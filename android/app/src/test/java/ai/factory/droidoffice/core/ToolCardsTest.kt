@@ -42,6 +42,16 @@ class ToolCardsTest {
     }
 
     @Test
+    fun liveToolsMatchTheirEntryAndExposeOutputAndPermissionState() {
+        val tools = listOf(
+            ThreadLive.Tool(null, "Execute", 1, "running"),
+            ThreadLive.Tool("tool-1", "Execute", 12, "waiting_permission", output = "building", more = 42),
+        )
+        assertEquals(null, ToolCards.live(tools, "missing"))
+        assertEquals(ToolCards.Live(12, "building", 42, waitingPermission = true), ToolCards.live(tools, "tool-1"))
+    }
+
+    @Test
     fun outputDropsTerminalEscapesAndTrailingBlanksAndDimsPromptLines() {
         val lines = ToolCards.outputLines("\u001B[32mok\u001B[0m 3 tests\n\n$ next\r\nloading\rdone\n\n\n")
         assertEquals(listOf("ok 3 tests", "", "$ next", "done"), lines.map { it.text })

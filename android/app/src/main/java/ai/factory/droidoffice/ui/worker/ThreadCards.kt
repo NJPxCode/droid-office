@@ -151,6 +151,7 @@ private class Cards(
     val floorDir: String?,
     val onFlip: (String, Boolean) -> Unit,
     val live: ((String) -> ToolCards.Live?)?,
+    val livePhaseSince: Long?,
 )
 
 /**
@@ -171,9 +172,10 @@ internal fun Activity(
     onToggleExploration: (ThreadView.Segment.Exploration, Boolean) -> Unit,
     onFlip: (String, Boolean) -> Unit,
     live: ((String) -> ToolCards.Live?)? = null,
+    livePhaseSince: Long? = null,
 ) {
     val first = a.id.removePrefix("activity:")
-    val cards = Cards(open, loaded, asking, allWorkers, deskWorker, onOpenWorker, floorDir, onFlip, live)
+    val cards = Cards(open, loaded, asking, allWorkers, deskWorker, onOpenWorker, floorDir, onFlip, live, livePhaseSince)
     Column(Modifier.fillMaxWidth().tagged(Tags.Worker.threadGroup(first))) {
         if (a.segments.isNotEmpty()) Segments(a, cards) else Legacy(a, cards, onToggleExploration)
         a.turnChanges?.let { TurnChanges(a.id, it, floorDir, Modifier.padding(top = 8.dp)) }
@@ -199,7 +201,7 @@ private fun Segments(a: ThreadRow.Activity, c: Cards) {
                 ) {
                     for (id in seg.blockIds) {
                         when (val b = blocks[id]) {
-                            is ThreadBlock.Thought -> ThoughtRow(b, c, dense = true)
+                            is ThreadBlock.Thought -> ThoughtRow(b, c)
                             is ThreadBlock.Tools -> {
                                 for (act in b.actions) if (seg.actionIds.isEmpty() || act.id in seg.actionIds) ActionRow(act, c, dense = true)
                                 b.plan?.let { PlanList(it, working = false, Modifier.padding(vertical = 4.dp).tagged(Tags.Worker.threadRunPlan(b.id.removePrefix("tools:")))) }
@@ -209,7 +211,7 @@ private fun Segments(a: ThreadRow.Activity, c: Cards) {
                     }
                 }
             }
-            is ThreadSegment.Thought -> (blocks[seg.blockId] as? ThreadBlock.Thought)?.let { ThoughtRow(it, c, dense = false) }
+            is ThreadSegment.Thought -> (blocks[seg.blockId] as? ThreadBlock.Thought)?.let { ThoughtRow(it, c) }
             is ThreadSegment.Tool -> actions[seg.actionId]?.let { (b, act) -> Tool(b, act, c, nested = false) }
             is ThreadSegment.Repeat -> {
                 val isOpen = c.open[seg.id] ?: seg.open
@@ -270,7 +272,7 @@ private fun Legacy(a: ThreadRow.Activity, c: Cards, onToggleExploration: (Thread
                 ) {
                     for (block in seg.blocks) {
                         when (block) {
-                            is ThreadBlock.Thought -> ThoughtRow(block, c, dense = true)
+                            is ThreadBlock.Thought -> ThoughtRow(block, c)
                             is ThreadBlock.Tools -> {
                                 for (action in block.actions) ActionRow(action, c, dense = true)
                                 block.plan?.let { PlanList(it, working = false, Modifier.padding(vertical = 4.dp).tagged(Tags.Worker.threadRunPlan(block.id.removePrefix("tools:")))) }
@@ -572,25 +574,20 @@ private fun ActionRow(a: ThreadModelAction, c: Cards, dense: Boolean) {
     }
 }
 
-/** One thought: its first line while closed, the whole of it while open. */
+/** One thought, with the shell's Factory timing, shimmer and disclosure motion. */
 @Composable
-private fun ThoughtRow(t: ThreadBlock.Thought, c: Cards, dense: Boolean) {
+private fun ThoughtRow(t: ThreadBlock.Thought, c: Cards) {
     val isOpen = ThreadView.Open.block(t, c.open)
-    val text = ThreadView.thought(t, c.loaded[t.id])
-    ToolRow(
-        glyph = null,
-        line = remember(t.preview, isOpen) { toolLine("Thought", if (isOpen) null else t.preview) },
-        working = t.live,
-        isOpen = isOpen,
+    val entry = c.loaded[t.id]
+    ThinkingBlock(
+        id = t.id,
+        text = ThreadView.thought(t, entry),
+        live = t.live,
+        open = isOpen,
         onToggle = { c.onFlip(t.id, isOpen) },
-        modifier = Modifier.tagged(Tags.Worker.threadEntry(t.id)),
-        toggleTag = Tags.Worker.threadToggle(t.id),
-        dense = dense,
-    ) {
-        SelectionContainer {
-            Text(text, style = toolStyle().copy(lineHeight = 20.sp, color = ToolDetail), modifier = Modifier.padding(bottom = 4.dp))
-        }
-    }
+        tookMs = entry?.tookMs,
+        startedAtMs = c.livePhaseSince,
+    )
 }
 
 @Composable

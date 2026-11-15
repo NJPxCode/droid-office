@@ -103,6 +103,7 @@ import ai.factory.droidoffice.core.ThreadRow
 import ai.factory.droidoffice.core.ThreadState
 import ai.factory.droidoffice.core.ThreadSupport
 import ai.factory.droidoffice.core.ThreadView
+import ai.factory.droidoffice.core.ToolCards
 import ai.factory.droidoffice.core.WorkerInfo
 import ai.factory.droidoffice.core.WorkerStatus
 import ai.factory.droidoffice.ui.LocalGraph
@@ -577,6 +578,10 @@ internal fun Thread(
                                     floorDir = floorDir,
                                     onToggleExploration = ::toggleExploration,
                                     onFlip = ::flip,
+                                    live = live?.let { snapshot ->
+                                        { id: String -> ToolCards.live(snapshot.tools, id) }
+                                    },
+                                    livePhaseSince = live?.phaseSince,
                                 )
                             }
                         }
@@ -630,6 +635,7 @@ internal fun Thread(
                     isOpen = planOpen,
                     onToggle = { open[PLAN_BAR] = !planOpen },
                     modifier = Modifier.widthIn(max = READING_WIDTH + 20.dp).fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 6.dp),
+                    working = w.state.busy,
                 )
             }
         }

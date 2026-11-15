@@ -74,6 +74,10 @@ object ToolCards {
     /** A tool running now, from the office's live layer (thread.live tools[]): its output tail while it runs. */
     data class Live(val startedAt: Long, val output: String? = null, val more: Int = 0, val waitingPermission: Boolean = false)
 
+    fun live(tools: List<ThreadLive.Tool>, id: String): Live? = tools.firstOrNull { it.id == id }?.let {
+        Live(it.startedAt, it.output, it.more ?: 0, it.phase == "waiting_permission")
+    }
+
     fun baseName(path: String): String = path.trimEnd('/').substringAfterLast('/').ifEmpty { path }
 
     private fun lines(count: Int) = if (count == 1) "1 line" else "$count lines"
