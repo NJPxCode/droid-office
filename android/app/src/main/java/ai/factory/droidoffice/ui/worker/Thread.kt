@@ -572,21 +572,19 @@ private fun QueuedMessages(items: List<ThreadQueue.Shown>, canClear: Boolean, on
             Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
         }
         items.forEachIndexed { i, q ->
-            Box(Modifier.fillMaxWidth().padding(top = 10.dp)) {
-                Column(Modifier.fillMaxWidth().queuedBlock().tagged(Tags.Worker.threadQueued(i + 1))) {
-                    Text(
-                        q.text.ifEmpty { "Image attached" },
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp, color = ThreadPalette.TextSecondary),
-                        maxLines = USER_LINES, overflow = TextOverflow.Ellipsis,
-                    )
-                    val more = when {
-                        q.more > 0 -> "${q.more} more line${if (q.more == 1) "" else "s"}"
-                        q.preview -> "Shortened"
-                        q.hasImage && q.text.isNotEmpty() -> "Image attached"
-                        else -> null
-                    }
-                    more?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = ThreadPalette.TextTertiary), modifier = Modifier.padding(top = 2.dp)) }
+            Column(Modifier.fillMaxWidth().padding(top = 10.dp).queuedBlock().tagged(Tags.Worker.threadQueued(i + 1))) {
+                Text(
+                    q.text.ifEmpty { "Image attached" },
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp, color = ThreadPalette.TextSecondary),
+                    maxLines = USER_LINES, overflow = TextOverflow.Ellipsis,
+                )
+                val more = when {
+                    q.more > 0 -> "${q.more} more line${if (q.more == 1) "" else "s"}"
+                    q.preview -> "Shortened"
+                    q.hasImage && q.text.isNotEmpty() -> "Image attached"
+                    else -> null
                 }
+                more?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = ThreadPalette.TextTertiary), modifier = Modifier.padding(top = 2.dp)) }
             }
         }
         Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -796,12 +794,10 @@ private fun Empty(w: WorkerInfo, state: ThreadState, connected: Boolean, rawTty:
     }
     // Without a transcript, what it was asked is still worth showing.
     w.prompt?.takeIf { it.isNotBlank() && state.phase != ThreadPhase.Loading }?.let { p ->
-        Box(Modifier.fillMaxWidth().padding(top = 28.dp)) {
-            Text(
-                p, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp), maxLines = 12, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.fillMaxWidth().userBlock().tagged(Tags.Worker.THREAD_PROMPT),
-            )
-        }
+        Text(
+            p, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp), maxLines = 12, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth().padding(top = 28.dp).userBlock().tagged(Tags.Worker.THREAD_PROMPT),
+        )
     }
 }
 

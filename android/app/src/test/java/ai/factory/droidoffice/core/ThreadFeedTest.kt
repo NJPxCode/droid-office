@@ -180,7 +180,7 @@ class ThreadFeedTest {
     @Test
     fun aFeedKeptThroughRawTtyComesBackWithWhatItLoadedAndAsksAgainAtOnce() {
         val feed = ThreadFeed("w1")
-        feed.receive(page(feed, feed.latest(0)!!, listOf(text("a", 1), text("b", 2)), hasMore = true, presentation = rows(listOf(text("a", 1), text("b", 2)))))
+        feed.receive(shown(feed, feed.latest(0)!!, listOf(text("a", 1), text("b", 2)), hasMore = true))
         val (earlier, before) = feed.earlier(1)!!
         val unanswered = feed.latest(ThreadFeed.RESEND_MS)!!
         // The Thread leaves for Raw TTY: nothing hears the answers to what it asked.
