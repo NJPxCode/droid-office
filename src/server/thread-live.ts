@@ -1,7 +1,21 @@
 import { stat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { WorkerAsk, WorkerStatus } from '../shared/protocol.js';
-import { liveStatus, readLiveScreen, readScreenStream, readScreenToolOutput, sameCommand, textSignature, type ThreadLive, type ThreadLiveTool, type ThreadLiveWorking, type ThreadSessionSettings } from '../shared/thread-live.js';
+import {
+  effortId,
+  effortName,
+  liveStatus,
+  modelOnScreen,
+  readLiveScreen,
+  readScreenStream,
+  readScreenToolOutput,
+  sameCommand,
+  textSignature,
+  type ThreadLive,
+  type ThreadLiveTool,
+  type ThreadLiveWorking,
+  type ThreadSessionSettings,
+} from '../shared/thread-live.js';
 import type { ThreadEntry } from '../shared/worker-thread.js';
 import type { ActiveToolCall } from './worker-queue.js';
 
@@ -22,6 +36,8 @@ export interface ThreadLiveInputs {
   screen?: readonly string[];
   /** The office's name for a model id. */
   modelName?(id: string): string | undefined;
+  /** The model id the office knows by this name. */
+  modelId?(name: string): string | undefined;
   /** A rewind the office is driving in its terminal. */
   rewind?: { entryId: string; since: number };
 }
@@ -117,7 +133,7 @@ export class ThreadLiveTracker {
     }
 
     let stream: ThreadLive['stream'];
-    if (busy && screen && (working === 'thinking' || working === 'streaming_assistant_message')) {
+    if (busy && screen && !screen.side && (working === 'thinking' || working === 'streaming_assistant_message')) {
       const shown = readScreenStream(screen.transcript);
       if (shown && !landed(shown.text, entries)) {
         const key = `${shown.kind}:${textSignature(shown.text).slice(0, 40)}`;
@@ -128,10 +144,21 @@ export class ThreadLiveTracker {
     if (!stream) state.stream = undefined;
 
     const settings = await this.settings(state, file, now);
-    const merged: ThreadSessionSettings | undefined = settings || screen?.model ? { ...settings } : undefined;
+    const shown = screen?.model ? modelOnScreen(screen.model) : undefined;
+    const merged: ThreadSessionSettings | undefined = settings || shown ? { ...settings } : undefined;
+    if (merged && shown) {
+      // Droid rewrites the settings file a while after /model or Tab; its mode line shows the change at once.
+      const filed = merged.model ? inputs.modelName?.(merged.model) : undefined;
+      if (!merged.model || (filed !== undefined && filed !== shown.name)) {
+        const id = inputs.modelId?.(shown.name);
+        if (id) merged.model = id;
+      }
+      const effort = shown.effort ? effortId(shown.effort) : undefined;
+      if (effort && effortName(merged.reasoningEffort ?? '') !== shown.effort) merged.reasoningEffort = effort;
+    }
     if (merged) {
       const name = merged.model ? inputs.modelName?.(merged.model) : undefined;
-      if (name ?? screen?.model) merged.modelName = name ?? screen?.model;
+      if (name ?? shown?.name) merged.modelName = name ?? shown?.name;
     }
 
     const body: Omit<ThreadLive, 'rev' | 'at'> = {
@@ -145,6 +172,7 @@ export class ThreadLiveTracker {
       tools,
       ...(waiting ? { waiting } : {}),
       ...(merged ? { settings: merged } : {}),
+      ...(screen?.side ? { side: screen.side } : {}),
     };
     const digest = JSON.stringify(body);
     const changed = digest !== state.digest;

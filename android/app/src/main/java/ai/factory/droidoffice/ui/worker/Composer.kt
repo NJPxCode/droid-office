@@ -42,6 +42,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -67,7 +69,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -108,6 +112,7 @@ import ai.factory.droidoffice.core.WorkerInfo
 import ai.factory.droidoffice.core.WorkspaceMention
 import ai.factory.droidoffice.net.ThreadFiles
 import ai.factory.droidoffice.ui.LocalGraph
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.factory.droidoffice.ui.LocalSnackbar
 import ai.factory.droidoffice.ui.components.Spinner
 import ai.factory.droidoffice.ui.components.tagged
@@ -155,6 +160,10 @@ fun Composer(
     quote: String? = null,
     onQuoted: () -> Unit = {},
     settings: ThreadSessionSettings? = null,
+    /** This conversation's prompts, newest first: Up and Down on a hardware keyboard walk them. */
+    prompts: List<String> = emptyList(),
+    /** Changes the model (`model`, a model id) or reasoning effort (`effort`) from the settings chip; null leaves it read-only. */
+    onSetting: ((setting: String, value: String) -> Unit)? = null,
     queuePanel: ThreadQueue.Panel = ThreadQueue.Panel.EMPTY,
     onQueueAction: ((action: String, item: ThreadQueue.Panel.Item) -> Unit)? = null,
 ) {
@@ -170,8 +179,12 @@ fun Composer(
     var pasteSeq by remember(w.id) { mutableIntStateOf(0) }
     // Why the last Send was held back (over the office's prompt limit), until the draft changes.
     var told by remember(w.id) { mutableStateOf<String?>(null) }
+    // Where Up and Down are in [prompts], and the draft they started from.
+    var recallAt by remember(w.id) { mutableIntStateOf(-1) }
+    var recallDraft by remember(w.id) { mutableStateOf("") }
     fun edit(next: TextFieldValue) {
         if (next.text != value.text) {
+            recallAt = -1
             told = null
             pastes.retainAll { next.text.contains(it.token) }
         }
@@ -381,6 +394,15 @@ fun Composer(
                     onStop()
                     true
                 }
+                (event.key == Key.DirectionUp || event.key == Key.DirectionDown) && !event.isShiftPressed && !event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed && value.selection.collapsed -> {
+                    val up = event.key == Key.DirectionUp
+                    val draft = if (recallAt < 0) value.text else recallDraft
+                    val next = ThreadCompose.recall(prompts, recallAt, up, value.text, value.selection.end, draft) ?: return@onPreviewKeyEvent false
+                    recallDraft = draft
+                    value = TextFieldValue(next.text, TextRange(next.text.length))
+                    recallAt = next.index
+                    true
+                }
                 event.key == Key.Enter && !event.isShiftPressed -> {
                     if (event.isCtrlPressed && queueable) {
                         if (canQueue) send(true)
@@ -439,13 +461,9 @@ fun Composer(
                             contentAlignment = Alignment.Center,
                         ) { Icon(Icons.Default.Add, "Attach pictures", tint = ThreadPalette.TextSecondary) }
                     }
-                    Text(
-                        ThreadCompose.settingsText(w, settings),
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ThreadPalette.TextSecondary),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp).tagged(Tags.Worker.COMPOSER_SETTINGS),
-                    )
+                    Box(Modifier.weight(1f)) {
+                        ModelChip(w, settings, onSetting)
+                    }
                     if (queueable) {
                         Text(
                             "Queue",
@@ -547,6 +565,54 @@ fun Composer(
             }
         }
     }
+    }
+}
+
+/**
+ * The composer's model and effort as Droid's mode line shows them (with Spec when active). With
+ * [onSetting] it opens a menu of the model's reasoning efforts and the models Droid offers, changed
+ * through Droid's own Tab key and /model picker.
+ */
+@Composable
+private fun ModelChip(w: WorkerInfo, settings: ThreadSessionSettings?, onSetting: ((setting: String, value: String) -> Unit)?) {
+    val graph = LocalGraph.current
+    val catalogue by graph.connection.catalogue.collectAsStateWithLifecycle()
+    var open by remember(w.id) { mutableStateOf(false) }
+    LaunchedEffect(open) { if (open && catalogue == null) graph.connection.models() }
+    val shape = RoundedCornerShape(3.dp)
+    Text(
+        ThreadCompose.settingsText(w, settings),
+        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ThreadPalette.TextSecondary),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(horizontal = 4.dp).clip(shape)
+            .then(if (onSetting != null) Modifier.clickable(role = Role.Button, onClickLabel = "Change the model or reasoning effort") { open = true } else Modifier)
+            .padding(horizontal = 4.dp, vertical = 6.dp).tagged(Tags.Worker.COMPOSER_SETTINGS),
+    )
+    if (onSetting == null) return
+    DropdownMenu(open, onDismissRequest = { open = false }, containerColor = ThreadPalette.Surface, modifier = Modifier.heightIn(max = 420.dp).tagged(Tags.Worker.COMPOSER_MODEL_MENU)) {
+        val models = catalogue?.models
+        val efforts = models?.firstOrNull { it.id == settings?.model }?.supportedReasoningEfforts.orEmpty()
+        @Composable
+        fun heading(text: String) = Text(text, style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextTertiary), modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+        @Composable
+        fun row(label: String, current: Boolean, tag: String, pick: () -> Unit) = DropdownMenuItem(
+            text = { Text(label, color = if (current) ThreadPalette.Accent else ThreadPalette.Text) },
+            onClick = {
+                open = false
+                pick()
+            },
+            modifier = Modifier.tagged(tag),
+        )
+        if (efforts.size > 1) {
+            heading("REASONING EFFORT")
+            for (effort in efforts) row(ThreadCompose.effortLabel(effort), settings?.reasoningEffort == effort, Tags.Worker.composerEffort(effort)) { onSetting("effort", effort) }
+        }
+        heading("MODEL")
+        if (models == null) Text("Loading Droid models…", color = ThreadPalette.TextTertiary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+        else for (model in models.filter { !it.legacy || it.id == settings?.model }) {
+            row(model.displayName.ifBlank { model.id }, model.id == settings?.model, Tags.Worker.composerModel(model.id)) { onSetting("model", model.id) }
+        }
     }
 }
 

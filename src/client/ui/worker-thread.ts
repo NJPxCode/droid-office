@@ -2,14 +2,17 @@ import { readDroidPending } from '../../shared/droid-queue';
 import { ORCHESTRATOR_ID } from '../../shared/mission-control';
 import { PROMPT_MAX } from '../../shared/prompts';
 import type { ClientMsg, ServerMsg, WorkerInfo } from '../../shared/protocol';
-import { nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
+import { nativeCopy, nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
 import { isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
 import { latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
 import { statusMode, thinkingSeconds, thoughtLabel } from '../../shared/thread-status';
 import { ThreadQueue } from '../../shared/thread-queue';
+import { rewindFilesSince } from '../../shared/thread-rewind';
+import { threadPrompts } from '../../shared/thread-turns';
 import { todosFinished } from '../../shared/todos';
 import type { ThreadEntry } from '../../shared/worker-thread';
 import type { Net } from '../net';
+import { recallPrompt } from '../prompt-recall';
 import { store } from '../state';
 import { TeamThread, TeamThreadPaint, teamThreadVisible } from '../team-thread';
 import { ThreadHistory } from '../thread-history';
@@ -18,9 +21,11 @@ import { withToken } from '../token';
 import { syncHorizontalScrollCue } from './code-highlight';
 import { h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
-import { liveFrom, entryAt, entryTook, effortLabel, type LiveTool, type LiveView } from './thread-live-view';
+import { liveFrom, entryAt, entryTook, type LiveTool, type LiveView } from './thread-live-view';
+import { openThreadCopy } from './thread-copy';
+import { mountThreadSettings } from './thread-settings';
 import { refreshMessageTimes, threadMessageActions } from './thread-message-actions';
-import { openThreadRewind } from './thread-rewind';
+import { openThreadRewind, type ThreadRewindRestore } from './thread-rewind';
 import { ThreadScrollMotion } from './thread-scroll-motion';
 import { mountThreadSearch } from './thread-search';
 import { mountThreadStatusRow } from './thread-status-row';
@@ -719,50 +724,34 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     edited();
   });
 
-  const recentMenu = h('div.wt-recent', { role: 'listbox', 'aria-label': 'Recent prompts', hidden: true });
-  let recentShown: string[] = [];
-  let recentCursor = 0;
-  const closeRecent = () => {
-    recentShown = [];
-    recentCursor = 0;
-    recentMenu.hidden = true;
-    recentMenu.replaceChildren();
-  };
-  const pickRecent = (text: string) => {
-    input.value = text;
-    closeRecent();
-    edited();
-    input.focus();
-    input.setSelectionRange(text.length, text.length);
-  };
-  const paintRecent = () => {
-    recentMenu.hidden = !recentShown.length;
-    recentCursor = Math.min(recentCursor, Math.max(0, recentShown.length - 1));
-    recentMenu.replaceChildren(
-      h('div.wt-recent-title', {}, 'Recent prompts'),
-      ...recentShown.map((text, i) =>
-        h('button.wt-recent-item', { type: 'button', role: 'option', 'aria-selected': String(i === recentCursor), onmousedown: (event: Event) => event.preventDefault(), onclick: () => pickRecent(text) }, text),
-      ),
-    );
-    recentMenu.children[recentCursor + 1]?.scrollIntoView({ block: 'nearest' });
-  };
-  const openRecent = () => {
-    const seen = new Set<string>();
-    recentShown = [];
-    for (const entry of [...history.entries].reverse()) {
-      const text = entry.role === 'user' && entry.kind === 'text' ? entry.text?.trim() : '';
-      if (!text || seen.has(text)) continue;
-      seen.add(text);
-      recentShown.push(text);
-      if (recentShown.length === 12) break;
+  // Up and Down walk this conversation's prompts in the input, as Droid's prompt history does.
+  let recallAt = -1;
+  let recallDraft = '';
+  const recall = (event: KeyboardEvent): boolean => {
+    if (event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) return false;
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return false;
+    if (input.selectionStart !== input.selectionEnd) return false;
+    const caret = input.selectionStart ?? input.value.length;
+    // Right after a recall the caret sits at the end and the arrows keep walking; inside the text they move it.
+    const browsing = recallAt >= 0 && caret === input.value.length;
+    if (!browsing) {
+      if (event.key === 'ArrowUp' && input.value.slice(0, caret).includes('\n')) return false;
+      if (event.key === 'ArrowDown' && (recallAt < 0 || input.value.slice(caret).includes('\n'))) return false;
     }
-    recentCursor = 0;
-    paintRecent();
+    const prompts = threadPrompts(history.entries);
+    if (!prompts.length) return false;
+    if (recallAt < 0) recallDraft = input.value;
+    const next = recallPrompt(prompts, recallAt, event.key === 'ArrowUp' ? 'up' : 'down', recallDraft);
+    input.value = next.text;
+    edited();
+    recallAt = next.index;
+    input.setSelectionRange(next.text.length, next.text.length);
+    return true;
   };
 
   const edited = () => {
     paintPastes();
-    if (input.value) closeRecent();
+    recallAt = -1;
     opts.onDraft(draftText());
     told = '';
     slashClosed = false;
@@ -791,19 +780,35 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     file.value = '';
   });
   const attach = h('button.btn.icon.sm.ghost.wt-attach', { type: 'button', 'aria-label': 'Add files and images', title: 'Add files and images', onclick: () => file.click() }, icon('plus', 15));
-  const modelChip = h('button.wt-setting.wt-model', { type: 'button', hidden: true, onclick: () => opts.raw?.() });
-  const modeChip = h('span.wt-setting.wt-mode', { hidden: true }, 'Spec');
-  const paintSettings = () => {
-    const settings = liveView?.settings;
-    const model = settings?.modelName ?? settings?.model;
-    const rawEffort = effortLabel(settings?.reasoningEffort);
-    const effort = rawEffort && !model?.toLowerCase().includes(rawEffort.toLowerCase()) ? rawEffort : undefined;
-    modelChip.hidden = !model;
-    if (model) {
-      modelChip.replaceChildren(h('span', {}, model), effort ? h('span.wt-model-effort', {}, effort) : '');
-      modelChip.title = 'Model and reasoning effort. Open Raw TTY to change them.';
+  const settingsUi = mountThreadSettings({
+    workerId: () => worker.id,
+    send: (msg) => opts.send(msg),
+    told: (text) => {
+      told = text;
+      updateControls();
+    },
+  });
+  const paintSettings = () => settingsUi.paint(liveView?.settings, !cloud && connected && worker.kind === 'agent');
+  // Droid's side chat (/btw): its question and answer, over the composer until it is closed.
+  const sideText = h('div.wt-side-text');
+  const sideClose = h('button.btn.icon.sm.ghost', { type: 'button', 'aria-label': 'Close side chat', title: 'Close side chat  Esc', onclick: () => void closeSide() }, icon('x', 14));
+  const sidePanel = h(
+    'section.wt-side',
+    { 'aria-label': 'Side chat', hidden: true },
+    h('header.wt-side-head', {}, h('b', {}, 'Side chat'), h('span.wt-side-hint', {}, 'Ask a follow-up with /btw. It stays out of the conversation.'), sideClose),
+    sideText,
+  );
+  const paintSide = () => {
+    const side = liveView?.side;
+    sidePanel.hidden = !side;
+    if (side && sideText.textContent !== side.text) sideText.textContent = side.text || 'Thinking…';
+  };
+  const closeSide = async () => {
+    const why = await opts.send({ t: 'worker.side', workerId: worker.id, close: true });
+    if (why) {
+      told = why;
+      updateControls();
     }
-    modeChip.hidden = settings?.interactionMode !== 'spec';
   };
   // While a turn runs, Send steers it (Droid reads the message now) and Queue holds it for after the turn.
   const queue = h('button.btn.sm.wt-queue', { type: 'button', title: 'Send once this turn is over', onclick: () => void submit(true) }, 'Queue');
@@ -811,11 +816,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   const send = h('button.btn.sm.primary.wt-send', { type: 'submit' }, sendLabel, icon('arrowUp', 14));
   const stop = h('button.btn.sm.wt-stop', { type: 'button', 'aria-label': 'Stop turn', title: 'Cancel  Esc', onclick: () => stopTurn() }, h('span.wt-stop-symbol', { 'aria-hidden': true }), h('span.wt-stop-label', {}, 'Stop'));
   const hint = h('span.wt-send-hint');
-  const box = h('div.wt-compose-box', {}, images.element, pasteChips, input, h('div.wt-compose-bar', {}, attach, modeChip, modelChip, hint, h('div.wt-send-buttons', {}, stop, queue, send)));
+  const box = h('div.wt-compose-box', {}, images.element, pasteChips, input, h('div.wt-compose-bar', {}, attach, ...settingsUi.chips, hint, h('div.wt-send-buttons', {}, stop, queue, send)));
   box.addEventListener('click', (event) => {
     if (!input.disabled && event.target instanceof Element && !event.target.closest('button, .pimgs, textarea')) input.focus();
   });
-  const form = h('form.wt-composer', {}, mentionMenu, slashMenu, recentMenu, file, queuedBox, box);
+  const form = h('form.wt-composer', {}, mentionMenu, slashMenu, settingsUi.menu, sidePanel, file, queuedBox, box);
   const progress = mountThreadStatusRow();
   const blockedText = h('p.wt-blocked-text');
   const blockedNote = h('div.wt-blocked.note.warn', { role: 'status', hidden: true }, icon('lock', 15), blockedText, opts.blockedAction ?? null);
@@ -1575,7 +1580,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     if (input.disabled) {
       if (slashShown.length) paintSlash();
       if (mentionShown.length) closeMention();
-      closeRecent();
+      settingsUi.close();
     }
     attach.disabled = input.disabled;
     const busy = isBusy(worker.status);
@@ -1654,6 +1659,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       refreshLiveOutput(element, (id) => liveTools.get(id));
       paintLive();
       paintSettings();
+      paintSide();
       paintProgress();
       if (stick) motion.follow();
       return;
@@ -1671,6 +1677,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
           input.value = rewound.text;
           edited();
         }
+        if (rewound.note) told = rewound.note;
         read(undefined, 0);
       } else {
         told = rewound.error ?? 'Failed to rewind conversation';
@@ -1731,7 +1738,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
 
   const clearDraft = () => {
     input.value = '';
-    closeRecent();
+    recallAt = -1;
     paintPastes();
     opts.onDraft('');
     told = '';
@@ -1741,13 +1748,20 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   const submit = async (queueSend = false) => {
     if ((queueSend ? queue.disabled || queue.hidden : send.disabled) || sending) return;
     const text = draftText().trim();
-    if (active && !disposed && !queueSend && nativeLimits(text, store.factory.connection.connected && !store.factory.connection.rejected)) {
+    const live = active && !disposed && !queueSend;
+    if (live && nativeLimits(text, store.factory.connection.connected && !store.factory.connection.rejected)) {
       openFactoryLimits();
       clearDraft();
       updateControls();
       return;
     }
-    const refused = cloud ? undefined : slashRefusal(text, worker.name, isBusy(worker.status));
+    if (live && !cloud && nativeCopy(text)) {
+      openThreadCopy({ entries: history.entries, sessionId: worker.sessionId });
+      clearDraft();
+      updateControls();
+      return;
+    }
+    const refused = cloud ? undefined : slashRefusal(text, worker.name, isBusy(worker.status), slashList);
     if (refused) {
       told = refused;
       updateControls();
@@ -1790,11 +1804,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     openThreadRewind({
       busy: isBusy(worker.status),
       text: history.entries.find((entry) => entry.id === entryId)?.text,
-      send: async (restore) => {
-        const msg = { t: 'worker.rewind', id: worker.id, workerId: worker.id, entryId, restore } as unknown as ClientMsg;
-        const why = await opts.send(msg);
-        if (why) return why || 'Failed to rewind conversation';
-        return undefined;
+      files: rewindFilesSince(history.entries, entryId),
+      send: async (restore: ThreadRewindRestore, files?: string[]) => {
+        const msg: ClientMsg = { t: 'worker.rewind', workerId: worker.id, entryId, restore, ...(files ? { files } : {}) };
+        return (await opts.send(msg)) || undefined;
       },
     });
   };
@@ -1867,33 +1880,16 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         return;
       }
     }
-    if (recentShown.length) {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        recentCursor = (recentCursor + (event.key === 'ArrowDown' ? 1 : recentShown.length - 1)) % recentShown.length;
-        paintRecent();
-        return;
-      }
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        closeRecent();
-        return;
-      }
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        pickRecent(recentShown[recentCursor]);
-        return;
-      }
-    } else if (event.key === 'ArrowUp' && !input.value) {
+    if (recall(event)) {
       event.preventDefault();
-      openRecent();
       return;
     }
-    if (event.key === 'Escape' && !event.shiftKey && isBusy(worker.status)) {
+    if (event.key === 'Escape' && !event.shiftKey && (!sidePanel.hidden || isBusy(worker.status))) {
       event.preventDefault();
       event.stopPropagation();
-      stopTurn();
+      // An open side chat takes Escape first, as it does in Droid.
+      if (!sidePanel.hidden) void closeSide();
+      else stopTurn();
       return;
     }
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -2015,6 +2011,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       progress.dispose();
       motion.dispose();
       search.dispose();
+      settingsUi.dispose();
       clearInterval(timer);
       document.removeEventListener('visibilitychange', visibility);
       teamSection.removeEventListener('toggle', teamDisclosure, true);

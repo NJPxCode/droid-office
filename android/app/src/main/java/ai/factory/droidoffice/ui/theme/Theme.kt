@@ -46,10 +46,10 @@ object Palette {
 }
 
 // The worker Thread's palette, as the Factory app draws a conversation (src/client/style.css
-// .worker-thread): warm near-black ground, warm greys, a raised slab for the owner's words, blue
+// .worker-thread): a pure black ground, warm greys, a raised slab for the owner's words, blue
 // links and Factory's diff colours. Accent and status colours stay the office's.
 object ThreadPalette {
-    val Bg = Color(0xFF060505)
+    val Bg = Color(0xFF000000)
     val Surface = Color(0xFF0C0B0A)
     val SurfaceRaised = Color(0xFF100E0D)
     val SurfaceHover = Color(0xFF151311)

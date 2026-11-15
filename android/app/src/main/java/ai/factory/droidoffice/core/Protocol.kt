@@ -250,7 +250,7 @@ data class FloorRoster(
 )
 
 sealed interface ServerMsg {
-    data class Welcome(val connection: String, val arrival: Arrival, val floors: List<FloorInfo>, val version: String, val view: FloorView, val availability: Map<String, ModelAvailability> = emptyMap(), val subscriptions: SubscriptionState? = null, val hiddenModels: Set<String> = emptySet(), val workerAnswerMultiSelect: Boolean = false, val factory: FactoryState? = null, val missionControl: MissionControlState? = null, val building: List<FloorRoster>? = null) : ServerMsg
+    data class Welcome(val connection: String, val arrival: Arrival, val floors: List<FloorInfo>, val version: String, val view: FloorView, val availability: Map<String, ModelAvailability> = emptyMap(), val subscriptions: SubscriptionState? = null, val hiddenModels: Set<String> = emptySet(), val workerAnswerMultiSelect: Boolean = false, val threadActions: Boolean = false, val factory: FactoryState? = null, val missionControl: MissionControlState? = null, val building: List<FloorRoster>? = null) : ServerMsg
     data class ActionResult(val requestId: String, val ok: Boolean, val error: String?) : ServerMsg
     data class HiddenModels(val ids: Set<String>) : ServerMsg
     /** Raw Factory state, including token-limit windows; OfficeJson tolerates newer unknown fields. */
@@ -300,7 +300,7 @@ sealed interface ServerMsg {
     /** A watched local worker's live turn state; each one replaces the last by rev. */
     data class ThreadLiveUpdate(val workerId: String, val sessionId: String?, val live: ThreadLive) : ServerMsg
     /** The result of ClientMsg.rewind; text is the rewound prompt for the composer. */
-    data class WorkerRewound(val workerId: String, val entryId: String, val ok: Boolean, val sessionId: String?, val text: String?, val error: String?) : ServerMsg
+    data class WorkerRewound(val workerId: String, val entryId: String, val ok: Boolean, val sessionId: String?, val text: String?, val error: String?, val note: String? = null) : ServerMsg
     data class Ignored(val t: String) : ServerMsg
 }
 
@@ -331,6 +331,7 @@ object Protocol {
             subscriptions = Subscriptions.parse(o["subscriptions"]),
             hiddenModels = strings(o["hiddenModels"]),
             workerAnswerMultiSelect = o.bool("workerAnswerMultiSelect") == true,
+            threadActions = o.bool("threadActions") == true,
             factory = FactoryCloud.parse(o["factory"]),
             missionControl = MissionControl.parse(o["missionControl"]),
             building = building(o["building"]),
@@ -370,7 +371,7 @@ object Protocol {
         "whiteboard.pinged" -> WbPinged.of(o)?.let { ServerMsg.Pinged(it) } ?: ServerMsg.Ignored(t)
         "thread.snapshot" -> threadSnapshot(o) ?: ServerMsg.Ignored(t)
         "thread.live" -> ThreadLive.of(o["live"])?.let { live -> ServerMsg.ThreadLiveUpdate(o.str("workerId").orEmpty(), o.str("sessionId"), live) } ?: ServerMsg.Ignored(t)
-        "worker.rewound" -> ServerMsg.WorkerRewound(o.str("workerId").orEmpty(), o.str("entryId").orEmpty(), o.bool("ok") == true, o.str("sessionId"), o.str("text"), o.str("error"))
+        "worker.rewound" -> ServerMsg.WorkerRewound(o.str("workerId").orEmpty(), o.str("entryId").orEmpty(), o.bool("ok") == true, o.str("sessionId"), o.str("text"), o.str("error"), o.str("note"))
         "action.result" -> ServerMsg.ActionResult(o.str("requestId").orEmpty(), o.bool("ok") == true, o.str("error"))
         else -> ServerMsg.Ignored(t)
     }
@@ -558,11 +559,30 @@ object ClientMsg {
         text?.let { put("text", it) }
     }
 
-    /** Rewind before a user ThreadEntry. restore true restores files; false keeps them as they are. */
-    fun rewind(workerId: String, entryId: String, restore: Boolean) = obj("worker.rewind") {
+    /**
+     * Rewind before a user ThreadEntry: [restore] is `conversation` (keep every file), `files` (restore
+     * them all) or `choose` (restore only [files], as Droid's "Choose files to restore..." picks them).
+     */
+    fun rewind(workerId: String, entryId: String, restore: String, files: List<String> = emptyList()) = obj("worker.rewind") {
+        require(restore == "conversation" || restore == "files" || restore == "choose")
         put("workerId", workerId)
         put("entryId", entryId)
-        put("restore", if (restore) "files" else "conversation")
+        put("restore", restore)
+        if (restore == "choose") put("files", JsonArray(files.map { JsonPrimitive(it) }))
+    }
+
+    /** Changes the session's reasoning effort (`effort`, an effort id) or model (`model`, a model id) through Droid's own keys and /model picker. */
+    fun setting(workerId: String, setting: String, value: String) = obj("worker.setting") {
+        require(setting == "effort" || setting == "model")
+        put("workerId", workerId)
+        put("setting", setting)
+        put("value", value)
+    }
+
+    /** Closes Droid's side chat (/btw) when the terminal shows it. */
+    fun closeSide(workerId: String) = obj("worker.side") {
+        put("workerId", workerId)
+        put("close", true)
     }
 
     fun attach(workerId: String) = obj("worker.attach") { put("workerId", workerId) }

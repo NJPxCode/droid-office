@@ -35,6 +35,8 @@ export interface LiveView {
   tools: LiveTool[];
   waiting?: { kind: string; toolId?: string };
   settings?: LiveSettings;
+  /** Droid's side chat (/btw) as the terminal shows it, while it is open. */
+  side?: { text: string };
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
@@ -70,6 +72,7 @@ export function liveFrom(msg: unknown, workerId: string, sessionId: string | und
   const streamKind = stream?.kind === 'thinking' || stream?.kind === 'text' ? stream.kind : undefined;
   const streamText = str(stream?.text);
   const waiting = obj(live.waiting);
+  const sideText = str(obj(live.side)?.text);
   const tools = Array.isArray(live.tools)
     ? live.tools.flatMap((raw): LiveTool[] => {
         const t = obj(raw);
@@ -93,6 +96,7 @@ export function liveFrom(msg: unknown, workerId: string, sessionId: string | und
     tools,
     ...(waiting ? { waiting: { kind: str(waiting.kind) ?? 'other', toolId: str(waiting.toolId) } } : {}),
     settings: settingsOf(live.settings),
+    ...(sideText !== undefined ? { side: { text: sideText } } : {}),
   };
 }
 

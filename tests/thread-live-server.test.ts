@@ -56,13 +56,35 @@ test('idle live state still carries settings, and an unchanged computation keeps
   assert.equal(first.changed, true);
   assert.equal(first.live.status, 'idle');
   assert.equal(first.live.settings?.model, 'claude-haiku-5-5');
-  assert.equal(first.live.settings?.modelName, 'Haiku 5.5 (Low)');
+  assert.equal(first.live.settings?.modelName, 'Haiku 5.5');
+  assert.equal(first.live.settings?.reasoningEffort, 'low');
   assert.equal('context' in (first.live.settings ?? {}), false);
   assert.equal(first.live.after, 'last');
   now += 1000;
   const second = await tracker.compute('w', inputs, [entry('last')], file);
   assert.equal(second.changed, false);
   assert.equal(second.live.rev, first.live.rev);
+});
+
+test('the mode line wins over a settings file Droid has not rewritten yet after /model or Tab', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'office-live-stale-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'session.jsonl');
+  await writeFile(path.join(root, 'session.settings.json'), JSON.stringify({ model: 'claude-sonnet-4-5', reasoningEffort: 'high', interactionMode: 'auto' }));
+  const names: Record<string, string> = { 'claude-sonnet-4-5': 'Sonnet 4.5', 'claude-haiku-5-5': 'Haiku 5.5' };
+  const tracker = new ThreadLiveTracker(() => 1000);
+  const inputs: ThreadLiveInputs = {
+    ...base(),
+    screen: [' Auto (High) · allow all commands                       Haiku 5.5 (Extra high)', '╭────╮', '│ > │', '╰────╯'],
+    modelName: (id) => names[id],
+    modelId: (name) => Object.keys(names).find((id) => names[id] === name),
+  };
+  const { live } = await tracker.compute('w', inputs, [entry('last')], file);
+  assert.deepEqual(live.settings, { model: 'claude-haiku-5-5', modelName: 'Haiku 5.5', reasoningEffort: 'xhigh', interactionMode: 'auto' });
+  // A name the office does not know keeps the file's model rather than dropping it.
+  const unknown = await new ThreadLiveTracker(() => 1000).compute('w', { ...inputs, screen: [' Auto (High)                       Custom Thing (Low)', '╭────╮', '│ > │', '╰────╯'] }, [entry('last')], file);
+  assert.equal(unknown.live.settings?.model, 'claude-sonnet-4-5');
+  assert.equal(unknown.live.settings?.reasoningEffort, 'low');
 });
 
 test('a running Execute gets its canonical id, hook start and live output', async () => {

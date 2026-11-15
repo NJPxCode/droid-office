@@ -63,6 +63,7 @@ import { officePrompt } from './prompts.js';
 import { Answers } from './answers.js';
 import { ThreadWatchHub } from './thread-watch.js';
 import { ThreadLiveTracker } from './thread-live.js';
+import type { DroidSetting } from './worker-settings.js';
 import { WorkerThreadReader } from './worker-thread.js';
 import { WorkerLabels } from './worker-labels.js';
 import { LabelModelError, openAiLabel, WorkerLabelModel } from './worker-label-model.js';
@@ -556,6 +557,7 @@ export async function startServer(cfg: Config) {
       const inputs = manager?.threadLive(workerId);
       if (!inputs) return undefined;
       inputs.modelName = (id) => droidModels.peek()?.models.find((m) => m.id === id)?.displayName;
+      inputs.modelId = (name) => droidModels.peek()?.models.find((m) => m.displayName === name)?.id;
       const source = session ?? manager?.threadSession(workerId);
       const file = source?.transcript ?? (source ? (await workerThreads.sessionPaths(source))?.file : undefined);
       return (await threadLive.compute(workerId, inputs, entries, file)).live;
@@ -1022,6 +1024,7 @@ export async function startServer(cfg: Config) {
       hiddenModels: hiddenModels.state(),
       workerLabels: workerLabels.state(),
       workerAnswerMultiSelect: true,
+      threadActions: true,
       prompts: prompts.state(),
       factory: factory.state(),
       gemini: officeVibes.geminiState(),
@@ -1321,10 +1324,16 @@ export async function startServer(cfg: Config) {
     };
     const handleWorkerRewind = (target: { wid: string; name: string; workers: typeof orchestrator.workers } | undefined, m: Extract<ClientMsg, { t: 'worker.rewind' }>) => {
       const entryId = str(m.entryId, 180);
-      const restore = m.restore === 'files' ? 'files' : 'conversation';
-      const reply = (ok: boolean, error?: string, text?: string) => {
+      const files = Array.isArray(m.files)
+        ? m.files
+            .slice(0, 200)
+            .map((file) => str(file, 1000))
+            .filter(Boolean)
+        : [];
+      const restore = m.restore === 'files' ? 'files' : m.restore === 'choose' ? { files } : 'conversation';
+      const reply = (ok: boolean, error?: string, text?: string, note?: string) => {
         const sessionId = target?.workers.threadSession(target.wid)?.sessionId;
-        sendTo(c, { t: 'worker.rewound', workerId: target?.wid ?? str(m.workerId, 32), entryId, ok, ...(sessionId ? { sessionId } : {}), ...(text ? { text } : {}), ...(error ? { error } : {}) });
+        sendTo(c, { t: 'worker.rewound', workerId: target?.wid ?? str(m.workerId, 32), entryId, ok, ...(sessionId ? { sessionId } : {}), ...(text ? { text } : {}), ...(error ? { error } : {}), ...(note ? { note } : {}) });
       };
       if (!target || !entryId) {
         const error = 'No such worker or conversation entry.';
@@ -1355,9 +1364,40 @@ export async function startServer(cfg: Config) {
           refuse(error);
           return;
         }
-        reply(true, undefined, point.text);
+        reply(true, undefined, point.text, result.note);
+        done(undefined, target.wid, result.note);
+      })().catch((err: unknown) => {
+        const error = `Failed to rewind conversation: ${err instanceof Error ? err.message : String(err)}`;
+        reply(false, error);
+        refuse(error);
+      });
+    };
+    const handleWorkerSetting = (target: { wid: string; workers: typeof orchestrator.workers } | undefined, m: Extract<ClientMsg, { t: 'worker.setting' }>) => {
+      if (!target) return done('No such worker');
+      const value = str(m.value, 120);
+      const effort = str(m.effort, 40) || undefined;
+      let want: DroidSetting | undefined;
+      if (m.setting === 'effort' && /^[a-z]{2,16}$/.test(value)) want = { setting: 'effort', value };
+      if (!want && (m.setting !== 'model' || !value)) return stop('Choose a reasoning effort or model.');
+      defer();
+      void (async () => {
+        if (!want) {
+          const catalogue = droidModels.peek() ?? (await droidModels.get().catch(() => undefined));
+          const name = catalogue?.models.find((model) => model.id === value)?.displayName;
+          if (!name) return refuse('That model is not one Droid offers here.');
+          want = { setting: 'model', name, ...(effort ? { effort } : {}) };
+        }
+        const error = await target.workers.setting(target.wid, want);
+        threadWatches?.notifyWorker(target.wid);
+        if (error) return refuse(error);
         done(undefined, target.wid);
-      })();
+      })().catch((err: unknown) => refuse(err instanceof Error ? err.message : String(err)));
+    };
+    const handleWorkerSide = (target: { wid: string; workers: typeof orchestrator.workers } | undefined) => {
+      if (!target) return done('No such worker');
+      const error = target.workers.closeSideChat(target.wid);
+      if (error) return refuse(error);
+      done(undefined, target.wid);
     };
     // The Orchestrator is in Mission Control on every floor: its terminal, thread and turn are reachable from any.
     if (asked === ORCHESTRATOR_ID && /^(worker|term|thread|changes)\./.test(msg.t)) {
@@ -1442,6 +1482,10 @@ export async function startServer(cfg: Config) {
           const info = orch.get(ORCHESTRATOR_ID);
           return handleWorkerRewind(info ? { wid: ORCHESTRATOR_ID, name: info.name, workers: orch } : undefined, msg);
         }
+        case 'worker.setting':
+          return handleWorkerSetting(orch.get(ORCHESTRATOR_ID) ? { wid: ORCHESTRATOR_ID, workers: orch } : undefined, msg);
+        case 'worker.side':
+          return handleWorkerSide(orch.get(ORCHESTRATOR_ID) ? { wid: ORCHESTRATOR_ID, workers: orch } : undefined);
         default:
           return done('The Orchestrator works from Mission Control: it has no desk, worktree or changes of its own.');
       }
@@ -1934,6 +1978,16 @@ export async function startServer(cfg: Config) {
       case 'worker.rewind': {
         const w = worker(msg.workerId);
         handleWorkerRewind(w ? { wid: w.wid, name: w.info.name, workers: w.floor.workers } : undefined, msg);
+        break;
+      }
+      case 'worker.setting': {
+        const w = worker(msg.workerId);
+        handleWorkerSetting(w ? { wid: w.wid, workers: w.floor.workers } : undefined, msg);
+        break;
+      }
+      case 'worker.side': {
+        const w = worker(msg.workerId);
+        handleWorkerSide(w ? { wid: w.wid, workers: w.floor.workers } : undefined);
         break;
       }
       case 'worker.interrupt': {

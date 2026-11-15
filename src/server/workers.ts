@@ -14,7 +14,9 @@ import { withImages } from '../shared/drops.js';
 import { readDroidQueue } from '../shared/droid-queue.js';
 import { detectBlockingTool, type BlockingToolState, type WorkerQueueState } from './worker-queue.js';
 import type { ThreadLiveInputs } from './thread-live.js';
-import { driveDroidRewind, type RewindDriveTarget } from './worker-rewind.js';
+import { driveDroidRewind, type RewindDriveResult, type RewindDriveTarget, type RewindRestore } from './worker-rewind.js';
+import { driveDroidSetting, type DroidSetting } from './worker-settings.js';
+import { readLiveScreen } from '../shared/thread-live.js';
 import { countCtrlEnterInputs, isCancelInput, isClearQueueInput } from '../shared/kitty.js';
 import { WORKSPACE_FILES, WORKTREES_DIR, Worktrees, describeWork, workspaceOf, type WorktreeCleanup, type WorktreeRef, type WorktreeStart, type WorktreeState } from './worktrees.js';
 import { checkoutDirty, choosePullBase, pushBranch } from './open-pull.js';
@@ -1695,7 +1697,7 @@ export class WorkerManager {
   }
 
   /** Drives Droid's rewind picker while holding this worker's one-rewind-at-a-time guard. */
-  async rewind(id: string, entryId: string, sessionId: string, target: RewindDriveTarget, restore: 'files' | 'conversation'): Promise<{ ok: boolean; error?: string }> {
+  async rewind(id: string, entryId: string, sessionId: string, target: RewindDriveTarget, restore: RewindRestore): Promise<RewindDriveResult> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'No such worker' };
     if (w.info.kind !== 'agent' || w.info.cloud || w.info.remote) return { ok: false, error: `${w.info.name} has no local conversation to rewind` };
@@ -1703,6 +1705,7 @@ export class WorkerManager {
     if (w.info.status === 'working' || w.info.status === 'starting' || w.info.status === 'needs_input') return { ok: false, error: `${w.info.name} is busy. Wait for its turn and any question to finish before rewinding.` };
     if (w.info.sessionId !== sessionId) return { ok: false, error: `${w.info.name}'s conversation changed. Read the Thread again before rewinding.` };
     if (!w.pty || !w.term) return { ok: false, error: `${w.info.name} is not running` };
+    if (this.settingDrives.has(id)) return { ok: false, error: `${w.info.name} is changing a setting. Try again in a moment.` };
     w.rewind = { entryId, since: Date.now() };
     w.rewindFork = { from: sessionId, until: Date.now() + 30_000 };
     let completed = false;
@@ -1717,6 +1720,37 @@ export class WorkerManager {
       w.rewind = undefined;
       this.events.update(w.info);
     }
+  }
+
+  private settingDrives = new Set<string>();
+
+  /** Changes a session setting through Droid's own keys and /model picker, one at a time per worker. */
+  async setting(id: string, want: DroidSetting): Promise<string | undefined> {
+    const w = this.workers.get(id);
+    if (!w) return 'No such worker';
+    if (w.info.kind !== 'agent' || w.info.cloud || w.info.remote) return `${w.info.name} has no local Droid session to change`;
+    if (!w.pty || !w.term) return `${w.info.name} is not running`;
+    if (w.rewind) return `${w.info.name} is rewinding its conversation`;
+    if (w.info.status === 'starting') return `${w.info.name} is still starting up: try again in a few seconds`;
+    if (w.info.status === 'needs_input') return `${w.info.name} is waiting on an answer in its terminal. Answer it first.`;
+    if (this.settingDrives.has(id)) return `${w.info.name} is already changing a setting`;
+    this.settingDrives.add(id);
+    try {
+      return await driveDroidSetting({ write: (data) => w.pty?.write(data), rows: () => (w.term ? screenRows(w.term) : undefined) }, want);
+    } finally {
+      this.settingDrives.delete(id);
+    }
+  }
+
+  /** Closes Droid's side chat (/btw) with Esc, only while the terminal shows it: Esc elsewhere would stop the turn. */
+  closeSideChat(id: string): string | undefined {
+    const w = this.workers.get(id);
+    if (!w?.pty || !w.term) return 'Worker is not running';
+    // Their key presses would land in the side chat instead of the dialog they drive.
+    if (w.rewind || this.settingDrives.has(id)) return `${w.info.name} is busy in its terminal. Try again in a moment.`;
+    if (!readLiveScreen(screenRows(w.term)).side) return undefined;
+    w.pty.write('\x1b');
+    return undefined;
   }
 
   /** Clears all pending messages, or the single 1-based item. */

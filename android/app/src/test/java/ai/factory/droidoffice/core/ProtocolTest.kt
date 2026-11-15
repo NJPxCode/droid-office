@@ -79,10 +79,31 @@ class ProtocolTest {
         assertEquals("worker.queue", queue.getValue("t").jsonPrimitive.content)
         assertEquals(2, queue.getValue("index").jsonPrimitive.content.toInt())
         assertEquals("queued", queue.getValue("group").jsonPrimitive.content)
-        val rewind = Json.parseToJsonElement(ClientMsg.rewind("w1", "u1:text", false)).jsonObject
+        val rewind = Json.parseToJsonElement(ClientMsg.rewind("w1", "u1:text", "conversation")).jsonObject
         assertEquals("worker.rewind", rewind.getValue("t").jsonPrimitive.content)
         assertEquals("conversation", rewind.getValue("restore").jsonPrimitive.content)
-        assertEquals("files", Json.parseToJsonElement(ClientMsg.rewind("w1", "u1:text", true)).jsonObject.getValue("restore").jsonPrimitive.content)
+        assertNull(rewind["files"])
+        assertEquals("files", Json.parseToJsonElement(ClientMsg.rewind("w1", "u1:text", "files")).jsonObject.getValue("restore").jsonPrimitive.content)
+        val choose = Json.parseToJsonElement(ClientMsg.rewind("w1", "u1:text", "choose", listOf("src/a.ts"))).jsonObject
+        assertEquals("choose", choose.getValue("restore").jsonPrimitive.content)
+        assertEquals(listOf("src/a.ts"), choose.getValue("files").jsonArray.map { it.jsonPrimitive.content })
+        val setting = Json.parseToJsonElement(ClientMsg.setting("w1", "effort", "high")).jsonObject
+        assertEquals("worker.setting", setting.getValue("t").jsonPrimitive.content)
+        assertEquals("effort", setting.getValue("setting").jsonPrimitive.content)
+        assertEquals("high", setting.getValue("value").jsonPrimitive.content)
+        val side = Json.parseToJsonElement(ClientMsg.closeSide("w1")).jsonObject
+        assertEquals("worker.side", side.getValue("t").jsonPrimitive.content)
+        assertEquals(true, side.getValue("close").jsonPrimitive.content.toBoolean())
+    }
+
+    @Test
+    fun threadActionsNeedTheWelcomeCapabilityAndRewindsCarryNotes() {
+        assertFalse((Protocol.decode(welcome) as ServerMsg.Welcome).threadActions)
+        assertTrue((Protocol.decode(welcome.replace(""""pulls":""", """"threadActions":true,"pulls":""")) as ServerMsg.Welcome).threadActions)
+        val rewound = Protocol.decode("""{"t":"worker.rewound","workerId":"w1","entryId":"u1:text","ok":true,"note":"This action was not confirmed"}""") as ServerMsg.WorkerRewound
+        assertEquals("This action was not confirmed", rewound.note)
+        val live = Protocol.decode("""{"t":"thread.live","workerId":"w1","sessionId":"s1","live":{"rev":1,"at":1,"status":"idle","side":{"text":"Side answer"}}}""") as ServerMsg.ThreadLiveUpdate
+        assertEquals("Side answer", live.live.side)
     }
 
     private val welcome = """

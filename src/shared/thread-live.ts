@@ -40,6 +40,12 @@ export interface ThreadLiveStream {
   since: number;
 }
 
+/** Droid's side chat (/btw), while it is open in the terminal. */
+export interface ThreadLiveSide {
+  /** The question and answer as the side chat shows them so far. */
+  text: string;
+}
+
 export interface ThreadLive {
   rev: number;
   at: number;
@@ -55,6 +61,7 @@ export interface ThreadLive {
   settings?: ThreadSessionSettings;
   /** A rewind the office is driving in the terminal (worker.rewind), until it ends. */
   rewind?: { entryId: string; since: number };
+  side?: ThreadLiveSide;
 }
 
 /** Factory's status for a working state (its uEc): an open question or permission wins. */
@@ -75,7 +82,15 @@ export function liveStatus(working: ThreadLiveWorking, waiting = false): ThreadL
 // ("[⏱ 13s, context: 5%] ? for help").
 
 const SPINNER = /^\s*[\u2800-\u28ff]\s+(.+?)\s*\(Press ESC to stop\)\s*$/;
-const BOX_TOP = /^\s*╭─+╮\s*$/;
+// The input box's top border, titled "── Spec ──" in Spec mode.
+const BOX_TOP = /^\s*╭─+(?: [^─]+ ─+)?╮\s*$/;
+const SPEC_BOX = /^\s*╭─+ Spec ─+╮\s*$/;
+const SIDE_TOP = /^\s*── Side chat ─+.*Esc close ──\s*$/;
+const SIDE_INPUT = /^\s*› /;
+// The input box's first row: its prompt, with or without a draft.
+const INPUT_ROW = /^\s*│\s?[>›]/;
+// A model as the mode line names it ("Haiku 5.5 (High)", "GPT-6.1 Sol"), never a transcript line.
+const MODEL_NAME = /^[\w.\-[\] ]+(?: \([A-Za-z ]+\))?$/;
 const PLAN = /^Plan · \d+\/\d+/;
 const QUEUE_HEADING = /^\s*(?:Queued|Steering) messages:\s*$/;
 const MESSAGE = /^⛬\s*/;
@@ -92,6 +107,9 @@ export interface LiveScreen {
   working?: ThreadLiveWorking;
   /** The model and effort on the mode line, e.g. "Haiku 5.5 (Low)". */
   model?: string;
+  /** Whether the input box is in Spec mode. Undefined without an input box (a dialog is open). */
+  spec?: boolean;
+  side?: ThreadLiveSide;
   /** The conversation rows above the plan, queue and spinner. */
   transcript: string[];
 }
@@ -104,24 +122,52 @@ export function spinnerWorking(label: string): ThreadLiveWorking {
   return 'thinking';
 }
 
+/** The side chat's question and answer, from its titled rule down to its input line. */
+export function readSideChat(lines: readonly string[]): ThreadLiveSide | undefined {
+  let top = -1;
+  for (let i = lines.length - 1; i >= 0; i--)
+    if (SIDE_TOP.test(lines[i])) {
+      top = i;
+      break;
+    }
+  if (top < 0) return undefined;
+  const input = lines.findIndex((line, at) => at > top && SIDE_INPUT.test(line));
+  // A side chat that has closed leaves its rule in the scrollback but no input line under it.
+  if (input < 0) return undefined;
+  // The body is indented two columns past the rule.
+  const indent = new RegExp(`^ {0,${(/^ */.exec(lines[top])?.[0].length ?? 0) + 2}}`);
+  const body = lines.slice(top + 1, input).map((line) => line.replace(indent, '').trimEnd());
+  return {
+    text: body
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim(),
+  };
+}
+
 export function readLiveScreen(lines: readonly string[]): LiveScreen {
+  const side = readSideChat(lines);
   let box = -1;
   for (let i = lines.length - 1; i >= 0; i--)
     if (BOX_TOP.test(lines[i])) {
       box = i;
       break;
     }
-  if (box < 0) return { transcript: [...lines] };
+  if (box < 0) return { transcript: [...lines], ...(side ? { side } : {}) };
   let label: string | undefined;
   let chrome = box;
+  // A dialog drawn in a box of its own (the model picker, a legacy-model warning) is not the input box.
+  const input = INPUT_ROW.test(lines[box + 1] ?? '');
   // The mode line, with the model at its end or on a line of its own.
   let model: string | undefined;
   for (let i = box - 1; i >= Math.max(0, box - 2); i--) {
     const line = lines[i];
     if (!line.trim()) break;
     const parts = line.trim().split(/\s{2,}/);
-    if (parts.length > 1) model = parts.at(-1);
-    else if (i === box - 1 && /\([A-Za-z ]+\)$/.test(line.trim()) && !/·/.test(line)) model = line.trim();
+    const last = parts.at(-1) ?? '';
+    if (parts.length > 1 && MODEL_NAME.test(last)) model ??= last;
+    else if (i === box - 1 && /\([A-Za-z ]+\)$/.test(line.trim()) && !/·/.test(line)) model ??= line.trim();
+    else if (!/·/.test(line)) break;
     chrome = i;
   }
   for (let i = chrome - 1; i >= Math.max(0, box - CHROME_REACH); i--) {
@@ -136,8 +182,29 @@ export function readLiveScreen(lines: readonly string[]): LiveScreen {
   return {
     transcript: lines.slice(0, chrome),
     ...(label !== undefined ? { label, working: spinnerWorking(label) } : {}),
-    ...(model ? { model } : {}),
+    ...(input && model ? { model } : {}),
+    ...(input ? { spec: SPEC_BOX.test(lines[box]) } : {}),
+    ...(side ? { side } : {}),
   };
+}
+
+/** A mode line's model ("Sonnet 5.5 (High)") split into its name and reasoning effort label. */
+export function modelOnScreen(shown: string): { name: string; effort?: string } {
+  const m = /^(.*?)\s*\(([^()]+)\)$/.exec(shown.trim());
+  return m ? { name: m[1], effort: m[2] } : { name: shown.trim() };
+}
+
+const EFFORT_LABEL: Record<string, string> = { off: 'Off', none: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+
+/** Droid's label for a `reasoningEffort` id, e.g. "Extra high" for "xhigh". */
+export function effortName(effort: string): string {
+  return EFFORT_LABEL[effort.toLowerCase()] ?? effort;
+}
+
+/** The `reasoningEffort` id for a label the mode line shows, e.g. "xhigh" for "Extra high"; never off, which it doesn't show. */
+export function effortId(label: string): string | undefined {
+  const wanted = label.trim().toLowerCase();
+  return Object.keys(EFFORT_LABEL).find((id) => id !== 'off' && id !== 'none' && EFFORT_LABEL[id].toLowerCase() === wanted);
 }
 
 /** A tool call's first line: its name at the message's indent, its result lines under it. */

@@ -100,6 +100,7 @@ import ai.factory.droidoffice.core.ThreadStatus
 import ai.factory.droidoffice.core.ThreadRow
 import ai.factory.droidoffice.core.ThreadState
 import ai.factory.droidoffice.core.ThreadSupport
+import ai.factory.droidoffice.core.ThreadTurns
 import ai.factory.droidoffice.core.ThreadView
 import ai.factory.droidoffice.core.ToolCards
 import ai.factory.droidoffice.core.WorkerInfo
@@ -190,13 +191,15 @@ internal fun Thread(
     search: Boolean = false,
     onSearch: (Boolean) -> Unit = {},
     onQuote: (String) -> Unit = {},
-    onRewind: ((entryId: String, restore: Boolean) -> Unit)? = null,
+    onRewind: ((entryId: String, restore: String, files: List<String>) -> Unit)? = null,
     rewinding: Boolean = false,
     rewindError: String? = null,
     onRewindCancel: () -> Unit = {},
     onQueuePanel: (ThreadQueue.Panel) -> Unit = {},
     /** This screen's feeds by office, floor and worker, so the Thread comes back from Raw TTY with what it loaded. */
     feeds: MutableMap<String, ThreadFeed> = remember { mutableMapOf() },
+    /** The loaded entries, whenever they change: the composer's prompt history and /copy read them. */
+    onEntries: (List<ThreadEntry>) -> Unit = {},
 ) {
     val graph = LocalGraph.current
     val connection = graph.connection
@@ -256,6 +259,7 @@ internal fun Thread(
     // Nothing from a presentation this app can't read is shown: the head says why instead.
     val rows = if (state.support == ThreadSupport.Supported) state.rows else emptyList()
     val loaded = remember(state.entries) { state.entries.associateBy { it.id } }
+    LaunchedEffect(state.entries) { onEntries(state.entries) }
     // Droid's queue as its screen shows it, with the whole text of what this phone sent to it.
     val droidQueue = remember(screen) { screen?.let(DroidQueue::readPending) }
     var clock by remember(feed) { mutableLongStateOf(0L) }
@@ -646,9 +650,10 @@ internal fun Thread(
                 text = loaded[target.id]?.text.orEmpty(),
                 busy = rewinding,
                 error = rewindError,
-                onChoose = { restore ->
+                files = remember(rows, target.id) { ThreadTurns.rewindFiles(rows, target.id) },
+                onChoose = { restore, files ->
                     rewindSent = true
-                    onRewind?.invoke(target.id, restore)
+                    onRewind?.invoke(target.id, restore, files)
                 },
                 onCancel = {
                     rewindTarget = null

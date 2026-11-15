@@ -617,6 +617,11 @@ object Tags {
         const val THREAD_REWIND_RESTORE = "worker.thread.rewind.restore"
         const val THREAD_REWIND_CONFIRM = "worker.thread.rewind.confirm"
         const val THREAD_REWIND_CANCEL = "worker.thread.rewind.cancel"
+        const val THREAD_REWIND_CHOOSE = "worker.thread.rewind.choose"
+        const val THREAD_SIDE = "worker.thread.side"
+        const val THREAD_SIDE_CLOSE = "worker.thread.side.close"
+        const val THREAD_COPY = "worker.thread.copy"
+        const val COMPOSER_MODEL_MENU = "composer.model_menu"
         const val THREAD_IMAGE_PREVIOUS = "worker.thread.image_viewer.previous"
         const val THREAD_IMAGE_NEXT = "worker.thread.image_viewer.next"
         const val THREAD_IMAGE_COUNT = "worker.thread.image_viewer.count"
@@ -633,6 +638,10 @@ object Tags {
         fun arrangeDown(id: String) = "worker.keys_sheet.down/$id"
 
         fun removeImage(number: Int) = "composer.remove_image/$number"
+        fun rewindFile(path: String) = "worker.thread.rewind.file/$path"
+        fun copyChoice(choice: String) = "worker.thread.copy/$choice"
+        fun composerModel(id: String) = "composer.model/$id"
+        fun composerEffort(id: String) = "composer.effort/$id"
         /** A chip in [PASTES], by its paste's number: tapping it puts the text back in the draft. */
         fun paste(number: Int) = "composer.paste/$number"
         fun removePaste(number: Int) = "composer.remove_paste/$number"

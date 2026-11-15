@@ -537,7 +537,8 @@ test('opens live Factory groups, folds repeats and subagents, and expands long c
   await push(exploration, true);
   const explore = page.locator('.wt-sg[data-disclosure="explore:r1"]');
   assert.equal(await explore.evaluate((el) => el.classList.contains('is-open')), true);
-  assert.match(await explore.locator('.wt-sg-label').innerText(), /Exploring 2 searches/);
+  // The group's rows stagger in; its label is read once it has painted.
+  await page.waitForFunction(() => /Exploring 2 searches/.test((document.querySelector('.wt-sg[data-disclosure="explore:r1"] .wt-sg-label') as HTMLElement | null)?.innerText ?? ''));
   await push(exploration, false);
   await page.waitForFunction(() => {
     const group = document.querySelector('.wt-sg[data-disclosure="explore:r1"]');

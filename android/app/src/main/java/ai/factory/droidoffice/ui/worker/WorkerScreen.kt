@@ -100,10 +100,12 @@ import ai.factory.droidoffice.core.SlashCommands
 import ai.factory.droidoffice.core.Tags
 import ai.factory.droidoffice.core.TermSize
 import ai.factory.droidoffice.core.TermView
+import ai.factory.droidoffice.core.ThreadEntry
 import ai.factory.droidoffice.core.ThreadFeed
 import ai.factory.droidoffice.core.ThreadLive
 import ai.factory.droidoffice.core.ThreadLiveState
 import ai.factory.droidoffice.core.ThreadQueue
+import ai.factory.droidoffice.core.ThreadTurns
 import ai.factory.droidoffice.core.WorkerInfo
 import ai.factory.droidoffice.core.WorkerLinkView
 import ai.factory.droidoffice.core.WorkerStatus
@@ -313,6 +315,8 @@ fun WorkerScreen(
         var composerFill by remember(workerId) { mutableStateOf<String?>(null) }
         var rewinding by remember(workerId) { mutableStateOf(false) }
         var rewindError by remember(workerId) { mutableStateOf<String?>(null) }
+        var threadEntries by remember(workerId) { mutableStateOf<List<ThreadEntry>>(emptyList()) }
+        var copying by remember(workerId) { mutableStateOf(false) }
         val liveState = remember(workerId) { ThreadLiveState() }
         var threadLive by remember(workerId) { mutableStateOf<ThreadLive?>(null) }
         LaunchedEffect(workerId) {
@@ -330,6 +334,7 @@ fun WorkerScreen(
                 if (msg.ok) {
                     rewindError = null
                     msg.text?.takeIf { it.isNotBlank() }?.let { composerFill = it }
+                    msg.note?.let { note -> scope.launch { snackbarHost.showSnackbar(note) } }
                     sent++
                 } else {
                     rewindError = msg.error ?: "Failed to rewind conversation"
@@ -476,10 +481,11 @@ fun WorkerScreen(
                         onQuote = { quote = it },
                         onQueuePanel = { queuePanel = it },
                         live = currentThreadLive,
-                        onRewind = if (link.phase == Phase.Connected && !cloud && !worker.isShell) { entryId, restore ->
+                        // An office from before these actions leaves them unanswered: "This action was not confirmed".
+                        onRewind = if (link.phase == Phase.Connected && !cloud && !worker.isShell && data.threadActions) { entryId, restore, files ->
                             rewinding = true
                             rewindError = null
-                            if (!connection.send(ClientMsg.rewind(workerId, entryId, restore))) {
+                            if (!connection.send(ClientMsg.rewind(workerId, entryId, restore, files))) {
                                 rewinding = false
                                 rewindError = "Couldn't reach the office. Nothing was rewound."
                             }
@@ -488,6 +494,7 @@ fun WorkerScreen(
                         rewindError = rewindError,
                         onRewindCancel = { rewindError = null },
                         feeds = threadFeeds,
+                        onEntries = { threadEntries = it },
                     )
                 } } }
             }
@@ -528,14 +535,22 @@ fun WorkerScreen(
                 val connected = link.phase == Phase.Connected
                 if (cloud && cloudError != null) CloudError(worker, cloudError)
                 if (blocked != null && !waiting) OrchestratorBlocked(blocked)
+                val side = currentThreadLive?.side
+                if (!tty && side != null) ThreadSideChat(side, onClose = if (connected && data.threadActions) {
+                    { if (!connection.send(ClientMsg.closeSide(workerId))) scope.launch { snackbar.showSnackbar("Couldn't reach the office. The side chat is still open.") } }
+                } else null)
                 Composer(
                     worker, draft, visible = blocked == null && !waiting && (!directInput || !tty || worker.isCloud), focusRequest = composerFocus, thread = !tty,
                     quote = quote, onQuoted = { quote = null },
                     fill = composerFill, onFilled = { composerFill = null },
                     settings = currentThreadLive?.settings,
+                    prompts = remember(threadEntries) { ThreadTurns.prompts(threadEntries) },
+                    onSetting = if (connected && !cloud && !worker.isShell && data.threadActions) { setting, value ->
+                        if (!connection.send(ClientMsg.setting(workerId, setting, value))) scope.launch { snackbar.showSnackbar("Couldn't reach the office. Nothing was changed.") }
+                    } else null,
                     queueState = queueState, onQueued = { queueRevision++ },
                     queuePanel = queuePanel,
-                    onQueueAction = if (connected && !cloud && !worker.isShell) { action, item ->
+                    onQueueAction = if (connected && !cloud && !worker.isShell && data.threadActions) { action, item ->
                         val kind = if (action == "edit") "delete" else action
                         val sent = connection.send(ClientMsg.queueAction(
                             workerId,
@@ -572,12 +587,16 @@ fun WorkerScreen(
                         }
                     } else null,
                     // Slash commands go to Droid's input box like a message, except one that would end
-                    // the CLI, and none while a turn runs, when Droid would take it as steering.
+                    // the CLI, and while a turn runs one Droid would not run mid-turn.
                     intercept = if (tty) null else { prompt ->
                         val slash = SlashCommands.of(prompt)
                         when {
                             SlashCommands.nativeLimits(prompt, ai.factory.droidoffice.core.FactoryLimits.connected(factory)) -> {
                                 factoryLimits = true
+                                true
+                            }
+                            !cloud && SlashCommands.nativeCopy(prompt) -> {
+                                copying = true
                                 true
                             }
                             slash == null -> false
@@ -590,8 +609,8 @@ fun WorkerScreen(
                                 scope.launch { snackbar.showSnackbar("/${slash.first} opens one of Droid's dialogs, which a cloud worker can't show here.") }
                                 true
                             }
-                            worker.state.busy -> {
-                                scope.launch { snackbar.showSnackbar("Slash commands run once ${worker.name} finishes this turn. Stop it to run one now.") }
+                            worker.state.busy && slash.second?.midTurn != true -> {
+                                scope.launch { snackbar.showSnackbar(SlashCommands.refusal(prompt, worker.name, busy = true).orEmpty()) }
                                 true
                             }
                             else -> false
@@ -606,6 +625,7 @@ fun WorkerScreen(
         })
         if (orchestratorMenu && orchestrator != null) OrchestratorSheet(orchestrator, onDismiss = { orchestratorMenu = false })
         if (factoryLimits) ai.factory.droidoffice.ui.offices.SubscriptionsSheet { factoryLimits = false }
+        if (copying) ThreadCopyDialog(threadEntries, worker.sessionId, onDismiss = { copying = false })
         openedQuestionMenu?.let { menu ->
             QuestionWorkspaceDialog(
                 worker = worker,

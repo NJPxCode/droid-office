@@ -1,6 +1,9 @@
 // Droid 1.12's /rewind-conversation screens. Pure parsing, checked against a real capture in
 // tests/thread-rewind.test.ts; the terminal driving lives in src/server/worker-rewind.ts.
 
+import { extractThreadChanges } from './thread-diff.js';
+import type { ThreadEntry } from './worker-thread.js';
+
 export interface RewindMenuRow {
   /** Droid's message number (the JSONL seq + 1), newest first. */
   number: number;
@@ -51,7 +54,82 @@ export function readRewindRestore(lines: readonly string[]): RewindRestoreOption
     const match = /^\s*([> ])\s*(Restore all files|Choose files to restore\.\.\.|Don't restore files)\s*$/.exec(text);
     if (match) options.push({ label: match[2], selected: match[1] === '>' });
   }
-  return options;
+  // The title can draw a frame before its choices do.
+  return options.length ? options : undefined;
+}
+
+/** A file Droid's "Choose files to restore..." screen lists: an edited one to restore, or a created one to delete. */
+export interface RewindFileRow {
+  /** As Droid shows it, relative to the session's folder. */
+  path: string;
+  action: 'restore' | 'delete';
+  checked: boolean;
+  selected: boolean;
+}
+
+export interface RewindFileList {
+  rows: RewindFileRow[];
+  /** "1-2 of 2": the rows shown and how many there are. */
+  first?: number;
+  last?: number;
+  total?: number;
+}
+
+/** "Restore Files to Rewind Point", or undefined while another screen is showing. */
+export function readRewindFiles(lines: readonly string[]): RewindFileList | undefined {
+  if (!lines.some((line) => cell(line).includes('Restore Files to Rewind Point'))) return undefined;
+  const rows: RewindFileRow[] = [];
+  let range: Pick<RewindFileList, 'first' | 'last' | 'total'> = {};
+  for (const line of lines) {
+    const row = /^\s*([> ])\s*\[([ x])\]\s+(.+?)\s+(restore|delete)\s*$/.exec(cell(line));
+    if (row) {
+      // An edited file shows its size before the action: "a.txt (6 B) restore".
+      const path = row[3].replace(/\s+\(\d[\d.,]*\s*[A-Za-z]*\)$/, '');
+      rows.push({ path, action: row[4] as RewindFileRow['action'], checked: row[2] === 'x', selected: row[1] === '>' });
+    }
+    if (/Space\/Enter toggle/.test(line)) {
+      const shown = /(\d+)-(\d+) of (\d+)\s*$/.exec(line);
+      if (shown) range = { first: Number(shown[1]), last: Number(shown[2]), total: Number(shown[3]) };
+    }
+  }
+  return { rows, ...range };
+}
+
+const slashes = (path: string) => path.replace(/\\/g, '/').replace(/^\.\//, '');
+
+/** Whether a file the Thread names (absolute, or relative to the worker's folder) is the one Droid's list shows. */
+export function rewindFileMatches(requested: string, shown: string): boolean {
+  const a = slashes(requested);
+  const b = slashes(shown);
+  return !!a && !!b && (a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`));
+}
+
+/** The requested file a row of Droid's list stands for: the same path first, then one ending in the other. */
+export function rewindFileFor(requested: readonly string[], shown: string): string | undefined {
+  return requested.find((path) => slashes(path) === slashes(shown)) ?? requested.find((path) => rewindFileMatches(path, shown));
+}
+
+/** A file the conversation changed after a user message: a rewind to before it restores or deletes it. */
+export interface RewindFile {
+  path: string;
+  shortPath: string;
+  action: 'restore' | 'delete';
+}
+
+/** The files changed after the user message `entryId`, as Droid's "Choose files to restore..." lists them. */
+export function rewindFilesSince(entries: readonly ThreadEntry[], entryId: string): RewindFile[] {
+  const at = entries.findIndex((entry) => entry.id === entryId);
+  if (at < 0) return [];
+  const files = new Map<string, RewindFile>();
+  for (const entry of entries.slice(at + 1)) {
+    if (entry.error) continue;
+    for (const change of extractThreadChanges(entry) ?? []) {
+      // A file created after the message is deleted by the rewind, however often it was edited later.
+      const action = files.get(change.path)?.action ?? (change.kind === 'added' ? 'delete' : 'restore');
+      files.set(change.path, { path: change.path, shortPath: change.shortPath, action });
+    }
+  }
+  return [...files.values()];
 }
 
 /** Whether this rewind point has no files to restore and Esc continues conversation-only. */
