@@ -9,7 +9,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { PROMPT_IMAGE_ID, PROMPT_IMAGES_MAX } from '../shared/drops.js';
 import { DESK_BY_ID, nearestFreeSeat, type DeskDef } from '../shared/layout.js';
-import { AGENT_EFFORTS, isAgentEffort, type AgentChoice, type GhPull, type SubagentModel, type SubagentSettings, type WorkerInfo, type WorkerStatus, type WorkerTask } from '../shared/protocol.js';
+import { AGENT_EFFORTS, isAgentEffort, type AgentChoice, type AgentEffort, type GhPull, type SubagentModel, type SubagentSettings, type WorkerInfo, type WorkerStatus, type WorkerTask } from '../shared/protocol.js';
 import type { PipelinesState } from '../shared/pipelines.js';
 import { isAsleep } from '../shared/status.js';
 import type { DroidModelCatalogue, DroidModelOption } from './droid-models.js';
@@ -22,6 +22,7 @@ import { workerMessageVars } from '../shared/prompts.js';
 import { hireRefusal } from './subscriptions/map.js';
 import { isBuildingAgent, MISSION_CONTROL_DOOR } from './building-agent.js';
 import { modelList, outsideModelList, outsideModelListMessage } from './model-policy.js';
+import { matchModel } from './model-match.js';
 import { analyzeCheckoutSafety, buildOtherFloorWorkers, workerLocation, type FloorTreeContext } from './floor-watch.js';
 import { pushedSha, workerDiff } from './team-inspect.js';
 import { canonicalPath, currentBranch, handoffStart, integrateWorker, verifyPushed, workerBranch, workerCwd } from './team-integrate.js';
@@ -69,6 +70,8 @@ export interface TeamWorkers {
   queueState?(id: string, now?: number): WorkerQueueState | undefined;
   blockingTool?(id: string, now?: number): BlockingToolState | undefined;
   resume(id: string, prompt?: string, images?: readonly string[]): string | undefined;
+  /** Moves an agent to `model` (`name` is how Droid's /model picker lists it): now in a running session, at its next launch otherwise. */
+  switchModel?(id: string, model: { id: string; name: string }, effort?: AgentEffort): Promise<{ applied: 'now' | 'next_launch' } | { error: string }>;
   kill(id: string): Promise<{ note?: string; error?: string }>;
   dismiss?(id: string, pruneWorktree: boolean, keepBranch: boolean): Promise<{ note?: string; error?: string }>;
   tail(id: string, lines: number): string | undefined;
@@ -807,6 +810,8 @@ export class Team {
       }
       case 'send':
         return this.send(caller, b);
+      case 'switch_model':
+        return this.switchModel(caller, b);
       case 'watch':
         return this.watch(caller, b);
       case 'review':
@@ -816,7 +821,7 @@ export class Team {
       case 'report':
         return this.report(caller, b);
       default:
-        return no(400, 'Unknown action: use whoami, status, watch, hire, models, send, review, dismiss or report');
+        return no(400, 'Unknown action: use whoami, status, watch, hire, models, send, switch_model, review, dismiss or report');
     }
   }
 
@@ -1941,6 +1946,48 @@ export class Team {
     });
   }
 
+  /**
+   * Switches a subagent (or, for a building agent, any floor worker it follows) to the model `b.model`
+   * names: an exact id or name, or the words the owner would type into Droid's /model filter.
+   */
+  private async switchModel(lead: WorkerInfo, b: Record<string, unknown>): Promise<TeamReply> {
+    const w = this.resolve(lead, b.worker);
+    if (typeof w === 'string') return no(404, w);
+    if (w.lead !== lead.id && !this.canControlWatched(lead)) return no(403, `${w.name} is an independent floor worker: only the owner or a building agent changes its model.`);
+    if (w.kind !== 'agent') return no(400, `${w.name} is a shell and runs no model.`);
+    if (w.cloud || w.remote) return no(409, `${w.name} runs outside this office, so its model can't be switched from here.`);
+    if (!this.workers.switchModel) return no(409, 'Model switching is unavailable on this floor.');
+    const query = str(b.model, 200).trim();
+    if (!query) return no(400, 'Name the model: what you would type after /model in Droid (Sol, droidproxy sol), or an exact id from team_models.');
+    const effort = b.effort === undefined || b.effort === '' ? undefined : b.effort;
+    if (effort !== undefined && !isAgentEffort(effort)) return no(400, `Effort is one of ${AGENT_EFFORTS.join(', ')}`);
+    const catalogue = await this.catalogue();
+    if (!catalogue?.models.length) return no(503, 'Droid did not list its models just now. Try again in a moment.');
+    const list = modelList(this.opts.settings());
+    const pool = catalogue.models.filter((m) => !catalogue.customOnly || m.custom);
+    const hit = matchModel(query, list ? pool.filter((m) => list.some((a) => a.id === m.id)) : pool);
+    if ('error' in hit) {
+      const outside = list ? matchModel(query, pool) : undefined;
+      if (list && outside && !('error' in outside)) return no(403, outsideModelListMessage(clip(outside.model.id, 60), list));
+      return no(404, hit.error);
+    }
+    const target = hit.model;
+    const efforts = target.supportedReasoningEfforts;
+    if (effort && efforts && !efforts.includes(effort)) {
+      return no(400, efforts.length ? `${target.displayName} takes effort ${efforts.join('/')}.` : `${target.displayName} has no reasoning effort to pick: leave effort out.`);
+    }
+    const refused = await this.refuseModel(target.id, true, list);
+    if (refused) return no(409, refused);
+    const result = await this.workers.switchModel(w.id, { id: target.id, name: target.displayName }, effort);
+    if ('error' in result) return no(409, `${w.name}: ${result.error}`);
+    return ok({
+      worker: this.member(this.workers.get(w.id) ?? w, lead.id),
+      model: { id: target.id, name: target.displayName },
+      ...(effort ? { effort } : {}),
+      applied: result.applied,
+      ...(hit.others.length ? { otherMatches: hit.others.slice(0, 5).map((m) => ({ id: m.id, name: m.displayName })) } : {}),
+    });
+  }
   private async dismiss(lead: WorkerInfo, b: Record<string, unknown>): Promise<TeamReply> {
     const w = this.resolve(lead, b.worker);
     if (typeof w === 'string') return no(404, w);

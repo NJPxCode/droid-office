@@ -3440,3 +3440,57 @@ test("a tool call that changed the worker's files, branch or pull requests says 
     [worker.id, { changes: true, board: true, pipelines: true }],
   ]);
 });
+
+test('switchModel drives /model in a running session, pins the model for a resume, and sets an asleep worker’s next launch', async (t) => {
+  const f = fixture();
+  isolateAgentEnvironment(f, t);
+  const previous = process.env.FAKE_AGENT_LOG;
+  process.env.FAKE_AGENT_LOG = f.log;
+  t.after(() => {
+    f.close();
+    if (previous === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = previous;
+  });
+  const workers = manager(f, []);
+  const worker = workers.spawn('desk-1', 'owner', undefined, false, 'agent', 'claude-sonnet-5-5');
+  if (typeof worker === 'string') throw new Error(worker);
+  const launches = () => f.read().filter((r) => r.kind === 'droid' && r.env.workerId === worker.id && r.args.includes('--settings'));
+  const pinned = (launch: Invocation) => JSON.parse(readFileSync(launch.args[launch.args.indexOf('--settings') + 1], 'utf8')).sessionDefaultSettings;
+  const [first] = await waitFor(launches, (l) => l.length >= 1);
+  workers.hookReply(worker.id, first.env.hookToken!, 'SessionStart', { session_id: 'droid-1', hook_event_name: 'SessionStart' });
+  const driven: unknown[] = [];
+  let answer: string | undefined = 'Droid has a dialog open. Close it in Raw TTY first.';
+  t.mock.method(workers, 'setting', async (_id: string, want: unknown) => {
+    driven.push(want);
+    return answer;
+  });
+
+  assert.deepEqual(await workers.switchModel(worker.id, { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }), { error: 'Droid has a dialog open. Close it in Raw TTY first.' });
+  assert.equal(workers.get(worker.id)?.model, 'claude-sonnet-5-5', 'a refused switch keeps the old model');
+  answer = undefined;
+  assert.deepEqual(await workers.switchModel(worker.id, { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }, 'high'), { applied: 'now' });
+  assert.deepEqual(driven.at(-1), { setting: 'model', name: 'GPT-6.1 Sol', effort: 'high' }, 'the picker is driven by the name Droid lists');
+  assert.deepEqual([workers.get(worker.id)?.model, workers.get(worker.id)?.effort, workers.get(worker.id)?.activeModel], ['gpt-6.1-sol', 'high', 'gpt-6.1-sol']);
+
+  process.kill(first.pid, 'SIGTERM');
+  await waitFor(
+    () => workers.get(worker.id)?.status,
+    (status) => status === 'exited',
+  );
+  assert.equal(workers.resume(worker.id), undefined);
+  const [, second] = await waitFor(launches, (l) => l.length >= 2);
+  assert.deepEqual(pinned(second), { model: 'gpt-6.1-sol', reasoningEffort: 'high' }, 'a resume keeps the switched model');
+
+  process.kill(second.pid, 'SIGTERM');
+  await waitFor(
+    () => workers.get(worker.id)?.status,
+    (status) => status === 'exited',
+  );
+  const calls = driven.length;
+  assert.deepEqual(await workers.switchModel(worker.id, { id: 'custom:droidproxy:gpt-6.1-sol', name: 'DroidProxy: GPT 6.1 Sol' }), { applied: 'next_launch' });
+  assert.equal(driven.length, calls, 'an asleep worker has no picker to drive');
+  assert.equal(workers.resume(worker.id), undefined);
+  const [, , third] = await waitFor(launches, (l) => l.length >= 3);
+  assert.deepEqual(pinned(third), { model: 'custom:droidproxy:gpt-6.1-sol' });
+  assert.ok('error' in (await workers.switchModel(worker.id, { id: 'bad model\nid', name: 'x' })), 'an id Droid could not take is refused');
+});

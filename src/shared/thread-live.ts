@@ -89,8 +89,8 @@ const SIDE_TOP = /^\s*── Side chat ─+.*Esc close ──\s*$/;
 const SIDE_INPUT = /^\s*› /;
 // The input box's first row: its prompt, with or without a draft.
 const INPUT_ROW = /^\s*│\s?[>›]/;
-// A model as the mode line names it ("Haiku 5.5 (High)", "GPT-6.1 Sol"), never a transcript line.
-const MODEL_NAME = /^[\w.\-[\] ]+(?: \([A-Za-z ]+\))?$/;
+// A model as the mode line names it ("Haiku 5.5 (High)", "GPT-6.1 Sol", BYOK "DroidProxy: GPT 6.1 Sol (High)"), never a transcript line.
+const MODEL_NAME = /^[\w.\-[\]: ]+(?: \([A-Za-z ]+\))?$/;
 const PLAN = /^Plan · \d+\/\d+/;
 const QUEUE_HEADING = /^\s*(?:Queued|Steering) messages:\s*$/;
 const MESSAGE = /^⛬\s*/;

@@ -361,6 +361,12 @@ test("each audience is told once to send workers home and to weigh a subscriptio
     assert.match(text, /Extra Usage balance/);
     assert.match(text, /DroidProxy/);
   }
+  assert.deepEqual(
+    [orchestrator, bot, lead].map((text) => count(text, /after `?\/model`? in its terminal: [`"]Sol[`"] picks GPT Sol on Factory credits, [`"]droidproxy sol[`"] DroidProxy’?'?s Sol, and the same pattern names any other model/g)),
+    [1, 1, 1],
+    'every lead learns to switch a model with worker_model, with both Sol examples, once',
+  );
+  for (const text of [orchestrator, bot, lead]) assert.match(text, /worker_model/);
   for (const text of [orchestrator, bot]) {
     assert.equal(count(text, /never prompt, interrupt, answer or send home/g), 1, 'the rule about building agents is kept once');
     assert.equal(count(text, /worktrees, branches and cloud sessions/g), 1, 'the rule about keeping worktrees is kept once');

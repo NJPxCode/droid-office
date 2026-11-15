@@ -462,6 +462,16 @@ Inspect, clear or promote pending messages on a worker (both office hook outbox 
 | `all` | boolean | no | Apply `clear` or `promote` to all pending items (not with `index`). |
 | `urgent` | boolean | no | For `promote` only: interrupt a running turn or blocking command via Escape and deliver immediately. |
 
+### `worker_model`
+
+Change Model: switch your subagent's Droid model the way the owner types `/model` in its terminal (building agents can also switch floor workers they watch with `team_watch`). `team_message` can't run slash commands, so use this instead. Pass the words you would type after `/model`: `Sol` picks GPT Sol on Factory credits, `droidproxy sol` picks DroidProxy's Sol on its subscription, and the same pattern picks any other model (`opus`, `opus 5`, `droidproxy terra`). An exact model id or name from `team_models` works too. Factory's own models win over your own-key (BYOK) ones unless the words name the gateway, whole words win over prefixes, then the shortest name, then Droid's own order (newest first). The response names the model it picked (`model`), any `otherMatches`, and `applied`: `now` for a running session (mid-turn, from its next model call), `next_launch` for an asleep one. The model allowlist and quota checks `team_hire` enforces apply, and the switch is kept when the worker resumes.
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `worker` | string | yes | Your subagent’s name or id, case-insensitive. |
+| `model` | string | yes | What you would type after `/model` in Droid (`Sol`, `droidproxy sol`, `opus 5`), or an exact model id or name from `team_models`. |
+| `effort` | "low" \| "medium" \| "high" \| "xhigh" \| "max" | no | Reasoning effort from `team_models` to pick with the model; omit to keep Droid's selection for it. |
+| `floor` | string | no | Building agents only: just this open floor, by id, name or checkout path. Omit for all your teams across the building. |
 ### `team_wait`
 
 Wait until one of your subagents reports, asks, gets blocked in its terminal or settles, then return with what happened: typed events with ids, waiting questions and a cursor. Matching news you have not heard (or news after since) returns at once. A terminal question counts when it appears during the wait, and idle when every watched subagent settles during it; questions already waiting are listed without ending the wait. Each call holds at most 90 s on the server so MCP clients do not abort with `-32001` request timeouts around 200–240 s; when nothing matches in that slice it returns `matched: false` (with `capped: true` when `timeoutSec > 90`) and a `cursor` to pass as `since` on the next wait. The cursor moves past news that until leaves out, so reuse it with the same until. Without since, a local lead hears the news it is shown, as with team_status. With a progress token it also reports progress every 15 s.

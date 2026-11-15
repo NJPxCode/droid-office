@@ -24,7 +24,7 @@ import { normalizeRepo } from '../shared/floors.js';
 import { DESK_BY_ID, nextFreeSeat, type DeskDef } from '../shared/layout.js';
 import { officePrompt, type PromptSource } from './prompts.js';
 import { forgeVars, placeholders, PROMPTS, withoutReminders, workerMessageVars } from '../shared/prompts.js';
-import { isBusy } from '../shared/status.js';
+import { isAsleep, isBusy } from '../shared/status.js';
 import { linearTaskOf } from '../shared/linear.js';
 import { fallbackTask } from './tasks.js';
 import { todosFinished } from '../shared/todos.js';
@@ -1742,6 +1742,32 @@ export class WorkerManager {
     }
   }
 
+  /**
+   * Moves an agent to another model the way the owner would: Droid's /model picker in a running
+   * session, or the model it launches on next for a session that is asleep. Either way the model is
+   * saved for later launches, since a resume pins the saved model again.
+   */
+  async switchModel(id: string, model: { id: string; name: string }, effort?: AgentEffort): Promise<{ applied: 'now' | 'next_launch' } | { error: string }> {
+    const w = this.workers.get(id);
+    if (!w) return { error: 'No such worker' };
+    if (w.info.kind !== 'agent' || w.info.cloud || w.info.remote) return { error: `${w.info.name} has no local Droid session to change` };
+    const invalid = validateWorkerModel('agent', model.id) ?? validateWorkerEffort('agent', effort);
+    if (invalid) return { error: invalid };
+    if (isAsleep(w.info.status) || !w.pty) {
+      const error = this.choose(id, model.id, effort);
+      return error ? { error } : { applied: 'next_launch' };
+    }
+    const error = await this.setting(id, { setting: 'model', name: model.name, ...(effort ? { effort } : {}) });
+    if (error) return { error };
+    w.info.model = model.id;
+    w.info.effort = effort;
+    // The session's settings file, which refreshDroidModel reads, catches up at the next hook.
+    w.info.activeModel = model.id;
+    w.info.activeEffort = effort;
+    this.emitUpdate(w);
+    this.persist();
+    return { applied: 'now' };
+  }
   /** Closes Droid's side chat (/btw) with Esc, only while the terminal shows it: Esc elsewhere would stop the turn. */
   closeSideChat(id: string): string | undefined {
     const w = this.workers.get(id);

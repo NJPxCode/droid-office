@@ -293,6 +293,7 @@ const PICKER = (rows: string[], selected: number) => [
 test('a transcript line or a dialog box above the input is never read as the mode line', () => {
   assert.equal(readLiveScreen(inputBox('Haiku 5.5 (High)')).model, 'Haiku 5.5 (High)');
   assert.equal(readLiveScreen(inputBox('Haiku 5.5 (High)')).spec, false);
+  assert.equal(readLiveScreen(inputBox('DroidProxy: GPT 6.1 Sol (High)')).model, 'DroidProxy: GPT 6.1 Sol (High)', 'a BYOK model names its gateway before a colon');
   const dialog = readLiveScreen(LEGACY(false));
   assert.equal(dialog.model, undefined);
   assert.equal(dialog.spec, undefined);
