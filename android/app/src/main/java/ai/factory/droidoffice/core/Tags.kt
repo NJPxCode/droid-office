@@ -581,6 +581,35 @@ object Tags {
         fun threadTurnChanges(id: String) = "worker.thread.turn.changes/$id"
         fun threadTurnFile(id: String, index: Int) = "worker.thread.turn.file/$id/$index"
 
+        // The Factory transcript shell: status line, search, message actions, composer toolbar and queue panel.
+        /** The status line under a live turn; its description is the phrase it shows. */
+        const val THREAD_STATUS = "worker.thread.status"
+        /** The Thread bar's search button, and the search row it opens over the conversation. */
+        const val THREAD_SEARCH = "worker.thread.search"
+        const val THREAD_SEARCH_FIELD = "worker.thread.search.field"
+        /** "2 of 5", or "No results". */
+        const val THREAD_SEARCH_COUNT = "worker.thread.search.count"
+        const val THREAD_SEARCH_PREV = "worker.thread.search.prev"
+        const val THREAD_SEARCH_NEXT = "worker.thread.search.next"
+        const val THREAD_SEARCH_CLOSE = "worker.thread.search.close"
+        /** The compaction divider ("Compacted 120k tokens"). */
+        const val THREAD_COMPACTION = "worker.thread.compaction"
+        /** The composer's session settings chip (model, effort, Spec or autonomy) and its context meter. */
+        const val COMPOSER_SETTINGS = "composer.settings"
+        const val COMPOSER_CONTEXT = "composer.context"
+        /** Factory's queued messages panel at the top of the composer, and its Clear all. */
+        const val COMPOSER_QUEUE = "composer.queue"
+        const val COMPOSER_QUEUE_CLEAR = "composer.queue.clear"
+        /** A message's actions row, opened by tapping the message, and its Copy and Quote. */
+        fun threadMessageActions(id: String) = "worker.thread.message.actions/$id"
+        fun threadMessageCopy(id: String) = "worker.thread.message.copy/$id"
+        fun threadMessageQuote(id: String) = "worker.thread.message.quote/$id"
+        /** A row of the queue panel by its place from 1, and its Send now, Remove and Edit. */
+        fun composerQueued(n: Int) = "composer.queue.item/$n"
+        fun composerQueuedSendNow(n: Int) = "composer.queue.send_now/$n"
+        fun composerQueuedRemove(n: Int) = "composer.queue.remove/$n"
+        fun composerQueuedEdit(n: Int) = "composer.queue.edit/$n"
+
         /** A quick key, by what TalkBack calls it: "Shift Tab" is `key.shift_tab`. */
         fun key(spoken: String) = "key." + spoken.lowercase().replace(' ', '_')
 

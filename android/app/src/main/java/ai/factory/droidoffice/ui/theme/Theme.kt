@@ -77,6 +77,13 @@ object ThreadPalette {
     val DelRow = Color(0xFF270B08)
     val AddGutter = Color(0xFF162312)
     val DelGutter = Color(0xFF340E09)
+    // Factory's core-v2 dark tokens the transcript shell reads: tool and thought labels, the stronger
+    // hairline, and the Stop button's tungsten square-in-square.
+    val ToolLabel = Color(0xFFB5ADA7)
+    val BorderEmphasis = Color(0xFF564E4A)
+    val StopFill = Color(0xFF342F2D)
+    val StopFillPressed = Color(0xFF403A37)
+    val StopMark = Color(0xFFD8D4D2)
 }
 
 @Immutable
