@@ -96,6 +96,8 @@ export interface Worker {
   pendingFork?: { sessionId: string; prompt?: string };
   /** The rewind the office is driving in this terminal (worker.rewind). */
   rewind?: { entryId: string; since: number };
+  /** A completed rewind whose asynchronous SessionStart hook has not arrived yet. */
+  rewindFork?: { from: string; until: number };
 }
 
 /** Cut off if it stopped now. A turn that already sent its Stop has finished, even before its screen confirms it. */

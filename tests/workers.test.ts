@@ -1162,6 +1162,25 @@ test("a subagent's hooks don't take over its worker's session (droid's own hook 
   assert.equal(workers.get(worker.id)?.task, undefined, 'a different session cannot keep the previous session’s preview');
 });
 
+test('a late rewind SessionStart preserves the task but clear and later switches still reset it', async (t) => {
+  const { workers, worker, hook } = await liveWorker(t, 'original-session');
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'Keep this task over rewind' });
+  const task = workers.get(worker.id)?.task;
+  assert.ok(task);
+  const internal = Reflect.get(workers, 'workers').get(worker.id);
+  internal.rewindFork = { from: 'original-session', until: Date.now() + 30_000 };
+  hook('SessionStart', { source: 'resume' }, 'rewound-session');
+  assert.deepEqual(workers.get(worker.id)?.task, task);
+  assert.equal(internal.rewindFork, undefined);
+  hook('SessionStart', { source: 'clear' }, 'cleared-session');
+  assert.equal(workers.get(worker.id)?.task, undefined);
+  hook('UserPromptSubmit', { prompt: 'Another task' }, 'cleared-session');
+  internal.rewindFork = { from: 'cleared-session', until: Date.now() - 1 };
+  hook('SessionStart', { source: 'resume' }, 'another-session');
+  assert.equal(workers.get(worker.id)?.task, undefined);
+});
+
 test('session switches cannot resurrect the original hire preview after restart', async (t) => {
   const { workers, worker, hook, f } = await liveWorker(t, 'original-session');
   hook('SessionStart', { source: 'startup' });

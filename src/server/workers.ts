@@ -1704,10 +1704,16 @@ export class WorkerManager {
     if (w.info.sessionId !== sessionId) return { ok: false, error: `${w.info.name}'s conversation changed. Read the Thread again before rewinding.` };
     if (!w.pty || !w.term) return { ok: false, error: `${w.info.name} is not running` };
     w.rewind = { entryId, since: Date.now() };
+    w.rewindFork = { from: sessionId, until: Date.now() + 30_000 };
+    let completed = false;
     try {
       this.events.update(w.info);
-      return await driveDroidRewind({ write: (data) => w.pty?.write(data), rows: () => (w.term ? screenRows(w.term) : undefined) }, target, restore);
+      const result = await driveDroidRewind({ write: (data) => w.pty?.write(data), rows: () => (w.term ? screenRows(w.term) : undefined) }, target, restore);
+      completed = result.ok;
+      return result;
     } finally {
+      if (!completed) w.rewindFork = undefined;
+      else if (w.rewindFork) w.rewindFork.until = Date.now() + 30_000;
       w.rewind = undefined;
       this.events.update(w.info);
     }
