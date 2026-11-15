@@ -4,7 +4,7 @@ import { PROMPT_MAX } from '../../shared/prompts';
 import type { ClientMsg, ServerMsg, WorkerInfo } from '../../shared/protocol';
 import { nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
 import { isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
-import { latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow, type ThreadToolGroup } from '../../shared/thread-presentation';
+import { latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
 import { ThreadQueue } from '../../shared/thread-queue';
 import { todosFinished } from '../../shared/todos';
 import type { ThreadEntry } from '../../shared/worker-thread';
@@ -22,7 +22,8 @@ import { icon } from './icons';
 import { promptImages } from './images';
 import { expandPastes, insertQuote, isLargePaste, livePastes, type PastedText, pastedText, replacePaste } from './thread-compose';
 import { viewPicture } from './picture-viewer';
-import { renderCommandCard, renderDelegationCard, renderFileChangeCard, renderToolDisclosure, renderToolGroup, renderTurnChanges, setDisclosureOpen, summarizeExplorationBlocks, type ThreadCardRenderContext } from './thread-diff-view';
+import { renderTurnChanges, setDisclosureOpen, type ThreadCardRenderContext } from './thread-diff-view';
+import { renderThreadActivity } from './thread-tool-activity';
 import { threadMarkdown, threadUserMarkdown, type WorkspacePathRef } from './thread-markdown';
 import { applyMention, findMentionQuery, rankWorkspacePaths, type MentionQuery, type WorkspaceMentionItem } from './thread-mention';
 
@@ -938,7 +939,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const node = h('article.wt-entry', { 'data-entry': row.id });
     const openChanges = changesOf(author);
     if (row.kind === 'activity') {
-      node.classList.add('activity');
       const cardCtx: ThreadCardRenderContext = {
         owner: author,
         floorDir: resolveFloorDir(),
@@ -952,81 +952,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         openChanges,
         ...(opts.sendToWhiteboard && canOpenFiles(author) ? { sendToWhiteboard: (path: string) => opts.sendToWhiteboard?.(author.id, path) } : {}),
       };
-      // Blocks a group folds render into its body instead of the row.
-      const groupOf = new Map<string, ThreadToolGroup>();
-      for (const group of row.groups ?? []) for (const id of group.blockIds) groupOf.set(id, group);
-      let target: HTMLElement = node;
-      let group: ThreadToolGroup | undefined;
-
-      let exploreSegment: ThreadBlock[] = [];
-      const flushExplore = () => {
-        if (!exploreSegment.length) return;
-        const segment = exploreSegment;
-        exploreSegment = [];
-        const first = segment[0];
-        const exploreKey = `explore:${first.id}`;
-        const meta = summarizeExplorationBlocks(segment, row.live);
-        const liveNow = meta.live && !asking;
-        const bodyItems: HTMLElement[] = [];
-        for (const blk of segment) {
-          if (blk.kind === 'thought') {
-            bodyItems.push(thought(blk, loaded.get(blk.id), toggles));
-          } else {
-            for (const item of blk.actions) {
-              bodyItems.push(renderToolDisclosure(item, loaded.get(item.id), author, pictures, toggles));
-            }
-          }
-        }
-        const details = setDisclosureOpen(
-          h(
-            'details.wt-explore',
-            { class: liveNow ? 'working' : meta.state, 'data-disclosure': exploreKey },
-            h(
-              'summary',
-              {},
-              h('span.wt-activity-mark', { 'aria-hidden': true }),
-              h('span.wt-activity-label', {}, `${liveNow ? 'Working · ' : ''}${meta.label}`),
-              meta.status ? h('span.wt-activity-status', {}, meta.status) : null,
-              chevron(),
-            ),
-            h('div.wt-explore-body', {}, ...bodyItems),
-          ),
-          toggles.get(exploreKey) ?? false,
-        );
-        target.append(details);
-      };
-
-      let hasWorkingCard = false;
-      for (const block of row.blocks) {
-        const into = groupOf.get(block.id);
-        if (into !== group) {
-          flushExplore();
-          group = into;
-          target = node;
-          if (into) {
-            const body = h('div');
-            node.append(renderToolGroup(into, body, into.live && row.live && !asking, toggles));
-            target = body;
-          }
-        }
-        if (block.kind === 'tools' && block.card) {
-          flushExplore();
-          for (const act of block.actions) {
-            if (act.state === 'working') hasWorkingCard = true;
-            if (block.card === 'change') target.append(renderFileChangeCard(act, loaded.get(act.id), cardCtx));
-            else if (block.card === 'command') target.append(renderCommandCard(act, loaded.get(act.id), cardCtx));
-            else target.append(renderDelegationCard(act, loaded.get(act.id), cardCtx));
-          }
-        } else {
-          exploreSegment.push(block);
-        }
-      }
-      flushExplore();
-
-      if (row.live && !asking && !hasWorkingCard && row.running && row.running !== row.label) {
-        node.append(h('p.wt-running', { role: 'status' }, row.running));
-      }
-      return node;
+      return renderThreadActivity(node, row, loaded, asking, { ...cardCtx, thought: (block, entry) => thought(block, entry, toggles) });
     }
 
     node.classList.add(row.role, row.kind === 'message' ? 'text' : 'notice');

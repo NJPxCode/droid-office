@@ -172,7 +172,13 @@ test('only the focused thread pane shows its composer, reclaiming space without 
   // Expand the captured activity so both viewport sizes have enough history to scroll.
   await first.locator('.wt-list').evaluate((el) => {
     for (const details of el.querySelectorAll('details')) details.open = true;
+    for (const trigger of el.querySelectorAll<HTMLButtonElement>('.wt-sg-trigger, .wt-tr-trigger')) if (trigger.hasAttribute('aria-expanded')) trigger.click();
   });
+  await first.locator('.wt-scroll').evaluate((el) => {
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event('scroll'));
+  });
+  await first.locator('.wt-latest').waitFor({ state: 'visible' });
   await first.locator('.wt-latest').click();
   assert.equal(await first.locator('.wt-composer').isVisible(), true);
   assert.equal(await second.locator('.wt-composer').isVisible(), false);
@@ -253,7 +259,7 @@ test('only the focused thread pane shows its composer, reclaiming space without 
   assert.equal(await first.locator('.wt-composer').isVisible(), true);
   assert.equal(await first.locator('.wt-input').evaluate((el) => document.activeElement === el), true, 'moved panes still focus their own composer');
   await second.locator('.dash-pane-head').click();
-  const summary = first.locator('.wt-list summary').first();
+  const summary = first.locator('.wt-list :is(.wt-sg-trigger, .wt-tr-trigger)[aria-expanded], .wt-list summary').first();
   await summary.click();
   assert.equal(await summary.evaluate((el) => document.activeElement === el), true, 'clicking a disclosure keeps keyboard focus on that control');
   await second.locator('.dash-pane-head').click();

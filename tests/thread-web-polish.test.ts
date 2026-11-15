@@ -294,7 +294,12 @@ test('selected reply or diff text is quoted into the draft at its cursor', { ski
     el.setSelectionRange(6, 6);
     el.blur();
   });
-  await selectText(page, '.wt-change-file tr.wt-diff-row.is-add .wt-diff-code');
+  const change = page.locator('.wt-tr[data-disclosure*="style.css"]');
+  await change.locator('.wt-tr-trigger').click();
+  await change.evaluate(async (el) => {
+    await Promise.all(el.getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => undefined)));
+  });
+  await selectText(page, '.wt-tr[data-disclosure*="style.css"] tr.wt-diff-row.is-add .wt-diff-code');
   assert.equal(await quote.isVisible(), true, 'a selection in a diff offers Quote');
   await quote.click();
   assert.equal(await input.inputValue(), 'Before\n\n> color: #eee;\n\n after');
