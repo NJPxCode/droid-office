@@ -56,6 +56,8 @@ class ToolCardsTest {
         val lines = ToolCards.outputLines("\u001B[32mok\u001B[0m 3 tests\n\n$ next\r\nloading\rdone\n\n\n")
         assertEquals(listOf("ok 3 tests", "", "$ next", "done"), lines.map { it.text })
         assertEquals(listOf(false, true, true, false), lines.map { it.dim })
+        assertEquals(emptyList<ToolCards.OutLine>(), ToolCards.outputLines(" \r\n\t\n"))
+        assertEquals(listOf(ToolCards.OutLine("", true), ToolCards.OutLine("  $ next", true)), ToolCards.outputLines("\n  $ next\n \n"))
     }
 
     @Test
@@ -63,6 +65,15 @@ class ToolCardsTest {
         val lines = listOf(hunk("@@ -10,7 +10,7 @@"), ctx(10, 10), ctx(11, 11), ctx(12, 12), del(13), add(13), ctx(14, 14), ctx(15, 15), ctx(16, 16))
         // Nine lines above the hunk, two context lines before the change and two after it fold away.
         assertEquals("[11] =12 -13 +13 =14 [2]", shape(ToolCards.diffRows(lines)))
+    }
+
+    @Test
+    fun emptyHunksDoNotChangeDiffRowsOrHiddenLineKeys() {
+        val lines = listOf(ctx(1, 1), ctx(2, 2), add(3), ctx(3, 4))
+        val split = listOf(hunk("empty"), hunk("first")) + lines.take(3) +
+            listOf(hunk("empty"), hunk("next")) + lines.drop(3) + hunk("trailing")
+        assertEquals(ToolCards.diffRows(lines), ToolCards.diffRows(split))
+        assertTrue(ToolCards.diffRows(listOf(hunk("empty"), hunk("empty"))).isEmpty())
     }
 
     @Test

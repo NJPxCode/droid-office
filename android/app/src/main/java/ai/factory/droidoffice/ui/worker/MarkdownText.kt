@@ -277,18 +277,12 @@ internal fun CodeBody(text: String, language: String?, mono: FontFamily, wrap: B
 
 @Composable
 private fun AlertCard(b: Markdown.Block.Alert, body: TextStyle, mono: FontFamily, opener: ((WorkspacePaths.Ref) -> Unit)?) {
-    val color = when (b.kind) {
-        Markdown.AlertKind.Note, Markdown.AlertKind.Tip -> ThreadPalette.TextSecondary
-        Markdown.AlertKind.Important -> Color(0xFFFFA675)
-        Markdown.AlertKind.Warning -> Color(0xFFF7A828)
-        Markdown.AlertKind.Caution -> Color(0xFFF0442E)
-    }
-    val icon = when (b.kind) {
-        Markdown.AlertKind.Note -> ToolIcons.Info
-        Markdown.AlertKind.Tip -> OfficeIcons.Sparkle
-        Markdown.AlertKind.Important -> OfficeIcons.Comment
-        Markdown.AlertKind.Warning -> ToolIcons.TriangleAlert
-        Markdown.AlertKind.Caution -> ToolIcons.CircleAlert
+    val (color, icon) = when (b.kind) {
+        Markdown.AlertKind.Note -> ThreadPalette.TextSecondary to ToolIcons.Info
+        Markdown.AlertKind.Tip -> ThreadPalette.TextSecondary to OfficeIcons.Sparkle
+        Markdown.AlertKind.Important -> Color(0xFFFFA675) to OfficeIcons.Comment
+        Markdown.AlertKind.Warning -> Color(0xFFF7A828) to ToolIcons.TriangleAlert
+        Markdown.AlertKind.Caution -> Color(0xFFF0442E) to ToolIcons.CircleAlert
     }
     Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
         Box(Modifier.width(4.dp).fillMaxHeight().background(color))
@@ -359,10 +353,21 @@ internal fun CopyActionChip(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
+        val description = when {
+            !iconOnly -> null
+            !copied -> label
+            label == "Copy code" -> "Code copied"
+            else -> "Copied"
+        }
+        val tint = when {
+            copied -> ThreadPalette.Success
+            iconOnly -> ThreadPalette.TextSecondary.copy(alpha = 0.5f)
+            else -> ThreadPalette.TextSecondary
+        }
         Icon(
             if (copied) OfficeIcons.Check else OfficeIcons.Copy,
-            contentDescription = if (iconOnly) (if (copied) (if (label == "Copy code") "Code copied" else "Copied") else label) else null,
-            tint = if (copied) ThreadPalette.Success else ThreadPalette.TextSecondary.let { if (iconOnly) it.copy(alpha = 0.5f) else it },
+            contentDescription = description,
+            tint = tint,
             modifier = Modifier.size(12.dp),
         )
         if (!iconOnly) {

@@ -48,17 +48,26 @@ object ThreadCompose {
     /** The pastes whose token is still in the draft: deleting a token drops its paste. */
     fun livePastes(value: String, pastes: List<PastedText>): List<PastedText> = pastes.filter { value.contains(it.token) }
 
+    /** The composer's model and effort, with Spec when active; autonomy stays office-managed. */
+    fun settingsText(worker: WorkerInfo, settings: ThreadSessionSettings?): String {
+        val mode = "Spec".takeIf { settings?.interactionMode == "spec" }
+        val model = settings?.modelName ?: settings?.model ?: worker.activeModel ?: worker.model
+        val effort = (settings?.reasoningEffort ?: worker.activeEffort ?: worker.effort)
+            ?.takeIf { settings?.modelName?.contains(it, ignoreCase = true) != true }
+        return listOfNotNull(mode, model, effort?.replaceFirstChar { it.uppercase() }).joinToString(" · ")
+    }
+
     /** Context-window counts in the terminal footer's compact form: 900, 12.4k, 1.2M. */
     fun compactCount(n: Long): String = when {
         n < 1_000 -> n.toString()
-        n < 1_000_000 -> {
-            val v = n / 1_000.0
-            if (v < 10 && n % 1_000 != 0L) "%.1fk".format(java.util.Locale.US, v) else "%,dk".format(java.util.Locale.US, Math.round(v))
-        }
-        else -> {
-            val v = n / 1_000_000.0
-            if (v < 10 && n % 1_000_000 != 0L) "%.1fM".format(java.util.Locale.US, v) else "%,dM".format(java.util.Locale.US, Math.round(v))
-        }
+        n < 1_000_000 -> compact(n, 1_000L, "k")
+        else -> compact(n, 1_000_000L, "M")
+    }
+
+    private fun compact(n: Long, unit: Long, suffix: String): String {
+        val v = n / unit.toDouble()
+        return if (v < 10 && n % unit != 0L) "%.1f$suffix".format(Locale.US, v)
+        else "%,d$suffix".format(Locale.US, Math.round(v))
     }
 
     /**

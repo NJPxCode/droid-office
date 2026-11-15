@@ -27,8 +27,8 @@ object SlashCommands {
 
     val ALL = listOf(
         Command("compress", "Compress the session in place. Add instructions to shape the summary", Kind.Thread, listOf("compact")),
-        Command("clear", "Clear the conversation, keeping the model and autonomy", Kind.Thread),
-        Command("new", "Start a fresh session with the default model and autonomy", Kind.Thread),
+        Command("clear", "Clear the conversation, keeping the model", Kind.Thread),
+        Command("new", "Start a fresh session with the default model", Kind.Thread),
         Command("handoff", "Start a new session with a summary of this one", Kind.Thread),
         Command("fast", "Turn fast mode on for the current model (/fast off to turn it off)", Kind.Thread),
         Command("favorite", "Pin this session for quick access", Kind.Thread, listOf("pin")),

@@ -100,19 +100,8 @@ object DroidQueue {
         val top = box.first
         val bottom = box.last
         val none = PendingSnapshot(emptyList(), 0, 0, false)
-        var hintEnd = -1
-        var review = false
-        for (i in top - 1 downTo maxOf(0, top - REACH)) {
-            if (HINT.containsMatchIn(rows[i])) {
-                hintEnd = i
-                break
-            }
-            if (REVIEW_HINT.containsMatchIn(rows[i])) {
-                hintEnd = i
-                review = true
-                break
-            }
-        }
+        val hintEnd = (top - 1 downTo maxOf(0, top - REACH)).firstOrNull { isHint(rows[it]) } ?: -1
+        val review = hintEnd >= 0 && !HINT.containsMatchIn(rows[hintEnd])
         if (hintEnd < 0) {
             val heading = (top - 1 downTo maxOf(0, top - REACH)).firstOrNull { STEERING_HEADING.matches(rows[it]) || HEADING.matches(rows[it]) }
             if (heading != null && (heading + 1 until bottom).any { BUSY_TURN.containsMatchIn(rows[it]) }) return null
@@ -121,9 +110,7 @@ object DroidQueue {
         if ((hintEnd + 1 until bottom).none { BUSY_TURN.containsMatchIn(rows[it]) }) return none
         var hint = hintEnd
         while (hint > 0 && hint - 1 >= top - REACH && (isHint(rows[hint - 1]) || HINT_WRAP.matches(rows[hint - 1]))) hint--
-        var start = -1
-        for (i in hint - 1 downTo maxOf(0, top - REACH)) if (STEERING_HEADING.matches(rows[i]) || HEADING.matches(rows[i])) start = i
-        if (start < 0) return none
+        val start = (maxOf(0, top - REACH) until hint).firstOrNull { STEERING_HEADING.matches(rows[it]) || HEADING.matches(rows[it]) } ?: return none
         val items = ArrayList<Pending>()
         var group = if (STEERING_HEADING.matches(rows[start])) Group.Steering else Group.Queued
         var moreSteering = 0

@@ -125,9 +125,9 @@ object ToolCards {
             if (next.length == clean.length) break
             clean = next
         }
-        val all = clean.replace("\r\n", "\n").split('\n').map { it.substringAfterLast('\r') }.toMutableList()
-        while (all.isNotEmpty() && all.last().isBlank()) all.removeAt(all.lastIndex)
-        return all.map { OutLine(it, it.isBlank() || it.trimStart().startsWith("$")) }
+        return clean.replace("\r\n", "\n").split('\n').map { it.substringAfterLast('\r') }
+            .dropLastWhile { it.isBlank() }
+            .map { OutLine(it, it.isBlank() || it.trimStart().startsWith("$")) }
     }
 
     /** A diff as it shows: changed lines with [CONTEXT] line around them, the rest folded into [Hidden] rows. */
@@ -148,19 +148,17 @@ object ToolCards {
 
     private fun blankContext(l: ThreadDiffLine) = l.kind == DiffLineKind.Ctx && l.text.isBlank()
 
-    private class Hunk(val lines: MutableList<ThreadDiffLine> = ArrayList())
-
     fun diffRows(lines: List<ThreadDiffLine>, context: Int = CONTEXT): List<DiffRow> {
-        val hunks = ArrayList<Hunk>()
+        val hunks = ArrayList<MutableList<ThreadDiffLine>>()
         for (l in lines) {
             if (l.kind == DiffLineKind.Hunk) {
-                hunks += Hunk()
+                hunks.add(ArrayList())
                 continue
             }
-            if (hunks.isEmpty()) hunks += Hunk()
-            hunks.last().lines += l
+            if (hunks.isEmpty()) hunks.add(ArrayList())
+            hunks.last() += l
         }
-        val nonEmpty = hunks.filter { it.lines.isNotEmpty() }
+        val nonEmpty = hunks.filter { it.isNotEmpty() }
         val out = ArrayList<DiffRow>()
         var hidden = 0
         fun hide(chunk: List<ThreadDiffLine>, gap: Int = 0) {
@@ -177,13 +175,13 @@ object ToolCards {
 
         var lastNew: Int? = null
         nonEmpty.forEachIndexed { h, hunk ->
-            var body: List<ThreadDiffLine> = hunk.lines
+            var body: List<ThreadDiffLine> = hunk
             val trimmedHead = if (h == 0 && body.isNotEmpty() && blankContext(body.first())) listOf(body.first()) else emptyList()
             body = body.drop(trimmedHead.size)
             val trimmedTail = if (h == nonEmpty.lastIndex && body.isNotEmpty() && blankContext(body.last())) listOf(body.last()) else emptyList()
             body = body.dropLast(trimmedTail.size)
 
-            val firstNew = hunk.lines.firstOrNull { it.newLine != null }?.newLine
+            val firstNew = hunk.firstOrNull { it.newLine != null }?.newLine
             val gap = when {
                 firstNew == null -> 0
                 lastNew == null -> firstNew - 1
@@ -218,7 +216,7 @@ object ToolCards {
                 hide(buffer.drop(context))
             } else show(buffer)
             hide(trimmedTail)
-            hunk.lines.lastOrNull { it.newLine != null }?.newLine?.let { lastNew = it }
+            hunk.lastOrNull { it.newLine != null }?.newLine?.let { lastNew = it }
         }
         return out
     }

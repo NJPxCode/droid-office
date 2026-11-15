@@ -97,6 +97,28 @@ class DroidPendingTest {
     }
 
     @Test
+    fun theNearestHintWinsAndClearTakesPriorityOnTheSameRow() {
+        val rows = listOf(
+            "Steering messages:", "First",
+            "Queued messages:", "Second",
+            "Enter send now · Ctrl+D delete · Esc/Ctrl+R exit",
+            "Ctrl+X to clear queue", "Press ESC to stop",
+        ) + box
+        val pending = DroidQueue.readPending(rows)!!
+        assertFalse(pending.reviewActive)
+        assertEquals(listOf("First", "Second"), pending.items.map { it.row.text })
+        assertFalse(DroidQueue.readPending(listOf(
+            "Queued messages:", "One",
+            "Enter send now · Ctrl+D delete · Ctrl+X to clear queue",
+            "Press ESC to stop",
+        ) + box)!!.reviewActive)
+        assertTrue(DroidQueue.readPending(listOf(
+            "Queued messages:", "One", "Ctrl+X to clear queue",
+            "Enter send now · Ctrl+D delete · Esc/Ctrl+R exit", "Press ESC to stop",
+        ) + box)!!.reviewActive)
+    }
+
+    @Test
     fun nothingPendingOrNotDroid() {
         assertEquals(0, DroidQueue.readPending(listOf("hello") + box)!!.total)
         assertEquals(null, DroidQueue.readPending(listOf("no box here")))

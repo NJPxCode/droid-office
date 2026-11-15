@@ -594,7 +594,7 @@ object Tags {
         const val THREAD_SEARCH_CLOSE = "worker.thread.search.close"
         /** The compaction divider ("Compacted 120k tokens"). */
         const val THREAD_COMPACTION = "worker.thread.compaction"
-        /** The composer's session settings chip (model, effort, Spec or autonomy) and its context meter. */
+        /** The composer's session settings chip (model, effort and Spec) and its context meter. */
         const val COMPOSER_SETTINGS = "composer.settings"
         const val COMPOSER_CONTEXT = "composer.context"
         /** Factory's queued messages panel at the top of the composer, and its Clear all. */

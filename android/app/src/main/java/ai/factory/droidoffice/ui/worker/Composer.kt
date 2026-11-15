@@ -437,24 +437,15 @@ fun Composer(
                             contentAlignment = Alignment.Center,
                         ) { Icon(Icons.Default.Add, "Attach pictures", tint = ThreadPalette.TextSecondary) }
                     }
-                    val mode = when {
-                        settings?.interactionMode == "spec" -> "Spec"
-                        settings?.autonomyLevel != null -> settings.autonomyLevel.replaceFirstChar { it.uppercase() } + " Autonomy"
-                        else -> null
-                    }
-                    val model = settings?.modelName ?: settings?.model ?: w.activeModel ?: w.model
-                    val effort = (settings?.reasoningEffort ?: w.activeEffort ?: w.effort)
-                        ?.takeIf { settings?.modelName?.contains(it, ignoreCase = true) != true }
-                    val settingsText = listOfNotNull(mode, model, effort?.replaceFirstChar { it.uppercase() }).joinToString(" · ")
                     Text(
-                        settingsText,
+                        ThreadCompose.settingsText(w, settings),
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ThreadPalette.TextSecondary),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f).padding(horizontal = 4.dp).tagged(Tags.Worker.COMPOSER_SETTINGS),
                     )
-                    settings?.context?.let { context ->
-                        val percent = context.percent ?: context.limit?.let { context.used * 100.0 / it }
+                    settings?.context?.let { usage ->
+                        val percent = usage.percent ?: usage.limit?.let { usage.used * 100.0 / it }
                         Row(Modifier.padding(horizontal = 4.dp).tagged(Tags.Worker.COMPOSER_CONTEXT), verticalAlignment = Alignment.CenterVertically) {
                             if (percent != null) CircularProgressIndicator(
                                 progress = { (percent / 100).toFloat().coerceIn(0f, 1f) },
@@ -464,7 +455,7 @@ fun Composer(
                                 strokeWidth = 1.5.dp,
                             )
                             Text(
-                                context.limit?.let { "${ThreadCompose.compactCount(context.used)}/${ThreadCompose.compactCount(it)}" } ?: ThreadCompose.compactCount(context.used),
+                                usage.limit?.let { "${ThreadCompose.compactCount(usage.used)}/${ThreadCompose.compactCount(it)}" } ?: ThreadCompose.compactCount(usage.used),
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, color = ThreadPalette.TextTertiary),
                                 modifier = Modifier.padding(start = 4.dp),
                             )

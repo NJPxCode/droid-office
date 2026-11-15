@@ -24,6 +24,36 @@ import org.junit.Test
 /** Mirrors tests/thread-compose.test.ts, so the phone's composer edits drafts as the web's does. */
 class ThreadComposeTest {
     @Test
+    fun settingsShowModelEffortAndSpecButNeverAutonomy() {
+        val worker = WorkerInfo(id = "w", model = "default", effort = "low", activeModel = "active", activeEffort = "medium")
+        assertEquals("active · Medium", ThreadCompose.settingsText(worker, null))
+        assertEquals("default · Low", ThreadCompose.settingsText(worker.copy(activeModel = null, activeEffort = null), null))
+        val settings = ThreadSessionSettings(model = "model-id", modelName = "Opus", reasoningEffort = "high")
+        for (level in listOf(null, "off", "low", "medium", "high")) {
+            val managed = settings.copy(autonomyLevel = level, autonomyMode = "yolo")
+            assertEquals("Opus · High", ThreadCompose.settingsText(worker, managed))
+            assertEquals("Spec · Opus · High", ThreadCompose.settingsText(worker, managed.copy(interactionMode = "spec")))
+        }
+        assertEquals("Opus High", ThreadCompose.settingsText(worker, settings.copy(modelName = "Opus High")))
+        assertEquals("model-id · High", ThreadCompose.settingsText(worker, settings.copy(modelName = null)))
+        assertEquals("", ThreadCompose.settingsText(WorkerInfo(id = "empty"), ThreadSessionSettings(autonomyLevel = "high")))
+    }
+
+    @Test
+    fun compactCountsKeepUnitThresholdsRoundingAndGrouping() {
+        val cases = listOf(
+            -1L to "-1", 0L to "0", 999L to "999",
+            1_000L to "1k", 1_001L to "1.0k", 1_250L to "1.3k",
+            9_999L to "10.0k", 10_000L to "10k", 10_500L to "11k",
+            999_999L to "1,000k", 1_000_000L to "1M",
+            1_250_000L to "1.3M", 9_999_999L to "10.0M",
+            10_000_000L to "10M", 10_500_000L to "11M",
+            1_000_000_000L to "1,000M",
+        )
+        for ((n, expected) in cases) assertEquals("count $n", expected, ThreadCompose.compactCount(n))
+    }
+
+    @Test
     fun aPasteBecomesAChipOnlyPastTheCharacterOrLineThreshold() {
         assertFalse(isLargePaste("x".repeat(PASTE_CHIP_CHARS)))
         assertTrue(isLargePaste("x".repeat(PASTE_CHIP_CHARS + 1)))

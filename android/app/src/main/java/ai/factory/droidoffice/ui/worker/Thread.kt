@@ -15,8 +15,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -154,8 +152,6 @@ private const val HEAD = "thread.head"
 private const val NEWER = "thread.newer"
 private const val ASK = "thread.ask"
 private const val STATUS = "thread.status"
-/** The receipts' item in the list, and its open state in the open map. */
-private const val QUEUED = "thread.queued"
 /** Sticky TodoWrite plan bar open state in the saved open map. */
 private const val PLAN_BAR = "thread.plan.bar"
 internal const val DIFF_FULL = "diff.full:"
@@ -263,13 +259,11 @@ internal fun Thread(
     // Droid's queue as its screen shows it, with the whole text of what this phone sent to it.
     val droidQueue = remember(screen) { screen?.let(DroidQueue::readPending) }
     var clock by remember(feed) { mutableLongStateOf(0L) }
-    var pendingQueue by remember(queued) { mutableStateOf(ThreadQueue.Panel.EMPTY) }
     var holding by remember(queued) { mutableStateOf(false) }
     LaunchedEffect(queued, queueRevision, queueReady, state.sessionId, state.entries, droidQueue, clock) {
         val before = queued.snapshot()
         if (queueReady) queued.sync(state.sessionId, state.entries)
-        pendingQueue = queued.panel(droidQueue, System.currentTimeMillis())
-        onQueuePanel(pendingQueue)
+        onQueuePanel(queued.panel(droidQueue, System.currentTimeMillis()))
         holding = queued.pending.isNotEmpty()
         if (queueReady && before != queued.snapshot()) onQueueChanged()
     }
@@ -656,51 +650,6 @@ internal fun Thread(
         }
     }
 }
-
-/**
- * The messages waiting in Droid's queue, oldest first: the owner's words across the column like their
- * other messages, hollow, under a line that says how many and offers to clear them. A row Droid
- * cut short shows what Droid shows, saying how many lines it left off.
- */
-@Composable
-private fun QueuedMessages(items: List<ThreadQueue.Shown>, canClear: Boolean, onClear: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(top = 24.dp).tagged(Tags.Worker.THREAD_QUEUED)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
-            Text(
-                "QUEUED · ${items.size}", style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary),
-                modifier = Modifier.padding(horizontal = 10.dp).semantics { liveRegion = LiveRegionMode.Polite },
-            )
-            Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
-        }
-        items.forEachIndexed { i, q ->
-            Column(Modifier.fillMaxWidth().padding(top = 10.dp).queuedBlock().tagged(Tags.Worker.threadQueued(i + 1))) {
-                Text(
-                    q.text.ifEmpty { "Image attached" },
-                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp, color = ThreadPalette.TextSecondary),
-                    maxLines = USER_LINES, overflow = TextOverflow.Ellipsis,
-                )
-                val more = when {
-                    q.more > 0 -> "${q.more} more line${if (q.more == 1) "" else "s"}"
-                    q.preview -> "Shortened"
-                    q.hasImage && q.text.isNotEmpty() -> "Image attached"
-                    else -> null
-                }
-                more?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = ThreadPalette.TextTertiary), modifier = Modifier.padding(top = 2.dp)) }
-            }
-        }
-        Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (items.size == 1) "Sent once this turn is over." else "Sent in order once this turn is over.",
-                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = ThreadPalette.TextTertiary), modifier = Modifier.weight(1f),
-            )
-            if (canClear) QuietButton("Clear queue", Icons.Default.Close, Tags.Worker.THREAD_QUEUED_CLEAR, true, onClear)
-        }
-    }
-}
-
-/** A message waiting its turn: the owner's block, hollow, so it reads as not sent yet. */
-private fun Modifier.queuedBlock() = this.border(1.dp, ThreadPalette.BorderStrong, RoundedCornerShape(4.dp)).padding(horizontal = 12.dp, vertical = 9.dp)
 
 /** Brings what was just opened into view once it's laid out, as far as it fits, without following the bottom. */
 internal class Reveal(val modifier: Modifier, val ask: () -> Unit)
