@@ -92,7 +92,7 @@ import ai.factory.droidoffice.ui.components.panel
 import ai.factory.droidoffice.ui.components.tagged
 import ai.factory.droidoffice.ui.theme.LocalOfficeType
 import ai.factory.droidoffice.ui.theme.OfficeIcons
-import ai.factory.droidoffice.ui.theme.Palette
+import ai.factory.droidoffice.ui.theme.ThreadPalette
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -110,7 +110,7 @@ internal fun MarkdownText(
     source: String,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
-    surface: Color = Palette.Bg,
+    surface: Color = ThreadPalette.Bg,
     breaks: Boolean = false,
     streaming: Boolean = false,
     onOpenPath: ((WorkspacePaths.Ref) -> Unit)? = null,
@@ -140,22 +140,22 @@ internal fun MarkdownText(
                         false -> "☐"
                         null -> b.marker
                     }
-                    Text(marker, style = body.copy(color = if (b.checked == true) Palette.Success else Palette.TextSecondary), modifier = Modifier.width(if (b.marker.length > 2) 30.dp else 20.dp))
+                    Text(marker, style = body.copy(color = if (b.checked == true) ThreadPalette.Success else ThreadPalette.TextSecondary), modifier = Modifier.width(if (b.marker.length > 2) 30.dp else 20.dp))
                     Text(
                         styled(b.spans, mono, opener),
-                        style = if (b.checked == true) body.copy(color = Palette.TextSecondary, textDecoration = TextDecoration.LineThrough) else body,
+                        style = if (b.checked == true) body.copy(color = ThreadPalette.TextSecondary, textDecoration = TextDecoration.LineThrough) else body,
                     )
                 }
                 is Markdown.Block.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
-                    Box(Modifier.width(2.dp).fillMaxHeight().background(Palette.BorderStrong))
-                    Text(styled(b.spans, mono, opener), style = body.copy(color = Palette.TextSecondary), modifier = Modifier.padding(start = 10.dp))
+                    Box(Modifier.width(2.dp).fillMaxHeight().background(ThreadPalette.BorderStrong))
+                    Text(styled(b.spans, mono, opener), style = body.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.padding(start = 10.dp))
                 }
                 is Markdown.Block.Code -> if (rich && b.language.equals("mermaid", ignoreCase = true)) MermaidBlock(b, streaming, mono) else CodeBlockCard(b, mono)
                 is Markdown.Block.Email -> EmailDraftCard(b, body)
                 is Markdown.Block.Widget -> WidgetBlock(b, streaming, mono)
                 is Markdown.Block.Math -> MathBlock(b, body)
                 is Markdown.Block.Image -> MarkdownImage(b.alt, b.src, body)
-                Markdown.Block.Rule -> Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).height(1.dp).background(Palette.Border))
+                Markdown.Block.Rule -> Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).height(1.dp).background(ThreadPalette.Border))
                 is Markdown.Block.Table -> Table(b, body.copy(fontSize = 13.5.sp, lineHeight = 19.sp), mono, surface, opener)
             }
         }
@@ -164,17 +164,17 @@ internal fun MarkdownText(
 
 @Composable
 private fun CodeBlockCard(b: Markdown.Block.Code, mono: FontFamily) {
-    val label = remember(b.language) { (b.language?.trim()?.ifEmpty { null } ?: "code").uppercase() }
+    val label = remember(b.language) { b.language?.trim()?.ifEmpty { null } ?: "code" }
     val shape = RoundedCornerShape(4.dp)
-    Column(Modifier.fillMaxWidth().panel(shape, Palette.Surface, Palette.Border)) {
+    Column(Modifier.fillMaxWidth().panel(shape, ThreadPalette.Code, ThreadPalette.Border)) {
         DisableSelection {
             Row(
-                Modifier.fillMaxWidth().background(Palette.SurfaceRaised).padding(start = 10.dp, end = 6.dp, top = 3.dp, bottom = 3.dp),
+                Modifier.fillMaxWidth().padding(start = 10.dp, end = 4.dp, top = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     label,
-                    style = LocalOfficeType.current.eyebrow.copy(color = Palette.TextSecondary),
+                    style = LocalOfficeType.current.monoBody.copy(fontSize = 11.sp, lineHeight = 15.sp, color = ThreadPalette.TextTertiary),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -187,7 +187,6 @@ private fun CodeBlockCard(b: Markdown.Block.Code, mono: FontFamily) {
                 )
             }
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
         CodeBody(b.text, b.language, mono)
     }
 }
@@ -196,12 +195,12 @@ private fun CodeBlockCard(b: Markdown.Block.Code, mono: FontFamily) {
 @Composable
 internal fun CodeBody(text: String, language: String?, mono: FontFamily) {
     val highlighted = remember(text, language) { highlightedCode(text, language) }
-    CodeScroll(Palette.Surface, bordered = false) { scroll ->
+    CodeScroll(ThreadPalette.Code, bordered = false) { scroll ->
         Text(
             highlighted,
             style = LocalOfficeType.current.monoBody.copy(fontSize = 12.5.sp, lineHeight = 18.sp),
             softWrap = false,
-            modifier = scroll.background(Palette.Surface).padding(horizontal = 10.dp, vertical = 8.dp),
+            modifier = scroll.background(ThreadPalette.Code).padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 10.dp),
         )
     }
 }
@@ -241,13 +240,13 @@ internal fun CopyActionChip(
         Icon(
             if (copied) OfficeIcons.Check else OfficeIcons.Copy,
             contentDescription = if (iconOnly) (if (copied) "Copied" else label) else null,
-            tint = if (copied) Palette.Success else Palette.TextSecondary,
+            tint = if (copied) ThreadPalette.Success else ThreadPalette.TextSecondary,
             modifier = Modifier.size(12.dp),
         )
         if (!iconOnly || copied) {
             Text(
                 if (copied) "COPIED" else label.uppercase(),
-                style = LocalOfficeType.current.eyebrow.copy(color = if (copied) Palette.Success else Palette.TextSecondary),
+                style = LocalOfficeType.current.eyebrow.copy(color = if (copied) ThreadPalette.Success else ThreadPalette.TextSecondary),
                 maxLines = 1,
             )
         }
@@ -258,12 +257,12 @@ internal fun CopyActionChip(
 private fun EmailDraftCard(email: Markdown.Block.Email, bodyStyle: TextStyle) {
     val uriHandler = LocalUriHandler.current
     val shape = RoundedCornerShape(4.dp)
-    Column(Modifier.fillMaxWidth().panel(shape, Palette.Surface, Palette.Border).tagged(Tags.Worker.THREAD_EMAIL)) {
+    Column(Modifier.fillMaxWidth().panel(shape, ThreadPalette.Surface, ThreadPalette.Border).tagged(Tags.Worker.THREAD_EMAIL)) {
         DisableSelection {
-            Column(Modifier.fillMaxWidth().background(Palette.SurfaceRaised).padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(Modifier.fillMaxWidth().background(ThreadPalette.SurfaceRaised).padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Icon(OfficeIcons.Mail, null, tint = Palette.TextSecondary, modifier = Modifier.size(13.dp))
-                    Text("EMAIL DRAFT", style = LocalOfficeType.current.eyebrow.copy(color = Palette.TextSecondary), modifier = Modifier.weight(1f))
+                    Icon(OfficeIcons.Mail, null, tint = ThreadPalette.TextSecondary, modifier = Modifier.size(13.dp))
+                    Text("EMAIL DRAFT", style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.weight(1f))
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     CopyActionChip("COPY BODY", email.body, "Email body", Tags.Worker.THREAD_EMAIL_COPY_BODY)
@@ -274,7 +273,7 @@ private fun EmailDraftCard(email: Markdown.Block.Email, bodyStyle: TextStyle) {
                 }
             }
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
         Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (email.to.isNotEmpty()) EmailFieldRow("To", email.to, bold = false)
             email.cc?.let { EmailFieldRow("Cc", it, bold = false) }
@@ -282,7 +281,7 @@ private fun EmailDraftCard(email: Markdown.Block.Email, bodyStyle: TextStyle) {
             if (email.subject.isNotEmpty()) EmailFieldRow("Subject", email.subject, bold = true)
         }
         if (email.body.isNotEmpty()) {
-            Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
             Text(
                 email.body,
                 style = bodyStyle.copy(fontSize = 14.sp, lineHeight = 20.sp),
@@ -297,7 +296,7 @@ private fun EmailActionButton(label: String, icon: ImageVector, tag: String, onC
     val shape = RoundedCornerShape(3.dp)
     Row(
         Modifier.clip(shape)
-            .border(1.dp, Palette.BorderStrong, shape)
+            .border(1.dp, ThreadPalette.BorderStrong, shape)
             .clickable(role = Role.Button, onClick = onClick)
             .tagged(tag)
             .heightIn(min = 28.dp)
@@ -305,8 +304,8 @@ private fun EmailActionButton(label: String, icon: ImageVector, tag: String, onC
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        Icon(icon, null, tint = Palette.Accent, modifier = Modifier.size(12.dp))
-        Text(label, style = LocalOfficeType.current.eyebrow.copy(color = Palette.Text), maxLines = 1)
+        Icon(icon, null, tint = ThreadPalette.Accent, modifier = Modifier.size(12.dp))
+        Text(label, style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.Text), maxLines = 1)
     }
 }
 
@@ -315,7 +314,7 @@ private fun EmailFieldRow(label: String, value: String, bold: Boolean) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         Text(
             label.uppercase(),
-            style = LocalOfficeType.current.eyebrow.copy(color = Palette.TextSecondary),
+            style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary),
             modifier = Modifier.width(64.dp).padding(top = 2.dp),
         )
         Text(
@@ -324,7 +323,7 @@ private fun EmailFieldRow(label: String, value: String, bold: Boolean) {
                 fontSize = 13.5.sp,
                 lineHeight = 19.sp,
                 fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal,
-                color = Palette.Text,
+                color = ThreadPalette.Text,
             ),
             modifier = Modifier.weight(1f),
         )
@@ -344,7 +343,7 @@ private fun WidgetBlock(w: Markdown.Block.Widget, streaming: Boolean, mono: Font
     }
     Column(
         Modifier.fillMaxWidth()
-            .panel(RoundedCornerShape(4.dp), Palette.Surface, Palette.Border)
+            .panel(RoundedCornerShape(4.dp), ThreadPalette.Surface, ThreadPalette.Border)
             .tagged(Tags.Worker.THREAD_WIDGET)
             .padding(10.dp),
     ) {
@@ -357,14 +356,14 @@ private fun WidgetLoadingCard() {
     DisableSelection {
         Row(
             Modifier.fillMaxWidth()
-                .panel(RoundedCornerShape(4.dp), Palette.Surface, Palette.Border)
+                .panel(RoundedCornerShape(4.dp), ThreadPalette.Surface, ThreadPalette.Border)
                 .tagged(Tags.Worker.THREAD_WIDGET)
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Spinner(Modifier.size(12.dp), Palette.TextSecondary)
-            Text("Rendering widget…", style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary))
+            Spinner(Modifier.size(12.dp), ThreadPalette.TextSecondary)
+            Text("Rendering widget…", style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary))
         }
     }
 }
@@ -381,12 +380,12 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
             val pad = (node.paddingDp ?: 0).dp
             val borderMod = when (node.border) {
                 JsonWidget.BorderKind.None -> Modifier
-                JsonWidget.BorderKind.Solid -> Modifier.border(1.dp, Palette.BorderStrong, RoundedCornerShape(4.dp))
+                JsonWidget.BorderKind.Solid -> Modifier.border(1.dp, ThreadPalette.BorderStrong, RoundedCornerShape(4.dp))
                 JsonWidget.BorderKind.Dashed, JsonWidget.BorderKind.Dotted -> {
                     val dash = if (node.border == JsonWidget.BorderKind.Dotted) floatArrayOf(4f, 4f) else floatArrayOf(10f, 6f)
                     Modifier.drawBehind {
                         drawRoundRect(
-                            color = Palette.BorderStrong,
+                            color = ThreadPalette.BorderStrong,
                             cornerRadius = CornerRadius(4.dp.toPx()),
                             style = Stroke(width = 1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(dash)),
                         )
@@ -406,14 +405,14 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
         }
         is JsonWidget.Node.Card -> {
             val pad = (node.paddingDp ?: 10).dp
-            Column(Modifier.fillMaxWidth().panel(RoundedCornerShape(4.dp), Palette.SurfaceRaised, Palette.Border)) {
+            Column(Modifier.fillMaxWidth().panel(RoundedCornerShape(4.dp), ThreadPalette.SurfaceRaised, ThreadPalette.Border)) {
                 node.title?.let { title ->
                     Text(
                         title.uppercase(),
-                        style = LocalOfficeType.current.eyebrow.copy(color = Palette.TextSecondary),
-                        modifier = Modifier.fillMaxWidth().background(Palette.SurfaceHigh).padding(horizontal = 10.dp, vertical = 6.dp),
+                        style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary),
+                        modifier = Modifier.fillMaxWidth().background(ThreadPalette.SurfaceHigh).padding(horizontal = 10.dp, vertical = 6.dp),
                     )
-                    if (node.children.isNotEmpty()) Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
+                    if (node.children.isNotEmpty()) Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
                 }
                 if (node.children.isNotEmpty()) {
                     Column(Modifier.fillMaxWidth().padding(pad), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -423,7 +422,7 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
             }
         }
         is JsonWidget.Node.Text -> {
-            val color = node.color?.let(::resolveToneColor) ?: Palette.Text
+            val color = node.color?.let(::resolveToneColor) ?: ThreadPalette.Text
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (node.text.isNotEmpty()) {
                     Text(
@@ -454,28 +453,28 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
         is JsonWidget.Node.Divider -> {
             if (node.title != null) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f).height(1.dp).background(Palette.Border))
-                    Text(node.title.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = Palette.TextSecondary), modifier = Modifier.padding(horizontal = 8.dp))
-                    Box(Modifier.weight(1f).height(1.dp).background(Palette.Border))
+                    Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
+                    Text(node.title.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.padding(horizontal = 8.dp))
+                    Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
                 }
             } else {
-                Box(Modifier.fillMaxWidth().padding(vertical = 2.dp).height(1.dp).background(Palette.Border))
+                Box(Modifier.fillMaxWidth().padding(vertical = 2.dp).height(1.dp).background(ThreadPalette.Border))
             }
         }
         JsonWidget.Node.Newline -> Spacer(Modifier.height(6.dp))
         JsonWidget.Node.Spacer -> Spacer(Modifier.size(8.dp))
         is JsonWidget.Node.KeyValue -> {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-                Text(node.label, style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary), modifier = Modifier.weight(1f).padding(end = 10.dp))
-                Text(node.value, style = LocalOfficeType.current.monoBody.copy(fontSize = 12.5.sp, lineHeight = 18.sp, color = Palette.Text))
+                Text(node.label, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.weight(1f).padding(end = 10.dp))
+                Text(node.value, style = LocalOfficeType.current.monoBody.copy(fontSize = 12.5.sp, lineHeight = 18.sp, color = ThreadPalette.Text))
             }
         }
         is JsonWidget.Node.StatusLine -> {
             val dotColor = when (node.status) {
-                JsonWidget.StatusKind.Success -> Palette.Success
-                JsonWidget.StatusKind.Error -> Palette.Danger
-                JsonWidget.StatusKind.Warning -> Palette.Warning
-                JsonWidget.StatusKind.Info -> Palette.Info
+                JsonWidget.StatusKind.Success -> ThreadPalette.Success
+                JsonWidget.StatusKind.Error -> ThreadPalette.Danger
+                JsonWidget.StatusKind.Warning -> ThreadPalette.Warning
+                JsonWidget.StatusKind.Info -> ThreadPalette.Info
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 Box(Modifier.size(6.dp).clip(CircleShape).background(dotColor))
@@ -484,13 +483,13 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
         }
         is JsonWidget.Node.Badge -> {
             val fg = when (node.variant) {
-                JsonWidget.BadgeVariant.Muted -> Palette.TextSecondary
-                JsonWidget.BadgeVariant.Success -> Palette.Success
-                JsonWidget.BadgeVariant.Warning -> Palette.Warning
-                JsonWidget.BadgeVariant.Danger -> Palette.Danger
-                JsonWidget.BadgeVariant.Info -> Palette.Info
-                JsonWidget.BadgeVariant.Accent -> Palette.Accent
-                JsonWidget.BadgeVariant.Default -> Palette.Text
+                JsonWidget.BadgeVariant.Muted -> ThreadPalette.TextSecondary
+                JsonWidget.BadgeVariant.Success -> ThreadPalette.Success
+                JsonWidget.BadgeVariant.Warning -> ThreadPalette.Warning
+                JsonWidget.BadgeVariant.Danger -> ThreadPalette.Danger
+                JsonWidget.BadgeVariant.Info -> ThreadPalette.Info
+                JsonWidget.BadgeVariant.Accent -> ThreadPalette.Accent
+                JsonWidget.BadgeVariant.Default -> ThreadPalette.Text
             }
             val shape = RoundedCornerShape(3.dp)
             Box(
@@ -504,16 +503,16 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
         }
         is JsonWidget.Node.Metric -> {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                node.label?.let { Text(it.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = Palette.TextSecondary)) }
+                node.label?.let { Text(it.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary)) }
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     node.value?.let {
-                        Text(it, style = LocalOfficeType.current.monoBody.copy(fontSize = 20.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = Palette.Text))
+                        Text(it, style = LocalOfficeType.current.monoBody.copy(fontSize = 20.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, color = ThreadPalette.Text))
                     }
                     node.trend?.let { t ->
                         val (arrow, c) = when (t) {
-                            JsonWidget.Trend.Up -> "↑" to Palette.Success
-                            JsonWidget.Trend.Down -> "↓" to Palette.Danger
-                            JsonWidget.Trend.Flat -> "→" to Palette.TextSecondary
+                            JsonWidget.Trend.Up -> "↑" to ThreadPalette.Success
+                            JsonWidget.Trend.Down -> "↓" to ThreadPalette.Danger
+                            JsonWidget.Trend.Flat -> "→" to ThreadPalette.TextSecondary
                         }
                         Text(arrow, style = LocalOfficeType.current.monoBody.copy(fontSize = 13.sp, color = c), modifier = Modifier.padding(bottom = 2.dp))
                     }
@@ -525,33 +524,33 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
             Column(mod, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     if (node.label != null) {
-                        Text(node.label, style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(node.label, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     } else {
                         Spacer(Modifier.weight(1f))
                     }
-                    Text("${node.percent}%", style = LocalOfficeType.current.eyebrow.copy(color = Palette.Text))
+                    Text("${node.percent}%", style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.Text))
                 }
-                Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(2.dp)).background(Palette.SurfaceHigh)) {
-                    Box(Modifier.fillMaxWidth(node.progress).fillMaxHeight().background(Palette.Accent))
+                Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(2.dp)).background(ThreadPalette.SurfaceHigh)) {
+                    Box(Modifier.fillMaxWidth(node.progress).fillMaxHeight().background(ThreadPalette.Accent))
                 }
             }
         }
         is JsonWidget.Node.BarChart -> {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 for (bar in node.bars) {
-                    val c = bar.color?.let(::resolveToneColor) ?: Palette.Accent
+                    val c = bar.color?.let(::resolveToneColor) ?: ThreadPalette.Accent
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(bar.label, style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(min = 60.dp, max = 120.dp))
-                        Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(2.dp)).background(Palette.SurfaceHigh)) {
+                        Text(bar.label, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(min = 60.dp, max = 120.dp))
+                        Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(2.dp)).background(ThreadPalette.SurfaceHigh)) {
                             Box(Modifier.fillMaxWidth(bar.fraction).fillMaxHeight().background(c))
                         }
-                        Text(bar.valueLabel, style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, color = Palette.Text))
+                        Text(bar.valueLabel, style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, color = ThreadPalette.Text))
                     }
                 }
             }
         }
         is JsonWidget.Node.Sparkline -> {
-            val lineColor = node.color?.let(::resolveToneColor) ?: Palette.Accent
+            val lineColor = node.color?.let(::resolveToneColor) ?: ThreadPalette.Accent
             Canvas(
                 Modifier.width(136.dp).height(32.dp).semantics { contentDescription = node.summary },
             ) {
@@ -584,21 +583,21 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
             }
         }
         is JsonWidget.Node.Table -> {
-            val headColor = node.headerColor?.let(::resolveToneColor) ?: Palette.TextSecondary
-            CodeScroll(Palette.SurfaceRaised) { scroll ->
+            val headColor = node.headerColor?.let(::resolveToneColor) ?: ThreadPalette.TextSecondary
+            CodeScroll(ThreadPalette.SurfaceRaised) { scroll ->
                 Column(scroll) {
-                    Row(Modifier.background(Palette.SurfaceHigh)) {
+                    Row(Modifier.background(ThreadPalette.SurfaceHigh)) {
                         node.columns.forEach { col ->
                             val wMod = Modifier.width((col.widthDp ?: 116).coerceIn(56, 260).dp).padding(horizontal = 8.dp, vertical = 6.dp)
                             Text(col.header.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = headColor), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = wMod)
                         }
                     }
                     node.rows.forEach { row ->
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
                         Row {
                             node.columns.forEachIndexed { idx, col ->
                                 val wMod = Modifier.width((col.widthDp ?: 116).coerceIn(56, 260).dp).padding(horizontal = 8.dp, vertical = 6.dp)
-                                Text(row.getOrElse(idx) { "" }, style = MaterialTheme.typography.bodySmall.copy(color = Palette.Text), maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = wMod)
+                                Text(row.getOrElse(idx) { "" }, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.Text), maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = wMod)
                             }
                         }
                     }
@@ -610,7 +609,7 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
                 node.items.forEachIndexed { idx, item ->
                     Row {
                         val marker = if (node.ordered) "${idx + 1}." else "•"
-                        Text(marker, style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary), modifier = Modifier.width(if (node.ordered) 24.dp else 16.dp))
+                        Text(marker, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.width(if (node.ordered) 24.dp else 16.dp))
                         Text(item, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.5.sp, lineHeight = 19.sp))
                     }
                 }
@@ -618,10 +617,10 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
         }
         is JsonWidget.Node.Callout -> {
             val accent = when (node.tone) {
-                JsonWidget.CalloutTone.Info -> Palette.Info
-                JsonWidget.CalloutTone.Success -> Palette.Success
-                JsonWidget.CalloutTone.Warning -> Palette.Warning
-                JsonWidget.CalloutTone.Danger -> Palette.Danger
+                JsonWidget.CalloutTone.Info -> ThreadPalette.Info
+                JsonWidget.CalloutTone.Success -> ThreadPalette.Success
+                JsonWidget.CalloutTone.Warning -> ThreadPalette.Warning
+                JsonWidget.CalloutTone.Danger -> ThreadPalette.Danger
             }
             Column(
                 Modifier.fillMaxWidth()
@@ -630,7 +629,7 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 node.title?.let { Text(it, style = MaterialTheme.typography.titleSmall.copy(color = accent)) }
-                node.content?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(color = Palette.Text, lineHeight = 18.sp)) }
+                node.content?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.Text, lineHeight = 18.sp)) }
                 for (child in node.children) RenderWidgetNode(child, mono)
             }
         }
@@ -638,16 +637,16 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 node.items.forEach { item ->
                     val dot = when (item.status) {
-                        JsonWidget.TimelineStatus.Done -> Palette.Success
-                        JsonWidget.TimelineStatus.Active -> Palette.Accent
-                        JsonWidget.TimelineStatus.Error -> Palette.Danger
-                        JsonWidget.TimelineStatus.Pending -> Palette.TextTertiary
+                        JsonWidget.TimelineStatus.Done -> ThreadPalette.Success
+                        JsonWidget.TimelineStatus.Active -> ThreadPalette.Accent
+                        JsonWidget.TimelineStatus.Error -> ThreadPalette.Danger
+                        JsonWidget.TimelineStatus.Pending -> ThreadPalette.TextTertiary
                     }
                     Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Box(Modifier.padding(top = 6.dp).size(7.dp).clip(CircleShape).background(dot))
                         Column(Modifier.weight(1f)) {
-                            Text(item.title, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = Palette.Text))
-                            item.description?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary)) }
+                            Text(item.title, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = ThreadPalette.Text))
+                            item.description?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary)) }
                         }
                     }
                 }
@@ -657,12 +656,12 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
 }
 
 private fun resolveToneColor(tone: JsonWidget.ToneColor): Color = when (tone) {
-    JsonWidget.ToneColor.Accent -> Palette.Accent
-    JsonWidget.ToneColor.Success -> Palette.Success
-    JsonWidget.ToneColor.Warning -> Palette.Warning
-    JsonWidget.ToneColor.Danger -> Palette.Danger
-    JsonWidget.ToneColor.Info -> Palette.Info
-    JsonWidget.ToneColor.Muted -> Palette.TextSecondary
+    JsonWidget.ToneColor.Accent -> ThreadPalette.Accent
+    JsonWidget.ToneColor.Success -> ThreadPalette.Success
+    JsonWidget.ToneColor.Warning -> ThreadPalette.Warning
+    JsonWidget.ToneColor.Danger -> ThreadPalette.Danger
+    JsonWidget.ToneColor.Info -> ThreadPalette.Info
+    JsonWidget.ToneColor.Muted -> ThreadPalette.TextSecondary
     JsonWidget.ToneColor.Purple -> Color(0xFFC084FC)
     is JsonWidget.ToneColor.Hex -> Color(tone.argb)
 }
@@ -673,12 +672,12 @@ internal fun highlightedCode(text: String, language: String?): AnnotatedString {
     return buildAnnotatedString {
         for (tok in tokens) {
             val c = when (tok.kind) {
-                Markdown.TokenKind.Plain -> Palette.Text
-                Markdown.TokenKind.Keyword -> Palette.AccentHover
-                Markdown.TokenKind.Type -> Palette.Info
-                Markdown.TokenKind.String -> Palette.Success
-                Markdown.TokenKind.Number -> Palette.Warning
-                Markdown.TokenKind.Comment -> Palette.TextSecondary
+                Markdown.TokenKind.Plain -> ThreadPalette.Text
+                Markdown.TokenKind.Keyword -> ThreadPalette.AccentHover
+                Markdown.TokenKind.Type -> ThreadPalette.Info
+                Markdown.TokenKind.String -> ThreadPalette.Success
+                Markdown.TokenKind.Number -> ThreadPalette.Warning
+                Markdown.TokenKind.Comment -> ThreadPalette.TextSecondary
             }
             if (tok.kind == Markdown.TokenKind.Plain) append(tok.text)
             else withStyle(SpanStyle(color = c)) { append(tok.text) }
@@ -691,7 +690,7 @@ internal fun highlightedCode(text: String, language: String?): AnnotatedString {
 internal fun CodeScroll(background: Color, modifier: Modifier = Modifier, bordered: Boolean = true, content: @Composable (Modifier) -> Unit) {
     val scroll = rememberScrollState()
     val frame = if (bordered) {
-        modifier.fillMaxWidth().background(background, RoundedCornerShape(4.dp)).border(1.dp, Palette.Border, RoundedCornerShape(4.dp))
+        modifier.fillMaxWidth().background(background, RoundedCornerShape(4.dp)).border(1.dp, ThreadPalette.Border, RoundedCornerShape(4.dp))
     } else {
         modifier.fillMaxWidth().background(background)
     }
@@ -719,7 +718,7 @@ private fun BoxScope.OverflowCue(scroll: ScrollState, background: Color) {
         },
     )
     Icon(
-        OfficeIcons.Chevron, "Scrolls sideways", tint = Palette.TextSecondary,
+        OfficeIcons.Chevron, "Scrolls sideways", tint = ThreadPalette.TextSecondary,
         modifier = Modifier.align(Alignment.TopEnd).padding(top = 9.dp, end = 3.dp).size(12.dp).tagged(Tags.Worker.THREAD_CODE_HINT),
     )
 }
@@ -825,20 +824,21 @@ private class Grid {
         val w = cs.last().toFloat()
         val h = rs.last().toFloat()
         val half = line / 2
-        drawRect(Palette.Surface, Offset.Zero, Size(w, rs[1].toFloat()))
+        drawRect(ThreadPalette.Code, Offset.Zero, Size(w, rs[1].toFloat()))
         for (y in rs) {
             val at = y.toFloat().coerceIn(half, h - half)
-            drawLine(Palette.Border, Offset(0f, at), Offset(w, at), line)
+            drawLine(ThreadPalette.BorderStrong, Offset(0f, at), Offset(w, at), line)
         }
         for (x in cs) {
             val at = x.toFloat().coerceIn(half, w - half)
-            drawLine(Palette.Border, Offset(at, 0f), Offset(at, h), line)
+            drawLine(ThreadPalette.BorderStrong, Offset(at, 0f), Offset(at, h), line)
         }
     }
 }
 
-private val linkStyles = TextLinkStyles(SpanStyle(color = Palette.Accent, textDecoration = TextDecoration.Underline))
-private val fileLinkStyles = TextLinkStyles(SpanStyle(color = Palette.Accent))
+// Blue, without an underline, as the Factory app sets links; the colour alone marks them.
+private val linkStyles = TextLinkStyles(SpanStyle(color = ThreadPalette.Link))
+private val fileLinkStyles = TextLinkStyles(SpanStyle(color = ThreadPalette.Link))
 
 private fun styled(spans: List<Markdown.Span>, mono: FontFamily, opener: ((WorkspacePaths.Ref) -> Unit)? = null): AnnotatedString = buildAnnotatedString {
     for (s in spans) {
@@ -847,7 +847,7 @@ private fun styled(spans: List<Markdown.Span>, mono: FontFamily, opener: ((Works
             fontStyle = if (s.italic) FontStyle.Italic else null,
             fontFamily = if (s.code) mono else null,
             fontSize = if (s.code) 0.9.em else TextUnit.Unspecified,
-            background = if (s.code) Palette.SurfaceHigh else Color.Unspecified,
+            background = if (s.code) ThreadPalette.SurfaceHigh else Color.Unspecified,
             textDecoration = if (s.strike) TextDecoration.LineThrough else null,
         )
         val link = s.link

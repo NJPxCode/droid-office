@@ -105,6 +105,7 @@ import ai.factory.droidoffice.ui.components.tagged
 import ai.factory.droidoffice.ui.theme.LocalOfficeType
 import ai.factory.droidoffice.ui.theme.OfficeIcons
 import ai.factory.droidoffice.ui.theme.Palette
+import ai.factory.droidoffice.ui.theme.ThreadPalette
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -350,7 +351,8 @@ fun Composer(
         }
         // Offline, the screen's one notice under the header says Send is off (Tags.Worker.COMPOSER_OFFLINE).
         Row(
-            Modifier.fillMaxWidth().clip(field).background(Palette.Surface).border(1.dp, Palette.BorderStrong, field)
+            Modifier.fillMaxWidth().clip(field).background(if (thread) ThreadPalette.Surface else Palette.Surface)
+                .border(1.dp, if (thread) ThreadPalette.InputBorder else Palette.BorderStrong, field)
                 .padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
@@ -425,7 +427,7 @@ fun Composer(
                 }
             }
             // In the thread, Send inverts against the surface (light on dark), so orange stays for what's live.
-            val sendFill = if (!ready) Palette.SurfaceHigh else if (thread) Palette.Text else Palette.Accent
+            val sendFill = if (!ready) Palette.SurfaceHigh else if (thread) ThreadPalette.Text else Palette.Accent
             Box(
                 Modifier.size(38.dp).clip(control).background(sendFill).clickable(enabled = ready) { send(false) }.tagged(Tags.Worker.SEND),
                 contentAlignment = Alignment.Center,
@@ -584,7 +586,7 @@ private fun MentionMenu(items: List<WorkspaceMention.Item>, onPick: (WorkspaceMe
 }
 
 /** How wide the Thread's conversation reads on a large screen: about eighty characters of message type. */
-internal val READING_WIDTH = 760.dp
+internal val READING_WIDTH = 768.dp
 
 private class Picture(val name: String, val type: String, val bytes: ByteArray, val thumb: ImageBitmap?)
 

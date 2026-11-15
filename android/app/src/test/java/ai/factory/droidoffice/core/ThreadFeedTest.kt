@@ -178,6 +178,25 @@ class ThreadFeedTest {
     }
 
     @Test
+    fun aFeedKeptThroughRawTtyComesBackWithWhatItLoadedAndAsksAgainAtOnce() {
+        val feed = ThreadFeed("w1")
+        feed.receive(page(feed, feed.latest(0)!!, listOf(text("a", 1), text("b", 2)), hasMore = true, presentation = rows(listOf(text("a", 1), text("b", 2)))))
+        val (earlier, before) = feed.earlier(1)!!
+        val unanswered = feed.latest(ThreadFeed.RESEND_MS)!!
+        // The Thread leaves for Raw TTY: nothing hears the answers to what it asked.
+        feed.disconnected()
+        assertEquals(ThreadPhase.Ready, feed.state.phase)
+        assertEquals(listOf("a", "b"), feed.state.entries.map { it.id })
+        assertEquals(2, feed.state.rows.size)
+        assertFalse(feed.state.loadingEarlier)
+        assertFalse(feed.receive(page(feed, unanswered, listOf(text("c", 3)))))
+        assertFalse(feed.receive(page(feed, earlier, listOf(text("z", 0)), before = before)))
+        // Back in the Thread, well inside the resend window, it asks for the latest straight away.
+        assertTrue(feed.latest(ThreadFeed.RESEND_MS + 1) != null)
+        assertTrue(feed.earlier(ThreadFeed.RESEND_MS + 2) != null)
+    }
+
+    @Test
     fun aDisconnectForgetsWhatWasAskedSoNothingSpinsForever() {
         val feed = ThreadFeed("w1")
         val req = feed.latest(0)!!

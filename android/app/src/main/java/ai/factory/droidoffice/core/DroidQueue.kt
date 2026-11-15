@@ -18,6 +18,8 @@ object DroidQueue {
     private val INPUT_ROW = Regex("""^\s*│\s?[>!]""")
     private val HEADING = Regex("""^\s*Queued messages:\s*$""")
     private val HINT = Regex("""Ctrl\+X to clear queue""")
+    // On a narrow terminal (Phone view) the hint wraps: its first segments land on a row of their own.
+    private val HINT_WRAP = Regex("""^\s*(?:Ctrl\+R to modify queue|Ctrl\+G to pull top)(?:\s*(?:·|\s{2,})\s*(?:Ctrl\+G to pull top|Ctrl\+X to clear queue))*\s*$""")
     private val MORE = Regex("""^(.*?)\s*\((\d+) more lines?\)$""")
     private const val REACH = 48
 
@@ -34,9 +36,11 @@ object DroidQueue {
         // Droid's input row, not a dialog's box: "│ > …", or "│ ! …" in bash mode.
         if ((top + 1 until bottom).none { INPUT_ROW.containsMatchIn(rows[it]) }) return null
         val heading = (top - 1 downTo maxOf(0, top - REACH)).firstOrNull { HEADING.matches(rows[it]) } ?: return emptyList()
-        val hint = (heading + 1 until top).firstOrNull { HINT.containsMatchIn(rows[it]) } ?: return emptyList()
+        val hintEnd = (heading + 1 until top).firstOrNull { HINT.containsMatchIn(rows[it]) } ?: return emptyList()
         // Replies can quote the queue labels; only treat them as a queue during a live turn.
-        if ((hint + 1 until bottom).none { rows[it].contains("Press ESC to stop") || rows[it].contains("Ctrl+Enter to queue") }) return emptyList()
+        if ((hintEnd + 1 until bottom).none { rows[it].contains("Press ESC to stop") || rows[it].contains("Ctrl+Enter to queue") }) return emptyList()
+        var hint = hintEnd
+        while (hint > heading + 1 && HINT_WRAP.matches(rows[hint - 1])) hint--
         return (heading + 1 until hint).mapNotNull { i ->
             var text = rows[i].trim()
             if (text.isEmpty()) return@mapNotNull null

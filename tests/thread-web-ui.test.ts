@@ -764,15 +764,14 @@ test('a Thread to raw terminal round trip keeps the reader’s scroll position a
     await frames();
     // The worker keeps streaming while the raw terminal shows: the detached transcript repaints.
     seq++;
-    const more = [...entries, { id: `m${seq}`, seq, role: 'assistant' as const, kind: 'text' as const, text: `Streamed while parked ${seq}` }];
-    entries.splice(0, entries.length, ...more);
+    entries.push({ id: `m${seq}`, seq, role: 'assistant', kind: 'text', text: `Streamed while parked ${seq}` });
     await page.evaluate(
       ({ entries, rows }) => {
         const w = window as any;
         w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
         w.thread.update({ ...w.worker, activity: 'streaming' }, true);
       },
-      { entries: more, rows: presentThread(more, true) },
+      { entries, rows: presentThread(entries, true) },
     );
     await frames();
     await page.evaluate(() => {

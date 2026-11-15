@@ -814,9 +814,17 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       if (heights[index]) row.style.setProperty('contain-intrinsic-block-size', `auto ${heights[index]}px`);
     });
   };
+  /** False when the row is gone (a new session or reload while away). */
   const returnTo = (spot: NonNullable<typeof parked>) => {
-    const node = spot.entry ? [...list.children].find((el) => el instanceof HTMLElement && el.dataset.entry === spot.entry) : undefined;
-    if (node) scroll.scrollTop += node.getBoundingClientRect().top - scroll.getBoundingClientRect().top - spot.offset;
+    if (!spot.entry) return false;
+    const top = scroll.getBoundingClientRect().top;
+    for (const el of list.children) {
+      if (el instanceof HTMLElement && el.dataset.entry === spot.entry) {
+        scroll.scrollTop += el.getBoundingClientRect().top - top - spot.offset;
+        return true;
+      }
+    }
+    return false;
   };
   const follow = () => {
     inspecting = false;
@@ -1421,9 +1429,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     queue.disabled = input.disabled || !received || !!slashOf(input.value);
     stop.hidden = !busy && !waiting;
     stop.disabled = !allowed || sending || stopping;
-    sendLabel.textContent = sending ? 'Sending…' : busy ? (cloud ? 'Queue' : 'Send now') : 'Send';
-    send.classList.toggle('icon', sendLabel.textContent === 'Send');
-    send.setAttribute('aria-label', sendLabel.textContent);
+    const label = sending ? 'Sending…' : busy ? (cloud ? 'Queue' : 'Send now') : 'Send';
+    sendLabel.textContent = label;
+    send.classList.toggle('icon', !sending && !busy);
+    send.setAttribute('aria-label', label);
     send.title = busy ? (cloud ? `Sent to ${worker.name} once this turn is over` : `Steer ${worker.name}: it reads this now, during the turn`) : '';
     const placeholder = () => {
       if (broken) return `${worker.name} can’t take messages`;
@@ -1738,8 +1747,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
           requestAnimationFrame(() => {
             if (parked !== spot || !active) return;
             parked = undefined;
-            if (spot.following) follow();
-            else returnTo(spot);
+            if (spot.following || !returnTo(spot)) follow();
             updateLatest();
           });
         }

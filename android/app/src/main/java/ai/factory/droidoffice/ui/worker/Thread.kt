@@ -133,6 +133,7 @@ import ai.factory.droidoffice.ui.components.tagged
 import ai.factory.droidoffice.ui.theme.LocalOfficeType
 import ai.factory.droidoffice.ui.theme.OfficeIcons
 import ai.factory.droidoffice.ui.theme.Palette
+import ai.factory.droidoffice.ui.theme.ThreadPalette
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -203,6 +204,8 @@ internal fun Thread(
     /** It has a terminal to fall back on; a cloud worker doesn't. */
     rawTty: Boolean = true,
     onOpenWorker: ((String) -> Unit)? = null,
+    /** This screen's feeds by office, floor and worker, so the Thread comes back from Raw TTY with what it loaded. */
+    feeds: MutableMap<String, ThreadFeed> = remember { mutableMapOf() },
 ) {
     val graph = LocalGraph.current
     val connection = graph.connection
@@ -212,7 +215,10 @@ internal fun Thread(
     val effectiveFloor = data.workerFloorId(w.id) ?: data.floorId
     // A new feed per office, floor and worker (the Orchestrator's is the building's): its request ids are its own, so no other's answers land here.
     val floorScope = MissionControl.floorScope(effectiveFloor, w.id)
-    val feed = remember(data.officeId, floorScope, w.id) { ThreadFeed(w.id) }
+    val kept = "${data.officeId}/$floorScope/${w.id}"
+    val feed = remember(kept) { feeds.getOrPut(kept) { ThreadFeed(w.id) } }
+    // Out of view (Raw TTY), its answers go unheard: what it asked is forgotten, what it loaded stays.
+    DisposableEffect(feed) { onDispose { feed.disconnected() } }
     var state by remember(feed) { mutableStateOf(feed.state) }
     var polls by remember(feed) { mutableIntStateOf(0) }
     val life by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
@@ -280,8 +286,7 @@ internal fun Thread(
     }
     val list = rememberLazyListState()
     // What the owner opened, whether they're following and where they were reading survive a font,
-    // density or theme change recreating the screen, for this office, floor and worker only.
-    val kept = "${data.officeId}/$floorScope/${w.id}"
+    // density or theme change recreating the screen, or Raw TTY and back, for this office, floor and worker only.
     // What this device opened or closed, by the model's ids (ThreadView.Open); the rest opens as the model says.
     val open = rememberSaveable(kept, saver = OpenSaver) { mutableStateMapOf() }
     var openSession by rememberSaveable(kept) { mutableStateOf<String?>(null) }
@@ -449,7 +454,7 @@ internal fun Thread(
     }
     val pictures = remember(effectiveFloor, w.id) { effectiveFloor?.let { PictureSource(it, w.id) } }
     val floorDir = remember(data.floors, effectiveFloor) { data.floors.firstOrNull { it.id == effectiveFloor }?.dir }
-    Column(modifier.tagged(Tags.Worker.THREAD)) {
+    Column(modifier.background(ThreadPalette.Bg).tagged(Tags.Worker.THREAD)) {
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
             // On a wide screen the conversation keeps a reading width, centred, rather than lines across the whole window.
             val side = maxOf(18.dp, (maxWidth - READING_WIDTH) / 2)
@@ -528,7 +533,7 @@ internal fun Thread(
                     )
                 }
             }
-            Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().height(8.dp).background(Brush.verticalGradient(listOf(Palette.Bg, Color.Transparent))))
+            Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().height(8.dp).background(Brush.verticalGradient(listOf(ThreadPalette.Bg, Color.Transparent))))
             // Floats over the conversation's bottom corner rather than taking a row of its own above the composer.
             if (ThreadView.showJump(follow, stuck, list.canScrollForward) && rows.isNotEmpty() && !state.newerTrimmed) {
                 val from = rows.indexOfFirst { it.id == seen }
@@ -551,27 +556,27 @@ internal fun Thread(
 }
 
 /**
- * The messages waiting in Droid's queue, oldest first: the owner's words on the right like their
- * other messages, quieter, under a line that says how many and offers to clear them. A row Droid
+ * The messages waiting in Droid's queue, oldest first: the owner's words across the column like their
+ * other messages, hollow, under a line that says how many and offers to clear them. A row Droid
  * cut short shows what Droid shows, saying how many lines it left off.
  */
 @Composable
 private fun QueuedMessages(items: List<ThreadQueue.Shown>, canClear: Boolean, onClear: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(top = 24.dp).tagged(Tags.Worker.THREAD_QUEUED)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.weight(1f).height(1.dp).background(Palette.Border))
+            Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
             Text(
-                "QUEUED · ${items.size}", style = LocalOfficeType.current.eyebrow.copy(color = Palette.TextSecondary),
+                "QUEUED · ${items.size}", style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary),
                 modifier = Modifier.padding(horizontal = 10.dp).semantics { liveRegion = LiveRegionMode.Polite },
             )
-            Box(Modifier.weight(1f).height(1.dp).background(Palette.Border))
+            Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
         }
         items.forEachIndexed { i, q ->
-            Box(Modifier.fillMaxWidth().padding(start = 48.dp, top = 10.dp), contentAlignment = Alignment.CenterEnd) {
-                Column(Modifier.queuedBlock().tagged(Tags.Worker.threadQueued(i + 1))) {
+            Box(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                Column(Modifier.fillMaxWidth().queuedBlock().tagged(Tags.Worker.threadQueued(i + 1))) {
                     Text(
                         q.text.ifEmpty { "Image attached" },
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp, color = Palette.TextSecondary),
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp, color = ThreadPalette.TextSecondary),
                         maxLines = USER_LINES, overflow = TextOverflow.Ellipsis,
                     )
                     val more = when {
@@ -580,14 +585,14 @@ private fun QueuedMessages(items: List<ThreadQueue.Shown>, canClear: Boolean, on
                         q.hasImage && q.text.isNotEmpty() -> "Image attached"
                         else -> null
                     }
-                    more?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = Palette.TextTertiary), modifier = Modifier.padding(top = 2.dp)) }
+                    more?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = ThreadPalette.TextTertiary), modifier = Modifier.padding(top = 2.dp)) }
                 }
             }
         }
         Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 if (items.size == 1) "Sent once this turn is over." else "Sent in order once this turn is over.",
-                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = Palette.TextTertiary), modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = ThreadPalette.TextTertiary), modifier = Modifier.weight(1f),
             )
             if (canClear) QuietButton("Clear queue", Icons.Default.Close, Tags.Worker.THREAD_QUEUED_CLEAR, true, onClear)
         }
@@ -595,7 +600,7 @@ private fun QueuedMessages(items: List<ThreadQueue.Shown>, canClear: Boolean, on
 }
 
 /** A message waiting its turn: the owner's block, hollow, so it reads as not sent yet. */
-private fun Modifier.queuedBlock() = this.border(1.dp, Palette.BorderStrong, RoundedCornerShape(4.dp)).padding(horizontal = 12.dp, vertical = 9.dp)
+private fun Modifier.queuedBlock() = this.border(1.dp, ThreadPalette.BorderStrong, RoundedCornerShape(4.dp)).padding(horizontal = 12.dp, vertical = 9.dp)
 
 /** Brings what was just opened into view once it's laid out, as far as it fits, without following the bottom. */
 private class Reveal(val modifier: Modifier, val ask: () -> Unit)
@@ -670,7 +675,7 @@ private fun Jump(fresh: Int, modifier: Modifier, onClick: () -> Unit) {
     val label = if (fresh > 0) "$fresh new message${if (fresh == 1) "" else "s"}" else "Jump to latest"
     Box(modifier) {
         Box(
-            Modifier.size(40.dp).clip(shape).background(Palette.SurfaceHigh).border(1.dp, Palette.BorderStrong, shape)
+            Modifier.size(40.dp).clip(shape).background(ThreadPalette.SurfaceHigh).border(1.dp, ThreadPalette.BorderStrong, shape)
                 .clickable(onClickLabel = "Jump to the latest message", role = Role.Button, onClick = onClick)
                 .tagged(Tags.Worker.THREAD_JUMP),
             contentAlignment = Alignment.Center,
@@ -678,13 +683,13 @@ private fun Jump(fresh: Int, modifier: Modifier, onClick: () -> Unit) {
             Icon(
                 OfficeIcons.ArrowDown, null,
                 Modifier.size(18.dp).semantics { contentDescription = label; liveRegion = LiveRegionMode.Polite }.tagged(Tags.Worker.THREAD_JUMP_LABEL),
-                tint = Palette.Text,
+                tint = ThreadPalette.Text,
             )
         }
         if (fresh > 0) {
             Box(
                 Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-6).dp).heightIn(min = 16.dp).widthIn(min = 16.dp)
-                    .background(Palette.Accent, RoundedCornerShape(2.dp)).padding(horizontal = 4.dp).clearAndSetSemantics { },
+                    .background(ThreadPalette.Accent, RoundedCornerShape(2.dp)).padding(horizontal = 4.dp).clearAndSetSemantics { },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(if (fresh > 99) "99+" else "$fresh", style = LocalOfficeType.current.eyebrow.copy(color = Color.White))
@@ -698,13 +703,13 @@ private fun Jump(fresh: Int, modifier: Modifier, onClick: () -> Unit) {
 private fun QuietButton(text: String, icon: androidx.compose.ui.graphics.vector.ImageVector, tag: String, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, tall: Boolean = false) {
     val shape = RoundedCornerShape(4.dp)
     Row(
-        modifier.clip(shape).border(1.dp, Palette.BorderStrong, shape).clickable(enabled = enabled, role = Role.Button, onClick = onClick).tagged(tag)
+        modifier.clip(shape).border(1.dp, ThreadPalette.BorderStrong, shape).clickable(enabled = enabled, role = Role.Button, onClick = onClick).tagged(tag)
             .heightIn(min = if (tall) 44.dp else 36.dp).padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, Modifier.size(13.dp), tint = if (enabled) Palette.TextSecondary else Palette.TextTertiary)
+        Icon(icon, null, Modifier.size(13.dp), tint = if (enabled) ThreadPalette.TextSecondary else ThreadPalette.TextTertiary)
         Spacer(Modifier.width(8.dp))
-        Text(text.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = if (enabled) Palette.Text else Palette.TextTertiary))
+        Text(text.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = if (enabled) ThreadPalette.Text else ThreadPalette.TextTertiary))
     }
 }
 
@@ -718,29 +723,29 @@ private fun Head(w: WorkerInfo, state: ThreadState, connected: Boolean, rawTty: 
         }
         when {
             state.loadingEarlier -> Row(Modifier.heightIn(min = 36.dp).padding(top = 4.dp).tagged(Tags.Worker.THREAD_EARLIER), verticalAlignment = Alignment.CenterVertically) {
-                Spinner(Modifier.size(12.dp), Palette.TextSecondary)
+                Spinner(Modifier.size(12.dp), ThreadPalette.TextSecondary)
                 Spacer(Modifier.width(8.dp))
                 Text("Loading earlier messages…", style = MaterialTheme.typography.bodySmall)
             }
             state.hasMore -> Column(Modifier.padding(top = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 QuietButton("Load earlier", OfficeIcons.ArrowUp, Tags.Worker.THREAD_EARLIER, connected, onEarlier)
-                state.earlierError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Palette.Danger, modifier = Modifier.padding(top = 6.dp)) }
+                state.earlierError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ThreadPalette.Danger, modifier = Modifier.padding(top = 6.dp)) }
             }
-            else -> Eyebrow("Start of the session", Modifier.padding(vertical = 10.dp).tagged(Tags.Worker.THREAD_START), color = Palette.TextSecondary)
+            else -> Eyebrow("Start of the session", Modifier.padding(vertical = 10.dp).tagged(Tags.Worker.THREAD_START), color = ThreadPalette.TextSecondary)
         }
         state.error?.let {
             Row(
-                Modifier.fillMaxWidth().padding(top = 8.dp).panel(RoundedCornerShape(4.dp), Palette.Danger.copy(alpha = 0.07f), Palette.Danger.copy(alpha = 0.32f))
+                Modifier.fillMaxWidth().padding(top = 8.dp).panel(RoundedCornerShape(4.dp), ThreadPalette.Danger.copy(alpha = 0.07f), ThreadPalette.Danger.copy(alpha = 0.32f))
                     .tagged(Tags.Worker.THREAD_ERROR).padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("The office couldn't update the thread: $it", style = MaterialTheme.typography.bodySmall, color = Palette.Danger, modifier = Modifier.weight(1f).padding(vertical = 6.dp))
+                Text("The office couldn't update the thread: $it", style = MaterialTheme.typography.bodySmall, color = ThreadPalette.Danger, modifier = Modifier.weight(1f).padding(vertical = 6.dp))
                 Box(
                     Modifier.clip(RoundedCornerShape(3.dp)).clickable(enabled = connected, role = Role.Button, onClick = onRetry).tagged(Tags.Worker.THREAD_RETRY)
                         .heightIn(min = 36.dp).padding(horizontal = 10.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("RETRY", style = LocalOfficeType.current.eyebrow.copy(color = if (connected) Palette.Text else Palette.TextTertiary))
+                    Text("RETRY", style = LocalOfficeType.current.eyebrow.copy(color = if (connected) ThreadPalette.Text else ThreadPalette.TextTertiary))
                 }
             }
         }
@@ -752,17 +757,17 @@ private fun Head(w: WorkerInfo, state: ThreadState, connected: Boolean, rawTty: 
 private fun Empty(w: WorkerInfo, state: ThreadState, connected: Boolean, rawTty: Boolean, onRetry: () -> Unit, onTty: () -> Unit) {
     data class Look(val title: String, val body: String, val color: Color, val retry: Boolean, val tty: Boolean)
     val look = when {
-        !connected -> Look("Not connected", "Not connected. The thread loads once the phone reaches the office.", Palette.TextSecondary, retry = false, tty = true)
+        !connected -> Look("Not connected", "Not connected. The thread loads once the phone reaches the office.", ThreadPalette.TextSecondary, retry = false, tty = true)
         state.phase == ThreadPhase.Ready && state.support != ThreadSupport.Supported ->
-            Look(state.support.title.orEmpty(), state.support.message.orEmpty(), Palette.Warning, retry = false, tty = true)
-        state.phase == ThreadPhase.Loading -> Look("Loading the conversation", "Loading the thread…", Palette.TextSecondary, retry = false, tty = false)
+            Look(state.support.title.orEmpty(), state.support.message.orEmpty(), ThreadPalette.Warning, retry = false, tty = true)
+        state.phase == ThreadPhase.Loading -> Look("Loading the conversation", "Loading the thread…", ThreadPalette.TextSecondary, retry = false, tty = false)
         // Its first prompt starts the session, and only then is there a conversation to read.
         w.id == ORCHESTRATOR_ID && w.sessionId == null && state.entries.isEmpty() ->
-            Look("Starting its conversation", "The Orchestrator's conversation shows here once its session starts.", Palette.TextSecondary, retry = false, tty = true)
-        state.phase == ThreadPhase.Error -> Look("Couldn't read the thread", "The office couldn't read the thread: ${state.error?.trimEnd('.') ?: "no reason given"}.", Palette.Danger, retry = true, tty = true)
-        state.phase == ThreadPhase.Unavailable && !rawTty -> Look("No thread to show", "This office can't read this worker's Factory session yet. Update Droid Office on your computer, or try again.", Palette.Warning, retry = true, tty = false)
-        state.phase == ThreadPhase.Unavailable -> Look("No thread to show", "This office doesn't send threads, or can't read this worker's session. Raw TTY shows everything.", Palette.Warning, retry = true, tty = true)
-        else -> Look("Start a conversation", "Your messages and the worker’s replies will appear here.", Palette.TextTertiary, retry = false, tty = false)
+            Look("Starting its conversation", "The Orchestrator's conversation shows here once its session starts.", ThreadPalette.TextSecondary, retry = false, tty = true)
+        state.phase == ThreadPhase.Error -> Look("Couldn't read the thread", "The office couldn't read the thread: ${state.error?.trimEnd('.') ?: "no reason given"}.", ThreadPalette.Danger, retry = true, tty = true)
+        state.phase == ThreadPhase.Unavailable && !rawTty -> Look("No thread to show", "This office can't read this worker's Factory session yet. Update Droid Office on your computer, or try again.", ThreadPalette.Warning, retry = true, tty = false)
+        state.phase == ThreadPhase.Unavailable -> Look("No thread to show", "This office doesn't send threads, or can't read this worker's session. Raw TTY shows everything.", ThreadPalette.Warning, retry = true, tty = true)
+        else -> Look("Start a conversation", "Your messages and the worker’s replies will appear here.", ThreadPalette.TextTertiary, retry = false, tty = false)
     }
     val loading = connected && state.phase == ThreadPhase.Loading
     val unreadable = connected && state.phase == ThreadPhase.Ready && state.support != ThreadSupport.Supported
@@ -771,14 +776,14 @@ private fun Empty(w: WorkerInfo, state: ThreadState, connected: Boolean, rawTty:
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
-            if (loading) Spinner(Modifier.size(16.dp), Palette.TextSecondary) else Box(Modifier.size(7.dp).background(look.color, RoundedCornerShape(1.dp)))
+            if (loading) Spinner(Modifier.size(16.dp), ThreadPalette.TextSecondary) else Box(Modifier.size(7.dp).background(look.color, RoundedCornerShape(1.dp)))
         }
         Text(
             look.title, style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 12.dp).semantics { heading() },
         )
         Text(
-            look.body, style = MaterialTheme.typography.bodySmall, color = Palette.TextSecondary, textAlign = TextAlign.Center,
+            look.body, style = MaterialTheme.typography.bodySmall, color = ThreadPalette.TextSecondary, textAlign = TextAlign.Center,
             modifier = Modifier.widthIn(max = 300.dp).padding(top = 4.dp).semantics { liveRegion = LiveRegionMode.Polite }.tagged(Tags.Worker.THREAD_STATE),
         )
         val tty = look.tty && rawTty
@@ -791,10 +796,10 @@ private fun Empty(w: WorkerInfo, state: ThreadState, connected: Boolean, rawTty:
     }
     // Without a transcript, what it was asked is still worth showing.
     w.prompt?.takeIf { it.isNotBlank() && state.phase != ThreadPhase.Loading }?.let { p ->
-        Box(Modifier.fillMaxWidth().padding(start = 48.dp, top = 28.dp), contentAlignment = Alignment.CenterEnd) {
+        Box(Modifier.fillMaxWidth().padding(top = 28.dp)) {
             Text(
                 p, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 22.sp), maxLines = 12, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.userBlock().tagged(Tags.Worker.THREAD_PROMPT),
+                modifier = Modifier.fillMaxWidth().userBlock().tagged(Tags.Worker.THREAD_PROMPT),
             )
         }
     }
@@ -818,9 +823,8 @@ private fun Modifier.clampLines(lines: Int, onClipped: (Boolean) -> Unit) = this
     layout(p.width, p.height.coerceAtMost(limit).coerceIn(constraints.minHeight, constraints.maxHeight)) { p.place(0, 0) }
 }
 
-/** The owner's own words: a flat, near-square block on the right. */
-private fun Modifier.userBlock() = this.background(Palette.SurfaceHover, RoundedCornerShape(4.dp)).border(1.dp, Palette.Border, RoundedCornerShape(4.dp))
-    .padding(horizontal = 12.dp, vertical = 9.dp)
+/** The owner's own words: a raised, near-square slab across the reading column, as the Factory app sets them. */
+private fun Modifier.userBlock() = this.background(ThreadPalette.UserSlab, RoundedCornerShape(4.dp)).padding(horizontal = 12.dp, vertical = 9.dp)
 
 @Composable
 private fun Message(w: WorkerInfo, m: ThreadRow.Message, text: String, images: List<ThreadImage>, all: Boolean, streaming: Boolean, floorDir: String?, onMore: () -> Unit) {
@@ -829,12 +833,12 @@ private fun Message(w: WorkerInfo, m: ThreadRow.Message, text: String, images: L
         val reveal = rememberReveal()
         // The pictures sent with the prompt, above its text, in place of where the office kept them.
         val pictures = images.isNotEmpty() && LocalPictureSource.current != null
-        Column(tag.padding(start = 48.dp).then(reveal.modifier), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.End) {
+        Column(tag.then(reveal.modifier), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.End) {
             if (pictures) ThreadPictures(images, "Picture you sent", null, end = true)
-            if (!pictures || text.isNotBlank()) Column(Modifier.userBlock()) {
+            if (!pictures || text.isNotBlank()) Column(Modifier.fillMaxWidth().userBlock()) {
                 var clipped by remember(m.id) { mutableStateOf(false) }
                 SelectionContainer {
-                    MarkdownText(text, if (all) Modifier else Modifier.clampLines(USER_LINES) { if (clipped != it) clipped = it }, surface = Palette.SurfaceHover, breaks = true)
+                    MarkdownText(text, if (all) Modifier else Modifier.clampLines(USER_LINES) { if (clipped != it) clipped = it }, surface = ThreadPalette.UserSlab, breaks = true)
                 }
                 if (all || clipped) {
                     Row(
@@ -845,16 +849,15 @@ private fun Message(w: WorkerInfo, m: ThreadRow.Message, text: String, images: L
                             .heightIn(min = 40.dp).padding(top = 4.dp, end = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(if (all) "SHOW LESS" else "SHOW ALL", style = LocalOfficeType.current.eyebrow.copy(color = Palette.Text))
+                        Text(if (all) "SHOW LESS" else "SHOW ALL", style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.Text))
                         Spacer(Modifier.width(6.dp))
-                        Icon(OfficeIcons.Chevron, null, Modifier.size(13.dp).rotate(if (all) -90f else 90f), tint = Palette.TextSecondary)
+                        Icon(OfficeIcons.Chevron, null, Modifier.size(13.dp).rotate(if (all) -90f else 90f), tint = ThreadPalette.TextSecondary)
                     }
                 }
             }
         }
     } else {
         Column(tag) {
-            if (m.startsTurn) Eyebrow(w.name.ifBlank { "Droid" }, Modifier.padding(bottom = 6.dp))
             val files = LocalFilePreview.current
             SelectionContainer { MarkdownText(text, streaming = streaming, onOpenPath = files?.let { it::open }, rich = true) }
             m.turnChanges?.let { TurnChanges(m.id, it, floorDir, Modifier.padding(top = 10.dp)) }
@@ -872,24 +875,24 @@ private fun Notice(w: WorkerInfo, n: ThreadRow.Notice, entry: ThreadEntry?) {
             if (images.isNotEmpty() && LocalPictureSource.current != null) {
                 ThreadPictures(images, if (n.role == ThreadRole.User) "Picture you sent" else "Picture from ${w.name}", null, end = n.role == ThreadRole.User)
             } else {
-                Text(n.text, style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary))
+                Text(n.text, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary))
             }
         }
         NoticeTone.Danger -> Row(
-            tag.panel(RoundedCornerShape(4.dp), Palette.Danger.copy(alpha = 0.07f), Palette.Danger.copy(alpha = 0.3f)).padding(horizontal = 12.dp, vertical = 9.dp),
+            tag.panel(RoundedCornerShape(4.dp), ThreadPalette.Danger.copy(alpha = 0.07f), ThreadPalette.Danger.copy(alpha = 0.3f)).padding(horizontal = 12.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.size(6.dp).background(Palette.Danger, RoundedCornerShape(1.dp)))
+            Box(Modifier.size(6.dp).background(ThreadPalette.Danger, RoundedCornerShape(1.dp)))
             Spacer(Modifier.width(10.dp))
-            Text(n.text, style = MaterialTheme.typography.bodySmall, color = Palette.Danger)
+            Text(n.text, style = MaterialTheme.typography.bodySmall, color = ThreadPalette.Danger)
         }
         NoticeTone.Quiet -> Row(tag, verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.weight(1f).height(1.dp).background(Palette.Border))
+            Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
             Text(
-                n.text.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = Palette.TextSecondary), textAlign = TextAlign.Center,
+                n.text.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary), textAlign = TextAlign.Center,
                 modifier = Modifier.padding(horizontal = 10.dp).weight(4f, fill = false),
             )
-            Box(Modifier.weight(1f).height(1.dp).background(Palette.Border))
+            Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
         }
     }
 }
@@ -976,24 +979,24 @@ private fun CardGroup(group: ThreadToolGroup, working: Boolean, isOpen: Boolean,
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (working) Spinner(Modifier.size(11.dp), Palette.Accent)
+            if (working) Spinner(Modifier.size(11.dp), ThreadPalette.Accent)
             Text(
                 if (working) ThreadView.WORKING + group.label else group.label,
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.5.sp, lineHeight = 19.sp, color = Palette.TextSecondary),
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, lineHeight = 18.sp, color = ThreadPalette.TextSecondary),
                 maxLines = if (isOpen) 3 else 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
             if (group.files > 0) {
-                Text(filesWord(group.files), style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary), maxLines = 1)
+                Text(filesWord(group.files), style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = ThreadPalette.TextTertiary), maxLines = 1)
                 DiffCounts(group.additions, group.deletions)
             }
             if (!working) CardStatusBadge(group.state, quietComplete = true)
-            Icon(OfficeIcons.Chevron, null, Modifier.size(14.dp).rotate(if (isOpen) 90f else 0f), tint = Palette.TextSecondary)
+            Icon(OfficeIcons.Chevron, null, Modifier.size(14.dp).rotate(if (isOpen) 90f else 0f), tint = ThreadPalette.TextTertiary)
         }
         if (isOpen) {
             Column(
                 Modifier.fillMaxWidth().padding(start = 7.dp, bottom = 4.dp).drawBehind {
-                    drawLine(Palette.Border, Offset(0f, 0f), Offset(0f, size.height), 1.dp.toPx())
+                    drawLine(ThreadPalette.BorderStrong, Offset(0f, 0f), Offset(0f, size.height), 1.dp.toPx())
                 }.padding(start = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) { content() }
@@ -1006,8 +1009,8 @@ private fun filesWord(count: Int) = if (count == 1) "1 file" else "$count files"
 @Composable
 private fun DiffCounts(additions: Int, deletions: Int) {
     Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("+$additions", style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, color = Palette.Success))
-        Text("-$deletions", style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, color = Palette.Danger))
+        Text("+$additions", style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, color = ThreadPalette.Add))
+        Text("-$deletions", style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, color = ThreadPalette.Del))
     }
 }
 
@@ -1015,16 +1018,16 @@ private fun DiffCounts(additions: Int, deletions: Int) {
 @Composable
 private fun TurnChanges(rowId: String, changes: ThreadTurnChanges, floorDir: String?, modifier: Modifier = Modifier) {
     val preview = LocalFilePreview.current
-    Column(modifier.fillMaxWidth().panel(RoundedCornerShape(4.dp), Palette.Surface, Palette.Border).tagged(Tags.Worker.threadTurnChanges(rowId))) {
+    Column(modifier.fillMaxWidth().panel(RoundedCornerShape(4.dp), ThreadPalette.Surface, ThreadPalette.BorderStrong).tagged(Tags.Worker.threadTurnChanges(rowId))) {
         Row(
-            Modifier.fillMaxWidth().background(Palette.SurfaceRaised).heightIn(min = 40.dp).padding(horizontal = 10.dp, vertical = 7.dp),
+            Modifier.fillMaxWidth().heightIn(min = 40.dp).padding(horizontal = 10.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Changed ${filesWord(changes.count)}", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, color = Palette.Text, fontWeight = FontWeight.Medium), modifier = Modifier.weight(1f))
+            Text("Changed ${filesWord(changes.count)}", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, lineHeight = 18.sp, color = ThreadPalette.TextSecondary), modifier = Modifier.weight(1f))
             DiffCounts(changes.additions, changes.deletions)
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.BorderStrong))
         Column(Modifier.padding(vertical = 4.dp)) {
             changes.files.forEachIndexed { i, file ->
                 val rel = remember(file.path, floorDir) { ThreadView.workspacePath(file.path, floorDir) }
@@ -1043,7 +1046,7 @@ private fun TurnChanges(rowId: String, changes: ThreadTurnChanges, floorDir: Str
                     Text(
                         file.shortPath,
                         style = LocalOfficeType.current.monoBody.copy(
-                            fontSize = 12.sp, lineHeight = 16.sp, color = Palette.Text,
+                            fontSize = 12.sp, lineHeight = 16.sp, color = ThreadPalette.Text,
                             textDecoration = if (openFile != null) TextDecoration.Underline else null,
                         ),
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
@@ -1053,7 +1056,7 @@ private fun TurnChanges(rowId: String, changes: ThreadTurnChanges, floorDir: Str
             }
             val more = changes.count - changes.files.size
             if (more > 0) {
-                Text("and $more more", style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary), modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+                Text("and $more more", style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
             }
         }
     }
@@ -1061,15 +1064,15 @@ private fun TurnChanges(rowId: String, changes: ThreadTurnChanges, floorDir: Str
 
 /** A command as the shell reads it, after an accent prompt. */
 private fun shellLine(command: String): AnnotatedString = buildAnnotatedString {
-    withStyle(SpanStyle(color = Palette.Accent)) { append("$ ") }
+    withStyle(SpanStyle(color = ThreadPalette.Accent)) { append("$ ") }
     for (tok in Markdown.tokenizeCode(command, "sh")) {
         val color = when (tok.kind) {
             Markdown.TokenKind.Plain -> null
-            Markdown.TokenKind.Keyword -> Palette.AccentHover
-            Markdown.TokenKind.Type -> Palette.Info
-            Markdown.TokenKind.String -> Palette.Success
-            Markdown.TokenKind.Number -> Palette.Warning
-            Markdown.TokenKind.Comment -> Palette.TextSecondary
+            Markdown.TokenKind.Keyword -> ThreadPalette.AccentHover
+            Markdown.TokenKind.Type -> ThreadPalette.Info
+            Markdown.TokenKind.String -> ThreadPalette.Success
+            Markdown.TokenKind.Number -> ThreadPalette.Warning
+            Markdown.TokenKind.Comment -> ThreadPalette.TextSecondary
         }
         if (color == null) append(tok.text) else withStyle(SpanStyle(color = color)) { append(tok.text) }
     }
@@ -1096,33 +1099,33 @@ private fun ExplorationDisclosure(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (working) {
-                Spinner(Modifier.size(11.dp), Palette.Accent)
+                Spinner(Modifier.size(11.dp), ThreadPalette.Accent)
                 Spacer(Modifier.width(8.dp))
             }
             Text(
                 if (working) ThreadView.WORKING + seg.label else seg.label,
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.5.sp, lineHeight = 19.sp, color = Palette.TextSecondary),
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp, lineHeight = 18.sp, color = ThreadPalette.TextSecondary),
                 maxLines = if (isOpen) 3 else 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).tagged(Tags.Worker.threadGroupSummary(seg.tagId)),
             )
             seg.status?.let {
                 Text(
-                    it.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = Palette.TextSecondary),
+                    it.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary),
                     maxLines = 1, modifier = Modifier.padding(start = 10.dp).tagged(Tags.Worker.threadGroupStatus(seg.tagId)),
                 )
             }
-            Icon(OfficeIcons.Chevron, null, Modifier.padding(start = 8.dp).size(14.dp).rotate(if (isOpen) 90f else 0f), tint = Palette.TextSecondary)
+            Icon(OfficeIcons.Chevron, null, Modifier.padding(start = 8.dp).size(14.dp).rotate(if (isOpen) 90f else 0f), tint = ThreadPalette.TextTertiary)
         }
         seg.running?.let {
             Text(
-                it, style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                it, style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = ThreadPalette.TextTertiary), maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = 24.dp, bottom = 4.dp).semantics { liveRegion = LiveRegionMode.Polite }.tagged(Tags.Worker.threadGroupRunning(seg.tagId)),
             )
         }
         if (isOpen) {
             Column(
                 Modifier.fillMaxWidth().padding(start = 7.dp, bottom = 4.dp).drawBehind {
-                    drawLine(Palette.Border, Offset(0f, 0f), Offset(0f, size.height), 1.dp.toPx())
+                    drawLine(ThreadPalette.BorderStrong, Offset(0f, 0f), Offset(0f, size.height), 1.dp.toPx())
                 }.padding(start = 12.dp),
             ) {
                 for (block in seg.blocks) {
@@ -1225,16 +1228,15 @@ private fun FileChangeCard(
     val openFile: (() -> Unit)? = if (preview != null && relPath != null) {
         { preview.openFilePreview(relPath, ThreadView.targetLine(change)) }
     } else null
-    val borderColor = if (action.state == ActivityState.Failed) Palette.Danger.copy(alpha = 0.35f) else Palette.Border
+    val borderColor = if (action.state == ActivityState.Failed) ThreadPalette.Danger.copy(alpha = 0.35f) else ThreadPalette.BorderStrong
     Column(
         Modifier.fillMaxWidth()
             .then(reveal.modifier)
-            .panel(RoundedCornerShape(4.dp), Palette.Surface, borderColor)
+            .panel(RoundedCornerShape(4.dp), ThreadPalette.Surface, borderColor)
             .tagged(Tags.Worker.threadChange(changeKey)),
     ) {
         Row(
             Modifier.fillMaxWidth()
-                .background(Palette.SurfaceRaised)
                 .disclosure(isOpen) {
                     if (!isOpen) reveal.ask()
                     onToggle()
@@ -1246,14 +1248,14 @@ private fun FileChangeCard(
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             if (action.state == ActivityState.Working) {
-                Spinner(Modifier.size(11.dp), Palette.Accent)
+                Spinner(Modifier.size(11.dp), ThreadPalette.Accent)
             } else {
-                Icon(OfficeIcons.File, null, Modifier.size(13.dp), tint = Palette.TextSecondary)
+                Icon(OfficeIcons.File, null, Modifier.size(13.dp), tint = ThreadPalette.TextSecondary)
             }
             Text(
                 change.shortPath,
                 style = LocalOfficeType.current.monoBody.copy(
-                    fontSize = 12.5.sp, lineHeight = 17.sp, color = Palette.Text,
+                    fontSize = 12.5.sp, lineHeight = 17.sp, color = ThreadPalette.Text,
                     textDecoration = if (openFile != null) TextDecoration.Underline else null,
                 ),
                 maxLines = 1,
@@ -1265,19 +1267,19 @@ private fun FileChangeCard(
                 ),
             )
             when (change.kind) {
-                FileChangeKind.Added -> MiniBadge("ADDED", Palette.Success)
-                FileChangeKind.Deleted -> MiniBadge("DELETED", Palette.Danger)
-                FileChangeKind.Modified -> if (change.generated && !isOpen) MiniBadge("GENERATED", Palette.TextSecondary)
+                FileChangeKind.Added -> MiniBadge("ADDED", ThreadPalette.Add)
+                FileChangeKind.Deleted -> MiniBadge("DELETED", ThreadPalette.Del)
+                FileChangeKind.Modified -> if (change.generated && !isOpen) MiniBadge("GENERATED", ThreadPalette.TextSecondary)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("+${change.additions}", style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, color = Palette.Success))
-                Text("-${change.deletions}", style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, color = Palette.Danger))
+                Text("+${change.additions}", style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, color = ThreadPalette.Add))
+                Text("-${change.deletions}", style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, color = ThreadPalette.Del))
             }
             CardStatusBadge(action.state, quietComplete = false)
-            Icon(OfficeIcons.Chevron, null, Modifier.size(13.dp).rotate(if (isOpen) 90f else 0f), tint = Palette.TextSecondary)
+            Icon(OfficeIcons.Chevron, null, Modifier.size(13.dp).rotate(if (isOpen) 90f else 0f), tint = ThreadPalette.TextSecondary)
         }
         if (openFile != null && change.kind == FileChangeKind.Added && action.state == ActivityState.Complete && ThreadView.deliverable(change.path)) {
-            Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
             Row(
                 Modifier.clickable(onClickLabel = "Preview the file", role = Role.Button, onClick = openFile)
                     .tagged(Tags.Worker.threadChangePreview(changeKey))
@@ -1286,18 +1288,18 @@ private fun FileChangeCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Icon(OfficeIcons.File, null, Modifier.size(12.dp), tint = Palette.Text)
-                Text("PREVIEW", style = LocalOfficeType.current.eyebrow.copy(color = Palette.Text))
+                Icon(OfficeIcons.File, null, Modifier.size(12.dp), tint = ThreadPalette.Text)
+                Text("PREVIEW", style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.Text))
             }
         }
         if (isOpen) {
-            Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.BorderStrong))
             if (change.lines.isNotEmpty()) {
                 val canClamp = change.lines.size > ThreadView.DIFF_CLAMP_LINES
                 val shownLines = if (canClamp && !showFull) change.lines.take(ThreadView.DIFF_CLAMP_LINES) else change.lines
                 val formatted = remember(shownLines) { formatDiffLines(shownLines) }
                 var textLayout by remember(shownLines) { mutableStateOf<TextLayoutResult?>(null) }
-                CodeScroll(Palette.Bg, bordered = false) { scroll ->
+                CodeScroll(ThreadPalette.Bg, bordered = false) { scroll ->
                     SelectionContainer {
                         Text(
                             formatted,
@@ -1311,9 +1313,9 @@ private fun FileChangeCard(
                                     val count = minOf(shownLines.size, layout.lineCount)
                                     for (idx in 0 until count) {
                                         val bg = when (shownLines[idx].kind) {
-                                            DiffLineKind.Add -> Palette.Success.copy(alpha = 0.10f)
-                                            DiffLineKind.Del -> Palette.Danger.copy(alpha = 0.10f)
-                                            DiffLineKind.Hunk -> Palette.Info.copy(alpha = 0.07f)
+                                            DiffLineKind.Add -> ThreadPalette.AddRow
+                                            DiffLineKind.Del -> ThreadPalette.DelRow
+                                            DiffLineKind.Hunk -> ThreadPalette.Info.copy(alpha = 0.07f)
                                             else -> Color.Transparent
                                         }
                                         if (bg != Color.Transparent) {
@@ -1328,10 +1330,10 @@ private fun FileChangeCard(
                     }
                 }
                 if (canClamp) {
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
                     Row(
                         Modifier.fillMaxWidth()
-                            .background(Palette.SurfaceRaised)
+                            .background(ThreadPalette.SurfaceRaised)
                             .disclosure(showFull, onToggleFull)
                             .tagged(Tags.Worker.threadChangeFull(changeKey))
                             .heightIn(min = 34.dp)
@@ -1341,15 +1343,15 @@ private fun FileChangeCard(
                     ) {
                         Text(
                             if (showFull) "SHOW LESS" else "SHOW FULL DIFF (${change.lines.size} LINES)",
-                            style = LocalOfficeType.current.eyebrow.copy(color = Palette.Text),
+                            style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.Text),
                         )
                         Spacer(Modifier.width(6.dp))
-                        Icon(OfficeIcons.Chevron, null, Modifier.size(12.dp).rotate(if (showFull) -90f else 90f), tint = Palette.TextSecondary)
+                        Icon(OfficeIcons.Chevron, null, Modifier.size(12.dp).rotate(if (showFull) -90f else 90f), tint = ThreadPalette.TextSecondary)
                     }
                 } else if (change.truncated) {
                     Text(
                         "Showing the first ${change.lines.size} diff lines.",
-                        style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary),
+                        style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary),
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                     )
                 }
@@ -1358,7 +1360,7 @@ private fun FileChangeCard(
             } else {
                 Text(
                     if (change.generated) "Generated file updated." else "No line changes to display.",
-                    style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextSecondary),
+                    style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary),
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                 )
             }
@@ -1377,17 +1379,17 @@ private fun formatDiffLines(lines: List<ThreadDiffLine>): AnnotatedString {
             val clean = line.text.replace('\n', ' ').replace('\r', ' ')
             if (!numbered) {
                 val (sign, color) = when (line.kind) {
-                    DiffLineKind.Add -> "+ " to Palette.Success.copy(alpha = 0.75f)
-                    DiffLineKind.Del -> "- " to Palette.Danger.copy(alpha = 0.75f)
-                    DiffLineKind.Ctx -> "  " to Palette.TextTertiary
-                    DiffLineKind.Hunk -> "" to Palette.Info
-                    DiffLineKind.Note -> "" to Palette.TextSecondary
+                    DiffLineKind.Add -> "+ " to ThreadPalette.Add
+                    DiffLineKind.Del -> "- " to ThreadPalette.Del
+                    DiffLineKind.Ctx -> "  " to ThreadPalette.TextTertiary
+                    DiffLineKind.Hunk -> "" to ThreadPalette.Info
+                    DiffLineKind.Note -> "" to ThreadPalette.TextSecondary
                 }
                 withStyle(SpanStyle(color = color)) { append(sign) }
                 val body = when (line.kind) {
-                    DiffLineKind.Hunk -> Palette.Info
-                    DiffLineKind.Note, DiffLineKind.Ctx -> Palette.TextSecondary
-                    else -> Palette.Text
+                    DiffLineKind.Hunk -> ThreadPalette.Info
+                    DiffLineKind.Note, DiffLineKind.Ctx -> ThreadPalette.TextSecondary
+                    else -> ThreadPalette.Text
                 }
                 withStyle(SpanStyle(color = body)) { append(clean) }
                 if (idx < lines.lastIndex) append('\n')
@@ -1395,32 +1397,32 @@ private fun formatDiffLines(lines: List<ThreadDiffLine>): AnnotatedString {
             }
             when (line.kind) {
                 DiffLineKind.Hunk, DiffLineKind.Note -> {
-                    val gutter = if (line.kind == DiffLineKind.Hunk) Palette.Info else Palette.TextSecondary
+                    val gutter = if (line.kind == DiffLineKind.Hunk) ThreadPalette.Info else ThreadPalette.TextSecondary
                     withStyle(SpanStyle(color = gutter)) {
                         append("$blankNum $blankNum   $clean")
                     }
                 }
                 DiffLineKind.Add -> {
                     val newNum = (line.newLine?.toString() ?: "").padStart(digits)
-                    withStyle(SpanStyle(color = Palette.Success.copy(alpha = 0.75f))) {
+                    withStyle(SpanStyle(color = ThreadPalette.Add)) {
                         append("$blankNum $newNum + ")
                     }
-                    withStyle(SpanStyle(color = Palette.Text)) { append(clean) }
+                    withStyle(SpanStyle(color = ThreadPalette.Text)) { append(clean) }
                 }
                 DiffLineKind.Del -> {
                     val oldNum = (line.oldLine?.toString() ?: "").padStart(digits)
-                    withStyle(SpanStyle(color = Palette.Danger.copy(alpha = 0.75f))) {
+                    withStyle(SpanStyle(color = ThreadPalette.Del)) {
                         append("$oldNum $blankNum - ")
                     }
-                    withStyle(SpanStyle(color = Palette.Text)) { append(clean) }
+                    withStyle(SpanStyle(color = ThreadPalette.Text)) { append(clean) }
                 }
                 DiffLineKind.Ctx -> {
                     val oldNum = (line.oldLine?.toString() ?: "").padStart(digits)
                     val newNum = (line.newLine?.toString() ?: "").padStart(digits)
-                    withStyle(SpanStyle(color = Palette.TextTertiary)) {
+                    withStyle(SpanStyle(color = ThreadPalette.TextTertiary)) {
                         append("$oldNum $newNum   ")
                     }
-                    withStyle(SpanStyle(color = Palette.TextSecondary)) { append(clean) }
+                    withStyle(SpanStyle(color = ThreadPalette.TextSecondary)) { append(clean) }
                 }
             }
             if (idx < lines.lastIndex) append('\n')
@@ -1433,15 +1435,15 @@ private fun CommandCard(action: ThreadModelAction, entry: ThreadEntry?, isOpen: 
     val reveal = rememberReveal()
     val cmdText = action.command?.command?.takeIf { it.isNotBlank() } ?: action.detail?.takeIf { it.isNotBlank() } ?: action.title
     val summaryText = action.command?.summary?.takeIf { it.isNotBlank() && it != cmdText }
-    val borderColor = if (action.state == ActivityState.Failed) Palette.Danger.copy(alpha = 0.4f) else Palette.Border
+    val borderColor = if (action.state == ActivityState.Failed) ThreadPalette.Danger.copy(alpha = 0.4f) else ThreadPalette.BorderStrong
     Column(
         Modifier.fillMaxWidth()
             .then(reveal.modifier)
-            .panel(RoundedCornerShape(4.dp), Palette.Surface, borderColor)
+            .panel(RoundedCornerShape(4.dp), ThreadPalette.Surface, borderColor)
             .tagged(Tags.Worker.threadEntry(action.id)),
     ) {
         Row(
-            Modifier.fillMaxWidth().background(Palette.SurfaceRaised),
+            Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(
@@ -1457,33 +1459,33 @@ private fun CommandCard(action: ThreadModelAction, entry: ThreadEntry?, isOpen: 
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (action.state == ActivityState.Working) {
-                    Spinner(Modifier.size(11.dp), Palette.Accent)
+                    Spinner(Modifier.size(11.dp), ThreadPalette.Accent)
                 } else {
                     Icon(
                         OfficeIcons.Shell,
                         null,
                         Modifier.size(13.dp),
-                        tint = if (action.state == ActivityState.Failed) Palette.Danger else Palette.TextSecondary,
+                        tint = if (action.state == ActivityState.Failed) ThreadPalette.Danger else ThreadPalette.TextSecondary,
                     )
                 }
                 Column(Modifier.weight(1f)) {
                     Text(
                         remember(cmdText) { shellLine(cmdText) },
-                        style = LocalOfficeType.current.monoBody.copy(fontSize = 12.5.sp, lineHeight = 17.sp, color = Palette.Text),
+                        style = LocalOfficeType.current.monoBody.copy(fontSize = 12.5.sp, lineHeight = 17.sp, color = ThreadPalette.Text),
                         maxLines = if (isOpen) 4 else 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     summaryText?.let {
                         Text(
                             it,
-                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 16.sp, color = Palette.TextSecondary),
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 16.sp, color = ThreadPalette.TextSecondary),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
                 CardStatusBadge(action.state, quietComplete = true)
-                Icon(OfficeIcons.Chevron, null, Modifier.size(13.dp).rotate(if (isOpen) 90f else 0f), tint = Palette.TextSecondary)
+                Icon(OfficeIcons.Chevron, null, Modifier.size(13.dp).rotate(if (isOpen) 90f else 0f), tint = ThreadPalette.TextSecondary)
             }
             DisableSelection {
                 CopyActionChip(
@@ -1497,7 +1499,7 @@ private fun CommandCard(action: ThreadModelAction, entry: ThreadEntry?, isOpen: 
             }
         }
         if (isOpen) {
-            Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.BorderStrong))
             ActionDetailsBody(action, entry, Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
         }
     }
@@ -1530,10 +1532,10 @@ private fun DelegationCard(
     Column(
         Modifier.fillMaxWidth()
             .then(reveal.modifier)
-            .panel(RoundedCornerShape(4.dp), Palette.Surface, Palette.Border)
+            .panel(RoundedCornerShape(4.dp), ThreadPalette.Surface, ThreadPalette.BorderStrong)
             .tagged(Tags.Worker.threadEntry(action.id)),
     ) {
-        Column(Modifier.fillMaxWidth().background(Palette.SurfaceRaised)) {
+        Column(Modifier.fillMaxWidth()) {
             Row(
                 Modifier.fillMaxWidth()
                     .disclosure(isOpen) {
@@ -1547,17 +1549,17 @@ private fun DelegationCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (action.state == ActivityState.Working) {
-                    Spinner(Modifier.size(12.dp), Palette.Accent)
+                    Spinner(Modifier.size(12.dp), ThreadPalette.Accent)
                 } else {
-                    Icon(OfficeIcons.Agent, null, Modifier.size(14.dp), tint = Palette.Accent)
+                    Icon(OfficeIcons.Agent, null, Modifier.size(14.dp), tint = ThreadPalette.Accent)
                 }
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(agentName, style = MaterialTheme.typography.titleSmall.copy(fontSize = 13.5.sp, color = Palette.Text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(agentName, style = MaterialTheme.typography.titleSmall.copy(fontSize = 13.5.sp, color = ThreadPalette.Text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (metaParts.isNotEmpty()) {
                             Text(
                                 metaParts.joinToString(" · "),
-                                style = LocalOfficeType.current.monoBody.copy(fontSize = 11.sp, color = Palette.TextSecondary),
+                                style = LocalOfficeType.current.monoBody.copy(fontSize = 11.sp, color = ThreadPalette.TextSecondary),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -1565,22 +1567,22 @@ private fun DelegationCard(
                     }
                     Text(
                         del?.summary?.ifBlank { null } ?: action.title,
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp, lineHeight = 18.sp, color = Palette.TextSecondary),
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp, lineHeight = 18.sp, color = ThreadPalette.TextSecondary),
                         maxLines = if (isOpen) 4 else 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 2.dp),
                     )
                 }
                 CardStatusBadge(action.state, quietComplete = false)
-                Icon(OfficeIcons.Chevron, null, Modifier.size(13.dp).rotate(if (isOpen) 90f else 0f), tint = Palette.TextSecondary)
+                Icon(OfficeIcons.Chevron, null, Modifier.size(13.dp).rotate(if (isOpen) 90f else 0f), tint = ThreadPalette.TextSecondary)
             }
             if (onOpenWorker != null && matchedWorker != null) {
                 Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 8.dp), horizontalArrangement = Arrangement.End) {
                     val shape = RoundedCornerShape(3.dp)
                     Row(
                         Modifier.clip(shape)
-                            .border(1.dp, Palette.Accent.copy(alpha = 0.45f), shape)
-                            .background(Palette.AccentMuted)
+                            .border(1.dp, ThreadPalette.Accent.copy(alpha = 0.45f), shape)
+                            .background(ThreadPalette.AccentMuted)
                             .clickable(role = Role.Button) { onOpenWorker(matchedWorker.id) }
                             .tagged(Tags.Worker.threadDelegateOpen(action.id))
                             .heightIn(min = 30.dp)
@@ -1588,14 +1590,14 @@ private fun DelegationCard(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
-                        Icon(OfficeIcons.Workers, null, Modifier.size(12.dp), tint = Palette.Accent)
-                        Text("OPEN THREAD", style = LocalOfficeType.current.eyebrow.copy(color = Palette.Accent))
+                        Icon(OfficeIcons.Workers, null, Modifier.size(12.dp), tint = ThreadPalette.Accent)
+                        Text("OPEN THREAD", style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.Accent))
                     }
                 }
             }
         }
         if (isOpen) {
-            Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
             ActionDetailsBody(action, entry, Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
         }
     }
@@ -1617,11 +1619,11 @@ private fun MiniBadge(label: String, color: Color) {
 @Composable
 private fun CardStatusBadge(state: ActivityState, quietComplete: Boolean) {
     when (state) {
-        ActivityState.Working -> MiniBadge("RUNNING", Palette.Warning)
-        ActivityState.Failed -> MiniBadge("FAILED", Palette.Danger)
-        ActivityState.Cancelled -> MiniBadge("CANCELLED", Palette.TextSecondary)
-        ActivityState.Incomplete -> MiniBadge("NO RESULT", Palette.TextSecondary)
-        ActivityState.Complete -> if (quietComplete) Icon(OfficeIcons.Check, null, Modifier.size(12.dp), tint = Palette.TextTertiary)
+        ActivityState.Working -> MiniBadge("RUNNING", ThreadPalette.Warning)
+        ActivityState.Failed -> MiniBadge("FAILED", ThreadPalette.Danger)
+        ActivityState.Cancelled -> MiniBadge("CANCELLED", ThreadPalette.TextSecondary)
+        ActivityState.Incomplete -> MiniBadge("NO RESULT", ThreadPalette.TextSecondary)
+        ActivityState.Complete -> if (quietComplete) Icon(OfficeIcons.Check, null, Modifier.size(12.dp), tint = ThreadPalette.TextTertiary)
     }
 }
 
@@ -1632,15 +1634,15 @@ private fun ActionDetailsBody(a: ThreadModelAction, entry: ThreadEntry?, modifie
         when (val d = remember(a, entry?.input, entry?.output, entry?.images, canShow) { ThreadView.detail(a, entry, canShow) }) {
             ThreadView.Detail.NotLoaded -> Text(ThreadView.NOT_LOADED, style = MaterialTheme.typography.bodySmall, modifier = Modifier.tagged(Tags.Worker.threadNotLoaded(a.id)))
             is ThreadView.Detail.Shown -> {
-                d.arguments?.let { (label, body) -> Mono(label, body, Palette.Text) }
+                d.arguments?.let { (label, body) -> Mono(label, body, ThreadPalette.Text) }
                 val pictures = d.images.isNotEmpty()
                 if (d.recorded) {
                     if (d.output.isNotEmpty() || !pictures) {
-                        Mono(d.result, d.output.ifEmpty { "(empty)" }, if (a.state == ActivityState.Cancelled) Palette.TextSecondary else Palette.Text)
+                        Mono(d.result, d.output.ifEmpty { "(empty)" }, if (a.state == ActivityState.Cancelled) ThreadPalette.TextSecondary else ThreadPalette.Text)
                     }
                     if (pictures) ThreadPictures(d.images, a.title, a.detail, end = false)
                 } else {
-                    Eyebrow(d.result, color = Palette.TextSecondary)
+                    Eyebrow(d.result, color = ThreadPalette.TextSecondary)
                     Text(d.output, style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -1653,7 +1655,7 @@ private fun StickyPlanBar(plan: ActivePlan, isOpen: Boolean, onToggle: () -> Uni
     val fraction = if (plan.total > 0) (plan.done.toFloat() / plan.total.toFloat()).coerceIn(0f, 1f) else 0f
     Column(
         modifier
-            .panel(RoundedCornerShape(4.dp), Palette.Surface, Palette.BorderStrong)
+            .panel(RoundedCornerShape(4.dp), ThreadPalette.Surface, ThreadPalette.BorderStrong)
             .tagged(Tags.Worker.THREAD_PLAN),
     ) {
         Row(
@@ -1665,23 +1667,23 @@ private fun StickyPlanBar(plan: ActivePlan, isOpen: Boolean, onToggle: () -> Uni
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Box(Modifier.size(6.dp).clip(CircleShape).background(if (plan.allDone) Palette.Success else Palette.Accent))
+            Box(Modifier.size(6.dp).clip(CircleShape).background(if (plan.allDone) ThreadPalette.Success else ThreadPalette.Accent))
             Text(
                 "${plan.done}/${plan.total} completed",
-                style = LocalOfficeType.current.eyebrow.copy(color = if (plan.allDone) Palette.Success else Palette.Text),
+                style = LocalOfficeType.current.eyebrow.copy(color = if (plan.allDone) ThreadPalette.Success else ThreadPalette.Text),
                 maxLines = 1,
             )
             Text(
                 plan.current ?: if (plan.allDone) "All steps completed" else "Plan in progress",
-                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp, color = Palette.TextSecondary),
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp, color = ThreadPalette.TextSecondary),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Icon(OfficeIcons.Chevron, null, Modifier.size(13.dp).rotate(if (isOpen) -90f else 90f), tint = Palette.TextSecondary)
+            Icon(OfficeIcons.Chevron, null, Modifier.size(13.dp).rotate(if (isOpen) -90f else 90f), tint = ThreadPalette.TextSecondary)
         }
-        Box(Modifier.fillMaxWidth().height(2.dp).background(Palette.SurfaceHigh)) {
-            Box(Modifier.fillMaxWidth(fraction).height(2.dp).background(if (plan.allDone) Palette.Success else Palette.Accent))
+        Box(Modifier.fillMaxWidth().height(2.dp).background(ThreadPalette.SurfaceHigh)) {
+            Box(Modifier.fillMaxWidth(fraction).height(2.dp).background(if (plan.allDone) ThreadPalette.Success else ThreadPalette.Accent))
         }
         if (isOpen && plan.steps.isNotEmpty()) {
             Column(
@@ -1702,9 +1704,9 @@ private fun StickyPlanBar(plan: ActivePlan, isOpen: Boolean, onToggle: () -> Uni
                             style = LocalOfficeType.current.monoBody.copy(
                                 fontSize = 12.sp,
                                 color = when {
-                                    s.done -> Palette.Success
-                                    s.active -> Palette.Accent
-                                    else -> Palette.TextTertiary
+                                    s.done -> ThreadPalette.Success
+                                    s.active -> ThreadPalette.Accent
+                                    else -> ThreadPalette.TextTertiary
                                 },
                             ),
                             modifier = Modifier.width(18.dp).clearAndSetSemantics {
@@ -1717,7 +1719,7 @@ private fun StickyPlanBar(plan: ActivePlan, isOpen: Boolean, onToggle: () -> Uni
                                 fontSize = 12.5.sp,
                                 lineHeight = 18.sp,
                                 fontWeight = if (s.active) FontWeight.Medium else FontWeight.Normal,
-                                color = if (s.active) Palette.Text else Palette.TextSecondary,
+                                color = if (s.active) ThreadPalette.Text else ThreadPalette.TextSecondary,
                                 textDecoration = if (s.done) TextDecoration.LineThrough else null,
                             ),
                         )
@@ -1740,7 +1742,7 @@ private fun ActionRow(a: ThreadModelAction, entry: ThreadEntry?, open: Boolean, 
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (a.state == ActivityState.Working) {
-                Spinner(Modifier.size(10.dp), Palette.Accent)
+                Spinner(Modifier.size(10.dp), ThreadPalette.Accent)
                 Spacer(Modifier.width(10.dp))
             }
             Column(Modifier.weight(1f)) {
@@ -1749,23 +1751,23 @@ private fun ActionRow(a: ThreadModelAction, entry: ThreadEntry?, open: Boolean, 
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontSize = 13.sp, lineHeight = 18.sp,
                         color = when (a.state) {
-                            ActivityState.Working -> Palette.Text
-                            else -> Palette.TextSecondary
+                            ActivityState.Working -> ThreadPalette.Text
+                            else -> ThreadPalette.TextSecondary
                         },
                     ),
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
                 a.detail?.let {
-                    Text(it, style = LocalOfficeType.current.monoBody.copy(fontSize = 11.sp, lineHeight = 15.sp, color = Palette.TextSecondary), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(it, style = LocalOfficeType.current.monoBody.copy(fontSize = 11.sp, lineHeight = 15.sp, color = ThreadPalette.TextSecondary), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             if (a.status.isNotEmpty()) {
                 Text(
-                    a.status.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = Palette.TextSecondary),
+                    a.status.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary),
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
-            Icon(OfficeIcons.Chevron, null, Modifier.padding(start = 8.dp).size(13.dp).rotate(if (open) 90f else 0f), tint = Palette.TextSecondary)
+            Icon(OfficeIcons.Chevron, null, Modifier.padding(start = 8.dp).size(13.dp).rotate(if (open) 90f else 0f), tint = ThreadPalette.TextSecondary)
         }
         if (open) {
             ActionDetailsBody(a, entry, Modifier.padding(start = 22.dp, top = 2.dp, bottom = 10.dp))
@@ -1786,19 +1788,19 @@ private fun ThoughtRow(t: ThreadBlock.Thought, text: String, open: Boolean, onTo
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (t.live) {
-                Spinner(Modifier.size(10.dp), Palette.Accent)
+                Spinner(Modifier.size(10.dp), ThreadPalette.Accent)
                 Spacer(Modifier.width(8.dp))
             }
-            Text("Thought", style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = Palette.TextSecondary), maxLines = 1, softWrap = false)
+            Text("Thought", style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, color = ThreadPalette.TextSecondary), maxLines = 1, softWrap = false)
             Box(Modifier.weight(1f)) {
                 if (!open) {
                     Text(
-                        t.preview, style = MaterialTheme.typography.bodySmall.copy(color = Palette.TextTertiary),
+                        t.preview, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextTertiary),
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp),
                     )
                 }
             }
-            Icon(OfficeIcons.Chevron, null, Modifier.padding(start = 8.dp).size(13.dp).rotate(if (open) 90f else 0f), tint = Palette.TextSecondary)
+            Icon(OfficeIcons.Chevron, null, Modifier.padding(start = 8.dp).size(13.dp).rotate(if (open) 90f else 0f), tint = ThreadPalette.TextSecondary)
         }
         if (open) {
             SelectionContainer {
@@ -1813,7 +1815,7 @@ private fun ThoughtRow(t: ThreadBlock.Thought, text: String, open: Boolean, onTo
 
 @Composable
 private fun Plan(tag: String, steps: List<PlanStep>) {
-    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp).tagged(tag)) {        Eyebrow("Plan · ${steps.count { it.done }} of ${steps.size} done", Modifier.padding(bottom = 4.dp), color = Palette.TextSecondary)
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp).tagged(tag)) {        Eyebrow("Plan · ${steps.count { it.done }} of ${steps.size} done", Modifier.padding(bottom = 4.dp), color = ThreadPalette.TextSecondary)
         for (s in steps) {
             Row(Modifier.padding(vertical = 2.dp)) {
                 // Marks, not arrows: a › here would read as something to open. Said as the web says them.
@@ -1823,7 +1825,7 @@ private fun Plan(tag: String, steps: List<PlanStep>) {
                         s.active -> "●"
                         else -> "○"
                     },
-                    style = LocalOfficeType.current.monoBody.copy(fontSize = 12.sp, color = if (s.active) Palette.Accent else Palette.TextTertiary),
+                    style = LocalOfficeType.current.monoBody.copy(fontSize = 12.sp, color = if (s.active) ThreadPalette.Accent else ThreadPalette.TextTertiary),
                     modifier = Modifier.width(18.dp).clearAndSetSemantics { contentDescription = if (s.done) "Done" else if (s.active) "Now" else "Next" },
                 )
                 Text(
@@ -1831,9 +1833,9 @@ private fun Plan(tag: String, steps: List<PlanStep>) {
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontSize = 13.sp,
                         color = when {
-                            s.done -> Palette.TextSecondary
-                            s.active -> Palette.Text
-                            else -> Palette.TextSecondary
+                            s.done -> ThreadPalette.TextSecondary
+                            s.active -> ThreadPalette.Text
+                            else -> ThreadPalette.TextSecondary
                         },
                         textDecoration = if (s.done) TextDecoration.LineThrough else null,
                     ),
@@ -1845,13 +1847,13 @@ private fun Plan(tag: String, steps: List<PlanStep>) {
 
 @Composable
 private fun Mono(label: String, body: String, color: Color) {
-    Eyebrow(label, color = Palette.TextSecondary)
+    Eyebrow(label, color = ThreadPalette.TextSecondary)
     val shown = if (body.length > SHOWN_CHARS) body.take(SHOWN_CHARS) else body
-    CodeScroll(Palette.Bg) { scroll ->
+    CodeScroll(ThreadPalette.Bg) { scroll ->
         SelectionContainer {
             Text(
                 shown, style = LocalOfficeType.current.monoBody.copy(fontSize = 11.5.sp, lineHeight = 16.sp, color = color), softWrap = false,
-                modifier = scroll.background(Palette.Bg, RoundedCornerShape(3.dp)).padding(horizontal = 10.dp, vertical = 8.dp),
+                modifier = scroll.background(ThreadPalette.Bg, RoundedCornerShape(3.dp)).padding(horizontal = 10.dp, vertical = 8.dp),
             )
         }
     }
@@ -1862,10 +1864,10 @@ private fun Mono(label: String, body: String, color: Color) {
 @Composable
 private fun NeedsTty(name: String, question: String, onTty: () -> Unit) {
     Column(
-        Modifier.fillMaxWidth().panel(RoundedCornerShape(4.dp), Palette.Danger.copy(alpha = 0.07f), Palette.Danger.copy(alpha = 0.4f))
+        Modifier.fillMaxWidth().panel(RoundedCornerShape(4.dp), ThreadPalette.Danger.copy(alpha = 0.07f), ThreadPalette.Danger.copy(alpha = 0.4f))
             .tagged(Tags.Asks.CARD).padding(12.dp),
     ) {
-        Eyebrow("${name.ifBlank { "Droid" }} needs your answer", color = Palette.Danger)
+        Eyebrow("${name.ifBlank { "Droid" }} needs your answer", color = ThreadPalette.Danger)
         Text(question, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 6.dp).tagged(Tags.Asks.QUESTION))
         Text(
             "The phone can't read this question off the terminal. Answer it in Raw TTY.",
@@ -1884,7 +1886,7 @@ private fun NeedsTty(name: String, question: String, onTty: () -> Unit) {
 @Composable
 internal fun ThreadWaiting(w: WorkerInfo, onTty: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 10.dp).panel(RoundedCornerShape(4.dp), Palette.Surface, Palette.BorderStrong)
+        Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 10.dp).panel(RoundedCornerShape(4.dp), ThreadPalette.Surface, ThreadPalette.BorderStrong)
             .tagged(Tags.Worker.THREAD_WAITING).padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

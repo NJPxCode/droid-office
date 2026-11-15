@@ -53,6 +53,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -99,6 +100,7 @@ import ai.factory.droidoffice.core.SlashCommands
 import ai.factory.droidoffice.core.Tags
 import ai.factory.droidoffice.core.TermSize
 import ai.factory.droidoffice.core.TermView
+import ai.factory.droidoffice.core.ThreadFeed
 import ai.factory.droidoffice.core.ThreadQueue
 import ai.factory.droidoffice.core.WorkerInfo
 import ai.factory.droidoffice.core.WorkerLinkView
@@ -137,6 +139,7 @@ import ai.factory.droidoffice.ui.home.rememberNow
 import ai.factory.droidoffice.ui.theme.LocalOfficeType
 import ai.factory.droidoffice.ui.theme.OfficeIcons
 import ai.factory.droidoffice.ui.theme.Palette
+import ai.factory.droidoffice.ui.theme.ThreadPalette
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -294,6 +297,10 @@ fun WorkerScreen(
             else -> null
         }
         var ttyChoice by rememberSaveable(workerId, initialView, openQuestion, launchId) { mutableStateOf<Boolean?>(initialTtyChoice) }
+        // Raw TTY takes the Thread out of composition: its saved state (place, follow, what's open) and
+        // its loaded feed wait here, so switching back shows the same conversation where it was left.
+        val threadStates = rememberSaveableStateHolder()
+        val threadFeeds = remember(workerId) { mutableMapOf<String, ThreadFeed>() }
         var directInput by rememberSaveable(workerId) { mutableStateOf(false) }
         var composerFocus by remember(workerId) { mutableIntStateOf(0) }
         var sent by remember(workerId) { mutableIntStateOf(0) }
@@ -412,7 +419,7 @@ fun WorkerScreen(
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 // Text selected in the conversation can be quoted into the reply while the composer shows.
                 val quotable = composing && blocked == null && worker.state != WorkerStatus.NeedsInput
-                ProvideFilePreview(worker) { QuoteSelections(quotable, onQuote = { quote = it }) {
+                ProvideFilePreview(worker) { QuoteSelections(quotable, onQuote = { quote = it }) { threadStates.SaveableStateProvider("thread/$workerId") {
                     Thread(
                         worker, screen, live && link.phase == Phase.Connected, link.phase == Phase.Connected,
                         Modifier.fillMaxSize(),
@@ -422,8 +429,9 @@ fun WorkerScreen(
                         followRequest = sent,
                         rawTty = !cloud,
                         onOpenWorker = openSubagent,
+                        feeds = threadFeeds,
                     )
-                } }
+                } } }
             }
         } else Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 10.dp)) {
             Terminal(
@@ -444,7 +452,7 @@ fun WorkerScreen(
             val density = LocalDensity.current
             DisposableEffect(lift) { onDispose { lift.value = null } }
             // Snackbars rise above the quick keys and the composer instead of covering them.
-            Column(Modifier.onSizeChanged { lift.value = with(density) { it.height.toDp() } + 8.dp }) {
+            Column(Modifier.background(if (tty) Palette.Bg else ThreadPalette.Bg).onSizeChanged { lift.value = with(density) { it.height.toDp() } + 8.dp }) {
                 if (!worker.isCloud && tty) {
                     QuickKeyRow(
                         workerId, worker.isShell, phone, directInput, link.phase == Phase.Connected, kittyFlags,
