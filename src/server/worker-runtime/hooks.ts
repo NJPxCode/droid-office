@@ -87,7 +87,8 @@ export class WorkerHooks {
       w.info.sessionId = session;
       if (w.info.activity === COMPACTING) w.info.activity = undefined;
     } else if (event === 'SessionStart') {
-      if ((w.info.sessionId && w.info.sessionId !== session) || report.source === 'clear') this.clearTask(w, report.source === 'clear');
+      // A rewind forks the session to continue the same task; /clear and other forks start a new one.
+      if (!w.rewind && ((w.info.sessionId && w.info.sessionId !== session) || report.source === 'clear')) this.clearTask(w, report.source === 'clear');
       w.info.sessionId = session;
       w.pendingFork = undefined;
       w.subSessions.clear();

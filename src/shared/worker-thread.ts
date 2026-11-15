@@ -23,6 +23,14 @@ export interface ThreadEntry {
   resultSeq?: number;
   /** Pictures in a tool's result or a message; `output` and `text` still say `[Image attachment]` for each. */
   images?: ThreadImage[];
+  /** When its record was written (epoch ms). */
+  at?: number;
+  /** A tool's: when its result was written. */
+  doneAt?: number;
+  /** A thought's: how long the model took on the message it came in, from the record before it. */
+  tookMs?: number;
+  /** A Task call's: the session of the subagent it started (`thread.read` with `child`). */
+  child?: string;
 }
 
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;

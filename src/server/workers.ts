@@ -13,6 +13,8 @@ import { OFFICE_SHELL_ID } from '../shared/office-shell.js';
 import { withImages } from '../shared/drops.js';
 import { readDroidQueue } from '../shared/droid-queue.js';
 import { detectBlockingTool, type BlockingToolState, type WorkerQueueState } from './worker-queue.js';
+import type { ThreadLiveInputs } from './thread-live.js';
+import { driveDroidRewind, type RewindDriveTarget } from './worker-rewind.js';
 import { countCtrlEnterInputs, isCancelInput, isClearQueueInput } from '../shared/kitty.js';
 import { WORKSPACE_FILES, WORKTREES_DIR, Worktrees, describeWork, workspaceOf, type WorktreeCleanup, type WorktreeRef, type WorktreeStart, type WorktreeState } from './worktrees.js';
 import { checkoutDirty, choosePullBase, pushBranch } from './open-pull.js';
@@ -528,6 +530,24 @@ export class WorkerManager {
     const info = w?.info;
     if (!w || info?.kind !== 'agent' || info.cloud || !info.sessionId) return undefined;
     return { sessionId: info.sessionId, cwd: this.cwd(info), drops: this.drops.folder(id), ...(w.transcript ? { transcript: w.transcript } : {}) };
+  }
+
+  /** The local inputs of its live Thread, read when a watched terminal or conversation changes. */
+  threadLive(id: string): ThreadLiveInputs | undefined {
+    const w = this.workers.get(id);
+    const info = w?.info;
+    if (!w || info?.kind !== 'agent' || info.cloud || info.remote) return undefined;
+    return {
+      ...(info.sessionId ? { sessionId: info.sessionId } : {}),
+      status: info.status,
+      ...(info.workingSince ? { workingSince: info.workingSince } : {}),
+      ...(info.activity ? { activity: info.activity } : {}),
+      ...(info.ask ? { ask: info.ask } : {}),
+      ...(w.asking ? { asking: w.asking } : {}),
+      activeTool: w.activeTool,
+      ...(w.term ? { screen: screenRows(w.term) } : {}),
+      ...(w.rewind ? { rewind: w.rewind } : {}),
+    };
   }
 
   /** Whether the worker is in a turn, so its newest Thread activity can still be working. */
@@ -1675,6 +1695,24 @@ export class WorkerManager {
   }
 
   /** Clears all pending messages, or the single 1-based item. */
+  /** Drives Droid's rewind picker while holding this worker's one-rewind-at-a-time guard. */
+  async rewind(id: string, entryId: string, target: RewindDriveTarget, restore: 'files' | 'conversation'): Promise<{ ok: boolean; error?: string }> {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'No such worker' };
+    if (w.info.kind !== 'agent' || w.info.cloud || w.info.remote) return { ok: false, error: `${w.info.name} has no local conversation to rewind` };
+    if (w.rewind) return { ok: false, error: `${w.info.name} is already rewinding its conversation` };
+    if (w.info.status === 'working' || w.info.status === 'starting' || w.info.status === 'needs_input') return { ok: false, error: `${w.info.name} is busy. Wait for its turn and any question to finish before rewinding.` };
+    if (!w.pty || !w.term) return { ok: false, error: `${w.info.name} is not running` };
+    w.rewind = { entryId, since: Date.now() };
+    try {
+      this.events.update(w.info);
+      return await driveDroidRewind({ write: (data) => w.pty?.write(data), rows: () => (w.term ? screenRows(w.term) : undefined) }, target, restore);
+    } finally {
+      w.rewind = undefined;
+      this.events.update(w.info);
+    }
+  }
+
   clearQueue(id: string, index?: number) {
     return this.delivery.clearQueue(id, index);
   }

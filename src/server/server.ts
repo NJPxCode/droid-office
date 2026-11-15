@@ -62,6 +62,7 @@ import { RenderEngine } from './whiteboard-render.js';
 import { officePrompt } from './prompts.js';
 import { Answers } from './answers.js';
 import { ThreadWatchHub } from './thread-watch.js';
+import { ThreadLiveTracker } from './thread-live.js';
 import { WorkerThreadReader } from './worker-thread.js';
 import { WorkerLabels } from './worker-labels.js';
 import { LabelModelError, openAiLabel, WorkerLabelModel } from './worker-label-model.js';
@@ -152,6 +153,7 @@ export async function startServer(cfg: Config) {
   const { sendTo, broadcast, toFloor, termData, clearOffFloorThrottle, broadcastOffFloorScreen } = transport;
   const workerThreads = new WorkerThreadReader();
   let threadWatches: ThreadWatchHub | undefined;
+  const threadLive = new ThreadLiveTracker();
   /** The office Mac's trackpad taps for a charging shot; a silent no-op off macOS (see haptics.ts). */
   const trackpadHaptics = new TrackpadHaptics();
   /** The droid every floor runs, by absolute path; null until it's installed (Setup sets it then). */
@@ -364,7 +366,10 @@ export async function startServer(cfg: Config) {
       missionChanged();
     },
     data: termData,
-    screen: (workerId, frame) => broadcast({ t: 'screen', workerId, ...frame }, undefined, true),
+    screen: (workerId, frame) => {
+      threadWatches?.screenChanged(workerId);
+      broadcast({ t: 'screen', workerId, ...frame }, undefined, true);
+    },
     toast: (text, level) => toastAll(text, level),
   });
   /** A worker's own manager: its floor's, or the Orchestrator's. */
@@ -546,6 +551,15 @@ export async function startServer(cfg: Config) {
       };
     },
     readCloud: (workerId) => (setup.state().airgapped ? undefined : cloud.thread(workerId)),
+    live: async (workerId, entries, session) => {
+      const manager = workerId === ORCHESTRATOR_ID ? orchestrator.workers : workerFloor(workerId)?.workers;
+      const inputs = manager?.threadLive(workerId);
+      if (!inputs) return undefined;
+      inputs.modelName = (id) => droidModels.peek()?.models.find((m) => m.id === id)?.displayName;
+      const source = session ?? manager?.threadSession(workerId);
+      const file = source?.transcript ?? (source ? (await workerThreads.sessionPaths(source))?.file : undefined);
+      return (await threadLive.compute(workerId, inputs, entries, file)).live;
+    },
     send: (clientId, msg) => {
       const target = clients.get(clientId);
       if (target) sendTo(target, msg);
@@ -720,6 +734,7 @@ export async function startServer(cfg: Config) {
       missionChanged();
     },
     offFloorScreen: broadcastOffFloorScreen,
+    screenChanged: (workerId) => threadWatches?.screenChanged(workerId),
     connections: (floor) => {
       let n = 0;
       for (const c of clients.values()) if (c.floor === floor.id) n++;
@@ -1326,23 +1341,27 @@ export async function startServer(cfg: Config) {
         case 'thread.read': {
           const request = str(msg.request, 128);
           const before = typeof msg.before === 'number' ? msg.before : undefined;
-          const reply = { t: 'thread.snapshot' as const, workerId: ORCHESTRATOR_ID, request, ...(before !== undefined ? { before } : {}) };
+          const child = str(msg.child, 160) || undefined;
+          const reply = { t: 'thread.snapshot' as const, workerId: ORCHESTRATOR_ID, request, ...(before !== undefined ? { before } : {}), ...(child ? { child } : {}) };
           const none = (error: string) => sendTo(c, { ...reply, entries: [], hasMore: false, error });
           const source = orch.threadSession(ORCHESTRATOR_ID);
           const busy = orch.threadBusy(ORCHESTRATOR_ID);
           if (msg.before !== undefined && (before === undefined || !Number.isSafeInteger(before) || before < 0)) none('Invalid conversation page.');
           else if (!source) none('The Orchestrator has no conversation yet.');
           else
-            void workerThreads.read(source, before, busy).then((page) => {
+            void (async () => {
+              const selected = child ? await workerThreads.childSession(source, child) : source;
+              if (!selected) return none('That subagent conversation does not belong to the Orchestrator.');
+              const page = await workerThreads.read(selected, before, busy);
               if (orch.threadSession(ORCHESTRATOR_ID)?.sessionId !== source.sessionId) return none('The Orchestrator’s conversation changed. Read the thread again.');
-              if (before === undefined) threadWatches?.seed(ORCHESTRATOR_ID, page, busy);
+              if (before === undefined) threadWatches?.seed(ORCHESTRATOR_ID, page, busy, child);
               sendTo(c, { ...reply, ...page });
-            });
+            })();
           return unanswered();
         }
         case 'thread.watch':
           if (typeof msg.on !== 'boolean') return stop('Send {"on": true} or {"on": false}.');
-          threadWatches?.watch(c.id, ORCHESTRATOR_ID, msg.on);
+          threadWatches?.watch(c.id, ORCHESTRATOR_ID, msg.on, str(msg.child, 160) || undefined);
           return done(undefined, ORCHESTRATOR_ID);
         default:
           return done('The Orchestrator works from Mission Control: it has no desk, worktree or changes of its own.');
@@ -1775,16 +1794,17 @@ export async function startServer(cfg: Config) {
         const workerId = str(msg.workerId, 32);
         const request = str(msg.request, 128);
         const before = typeof msg.before === 'number' ? msg.before : undefined;
+        const child = str(msg.child, 160) || undefined;
         const cloudOwner = cloud.find(workerId);
         const floor = workerFloor(workerId) ?? (cloudOwner ? floors.get(cloudOwner.floor.id) : undefined) ?? floorOf(c);
         const source = floor?.workers.threadSession(workerId);
-        const reply = { t: 'thread.snapshot' as const, workerId, request, ...(before !== undefined ? { before } : {}) };
+        const reply = { t: 'thread.snapshot' as const, workerId, request, ...(before !== undefined ? { before } : {}), ...(child ? { child } : {}) };
         if (msg.before !== undefined && (before === undefined || !Number.isSafeInteger(before) || before < 0)) {
           sendTo(c, { ...reply, entries: [], hasMore: false, error: 'Invalid conversation page.' });
           break;
         }
         // A cloud worker's thread is its Factory session's messages (factory/cloud-thread.ts).
-        const remote = floor && cloudOwner?.floor.id === floor.id ? cloud.thread(workerId, before) : undefined;
+        const remote = !child && floor && cloudOwner?.floor.id === floor.id ? cloud.thread(workerId, before) : undefined;
         if (remote && floor) {
           const sessionId = cloudOwner?.info.sessionId;
           void remote.then((page) => {
@@ -1803,22 +1823,97 @@ export async function startServer(cfg: Config) {
           break;
         }
         const busy = floor.workers.threadBusy(workerId);
-        void workerThreads.read(source, before, busy).then((page) => {
+        void (async () => {
+          const selected = child ? await workerThreads.childSession(source, child) : source;
+          if (!selected) {
+            sendTo(c, { ...reply, entries: [], hasMore: false, error: 'That subagent conversation does not belong to this worker.' });
+            return;
+          }
+          const page = await workerThreads.read(selected, before, busy);
           const current = floor.workers.threadSession(workerId);
           if (floors.get(floor.id) !== floor || current?.sessionId !== source.sessionId || current.cwd !== source.cwd) {
             sendTo(c, { ...reply, entries: [], hasMore: false, error: 'The active floor or worker session changed. Read the thread again.' });
             return;
           }
-          if (before === undefined) threadWatches?.seed(workerId, page, busy);
+          if (before === undefined) threadWatches?.seed(workerId, page, busy, child);
           sendTo(c, { ...reply, ...page });
-        });
+        })();
         break;
       }
       case 'thread.watch': {
         if (typeof msg.on !== 'boolean') return stop('Send {"on": true} or {"on": false}.');
         const workerId = str(msg.workerId, 32);
-        if (workerId) threadWatches?.watch(c.id, workerId, msg.on);
+        if (workerId) threadWatches?.watch(c.id, workerId, msg.on, str(msg.child, 160) || undefined);
         done(undefined, workerId || undefined);
+        break;
+      }
+      case 'worker.queue': {
+        const w = worker(msg.workerId);
+        if (!w) return done('No such worker');
+        const action = msg.action;
+        if (action !== 'promote' && action !== 'delete' && action !== 'clear') return stop('Unknown queue action.');
+        let index = typeof msg.index === 'number' && Number.isSafeInteger(msg.index) && msg.index > 0 ? msg.index : undefined;
+        const text = str(msg.text, 20000) || undefined;
+        const group = msg.group === 'steering' || msg.group === 'queued' ? msg.group : undefined;
+        const items = w.floor.workers.queueState(w.wid)?.items ?? [];
+        if (text) {
+          const matches = items.filter((item) => item.text === text);
+          if (index === undefined && matches.length === 1) index = matches[0].index;
+          const selected = items.find((item) => item.index === index);
+          if (!selected || selected.text !== text) return stop('That queued message changed. Read the queue again.');
+        }
+        if (group) {
+          const selected = items.find((item) => item.index === index);
+          const delivery = group === 'queued' ? 'after_turn' : 'steering';
+          if (!selected || selected.delivery !== delivery) return stop('That queued message changed groups. Read the queue again.');
+        }
+        if (action !== 'clear' && index === undefined) return stop('Choose a queued message first.');
+        void (async () => {
+          const result = action === 'promote' ? await w.floor.workers.promoteQueue(w.wid, { index }) : await w.floor.workers.clearQueue(w.wid, action === 'delete' ? index : undefined);
+          if (result.error) return refuse(result.error);
+          done(undefined, w.wid);
+        })();
+        break;
+      }
+      case 'worker.rewind': {
+        const w = worker(msg.workerId);
+        const entryId = str(msg.entryId, 180);
+        const restore = msg.restore === 'files' ? 'files' : 'conversation';
+        const reply = (ok: boolean, error?: string, text?: string) => {
+          const sessionId = w?.floor.workers.threadSession(w.wid)?.sessionId;
+          sendTo(c, { t: 'worker.rewound', workerId: w?.wid ?? str(msg.workerId, 32), entryId, ok, ...(sessionId ? { sessionId } : {}), ...(text ? { text } : {}), ...(error ? { error } : {}) });
+        };
+        if (!w || !entryId) {
+          const error = 'No such worker or conversation entry.';
+          reply(false, error);
+          return stop(error);
+        }
+        const source = w.floor.workers.threadSession(w.wid);
+        if (!source) {
+          const error = `${w.info.name} has no conversation to rewind.`;
+          reply(false, error);
+          return refuse(error);
+        }
+        void (async () => {
+          const point = await workerThreads.rewindPoint(source, entryId);
+          if (!point) {
+            const error = 'That user message is no longer in the active conversation.';
+            reply(false, error);
+            refuse(error);
+            return;
+          }
+          threadWatches?.notifyWorker(w.wid);
+          const result = await w.floor.workers.rewind(w.wid, entryId, point, restore);
+          threadWatches?.notifyWorker(w.wid);
+          if (!result.ok) {
+            const error = `Failed to rewind conversation: ${result.error ?? 'Droid did not finish the rewind.'}`;
+            reply(false, error);
+            refuse(error);
+            return;
+          }
+          reply(true, undefined, point.preview);
+          done(undefined, w.wid);
+        })();
         break;
       }
       case 'worker.interrupt': {

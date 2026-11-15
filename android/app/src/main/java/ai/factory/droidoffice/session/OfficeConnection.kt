@@ -272,6 +272,12 @@ class OfficeConnection(
     /** Pages of workers' conversations, each answering one `thread.read`; a [ai.factory.droidoffice.core.ThreadFeed] keeps the ones it asked for. */
     val threads: SharedFlow<ServerMsg.ThreadSnapshot> = _threads.asSharedFlow()
 
+    private val _threadLives = MutableSharedFlow<ServerMsg.ThreadLiveUpdate>(extraBufferCapacity = 32)
+    val threadLives: SharedFlow<ServerMsg.ThreadLiveUpdate> = _threadLives.asSharedFlow()
+
+    private val _workerRewounds = MutableSharedFlow<ServerMsg.WorkerRewound>(extraBufferCapacity = 8)
+    val workerRewounds: SharedFlow<ServerMsg.WorkerRewound> = _workerRewounds.asSharedFlow()
+
     private val boardWatchers = HashSet<String>()
     private var whiteboard = newWhiteboard()
 
@@ -863,6 +869,8 @@ class OfficeConnection(
             is ServerMsg.Whiteboard -> whiteboard.handle(msg.t, msg.obj)
             is ServerMsg.Pinged -> _pinged.tryEmit(msg.result)
             is ServerMsg.ThreadSnapshot -> _threads.tryEmit(msg)
+            is ServerMsg.ThreadLiveUpdate -> _threadLives.tryEmit(msg)
+            is ServerMsg.WorkerRewound -> _workerRewounds.tryEmit(msg)
             is ServerMsg.ActionResult -> actionRequests.remove(msg.requestId)?.complete(msg)
             is ServerMsg.Pong, is ServerMsg.Ignored -> Unit
         }

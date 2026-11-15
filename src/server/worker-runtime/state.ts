@@ -94,6 +94,8 @@ export interface Worker {
   setupDoneAt?: number;
   /** Until SessionStart gives the twin its own id, restarts must fork, never resume the source. */
   pendingFork?: { sessionId: string; prompt?: string };
+  /** The rewind the office is driving in this terminal (worker.rewind). */
+  rewind?: { entryId: string; since: number };
 }
 
 /** Cut off if it stopped now. A turn that already sent its Stop has finished, even before its screen confirms it. */

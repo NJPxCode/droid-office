@@ -84,6 +84,8 @@ export interface FloorContext {
   workerChanged(floor: Floor, w: WorkerInfo | string): void;
   /** A worker needing input updated its terminal screen, so off-floor companions keep its menu live. */
   offFloorScreen?(floor: Floor, workerId: string): void;
+  /** A local worker repainted: its watched Thread's live output may have moved without a hook. */
+  screenChanged?(workerId: string): void;
   /** How many owner connections are on this floor right now. */
   connections(floor: Floor): number;
   /** ⚙️ Settings: a worker whose pull request merged goes home by itself. */
@@ -309,6 +311,7 @@ export class Floor {
         },
         data: (workerId, data, connectionIds) => ctx.termData(workerId, data, connectionIds),
         screen: (workerId, frame) => {
+          ctx.screenChanged?.(workerId);
           const dropped = ctx.emit(this, { t: 'screen', workerId, ...frame }, true);
           if (this.workers.get(workerId)?.status === 'needs_input') ctx.offFloorScreen?.(this, workerId);
           return dropped;

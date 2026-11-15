@@ -294,7 +294,13 @@ sealed interface ServerMsg {
         val presentation: ThreadPresentation? = null,
         /** Sent unprompted while `thread.watch` is active for [workerId]. */
         val push: Boolean = false,
+        /** The subagent session this page answers, when thread.read/watch named one. */
+        val child: String? = null,
     ) : ServerMsg
+    /** A watched local worker's live turn state; each one replaces the last by rev. */
+    data class ThreadLiveUpdate(val workerId: String, val sessionId: String?, val live: ThreadLive) : ServerMsg
+    /** The result of ClientMsg.rewind; text is the rewound prompt for the composer. */
+    data class WorkerRewound(val workerId: String, val entryId: String, val ok: Boolean, val sessionId: String?, val text: String?, val error: String?) : ServerMsg
     data class Ignored(val t: String) : ServerMsg
 }
 
@@ -363,6 +369,8 @@ object Protocol {
         "whiteboard", "whiteboard.rendered", "whiteboard.renderer" -> ServerMsg.Whiteboard(t, o)
         "whiteboard.pinged" -> WbPinged.of(o)?.let { ServerMsg.Pinged(it) } ?: ServerMsg.Ignored(t)
         "thread.snapshot" -> threadSnapshot(o) ?: ServerMsg.Ignored(t)
+        "thread.live" -> ThreadLive.of(o["live"])?.let { live -> ServerMsg.ThreadLiveUpdate(o.str("workerId").orEmpty(), o.str("sessionId"), live) } ?: ServerMsg.Ignored(t)
+        "worker.rewound" -> ServerMsg.WorkerRewound(o.str("workerId").orEmpty(), o.str("entryId").orEmpty(), o.bool("ok") == true, o.str("sessionId"), o.str("text"), o.str("error"))
         "action.result" -> ServerMsg.ActionResult(o.str("requestId").orEmpty(), o.bool("ok") == true, o.str("error"))
         else -> ServerMsg.Ignored(t)
     }
@@ -419,6 +427,7 @@ object Protocol {
             request = request,
             before = o.long("before") ?: (o["before"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()?.toLong(),
             sessionId = o.str("sessionId")?.takeIf { it.isNotEmpty() },
+            child = o.str("child")?.takeIf { it.isNotEmpty() },
             entries = (o["entries"] as? JsonArray)?.mapNotNull(ThreadEntry::of).orEmpty(),
             hasMore = o.bool("hasMore") ?: false,
             error = o.str("error")?.takeIf { it.isNotBlank() },
@@ -525,16 +534,35 @@ object ClientMsg {
     }
 
     /** The latest page of a worker's conversation, or the page before seq [before]; [request] comes back on the answer. */
-    fun threadRead(workerId: String, request: String, before: Long? = null) = obj("thread.read") {
+    fun threadRead(workerId: String, request: String, before: Long? = null, child: String? = null) = obj("thread.read") {
         put("workerId", workerId)
         put("request", request)
         if (before != null) put("before", before)
+        child?.let { put("child", it) }
     }
 
-    /** Subscribes ([on] true) or unsubscribes ([on] false) to server-pushed latest `thread.snapshot` updates for [workerId]. */
-    fun threadWatch(workerId: String, on: Boolean) = obj("thread.watch") {
+    /** Subscribes ([on] true) or unsubscribes ([on] false) to snapshots and live state, optionally for one subagent. */
+    fun threadWatch(workerId: String, on: Boolean, child: String? = null) = obj("thread.watch") {
         put("workerId", workerId)
         put("on", on)
+        child?.let { put("child", it) }
+    }
+
+    /** Send now, remove, or clear Droid's pending messages; index is 1-based when one item is chosen. */
+    fun queueAction(workerId: String, action: String, index: Int? = null, group: String? = null, text: String? = null) = obj("worker.queue") {
+        require(action == "promote" || action == "delete" || action == "clear")
+        put("workerId", workerId)
+        put("action", action)
+        index?.let { put("index", it) }
+        group?.let { put("group", it) }
+        text?.let { put("text", it) }
+    }
+
+    /** Rewind before a user ThreadEntry. restore true restores files; false keeps them as they are. */
+    fun rewind(workerId: String, entryId: String, restore: Boolean) = obj("worker.rewind") {
+        put("workerId", workerId)
+        put("entryId", entryId)
+        put("restore", if (restore) "files" else "conversation")
     }
 
     fun attach(workerId: String) = obj("worker.attach") { put("workerId", workerId) }
