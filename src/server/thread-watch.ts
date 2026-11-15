@@ -48,7 +48,7 @@ interface WorkerWatch {
   again: boolean;
   closed: boolean;
   lastDigest?: string;
-  liveRev?: number;
+  liveRevs: Map<string, number>;
 }
 
 const MISSING_POLL_MIN_MS = 250;
@@ -118,6 +118,7 @@ export class ThreadWatchHub {
         workerId,
         ...(child ? { child } : {}),
         clients: new Set(),
+        liveRevs: new Map(),
         reading: false,
         again: false,
         closed: false,
@@ -202,6 +203,7 @@ export class ThreadWatchHub {
     const entry = this.byWorker.get(key);
     if (!entry) return;
     entry.clients.delete(clientId);
+    entry.liveRevs.delete(clientId);
     if (!entry.clients.size) {
       this.teardown(entry);
       this.byWorker.delete(key);
@@ -407,10 +409,13 @@ export class ThreadWatchHub {
   private async pushLive(entry: WorkerWatch, page: ThreadPage, session?: ThreadSession): Promise<void> {
     if (entry.child || !this.opts.live) return;
     const live = await this.opts.live(entry.workerId, page.entries, session);
-    if (!live || live.rev === entry.liveRev || this.stopped || entry.closed || !entry.clients.size) return;
-    entry.liveRev = live.rev;
+    if (!live || this.stopped || entry.closed || !entry.clients.size) return;
     const msg: ThreadLivePushMsg = { t: 'thread.live', workerId: entry.workerId, ...(page.sessionId ? { sessionId: page.sessionId } : {}), live };
-    for (const clientId of entry.clients) this.opts.send(clientId, msg);
+    for (const clientId of entry.clients) {
+      if (entry.liveRevs.get(clientId) === live.rev) continue;
+      entry.liveRevs.set(clientId, live.rev);
+      this.opts.send(clientId, msg);
+    }
   }
 
   private push(entry: WorkerWatch, page: ThreadPage): void {

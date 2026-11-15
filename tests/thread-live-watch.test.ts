@@ -61,6 +61,49 @@ test('watch starts with idle live settings and a repaint pushes a changed live s
   await waitUntil(() => sent.some((msg) => msg.t === 'thread.live' && msg.live.rev === 2));
 });
 
+test('new and returning clients receive unchanged live settings without duplicating existing clients', async (t) => {
+  const page = { sessionId: 'session-one', entries: [], hasMore: false };
+  let computations = 0;
+  const sent: { clientId: string; msg: ThreadWatchMsg }[] = [];
+  const target: WatchedThreadTarget = { kind: 'local', floorId: null, busy: false, local: { sessionId: page.sessionId, cwd: '/tmp/thread-live-watch' } };
+  const hub = new ThreadWatchHub({
+    workerThreads: {
+      read: async () => page,
+      sessionPaths: async () => undefined,
+      sessionPathsSync: () => undefined,
+      childSession: async () => undefined,
+    },
+    resolveWorker: () => target,
+    live: async () => {
+      computations++;
+      return liveState(1);
+    },
+    send: (clientId, msg) => sent.push({ clientId, msg }),
+    localCoalesceMs: 1,
+  });
+  t.after(() => hub.close());
+  const deliveries = (clientId: string) => sent.filter((event) => event.clientId === clientId && event.msg.t === 'thread.live');
+  hub.watch('android', 'worker', true);
+  await waitUntil(() => deliveries('android').length === 1);
+  hub.watch('web', 'worker', true);
+  await waitUntil(() => deliveries('web').length === 1);
+  assert.equal(deliveries('android').length, 1);
+  const web = deliveries('web')[0].msg;
+  assert.ok(web.t === 'thread.live');
+  assert.equal(web.live.settings?.model, 'claude-haiku-5-5');
+
+  const before = computations;
+  hub.notifyWorker('worker');
+  await waitUntil(() => computations > before);
+  assert.equal(deliveries('android').length, 1);
+  assert.equal(deliveries('web').length, 1);
+
+  hub.watch('web', 'worker', false);
+  hub.watch('web', 'worker', true);
+  await waitUntil(() => deliveries('web').length === 2);
+  assert.equal(deliveries('android').length, 1);
+});
+
 test('main and child watches push separate snapshots, with child echoed', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'office-child-watch-'));
   t.after(() => rm(root, { recursive: true, force: true }));
