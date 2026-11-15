@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { ThreadWatchHub, type ThreadWatchMsg, type WatchedThreadTarget } from '../src/server/thread-watch.js';
+import { threadPageDigest, ThreadWatchHub, type ThreadWatchMsg, type WatchedThreadTarget } from '../src/server/thread-watch.js';
 import { WorkerThreadReader } from '../src/server/worker-thread.js';
 import type { ThreadLive } from '../src/shared/thread-live.js';
 
@@ -15,6 +15,15 @@ const waitUntil = async (predicate: () => boolean) => {
   }
 };
 const liveState = (rev: number, label?: string): ThreadLive => ({ rev, at: 1000 + rev, status: 'idle', working: 'idle', ...(label ? { label } : {}), tools: [], settings: { model: 'claude-haiku-5-5' } });
+
+test('snapshot digests notice entry times and a Task child discovered after the call', () => {
+  const base = { sessionId: 's1', entries: [{ id: 'tool:c1', role: 'assistant' as const, kind: 'tool' as const, name: 'Task', seq: 0 }], hasMore: false };
+  const initial = threadPageDigest(base, false);
+  assert.notEqual(threadPageDigest({ ...base, entries: [{ ...base.entries[0], at: 100 }] }, false), initial);
+  assert.notEqual(threadPageDigest({ ...base, entries: [{ ...base.entries[0], doneAt: 200 }] }, false), initial);
+  assert.notEqual(threadPageDigest({ ...base, entries: [{ ...base.entries[0], tookMs: 20 }] }, false), initial);
+  assert.notEqual(threadPageDigest({ ...base, entries: [{ ...base.entries[0], child: 'child-session' }] }, false), initial);
+});
 
 test('watch starts with idle live settings and a repaint pushes a changed live state', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'office-live-watch-'));

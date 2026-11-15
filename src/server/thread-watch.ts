@@ -65,7 +65,9 @@ export function threadPageDigest(page: ThreadPage, busy: boolean): string {
   const parts = [page.sessionId ?? '', busy ? '1' : '0', page.hasMore ? '1' : '0', page.error ?? '', String(page.entries.length)];
   for (const e of page.entries) {
     const tail = (e.output ?? e.text ?? '').slice(-24);
-    parts.push(`${e.id}:${e.seq}:${e.text?.length ?? -1}:${e.input?.length ?? -1}:${e.output?.length ?? -1}:${e.error ? 1 : 0}:${e.resultSeq ?? -1}:${e.images?.length ?? 0}:${tail}`);
+    parts.push(
+      `${e.id}:${e.seq}:${e.text?.length ?? -1}:${e.input?.length ?? -1}:${e.output?.length ?? -1}:${e.error ? 1 : 0}:${e.resultSeq ?? -1}:${e.images?.length ?? 0}:${e.at ?? -1}:${e.doneAt ?? -1}:${e.tookMs ?? -1}:${e.child ?? ''}:${tail}`,
+    );
   }
   return parts.join('|');
 }
