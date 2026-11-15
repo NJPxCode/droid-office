@@ -39,8 +39,8 @@ internal fun ComposerQueue(
     onAction: ((action: String, item: ThreadQueue.Panel.Item) -> Unit)?,
 ) {
     Column(Modifier.fillMaxWidth().tagged(Tags.Worker.COMPOSER_QUEUE)) {
-        if (panel.steering.isNotEmpty()) QueueGroup("Steering messages", panel.steering, panel.moreSteering, connected, onAction)
-        if (panel.queued.isNotEmpty()) QueueGroup("Queued messages", panel.queued, panel.moreQueued, connected, onAction)
+        if (panel.steering.isNotEmpty()) QueueGroup("Steering messages", panel.steering, panel.moreSteering, connected, onAction, offset = 0)
+        if (panel.queued.isNotEmpty()) QueueGroup("Queued messages", panel.queued, panel.moreQueued, connected, onAction, offset = panel.steering.size)
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "${panel.total} message${if (panel.total == 1) "" else "s"} queued",
@@ -65,6 +65,7 @@ private fun QueueGroup(
     more: Int,
     connected: Boolean,
     onAction: ((action: String, item: ThreadQueue.Panel.Item) -> Unit)?,
+    offset: Int,
 ) {
     Text(
         title,
@@ -72,7 +73,7 @@ private fun QueueGroup(
         modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 2.dp),
     )
     items.forEachIndexed { i, item ->
-        val n = i + 1
+        val n = offset + i + 1
         Row(
             Modifier.fillMaxWidth().heightIn(min = 36.dp).padding(start = 12.dp, end = 4.dp).tagged(Tags.Worker.composerQueued(n)),
             verticalAlignment = Alignment.CenterVertically,

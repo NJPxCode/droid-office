@@ -405,12 +405,7 @@ fun Composer(
                                 graph.connection.send(ClientMsg.termInput(w.id, DroidQueue.CLEAR))
                             if (!cleared) scope.launch { snackbar.showSnackbar("Couldn't reach the office. The queue is unchanged.") }
                         },
-                        onAction = onQueueAction?.let { action ->
-                            { kind, item ->
-                                if (kind == "edit") edit(TextFieldValue(item.text, TextRange(item.text.length)))
-                                action(kind, item)
-                            }
-                        },
+                        onAction = onQueueAction,
                     )
                     Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
                 }
@@ -448,7 +443,8 @@ fun Composer(
                         else -> null
                     }
                     val model = settings?.modelName ?: settings?.model ?: w.activeModel ?: w.model
-                    val effort = settings?.reasoningEffort ?: w.activeEffort ?: w.effort
+                    val effort = (settings?.reasoningEffort ?: w.activeEffort ?: w.effort)
+                        ?.takeIf { settings?.modelName?.contains(it, ignoreCase = true) != true }
                     val settingsText = listOfNotNull(mode, model, effort?.replaceFirstChar { it.uppercase() }).joinToString(" · ")
                     Text(
                         settingsText,

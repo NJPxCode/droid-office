@@ -101,6 +101,8 @@ import ai.factory.droidoffice.core.Tags
 import ai.factory.droidoffice.core.TermSize
 import ai.factory.droidoffice.core.TermView
 import ai.factory.droidoffice.core.ThreadFeed
+import ai.factory.droidoffice.core.ThreadLive
+import ai.factory.droidoffice.core.ThreadLiveState
 import ai.factory.droidoffice.core.ThreadQueue
 import ai.factory.droidoffice.core.WorkerInfo
 import ai.factory.droidoffice.core.WorkerLinkView
@@ -308,6 +310,30 @@ fun WorkerScreen(
         var quote by remember(workerId) { mutableStateOf<String?>(null) }
         var threadSearch by rememberSaveable(workerId) { mutableStateOf(false) }
         var queuePanel by remember(workerId) { mutableStateOf(ThreadQueue.Panel.EMPTY) }
+        var composerFill by remember(workerId) { mutableStateOf<String?>(null) }
+        var rewinding by remember(workerId) { mutableStateOf(false) }
+        var rewindError by remember(workerId) { mutableStateOf<String?>(null) }
+        val liveState = remember(workerId) { ThreadLiveState() }
+        var threadLive by remember(workerId) { mutableStateOf<ThreadLive?>(null) }
+        LaunchedEffect(workerId) {
+            liveState.clear()
+            connection.threadLives.collect { msg ->
+                if (msg.workerId == workerId && liveState.receive(msg.sessionId, msg.live)) threadLive = liveState.live
+            }
+        }
+        LaunchedEffect(workerId) {
+            connection.workerRewounds.collect { msg ->
+                if (msg.workerId != workerId) return@collect
+                rewinding = false
+                if (msg.ok) {
+                    rewindError = null
+                    msg.text?.takeIf { it.isNotBlank() }?.let { composerFill = it }
+                    sent++
+                } else {
+                    rewindError = msg.error ?: "Failed to rewind conversation"
+                }
+            }
+        }
         val questionScopeKey = "$workerId/${questionId.orEmpty()}/$launchId"
         var questionHandled by rememberSaveable(questionScopeKey) { mutableStateOf(false) }
         var openedQuestionMenu by remember(questionScopeKey) { mutableStateOf<Menu?>(null) }
@@ -447,6 +473,18 @@ fun WorkerScreen(
                         onSearch = { threadSearch = it },
                         onQuote = { quote = it },
                         onQueuePanel = { queuePanel = it },
+                        live = threadLive,
+                        onRewind = if (link.phase == Phase.Connected && !cloud && !worker.isShell) { entryId, restore ->
+                            rewinding = true
+                            rewindError = null
+                            if (!connection.send(ClientMsg.rewind(workerId, entryId, restore))) {
+                                rewinding = false
+                                rewindError = "Couldn't reach the office. Nothing was rewound."
+                            }
+                        } else null,
+                        rewinding = rewinding,
+                        rewindError = rewindError,
+                        onRewindCancel = { rewindError = null },
                         feeds = threadFeeds,
                     )
                 } } }
@@ -491,8 +529,22 @@ fun WorkerScreen(
                 Composer(
                     worker, draft, visible = blocked == null && !waiting && (!directInput || !tty || worker.isCloud), focusRequest = composerFocus, thread = !tty,
                     quote = quote, onQuoted = { quote = null },
+                    fill = composerFill, onFilled = { composerFill = null },
+                    settings = threadLive?.settings,
                     queueState = queueState, onQueued = { queueRevision++ },
                     queuePanel = queuePanel,
+                    onQueueAction = if (connected && !cloud && !worker.isShell) { action, item ->
+                        val kind = if (action == "edit") "delete" else action
+                        val sent = connection.send(ClientMsg.queueAction(
+                            workerId,
+                            kind,
+                            index = item.index + 1,
+                            group = item.group.name.lowercase(),
+                            text = item.text.takeUnless { item.preview },
+                        ))
+                        if (sent && action == "edit") composerFill = item.text
+                        if (!sent) scope.launch { snackbar.showSnackbar("Couldn't reach the office. The queue is unchanged.") }
+                    } else null,
                     onSent = { prompt ->
                         sent++
                         // A slash command that opens one of Droid's dialogs is answered there: show it.

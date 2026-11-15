@@ -623,7 +623,7 @@ internal fun Thread(
             }
         }
         if (activePlan != null && state.support == ThreadSupport.Supported) {
-            val planOpen = open[PLAN_BAR] == true
+            val planOpen = open[PLAN_BAR] != false
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                 StickyPlanBar(
                     plan = activePlan,
