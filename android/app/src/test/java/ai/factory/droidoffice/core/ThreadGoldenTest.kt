@@ -177,8 +177,8 @@ class ThreadGoldenTest {
                             })
                         })
                     }
-                    r.turnChanges?.let { put("turnChanges", encode(it)) }
                     if (r.segments.isNotEmpty()) put("segments", buildJsonArray { r.segments.forEach { add(encode(it)) } })
+                    r.turnChanges?.let { put("turnChanges", encode(it)) }
                 }
             }
         }

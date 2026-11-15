@@ -1,11 +1,15 @@
 package ai.factory.droidoffice.ui.worker
 
 import android.content.ClipData
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +20,7 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -24,13 +29,21 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.DisableSelection
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -42,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -49,6 +63,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -82,6 +97,8 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import ai.factory.droidoffice.core.JsonWidget
 import ai.factory.droidoffice.core.Markdown
 import ai.factory.droidoffice.core.Tags
@@ -96,12 +113,12 @@ import ai.factory.droidoffice.ui.theme.ThreadPalette
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private const val COPY_FEEDBACK_MS = 1_500L
+private const val COPY_FEEDBACK_MS = 2_000L
 
 /**
  * A message's Markdown, laid out with the office's type. Links open in the browser. [surface] is
- * what the message sits on, which a table's overflow fade blends into. With [onOpenPath], the
- * workspace files the text names (`src/a.ts:12`) are links that open them. With [rich] (an
+ * what the message sits on, which a table's overflow fade blends into. With [onOpenPath], inline
+ * code that names a workspace file (`src/a.ts:12`) is a link that opens it. With [rich] (an
  * assistant's reply, as the web Thread draws them), ```mermaid blocks are drawn as diagrams and
  * TeX math (`$…$`, `$$…$$`) is typeset.
  */
@@ -121,87 +138,190 @@ internal fun MarkdownText(
     val open = rememberUpdatedState(onOpenPath)
     val opener: ((WorkspacePaths.Ref) -> Unit)? = if (paths) remember { { ref: WorkspacePaths.Ref -> open.value?.invoke(ref) } } else null
     val mono = LocalOfficeType.current.mono
-    val body = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp, lineHeight = 22.sp)
+    val shownBlocks = remember(streaming) { mutableIntStateOf(if (streaming) 0 else Int.MAX_VALUE) }
+    val body = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp, lineHeight = 22.sp, letterSpacing = (-0.02).em)
     Column(modifier, verticalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 8.dp)) {
-        for (b in blocks) {
-            when (b) {
-                is Markdown.Block.Heading -> Text(
-                    styled(b.spans, mono, opener),
-                    style = when (b.level) {
-                        1 -> MaterialTheme.typography.titleLarge
-                        2 -> MaterialTheme.typography.titleMedium
-                        else -> MaterialTheme.typography.titleSmall
-                    },
-                )
-                is Markdown.Block.Paragraph -> Text(styled(b.spans, mono, opener), style = body)
-                is Markdown.Block.Item -> Row(Modifier.padding(start = (b.depth * 14).dp)) {
-                    val marker = when (b.checked) {
-                        true -> "☑"
-                        false -> "☐"
-                        null -> b.marker
-                    }
-                    Text(marker, style = body.copy(color = if (b.checked == true) ThreadPalette.Success else ThreadPalette.TextSecondary), modifier = Modifier.width(if (b.marker.length > 2) 30.dp else 20.dp))
-                    Text(
+        for ((index, b) in blocks.withIndex()) {
+            EnteringBlock(streaming && index >= shownBlocks.intValue, onEntered = { shownBlocks.intValue = maxOf(shownBlocks.intValue, index + 1) }) {
+                when (b) {
+                    is Markdown.Block.Heading -> Text(
                         styled(b.spans, mono, opener),
-                        style = if (b.checked == true) body.copy(color = ThreadPalette.TextSecondary, textDecoration = TextDecoration.LineThrough) else body,
+                        style = body.copy(
+                            fontSize = if (b.level <= 2) 16.sp else 15.sp,
+                            lineHeight = 20.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (b.level == 6) ThreadPalette.Text.copy(alpha = 0.7f) else ThreadPalette.Text,
+                        ),
                     )
+                    is Markdown.Block.Paragraph -> Text(styled(b.spans, mono, opener), style = body)
+                    is Markdown.Block.Item -> Row(Modifier.padding(start = (b.depth * 14).dp)) {
+                        val marker = when (b.checked) {
+                            true -> "☑"
+                            false -> "☐"
+                            null -> b.marker
+                        }
+                        Text(marker, style = body.copy(color = if (b.checked == true) ThreadPalette.Success else ThreadPalette.TextSecondary), modifier = Modifier.width(if (b.marker.length > 2) 30.dp else 20.dp))
+                        Text(
+                            styled(b.spans, mono, opener),
+                            style = if (b.checked == true) body.copy(color = ThreadPalette.TextSecondary, textDecoration = TextDecoration.LineThrough) else body,
+                        )
+                    }
+                    is Markdown.Block.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
+                        Box(Modifier.width(4.dp).fillMaxHeight().background(ThreadPalette.BorderStrong))
+                        Text(styled(b.spans, mono, opener), style = body.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.padding(start = 16.dp))
+                    }
+                    is Markdown.Block.Alert -> AlertCard(b, body, mono, opener)
+                    is Markdown.Block.Code -> when {
+                        rich && b.language.equals("mermaid", ignoreCase = true) -> MermaidBlock(b, streaming, mono)
+                        b.language.equals("suggestion", ignoreCase = true) -> SuggestionCard(b, mono)
+                        else -> CodeBlockCard(b, mono)
+                    }
+                    is Markdown.Block.Email -> EmailDraftCard(b, body)
+                    is Markdown.Block.Widget -> WidgetBlock(b, streaming, mono)
+                    is Markdown.Block.Math -> MathBlock(b, body)
+                    is Markdown.Block.Image -> MarkdownImage(b.alt, b.src, body)
+                    Markdown.Block.Rule -> Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).height(1.dp).background(ThreadPalette.Border))
+                    is Markdown.Block.Table -> Table(b, body.copy(fontSize = 12.sp, lineHeight = 20.7.sp), mono, surface, opener)
                 }
-                is Markdown.Block.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
-                    Box(Modifier.width(2.dp).fillMaxHeight().background(ThreadPalette.BorderStrong))
-                    Text(styled(b.spans, mono, opener), style = body.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.padding(start = 10.dp))
-                }
-                is Markdown.Block.Code -> if (rich && b.language.equals("mermaid", ignoreCase = true)) MermaidBlock(b, streaming, mono) else CodeBlockCard(b, mono)
-                is Markdown.Block.Email -> EmailDraftCard(b, body)
-                is Markdown.Block.Widget -> WidgetBlock(b, streaming, mono)
-                is Markdown.Block.Math -> MathBlock(b, body)
-                is Markdown.Block.Image -> MarkdownImage(b.alt, b.src, body)
-                Markdown.Block.Rule -> Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).height(1.dp).background(ThreadPalette.Border))
-                is Markdown.Block.Table -> Table(b, body.copy(fontSize = 13.5.sp, lineHeight = 19.sp), mono, surface, opener)
             }
         }
     }
+}
+
+@Composable
+private fun EnteringBlock(entering: Boolean, onEntered: () -> Unit, content: @Composable () -> Unit) {
+    val alpha = remember { Animatable(if (entering) 0f else 1f) }
+    val entered = rememberUpdatedState(onEntered)
+    LaunchedEffect(entering) {
+        if (entering) {
+            alpha.animateTo(1f, animationSpec = tween(200, easing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)))
+            entered.value()
+        }
+    }
+    Box(Modifier.graphicsLayer { this.alpha = alpha.value }) { content() }
 }
 
 @Composable
 private fun CodeBlockCard(b: Markdown.Block.Code, mono: FontFamily) {
     val label = remember(b.language) { b.language?.trim()?.ifEmpty { null } ?: "code" }
+    val lines = remember(b.text) { b.text.lines().size }
+    var expanded by remember(b.text) { mutableStateOf(false) }
     val shape = RoundedCornerShape(4.dp)
-    Column(Modifier.fillMaxWidth().panel(shape, ThreadPalette.Code, ThreadPalette.Border)) {
+    Column(Modifier.fillMaxWidth().panel(shape, ThreadPalette.Surface, ThreadPalette.BorderStrong)) {
         DisableSelection {
             Row(
-                Modifier.fillMaxWidth().padding(start = 10.dp, end = 4.dp, top = 2.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     label,
-                    style = LocalOfficeType.current.monoBody.copy(fontSize = 11.sp, lineHeight = 15.sp, color = ThreadPalette.TextTertiary),
+                    style = LocalOfficeType.current.monoBody.copy(fontSize = 12.sp, lineHeight = 20.7.sp, color = ThreadPalette.TextTertiary),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
                 CopyActionChip(
-                    label = "COPY",
+                    label = "Copy code",
                     textToCopy = b.text,
                     clipTitle = "Code",
                     tag = Tags.Worker.THREAD_CODE_COPY,
+                    iconOnly = true,
                 )
             }
         }
-        CodeBody(b.text, b.language, mono)
+        if (lines > 10) {
+            Box(
+                Modifier.fillMaxWidth()
+                    .heightIn(max = if (expanded) 500.dp else 180.dp)
+                    .then(if (expanded) Modifier.verticalScroll(rememberScrollState()) else Modifier.clipToBounds()),
+            ) {
+                CodeBody(b.text, b.language, mono, wrap = true, background = ThreadPalette.Surface)
+            }
+            DisableSelection {
+                Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.BorderStrong))
+                Text(
+                    if (expanded) "Show less" else "Show more",
+                    style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary),
+                    modifier = Modifier.fillMaxWidth()
+                        .toggleable(expanded, role = Role.Switch, onValueChange = { expanded = it })
+                        .padding(horizontal = 4.dp, vertical = 6.dp),
+                    textAlign = TextAlign.Center,
+                )
+            }
+        } else {
+            CodeBody(b.text, b.language, mono, wrap = true, background = ThreadPalette.Surface)
+        }
     }
 }
 
-/** A code block's highlighted text, scrolling sideways rather than wrapping. */
+/** A code block's highlighted text. Thread blocks wrap; tool details keep their sideways scroll. */
 @Composable
-internal fun CodeBody(text: String, language: String?, mono: FontFamily) {
+internal fun CodeBody(text: String, language: String?, mono: FontFamily, wrap: Boolean = false, background: Color = ThreadPalette.Code) {
     val highlighted = remember(text, language) { highlightedCode(text, language) }
-    CodeScroll(ThreadPalette.Code, bordered = false) { scroll ->
-        Text(
-            highlighted,
-            style = LocalOfficeType.current.monoBody.copy(fontSize = 12.5.sp, lineHeight = 18.sp),
-            softWrap = false,
-            modifier = scroll.background(ThreadPalette.Code).padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 10.dp),
-        )
+    val style = LocalOfficeType.current.monoBody.copy(fontSize = if (wrap) 12.sp else 12.5.sp, lineHeight = if (wrap) 20.7.sp else 18.sp)
+    if (wrap) {
+        Text(highlighted, style = style, softWrap = true, modifier = Modifier.fillMaxWidth().background(background).padding(8.dp))
+    } else {
+        CodeScroll(background, bordered = false) { scroll ->
+            Text(
+                highlighted,
+                style = style,
+                softWrap = false,
+                modifier = scroll.background(background).padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 10.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AlertCard(b: Markdown.Block.Alert, body: TextStyle, mono: FontFamily, opener: ((WorkspacePaths.Ref) -> Unit)?) {
+    val color = when (b.kind) {
+        Markdown.AlertKind.Note, Markdown.AlertKind.Tip -> ThreadPalette.TextSecondary
+        Markdown.AlertKind.Important -> Color(0xFFFFA675)
+        Markdown.AlertKind.Warning -> Color(0xFFF7A828)
+        Markdown.AlertKind.Caution -> Color(0xFFF0442E)
+    }
+    val icon = when (b.kind) {
+        Markdown.AlertKind.Note -> ToolIcons.Info
+        Markdown.AlertKind.Tip -> OfficeIcons.Sparkle
+        Markdown.AlertKind.Important -> OfficeIcons.Comment
+        Markdown.AlertKind.Warning -> ToolIcons.TriangleAlert
+        Markdown.AlertKind.Caution -> ToolIcons.CircleAlert
+    }
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+        Box(Modifier.width(4.dp).fillMaxHeight().background(color))
+        Column(Modifier.weight(1f).padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(icon, null, tint = color, modifier = Modifier.size(16.dp))
+                Text(b.title ?: b.kind.label, style = body.copy(fontSize = 13.sp, fontWeight = FontWeight.Medium, color = color))
+            }
+            for (paragraph in b.paragraphs) Text(styled(paragraph, mono, opener), style = body)
+        }
+    }
+}
+
+@Composable
+private fun SuggestionCard(b: Markdown.Block.Code, mono: FontFamily) {
+    val shape = RoundedCornerShape(4.dp)
+    Column(Modifier.fillMaxWidth().panel(shape, ThreadPalette.Surface, ThreadPalette.BorderStrong)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Icon(ToolIcons.FileDiff, null, tint = ThreadPalette.TextTertiary, modifier = Modifier.size(12.dp))
+            Text("Suggested change", style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary))
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.BorderStrong))
+        if (b.text.isEmpty()) {
+            Text("Deletes the lines this comment is on", style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.padding(8.dp))
+        } else {
+            Column(Modifier.fillMaxWidth().background(Color(0xFF0C150C)).padding(vertical = 4.dp)) {
+                for (line in b.text.lines()) {
+                    Text(
+                        "+$line",
+                        style = LocalOfficeType.current.monoBody.copy(fontSize = 12.sp, lineHeight = 20.7.sp, color = ThreadPalette.Text),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -239,8 +359,8 @@ internal fun CopyActionChip(
     ) {
         Icon(
             if (copied) OfficeIcons.Check else OfficeIcons.Copy,
-            contentDescription = if (iconOnly) (if (copied) "Copied" else label) else null,
-            tint = if (copied) ThreadPalette.Success else ThreadPalette.TextSecondary,
+            contentDescription = if (iconOnly) (if (copied) (if (label == "Copy code") "Code copied" else "Copied") else label) else null,
+            tint = if (copied) ThreadPalette.Success else ThreadPalette.TextSecondary.let { if (iconOnly) it.copy(alpha = 0.5f) else it },
             modifier = Modifier.size(12.dp),
         )
         if (!iconOnly) {
@@ -262,12 +382,12 @@ private fun EmailDraftCard(email: Markdown.Block.Email, bodyStyle: TextStyle) {
             Column(Modifier.fillMaxWidth().background(ThreadPalette.SurfaceRaised).padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Icon(OfficeIcons.Mail, null, tint = ThreadPalette.TextSecondary, modifier = Modifier.size(13.dp))
-                    Text("EMAIL DRAFT", style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.weight(1f))
+                    Text("Email draft", style = MaterialTheme.typography.bodyMedium.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.weight(1f))
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     CopyActionChip("COPY BODY", email.body, "Email body", Tags.Worker.THREAD_EMAIL_COPY_BODY)
-                    CopyActionChip("COPY ALL", email.raw, "Email draft", Tags.Worker.THREAD_EMAIL_COPY_ALL)
-                    EmailActionButton("OPEN IN MAIL", OfficeIcons.External, Tags.Worker.THREAD_EMAIL_OPEN) {
+                    CopyActionChip("COPY EMAIL", email.raw, "Email draft", Tags.Worker.THREAD_EMAIL_COPY_ALL)
+                    EmailActionButton("SEND", OfficeIcons.External, Tags.Worker.THREAD_EMAIL_OPEN) {
                         runCatching { uriHandler.openUri(email.mailtoUri()) }
                     }
                 }
@@ -733,49 +853,95 @@ private val CELL_MIN = 48.dp
  * the message, with the same edge cue as code.
  */
 @Composable
-private fun Table(t: Markdown.Block.Table, style: TextStyle, mono: FontFamily, surface: Color, opener: ((WorkspacePaths.Ref) -> Unit)?) {
+private fun Table(t: Markdown.Block.Table, style: TextStyle, mono: FontFamily, surface: Color, opener: ((WorkspacePaths.Ref) -> Unit)?, actions: Boolean = true) {
     val scroll = rememberScrollState()
     val grid = remember(t) { Grid() }
     val head = style.copy(fontWeight = FontWeight.SemiBold)
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+    var showActions by remember { mutableStateOf(false) }
+    var copied by remember { mutableStateOf(false) }
+    var expanded by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(4.dp)
     Box(Modifier.fillMaxWidth().tagged(Tags.Worker.THREAD_TABLE)) {
-        Layout(
-            content = {
-                for (row in listOf(t.header) + t.rows) {
-                    row.forEachIndexed { c, cell -> Cell(cell, if (row === t.header) head else style, t.align.getOrNull(c), mono, opener) }
-                }
-            },
-            modifier = Modifier.horizontalScroll(scroll).drawBehind { grid.draw(this) },
-        ) { measurables, _ ->
-            val cols = t.align.size.coerceAtLeast(1)
-            val rows = measurables.size / cols
-            val cap = CELL_MAX.roundToPx()
-            val floor = CELL_MIN.roundToPx()
-            // Never narrower than a cell's widest unbreakable piece (a long word, a command in code):
-            // the table scrolls sideways instead of breaking it.
-            val widths = IntArray(cols) { c ->
-                val natural = (0 until rows).maxOf { r -> measurables[r * cols + c].maxIntrinsicWidth(Constraints.Infinity) }.coerceIn(floor, cap)
-                maxOf(natural, (0 until rows).maxOf { r -> measurables[r * cols + c].minIntrinsicWidth(Constraints.Infinity) })
-            }
-            val placeables = measurables.mapIndexed { i, m -> m.measure(Constraints(minWidth = widths[i % cols], maxWidth = widths[i % cols])) }
-            val heights = IntArray(rows) { r -> (0 until cols).maxOf { c -> placeables[r * cols + c].height } }
-            val width = widths.sum()
-            val height = heights.sum()
-            grid.columns = widths.runningFold(0) { a, w -> a + w }
-            grid.rows = heights.toList().runningFold(0) { a, h -> a + h }
-            grid.line = 1.dp.toPx()
-            layout(width, height) {
-                var y = 0
-                for (r in 0 until rows) {
-                    var x = 0
-                    for (c in 0 until cols) {
-                        placeables[r * cols + c].place(x, y)
-                        x += widths[c]
+        Box(
+            Modifier.fillMaxWidth()
+                .then(if (actions) Modifier.combinedClickable(onClick = {}, onLongClick = { showActions = true }) else Modifier)
+                .clip(shape)
+                .border(1.dp, ThreadPalette.BorderStrong, shape),
+        ) {
+            Layout(
+                content = {
+                    for (row in listOf(t.header) + t.rows) {
+                        row.forEachIndexed { c, cell -> Cell(cell, if (row === t.header) head else style, t.align.getOrNull(c), mono, opener) }
                     }
-                    y += heights[r]
+                },
+                modifier = Modifier.horizontalScroll(scroll).drawBehind { grid.draw(this) },
+            ) { measurables, _ ->
+                val cols = t.align.size.coerceAtLeast(1)
+                val rows = measurables.size / cols
+                val cap = CELL_MAX.roundToPx()
+                val floor = CELL_MIN.roundToPx()
+                // Never narrower than a cell's widest unbreakable piece (a long word, a command in code):
+                // the table scrolls sideways instead of breaking it.
+                val widths = IntArray(cols) { c ->
+                    val natural = (0 until rows).maxOf { r -> measurables[r * cols + c].maxIntrinsicWidth(Constraints.Infinity) }.coerceIn(floor, cap)
+                    maxOf(natural, (0 until rows).maxOf { r -> measurables[r * cols + c].minIntrinsicWidth(Constraints.Infinity) })
+                }
+                val placeables = measurables.mapIndexed { i, m -> m.measure(Constraints(minWidth = widths[i % cols], maxWidth = widths[i % cols])) }
+                val heights = IntArray(rows) { r -> (0 until cols).maxOf { c -> placeables[r * cols + c].height } }
+                val width = widths.sum()
+                val height = heights.sum()
+                grid.columns = widths.runningFold(0) { a, w -> a + w }
+                grid.rows = heights.toList().runningFold(0) { a, h -> a + h }
+                grid.line = 1.dp.toPx()
+                layout(width, height) {
+                    var y = 0
+                    for (r in 0 until rows) {
+                        var x = 0
+                        for (c in 0 until cols) {
+                            placeables[r * cols + c].place(x, y)
+                            x += widths[c]
+                        }
+                        y += heights[r]
+                    }
+                }
+            }
+            OverflowCue(scroll, surface)
+        }
+        if (actions) {
+            DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
+                DropdownMenuItem(
+                    text = { Text(if (copied) "Markdown table copied" else "Copy Markdown table") },
+                    onClick = {
+                        showActions = false
+                        copied = true
+                        scope.launch {
+                            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Markdown table", t.raw)))
+                            delay(COPY_FEEDBACK_MS)
+                            copied = false
+                        }
+                    },
+                )
+                DropdownMenuItem(text = { Text("Expand Markdown table") }, onClick = {
+                    showActions = false
+                    expanded = true
+                })
+            }
+        }
+    }
+    if (expanded) {
+        Dialog(onDismissRequest = { expanded = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Column(Modifier.fillMaxSize().background(ThreadPalette.Bg).padding(24.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Table", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { expanded = false }) { Icon(Icons.Filled.Close, "Close table", tint = ThreadPalette.Text) }
+                }
+                Box(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
+                    Table(t, style, mono, surface, opener, actions = false)
                 }
             }
         }
-        OverflowCue(scroll, surface)
     }
 }
 
@@ -785,7 +951,7 @@ private fun Table(t: Markdown.Block.Table, style: TextStyle, mono: FontFamily, s
  */
 @Composable
 private fun Cell(spans: List<Markdown.Span>, style: TextStyle, align: Markdown.Align?, mono: FontFamily, opener: ((WorkspacePaths.Ref) -> Unit)?) {
-    val pad = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+    val pad = Modifier.padding(horizontal = 13.dp, vertical = 8.dp)
     if (spans.none { it.code }) {
         Text(
             styled(spans, mono, opener), style = style, modifier = pad,
@@ -824,12 +990,11 @@ private class Grid {
         val w = cs.last().toFloat()
         val h = rs.last().toFloat()
         val half = line / 2
-        drawRect(ThreadPalette.Code, Offset.Zero, Size(w, rs[1].toFloat()))
-        for (y in rs) {
+        for (y in rs.drop(1).dropLast(1)) {
             val at = y.toFloat().coerceIn(half, h - half)
             drawLine(ThreadPalette.BorderStrong, Offset(0f, at), Offset(w, at), line)
         }
-        for (x in cs) {
+        for (x in cs.drop(1).dropLast(1)) {
             val at = x.toFloat().coerceIn(half, w - half)
             drawLine(ThreadPalette.BorderStrong, Offset(at, 0f), Offset(at, h), line)
         }
@@ -838,16 +1003,16 @@ private class Grid {
 
 // Blue, without an underline, as the Factory app sets links; the colour alone marks them.
 private val linkStyles = TextLinkStyles(SpanStyle(color = ThreadPalette.Link))
-private val fileLinkStyles = TextLinkStyles(SpanStyle(color = ThreadPalette.Link))
+private val fileLinkStyles = TextLinkStyles(SpanStyle())
 
 private fun styled(spans: List<Markdown.Span>, mono: FontFamily, opener: ((WorkspacePaths.Ref) -> Unit)? = null): AnnotatedString = buildAnnotatedString {
     for (s in spans) {
         val style = SpanStyle(
-            fontWeight = if (s.bold) FontWeight.SemiBold else null,
+            fontWeight = if (s.bold) FontWeight.ExtraBold else null,
             fontStyle = if (s.italic) FontStyle.Italic else null,
             fontFamily = if (s.code) mono else null,
-            fontSize = if (s.code) 0.9.em else TextUnit.Unspecified,
-            background = if (s.code) ThreadPalette.SurfaceHigh else Color.Unspecified,
+            fontSize = if (s.code) 0.923.em else TextUnit.Unspecified,
+            background = if (s.code) ThreadPalette.Code else Color.Unspecified,
             textDecoration = if (s.strike) TextDecoration.LineThrough else null,
         )
         val link = s.link

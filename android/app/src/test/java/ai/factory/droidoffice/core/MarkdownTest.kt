@@ -33,17 +33,30 @@ class MarkdownTest {
         assertEquals(null, Markdown.parse(src).flatMap { (it as Block.Paragraph).spans }.firstOrNull { it.file != null })
         val spans = (Markdown.parse(src, paths = true).single() as Block.Paragraph).spans
         val files = spans.filter { it.file != null }
-        assertEquals(listOf("src/app.ts:12", "android/app/build.gradle.kts:4", "package.json"), files.map { it.text })
+        assertEquals(listOf("src/app.ts:12", "package.json"), files.map { it.text })
         assertEquals(WorkspacePaths.Ref("src/app.ts", 12), files[0].file)
         assertEquals(true, files[0].code)
-        assertEquals(WorkspacePaths.Ref("package.json"), files[2].file)
+        assertEquals(WorkspacePaths.Ref("package.json"), files[1].file)
+        assertEquals(null, spans.first { it.text.contains("android/app/build.gradle.kts") }.file)
         assertEquals(null, spans.first { it.link != null }.file)
         assertEquals(src.replace("`", "").replace("[docs](https://x.dev/src/a.ts)", "docs"), spans.joinToString("") { it.text })
     }
 
     @Test
+    fun inlineCodePathsMatchFactoryDetection() {
+        val src = "Open `/Users/me/a file.ts:12:4`, `FooBar.ts`, `foo.ts` and [local](file:///tmp/a%20b.ts:3)."
+        val spans = (Markdown.parse(src, paths = true).single() as Block.Paragraph).spans
+        val files = spans.filter { it.file != null }
+        assertEquals(listOf("/Users/me/a file.ts:12:4", "foo.ts", "local"), files.map { it.text })
+        assertEquals(WorkspacePaths.Ref("/Users/me/a file.ts", 12), files[0].file)
+        assertEquals(WorkspacePaths.Ref("foo.ts"), files[1].file)
+        assertEquals(WorkspacePaths.Ref("/tmp/a b.ts", 3), files[2].file)
+        assertEquals(null, spans.first { it.text == "FooBar.ts" }.file)
+    }
+
+    @Test
     fun linksPathsInListsQuotesHeadingsAndTables() {
-        val blocks = Markdown.parse("# src/a.ts\n- src/b.ts:3\n> src/c.ts\n\n| f |\n|---|\n| src/d.ts |", paths = true)
+        val blocks = Markdown.parse("# `src/a.ts`\n- `src/b.ts:3`\n> `src/c.ts`\n\n| f |\n|---|\n| `src/d.ts` |", paths = true)
         assertEquals("src/a.ts", (blocks[0] as Block.Heading).spans.single().file?.path)
         assertEquals(WorkspacePaths.Ref("src/b.ts", 3), (blocks[1] as Block.Item).spans.single().file)
         assertEquals("src/c.ts", (blocks[2] as Block.Quote).spans.single().file?.path)
@@ -80,7 +93,7 @@ class MarkdownTest {
         assertEquals(Block.Quote(listOf(Span("quoted"))), blocks[7])
         assertEquals(Block.Rule, blocks[8])
         assertEquals(Block.Code("val x = 1", "kotlin"), blocks[9])
-        assertEquals(Block.Table(listOf(Markdown.Align.None, Markdown.Align.None), listOf(listOf(Span("a")), listOf(Span("b"))), emptyList()), blocks[10])
+        assertEquals(Block.Table(listOf(Markdown.Align.None, Markdown.Align.None), listOf(listOf(Span("a")), listOf(Span("b"))), emptyList(), "| a | b |\n|---|---|"), blocks[10])
         assertEquals(11, blocks.size)
     }
 
@@ -144,14 +157,33 @@ class MarkdownTest {
         val md = "```\n| a | b |\n|---|---|\n```\n| c | d |\n|---|---|\n```\nx\n```"
         val blocks = Markdown.parse(md)
         assertEquals(Block.Code("| a | b |\n|---|---|"), blocks[0])
-        assertEquals(Block.Table(listOf(Markdown.Align.None, Markdown.Align.None), listOf(listOf(Span("c")), listOf(Span("d"))), emptyList()), blocks[1])
+        assertEquals(Block.Table(listOf(Markdown.Align.None, Markdown.Align.None), listOf(listOf(Span("c")), listOf(Span("d"))), emptyList(), "| c | d |\n|---|---|"), blocks[1])
         assertEquals(Block.Code("x"), blocks[2])
         assertEquals(3, blocks.size)
     }
 
     @Test
     fun anUnclosedFenceKeepsTheRestAsCode() {
-        assertEquals(listOf(Block.Code("a\nb")), Markdown.parse("```\na\nb"))
+        assertEquals(listOf(Block.Code("a\nb", open = true)), Markdown.parse("```\na\nb"))
+    }
+
+    @Test
+    fun alertsMathFencesAndTableSource() {
+        val blocks = Markdown.parse(
+            "> [!WARNING] Custom title\n> First **paragraph**\n>\n> Second paragraph\n\n```math\n\\sum_{i=1}^{n} i\n```\n\n| a |\n|---|\n| 1 |",
+        )
+        assertEquals(
+            Block.Alert(
+                Markdown.AlertKind.Warning,
+                "Custom title",
+                listOf(listOf(Span("First "), Span("paragraph", bold = true)), listOf(Span("Second paragraph"))),
+            ),
+            blocks[0],
+        )
+        assertEquals(Block.Math("\\sum_{i=1}^{n} i", "```math\n\\sum_{i=1}^{n} i\n```"), blocks[1])
+        assertEquals("| a |\n|---|\n| 1 |", (blocks[2] as Block.Table).raw)
+        assertEquals(Block.Code("x", "math", open = true), Markdown.parse("```math\nx").single())
+        assertEquals(Block.Quote(listOf(Span("[!UNKNOWN] ordinary quote continued"))), Markdown.parse("> [!UNKNOWN] ordinary quote\n> continued").single())
     }
 
     @Test

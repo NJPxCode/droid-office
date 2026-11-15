@@ -48,6 +48,10 @@ internal object ToolIcons {
     val ChevronsUpDown = icon("ChevronsUpDown", "M7 15l5 5 5-5", "M7 9l5-5 5 5")
     val ChevronsDownUp = icon("ChevronsDownUp", "M7 20l5-5 5 5", "M7 4l5 5 5-5")
     val Maximize = icon("Maximize", "M15 3h6v6", "M9 21H3v-6", "M21 3l-7 7", "M3 21l7-7")
+    val Info = icon("Info", "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z", "M12 16v-4", "M12 8h.01")
+    val TriangleAlert = icon("TriangleAlert", "M10.3 3.7L2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0z", "M12 9v4", "M12 17h.01")
+    val CircleAlert = icon("CircleAlert", "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z", "M12 8v4", "M12 16h.01")
+    val MoreHorizontal = icon("MoreHorizontal", "M5 12h.01", "M12 12h.01", "M19 12h.01")
 
     fun of(glyph: ToolCards.Glyph): ImageVector = when (glyph) {
         ToolCards.Glyph.Read -> BookOpen

@@ -40,20 +40,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -68,6 +70,8 @@ import ai.factory.droidoffice.ui.LocalGraph
 import ai.factory.droidoffice.ui.components.Spinner
 import ai.factory.droidoffice.ui.components.tagged
 import ai.factory.droidoffice.ui.theme.LocalOfficeType
+import ai.factory.droidoffice.ui.theme.OfficeIcons
+import ai.factory.droidoffice.ui.theme.ThreadPalette
 import ai.factory.droidoffice.ui.theme.Palette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -187,14 +191,35 @@ internal fun MarkdownImage(alt: String, src: String, style: TextStyle) {
         }
     }
     if (failed && picture == null) {
-        Text(alt.ifBlank { src }, style = style.copy(color = Palette.TextSecondary, fontStyle = FontStyle.Italic), maxLines = 2, overflow = TextOverflow.Ellipsis)
+        val uriHandler = LocalUriHandler.current
+        val provider = remember(src) { runCatching { java.net.URI(src).host }.getOrNull() }
+        val shape = RoundedCornerShape(4.dp)
+        Row(
+            Modifier.fillMaxWidth().clip(shape).border(1.dp, ThreadPalette.BorderStrong, shape).padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(OfficeIcons.Picture, null, tint = ThreadPalette.TextTertiary, modifier = Modifier.size(14.dp))
+            Text("Preview unavailable", style = style.copy(fontSize = 12.sp, color = ThreadPalette.TextTertiary))
+            if (alt.isNotBlank()) Text(alt, style = style.copy(color = ThreadPalette.TextSecondary), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            if (provider != null) {
+                Text(
+                    "Open on $provider",
+                    style = style.copy(color = ThreadPalette.Link),
+                    maxLines = 1,
+                    modifier = Modifier.clickable(role = Role.Button) { runCatching { uriHandler.openUri(src) } },
+                )
+            }
+        }
         return
     }
     val ratio = picture?.let { (it.width.toFloat() / it.height).coerceIn(0.2f, 5f) } ?: (16f / 9f)
     val shape = RoundedCornerShape(4.dp)
+    var viewing by remember(key) { mutableStateOf(false) }
     Box(
         Modifier.fillMaxWidth().heightIn(max = 480.dp).aspectRatio(ratio, matchHeightConstraintsFirst = ratio < 1f)
             .clip(shape).border(1.dp, Palette.Border, shape).background(Palette.Bg)
+            .clickable(role = Role.Image, enabled = picture != null, onClickLabel = "Open the picture") { viewing = true }
             .semantics { contentDescription = alt }
             .tagged(Tags.Worker.THREAD_MD_IMAGE),
         contentAlignment = Alignment.Center,
@@ -203,6 +228,7 @@ internal fun MarkdownImage(alt: String, src: String, style: TextStyle) {
         if (shown != null) Image(shown, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
         else Spinner(Modifier.size(14.dp), Palette.TextSecondary)
     }
+    if (viewing) FullscreenPictureDialog(picture, null, null, alt.ifBlank { "Image preview" }, src, onClose = { viewing = false })
 }
 
 /** One picture over everything, fit to the screen with pinch-zoom, until the owner taps it, ✕ or Back. */
@@ -238,15 +264,12 @@ internal fun FullscreenPictureDialog(
         var transform by remember(picture) { mutableStateOf(PictureTransform()) }
         val imgW = picture?.width ?: width ?: 0
         val imgH = picture?.height ?: height ?: 0
-        Column(Modifier.fillMaxSize().background(Palette.Bg).systemBarsPadding().tagged(Tags.Worker.THREAD_IMAGE_VIEWER)) {
+        Column(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)).systemBarsPadding().tagged(Tags.Worker.THREAD_IMAGE_VIEWER)) {
             Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(name, style = MaterialTheme.typography.titleSmall, color = Palette.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val sub = listOfNotNull(about, if (width != null && height != null) "$width × $height" else null).joinToString(" · ")
                     if (sub.isNotEmpty()) Text(sub, style = LocalOfficeType.current.monoBody.copy(color = Palette.TextSecondary), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                IconButton(onClick = onClose, modifier = Modifier.tagged(Tags.Worker.THREAD_IMAGE_CLOSE)) {
-                    Icon(Icons.Filled.Close, contentDescription = "Close the picture", tint = Palette.Text)
                 }
             }
             Box(
@@ -263,7 +286,7 @@ internal fun FullscreenPictureDialog(
                     }
                     .pointerInput(picture, boxSize) {
                         detectTransformGestures { centroid, pan, gestureZoom, _ ->
-                            transform = PictureZoom.step(
+                            val next = PictureZoom.step(
                                 transform,
                                 gestureZoom,
                                 pan.x,
@@ -275,13 +298,15 @@ internal fun FullscreenPictureDialog(
                                 boxSize.width.toFloat(),
                                 boxSize.height.toFloat(),
                             )
+                            transform = PictureZoom.clamp(next.zoom.coerceAtMost(4f), next.panX, next.panY, imgW, imgH, boxSize.width.toFloat(), boxSize.height.toFloat())
                         }
                     }
                     .pointerInput(picture, boxSize) {
                         detectTapGestures(
                             onDoubleTap = { pos ->
                                 if (picture != null) {
-                                    transform = PictureZoom.doubleTap(transform, pos.x, pos.y, imgW, imgH, boxSize.width.toFloat(), boxSize.height.toFloat())
+                                    transform = if (transform.zoom > 1.05f) PictureTransform()
+                                    else PictureZoom.step(transform, 2f / transform.zoom, 0f, 0f, pos.x, pos.y, imgW, imgH, boxSize.width.toFloat(), boxSize.height.toFloat())
                                 }
                             },
                             onTap = {
@@ -305,6 +330,43 @@ internal fun FullscreenPictureDialog(
                     )
                 } else {
                     Spinner(Modifier.size(20.dp), Palette.Accent)
+                }
+            }
+            fun zoomTo(next: Float) {
+                val target = next.coerceIn(1f, 4f)
+                transform = PictureZoom.step(
+                    transform,
+                    target / transform.zoom,
+                    0f,
+                    0f,
+                    boxSize.width / 2f,
+                    boxSize.height / 2f,
+                    imgW,
+                    imgH,
+                    boxSize.width.toFloat(),
+                    boxSize.height.toFloat(),
+                )
+            }
+            Row(
+                Modifier.align(Alignment.CenterHorizontally).padding(bottom = 24.dp)
+                    .background(Palette.Surface, RoundedCornerShape(4.dp))
+                    .border(1.dp, Palette.Border, RoundedCornerShape(4.dp))
+                    .padding(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { zoomTo(transform.zoom - 0.5f) }, enabled = picture != null && transform.zoom > 1f) {
+                    Icon(OfficeIcons.Minus, "Zoom out", tint = Palette.TextSecondary)
+                }
+                Text(
+                    "${(transform.zoom * 100).toInt()}%",
+                    style = LocalOfficeType.current.monoBody.copy(color = Palette.TextSecondary),
+                    modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(role = Role.Button, onClickLabel = "Reset zoom") { transform = PictureTransform() }.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+                IconButton(onClick = { zoomTo(transform.zoom + 0.5f) }, enabled = picture != null && transform.zoom < 4f) {
+                    Icon(OfficeIcons.Plus, "Zoom in", tint = Palette.TextSecondary)
+                }
+                IconButton(onClick = onClose, modifier = Modifier.tagged(Tags.Worker.THREAD_IMAGE_CLOSE)) {
+                    Icon(Icons.Filled.Close, contentDescription = "Close the picture", tint = Palette.TextSecondary)
                 }
             }
         }
