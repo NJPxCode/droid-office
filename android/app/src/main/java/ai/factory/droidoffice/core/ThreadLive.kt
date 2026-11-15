@@ -110,9 +110,15 @@ data class ThreadTokens(val input: Long = 0, val output: Long = 0, val cacheCrea
     companion object {
         fun of(e: JsonElement?): ThreadTokens? {
             val o = e as? JsonObject ?: return null
+            val input = o.long("input")
+            val output = o.long("output")
+            val cacheCreation = o.long("cacheCreation")
+            val cacheRead = o.long("cacheRead")
+            val thinking = o.long("thinking")
+            val credits = (o["credits"] as? JsonPrimitive)?.doubleOrNull?.takeIf { it.isFinite() }
+            if (input == null && output == null && cacheCreation == null && cacheRead == null && thinking == null && credits == null) return null
             return ThreadTokens(
-                o.long("input") ?: 0, o.long("output") ?: 0, o.long("cacheCreation") ?: 0, o.long("cacheRead") ?: 0, o.long("thinking") ?: 0,
-                (o["credits"] as? JsonPrimitive)?.doubleOrNull,
+                input ?: 0, output ?: 0, cacheCreation ?: 0, cacheRead ?: 0, thinking ?: 0, credits,
             )
         }
     }
@@ -168,7 +174,11 @@ class ThreadLiveState {
         private set
 
     /** True when [next] replaced what was held. */
-    fun receive(sessionId: String?, next: ThreadLive): Boolean {
+    fun receive(sessionId: String?, next: ThreadLive): Boolean = receive(sessionId, next, sessionId)
+
+    /** The visible worker's session must match, including when it has no session yet. */
+    fun receive(sessionId: String?, next: ThreadLive, expectedSession: String?): Boolean {
+        if (sessionId != expectedSession) return false
         val held = live
         if (held != null && sessionId == session && next.rev <= held.rev) return false
         session = sessionId

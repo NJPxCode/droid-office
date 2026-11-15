@@ -275,12 +275,12 @@ internal fun MermaidBlock(b: Markdown.Block.Code, streaming: Boolean, mono: Font
     val snackbar = LocalSnackbar.current
     val shown = drawing
     val download = rememberThreadDownload("diagram.svg", "image/svg+xml") { drawing?.svg?.toByteArray() }
-    val pending = b.open || (streaming && source.isEmpty())
+    val mode = RichPage.mermaidMode(b, streaming, showSource, failed)
     Column(
         Modifier.fillMaxWidth().panel(shape, ThreadPalette.Surface, ThreadPalette.BorderStrong).tagged(Tags.Worker.THREAD_DIAGRAM)
             .semantics { if (shown != null && !showSource) contentDescription = "Mermaid diagram" },
     ) {
-        if (source.isNotEmpty() && !pending && !failed && !(showSource && shown != null)) {
+        if (source.isNotEmpty() && mode == RichPage.MermaidMode.Drawing) {
             Box(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 RichView(
                     RichPage.Kind.Mermaid, source, shown, zoom = false, Modifier.fillMaxWidth(),
@@ -345,7 +345,7 @@ internal fun MermaidBlock(b: Markdown.Block.Code, streaming: Boolean, mono: Font
                     }
                 }
             }
-        } else if (pending) {
+        } else if (mode == RichPage.MermaidMode.Pending) {
             Box(
                 Modifier.fillMaxWidth().height(80.dp).semantics { contentDescription = "Rendering diagram" },
                 contentAlignment = Alignment.Center,
@@ -353,7 +353,7 @@ internal fun MermaidBlock(b: Markdown.Block.Code, streaming: Boolean, mono: Font
                 Spinner(Modifier.size(24.dp), ThreadPalette.TextSecondary)
             }
         }
-        if (!pending && (showSource || failed)) CodeBody(b.text, "mermaid", mono, wrap = true, background = ThreadPalette.Surface)
+        if (mode == RichPage.MermaidMode.Source) CodeBody(b.text, "mermaid", mono, wrap = true, background = ThreadPalette.Surface)
     }
     if (zoomed && shown != null) DiagramViewer(source, shown, b.text) { zoomed = false }
 }

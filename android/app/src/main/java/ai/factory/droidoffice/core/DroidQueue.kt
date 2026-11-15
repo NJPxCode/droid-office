@@ -67,7 +67,7 @@ object DroidQueue {
         var more = 0
         MORE.matchEntire(text)?.let {
             text = it.groupValues[1]
-            more = it.groupValues[2].toInt()
+            more = it.groupValues[2].toIntOrNull() ?: 0
         }
         val cut = text.endsWith("…")
         if (cut) text = text.dropLast(1).trimEnd()
@@ -122,8 +122,8 @@ object DroidQueue {
                 HEADING.matches(raw) -> group = Group.Queued
                 else -> {
                     val text = raw.trim()
-                    MORE_STEERING.matchEntire(text)?.let { moreSteering = it.groupValues[1].toInt() }
-                        ?: MORE_QUEUED.matchEntire(text)?.let { moreQueued = it.groupValues[1].toInt() }
+                    MORE_STEERING.matchEntire(text)?.let { moreSteering = it.groupValues[1].toIntOrNull() ?: 0 }
+                        ?: MORE_QUEUED.matchEntire(text)?.let { moreQueued = it.groupValues[1].toIntOrNull() ?: 0 }
                         ?: row(text)?.let { items += Pending(group, it) }
                 }
             }

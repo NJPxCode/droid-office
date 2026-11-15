@@ -97,6 +97,23 @@ class DroidPendingTest {
     }
 
     @Test
+    fun overflowedCountsCannotCrashAQueuePreview() {
+        val rows = listOf(
+            "Steering messages:", "Keep this prompt (999999999999999999999 more lines)",
+            "+999999999999999999999 more steering items",
+            "Queued messages:", "Next prompt (999999999999999999999 more lines)",
+            "+999999999999999999999 more queued items",
+            "Ctrl+X to clear queue", "Press ESC to stop",
+        ) + box
+        val pending = DroidQueue.readPending(rows)!!
+        assertEquals(listOf("Keep this prompt", "Next prompt"), pending.items.map { it.row.text })
+        assertEquals(listOf(0, 0), pending.items.map { it.row.more })
+        assertEquals(0, pending.moreSteering)
+        assertEquals(0, pending.moreQueued)
+        assertEquals(listOf(DroidQueue.Row("Next prompt", false, 0)), DroidQueue.read(rows))
+    }
+
+    @Test
     fun theNearestHintWinsAndClearTakesPriorityOnTheSameRow() {
         val rows = listOf(
             "Steering messages:", "First",

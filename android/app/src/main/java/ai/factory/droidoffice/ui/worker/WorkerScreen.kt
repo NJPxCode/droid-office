@@ -318,9 +318,11 @@ fun WorkerScreen(
         LaunchedEffect(workerId) {
             liveState.clear()
             connection.threadLives.collect { msg ->
-                if (msg.workerId == workerId && liveState.receive(msg.sessionId, msg.live)) threadLive = liveState.live
+                val session = connection.data.value.worker(workerId)?.sessionId
+                if (msg.workerId == workerId && liveState.receive(msg.sessionId, msg.live, session)) threadLive = liveState.live
             }
         }
+        val currentThreadLive = threadLive?.takeIf { liveState.session == worker.sessionId }
         LaunchedEffect(workerId) {
             connection.workerRewounds.collect { msg ->
                 if (msg.workerId != workerId) return@collect
@@ -473,7 +475,7 @@ fun WorkerScreen(
                         onSearch = { threadSearch = it },
                         onQuote = { quote = it },
                         onQueuePanel = { queuePanel = it },
-                        live = threadLive,
+                        live = currentThreadLive,
                         onRewind = if (link.phase == Phase.Connected && !cloud && !worker.isShell) { entryId, restore ->
                             rewinding = true
                             rewindError = null
@@ -530,7 +532,7 @@ fun WorkerScreen(
                     worker, draft, visible = blocked == null && !waiting && (!directInput || !tty || worker.isCloud), focusRequest = composerFocus, thread = !tty,
                     quote = quote, onQuoted = { quote = null },
                     fill = composerFill, onFilled = { composerFill = null },
-                    settings = threadLive?.settings,
+                    settings = currentThreadLive?.settings,
                     queueState = queueState, onQueued = { queueRevision++ },
                     queuePanel = queuePanel,
                     onQueueAction = if (connected && !cloud && !worker.isShell) { action, item ->

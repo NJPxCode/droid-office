@@ -23,9 +23,10 @@ object ThreadStatus {
      * waiting on the owner, compacting, writing the last message ([streaming]), or thinking and working.
      */
     fun mode(w: WorkerInfo, live: ThreadLive?, streaming: Boolean): Mode {
+        if (w.state == WorkerStatus.NeedsInput) return Mode.Waiting
         if (live != null) {
             return when (live.status) {
-                ThreadLive.Status.Idle -> if (w.state == WorkerStatus.NeedsInput) Mode.Waiting else Mode.Idle
+                ThreadLive.Status.Idle -> if (w.state.busy) Mode.Pondering else Mode.Idle
                 ThreadLive.Status.Pondering -> Mode.Pondering
                 ThreadLive.Status.Responding -> Mode.Responding
                 ThreadLive.Status.Waiting -> Mode.Waiting
@@ -33,7 +34,6 @@ object ThreadStatus {
             }
         }
         return when {
-            w.state == WorkerStatus.NeedsInput -> Mode.Waiting
             !w.state.busy -> Mode.Idle
             w.activity == WORKER_COMPACTING -> Mode.Compacting
             streaming -> Mode.Responding

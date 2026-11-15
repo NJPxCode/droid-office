@@ -57,7 +57,7 @@ object ThreadCompose {
         return listOfNotNull(mode, model, effort?.replaceFirstChar { it.uppercase() }).joinToString(" · ")
     }
 
-    /** Context-window counts in the terminal footer's compact form: 900, 12.4k, 1.2M. */
+    /** Context-window counts in the terminal footer's compact form: 900, 9.9k, 12k, 1.2M. */
     fun compactCount(n: Long): String = when {
         n < 1_000 -> n.toString()
         n < 1_000_000 -> compact(n, 1_000L, "k")

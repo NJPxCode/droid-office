@@ -58,6 +58,19 @@ class ThreadStatusTest {
     private fun worker(status: String, activity: String? = null) = WorkerInfo(id = "w", status = status, activity = activity)
 
     @Test
+    fun waitingAndRunningWorkerStatesOverrideAnOlderLiveStatus() {
+        for (status in ThreadLive.Status.entries) {
+            val live = ThreadLive(rev = 1, at = 0, status = status, working = "thinking")
+            assertEquals(status.name, ThreadStatus.Mode.Waiting, ThreadStatus.mode(worker("needs_input"), live, streaming = true))
+        }
+        val idle = ThreadLive(rev = 2, at = 0, status = ThreadLive.Status.Idle, working = "idle")
+        assertEquals(ThreadStatus.Mode.Pondering, ThreadStatus.mode(worker("working"), idle, streaming = false))
+        assertEquals(ThreadStatus.Mode.Pondering, ThreadStatus.mode(worker("starting"), idle, streaming = false))
+        assertEquals(ThreadStatus.Mode.Idle, ThreadStatus.mode(worker("idle"), idle, streaming = false))
+        assertEquals(ThreadStatus.Mode.Idle, ThreadStatus.mode(worker("exited"), idle, streaming = false))
+    }
+
+    @Test
     fun theModeComesFromTheOfficesLiveStateFirst() {
         val live = ThreadLive(rev = 1, at = 0, status = ThreadLive.Status.Responding, working = "streaming_assistant_message")
         assertEquals(ThreadStatus.Mode.Responding, ThreadStatus.mode(worker("working"), live, streaming = false))
@@ -94,6 +107,34 @@ class ThreadStatusTest {
 }
 
 class ThreadLiveTest {
+    @Test
+    fun liveUpdatesMustMatchTheWorkersCurrentSessionEvenWhenMissing() {
+        val state = ThreadLiveState()
+        val live = ThreadLive(rev = 5, at = 0, status = ThreadLive.Status.Pondering, working = "thinking")
+        assertTrue(state.receive("s1", live, expectedSession = "s1"))
+        assertFalse(state.receive(null, live.copy(rev = 6), expectedSession = "s1"))
+        assertFalse(state.receive("old", live.copy(rev = 99), expectedSession = "s1"))
+        assertFalse(state.receive("s1", live.copy(rev = 99), expectedSession = "s2"))
+        assertEquals("s1", state.session)
+        assertEquals(5L, state.live?.rev)
+        // New sessions can restart revisions on an older office; stale-session rejection is separate.
+        assertTrue(state.receive("s2", live.copy(rev = 1), expectedSession = "s2"))
+        assertFalse(state.receive("s1", live.copy(rev = 100), expectedSession = "s2"))
+        assertFalse(state.receive("s2", live.copy(rev = 2), expectedSession = null))
+        assertTrue(state.receive(null, live.copy(rev = 1), expectedSession = null))
+        assertEquals(null, state.session)
+    }
+
+    @Test
+    fun absentOrUnknownTokenFieldsNeverInventZeroUsage() {
+        for (raw in listOf("{}", """{"unknown":4}""", """{"input":null,"output":"invalid","credits":"NaN"}""")) {
+            assertEquals(raw, null, ThreadTokens.of(OfficeJson.parseToJsonElement(raw)))
+        }
+        assertEquals(ThreadTokens(), ThreadTokens.of(OfficeJson.parseToJsonElement("""{"input":0}""")))
+        assertEquals(ThreadTokens(input = 12), ThreadTokens.of(OfficeJson.parseToJsonElement("""{"input":12}""")))
+        assertEquals(ThreadTokens(credits = 0.25), ThreadTokens.of(OfficeJson.parseToJsonElement("""{"credits":0.25}""")))
+    }
+
     @Test
     fun readsTheOfficesLiveTurn() {
         val json = """{"rev":4,"at":1000,"status":"pondering","working":"executing_tool","label":"Planning 8 actions","turnStartedAt":900,"phaseSince":950,

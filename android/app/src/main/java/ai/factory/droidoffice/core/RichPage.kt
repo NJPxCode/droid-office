@@ -15,6 +15,15 @@ object RichPage {
     /** What the page draws: a ```mermaid diagram, or a `$$…$$` equation (KaTeX). */
     enum class Kind(val wire: String) { Mermaid("mermaid"), Math("math") }
 
+    enum class MermaidMode { Pending, Drawing, Source }
+
+    /** Only an in-progress fence waits; an unfinished final reply falls back to its source. */
+    fun mermaidMode(block: Markdown.Block.Code, streaming: Boolean, showSource: Boolean, failed: Boolean): MermaidMode = when {
+        streaming && (block.open || block.text.isBlank()) -> MermaidMode.Pending
+        block.open || showSource || failed -> MermaidMode.Source
+        else -> MermaidMode.Drawing
+    }
+
     sealed interface Msg {
         data object Ready : Msg
 

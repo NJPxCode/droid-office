@@ -198,7 +198,7 @@ private fun EnteringBlock(entering: Boolean, onEntered: () -> Unit, content: @Co
         if (entering) {
             alpha.animateTo(1f, animationSpec = tween(200, easing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)))
             entered.value()
-        }
+        } else alpha.snapTo(1f)
     }
     Box(Modifier.graphicsLayer { this.alpha = alpha.value }) { content() }
 }
@@ -207,7 +207,7 @@ private fun EnteringBlock(entering: Boolean, onEntered: () -> Unit, content: @Co
 private fun CodeBlockCard(b: Markdown.Block.Code, mono: FontFamily) {
     val label = remember(b.language) { b.language?.trim()?.ifEmpty { null } ?: "code" }
     val lines = remember(b.text) { b.text.lines().size }
-    var expanded by remember(b.text) { mutableStateOf(false) }
+    var expanded by rememberSaveable { mutableStateOf(false) }
     val shape = RoundedCornerShape(4.dp)
     Column(Modifier.fillMaxWidth().panel(shape, ThreadPalette.Surface, ThreadPalette.BorderStrong)) {
         DisableSelection {
@@ -952,11 +952,15 @@ private fun Table(t: Markdown.Block.Table, style: TextStyle, mono: FontFamily, s
                     text = { Text(if (copied) "Markdown table copied" else "Copy Markdown table") },
                     onClick = {
                         showActions = false
-                        copied = true
                         scope.launch {
-                            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Markdown table", t.raw)))
-                            delay(COPY_FEEDBACK_MS)
-                            copied = false
+                            try {
+                                if (runCatching { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Markdown table", t.raw))) }.isSuccess) {
+                                    copied = true
+                                    delay(COPY_FEEDBACK_MS)
+                                }
+                            } finally {
+                                copied = false
+                            }
                         }
                     },
                 )

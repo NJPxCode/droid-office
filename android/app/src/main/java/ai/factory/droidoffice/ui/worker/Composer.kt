@@ -313,7 +313,7 @@ fun Composer(
     Column(Modifier.then(if (thread) Modifier.widthIn(max = READING_WIDTH + 20.dp) else Modifier).fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 10.dp)) {
         val mentions = if (mention != null) mentionItems else emptyList()
         AnimatedVisibility(mention != null) {
-            MentionMenu(mentions, searching = files.base == null) { item ->
+            MentionMenu(mentions, searching = connected && files.base == null) { item ->
                 val q = WorkspaceMention.find(value.text, value.selection.end) ?: mention ?: return@MentionMenu
                 val next = WorkspaceMention.apply(value.text, q.start, q.end, item.path)
                 edit(TextFieldValue(next.value, selection = TextRange(next.cursor)))
