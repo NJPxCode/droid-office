@@ -53,6 +53,8 @@ object Markdown {
         data class Widget(val rawJson: String, val complete: Boolean) : Block
         /** A `$$…$$` equation on its own line: [tex] without the dollars, [raw] as written. */
         data class Math(val tex: String, val raw: String) : Block
+        /** An image on a line of its own (`![alt](src)`); [localImagePath] says whether [src] is a file on the office's machine. */
+        data class Image(val alt: String, val src: String) : Block
         data object Rule : Block
         /** Every row has [align]'s number of cells; a short row is padded with empty ones, a long one widens the table. */
         data class Table(val align: List<Align>, val header: List<List<Span>>, val rows: List<List<List<Span>>>) : Block
@@ -106,6 +108,27 @@ object Markdown {
     private val task = Regex("""^\[([ xX])]\s+(.*)$""")
     private val rule = Regex("""^\s{0,3}([-*_])(\s*\1){2,}\s*$""")
     private val fence = Regex("""^\s{0,3}(```+|~~~+)\s*([^\s`]*)""")
+    private val imageLine = Regex("""^!\[([^\]]*)]\(\s*(<[^>]+>|[^\s)]+)(?:\s+"[^"]*")?\s*\)$""")
+    private val urlScheme = Regex("""^[a-zA-Z][a-zA-Z0-9+.-]*:""")
+    private val fileUrl = Regex("""^file://(?:localhost)?(?=/)""", RegexOption.IGNORE_CASE)
+    private val percentEscape = Regex("""%[0-9a-fA-F]{2}""")
+
+    /**
+     * The file on the office's machine an image [src] names (`/Users/me/shot.png`, `~/a.png`,
+     * `docs/chart.svg`, `file:///tmp/a.png`), as `localImagePath` in src/shared/worker-thread.ts reads it;
+     * null for web, data and other URLs.
+     */
+    fun localImagePath(src: String): String? {
+        var s = src.trim()
+        if (s.startsWith('<') && s.endsWith('>')) s = s.substring(1, s.length - 1).trim()
+        val file = fileUrl.find(s)
+        if (file != null) s = s.substring(file.range.last + 1)
+        else if (urlScheme.containsMatchIn(s) || s.startsWith("//") || s.startsWith('#') || s.startsWith('?')) return null
+        if (percentEscape.containsMatchIn(s)) {
+            s = runCatching { java.net.URLDecoder.decode(s.replace("+", "%2B"), StandardCharsets.UTF_8.name()) }.getOrNull() ?: return null
+        }
+        return s.takeIf { it.isNotEmpty() && '\u0000' !in it }
+    }
 
     private const val JSON_RENDER_OPEN = "<json-render>"
     private const val JSON_RENDER_CLOSE = "</json-render>"
@@ -161,6 +184,7 @@ object Markdown {
                 display != null -> Block.Math(display.tex, display.raw)
                 // The fence rules here and in [parseChunk] differ at the edges; code shows as written.
                 b is Block.Code -> b.copy(text = restore(b.text))
+                b is Block.Image -> b.copy(alt = restore(b.alt), src = restore(b.src))
                 b is Block.Email -> b.copy(to = restore(b.to), cc = b.cc?.let(::restore), bcc = b.bcc?.let(::restore), subject = restore(b.subject), body = restore(b.body), raw = restore(b.raw))
                 else -> mapSpans(b, ::spans)
             }
@@ -278,6 +302,11 @@ object Markdown {
                     flush()
                     val m = ordered.find(line)!!
                     out += item("${m.groupValues[2]}.", m.groupValues[1], m.groupValues[3])
+                }
+                imageLine.matches(line.trim()) -> {
+                    flush()
+                    val m = imageLine.find(line.trim())!!
+                    out += Block.Image(m.groupValues[1], m.groupValues[2].removePrefix("<").removeSuffix(">").trim())
                 }
                 else -> {
                     if (para.isNotEmpty()) para.append(if (breaks) '\n' else ' ')
@@ -597,6 +626,17 @@ object Markdown {
                     emit()
                     out += style.copy(text = s.substring(i + ticks, end).trim(), code = true)
                     i = end + ticks
+                    continue
+                }
+            }
+            if (c == '!' && s.startsWith("[", i + 1)) {
+                val close = s.indexOf("](", i + 2)
+                val end = if (close > 0) s.indexOf(')', close + 2) else -1
+                // An image inside running text shows as its alt text rather than raw Markdown.
+                if (close > 0 && end > 0 && !s.substring(i + 2, close).contains('[')) {
+                    emit()
+                    out += style.copy(text = s.substring(i + 2, close))
+                    i = end + 1
                     continue
                 }
             }

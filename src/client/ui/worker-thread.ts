@@ -17,7 +17,7 @@ import { withToken } from '../token';
 import { syncHorizontalScrollCue } from './code-highlight';
 import { h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
-import { openFilePreviewModal } from './file-preview';
+import { openFilePreviewModal, threadFileImageUrl } from './file-preview';
 import { icon } from './icons';
 import { promptImages } from './images';
 import { expandPastes, insertQuote, isLargePaste, livePastes, type PastedText, pastedText, replacePaste } from './thread-compose';
@@ -1015,6 +1015,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       const body = threadMarkdown(text, {
         streaming,
         onOpenPath: onOpenPathFor(author),
+        ...(canOpenFiles(author) ? { imageUrl: (path: string) => threadFileImageUrl({ floor: opts.floor ?? '', workerId: author.id, path }) } : {}),
       });
       node.append(body);
       return node;

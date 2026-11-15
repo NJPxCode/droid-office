@@ -3,6 +3,7 @@ import katex from 'katex';
 import { Marked } from 'marked';
 import { attachCopyFeedback, renderCodeFrame, syncHorizontalScrollCue } from './code-highlight';
 import { renderThreadMermaid } from './diagram';
+import { localImagePath } from '../../shared/worker-thread';
 import { h } from './dom';
 import { extractJsonRenderBlocks, renderJsonWidget } from './json-render';
 
@@ -960,6 +961,20 @@ export interface ThreadMarkdownOptions {
   onOpenPath?: (ref: WorkspacePathRef) => void;
   /** True while the assistant message is still streaming, so incomplete widgets show a quiet loading state. */
   streaming?: boolean;
+  /** The URL that loads a picture on the office's machine an image names ({@link localImagePath}); without it such images keep their own src. */
+  imageUrl?: (path: string) => string;
+}
+
+/** Marked's HTML for `src`, with images of files on the office's machine pointed at `imageUrl` before sanitizing (which drops `file:` URLs). */
+function parseWithImages(src: string, imageUrl: ((path: string) => string) | undefined): string {
+  if (!imageUrl) return md.parse(src, { async: false }) as string;
+  const tokens = md.lexer(src);
+  md.walkTokens(tokens, (token) => {
+    if (token.type !== 'image') return;
+    const local = localImagePath(token.href);
+    if (local) token.href = imageUrl(local);
+  });
+  return md.parser(tokens);
 }
 
 /** Renders rich assistant Markdown for Thread view. */
@@ -970,7 +985,7 @@ export function threadMarkdown(src: string, opts?: ThreadMarkdownOptions): HTMLE
   const { textWithPlaceholders: withoutWidgets, blocks: jsonBlocks } = extractJsonRenderBlocks(src);
   const { textWithPlaceholders: prepared, segments: mathSegments } = extractMathSegments(withoutWidgets);
 
-  const html = md.parse(prepared, { async: false }) as string;
+  const html = parseWithImages(prepared, opts?.imageUrl);
   root.append(sanitizeHtml(html));
 
   hydrateJsonRenderPlaceholders(root, jsonBlocks, !!opts?.streaming);

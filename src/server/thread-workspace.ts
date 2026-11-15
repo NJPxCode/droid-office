@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process';
 import type { Dirent } from 'node:fs';
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { isBinaryBuffer } from '../shared/docs.js';
 import { insideCheckout } from './changes.js';
+import { pictureType } from './drops.js';
 
 const CACHE_TTL_MS = 5000;
 const GIT_TIMEOUT_MS = 10_000;
@@ -268,6 +270,35 @@ async function workspaceRelative(cwd: string, filePath: string): Promise<string 
   return undefined;
 }
 
+const SECRET_DIRS = new Set(['.git', '.ssh', '.gnupg', '.aws']);
+
+/** A picture outside every workspace: a regular raster image by its bytes, never in a secret folder or the office's own state. */
+async function readMachineImage(abs: string): Promise<ThreadWorkspaceImage | ThreadWorkspaceFailure> {
+  let real: string;
+  try {
+    real = await realpath(abs);
+  } catch {
+    return { status: 404, error: 'File not found.' };
+  }
+  // Lowercased: macOS folders match names case-insensitively, so `.SSH` is `.ssh`.
+  const parts = real.toLowerCase().split(path.sep);
+  const office = parts.lastIndexOf('.droid-office');
+  if (parts.some((seg) => SECRET_DIRS.has(seg)) || (office >= 0 && parts[office + 1] !== 'worktrees')) {
+    return { status: 403, error: 'Pictures in private folders cannot be shown.' };
+  }
+  try {
+    const info = await stat(real);
+    if (!info.isFile()) return { status: 404, error: 'That path is not a regular file.' };
+    if (info.size > MAX_IMAGE_BYTES) return { status: 413, error: `Pictures over ${MAX_IMAGE_BYTES / 1024 / 1024} MB can't be shown.` };
+    const body = await readFile(real);
+    const type = pictureType(body);
+    if (!type) return { status: 415, error: 'Only PNG, JPEG, GIF and WebP pictures outside the workspace can be shown.' };
+    return { type, body };
+  } catch (err) {
+    return { status: 500, error: (err as Error).message };
+  }
+}
+
 const ANCHOR_FILES = 64;
 const ANCHOR_CACHE_BYTES = 32 * 1024 * 1024;
 
@@ -409,10 +440,21 @@ export class ThreadWorkspace {
     }
   }
 
-  /** A picture in the workspace as its bytes, under the same confinement as a preview. */
+  /**
+   * A picture as its bytes, under the same confinement as a preview. An absolute or `~/` path (a reply's
+   * Markdown image) inside the workspace is read as that workspace file; elsewhere on this machine only a
+   * real PNG, JPEG, GIF or WebP outside secret folders is served.
+   */
   async readImage(cwd: string, rawPath: string): Promise<ThreadWorkspaceImage | ThreadWorkspaceFailure> {
     const type = IMAGE_TYPES[/\.([a-z0-9]+)$/i.exec(rawPath.trim())?.[1]?.toLowerCase() ?? ''];
     if (!type) return { status: 415, error: 'Only PNG, JPEG, GIF, WebP and SVG pictures can be shown.' };
+    const trimmed = rawPath.trim();
+    const expanded = trimmed.startsWith('~/') ? path.join(homedir(), trimmed.slice(2)) : trimmed;
+    if (path.isAbsolute(expanded)) {
+      const rel = await workspaceRelative(cwd, expanded);
+      if (!rel) return readMachineImage(expanded);
+      rawPath = rel;
+    }
     const resolved = await resolveWorkspaceFile(cwd, rawPath);
     if ('error' in resolved) return resolved;
     try {

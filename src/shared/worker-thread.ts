@@ -24,3 +24,26 @@ export interface ThreadEntry {
   /** Pictures in a tool's result or a message; `output` and `text` still say `[Image attachment]` for each. */
   images?: ThreadImage[];
 }
+
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+/**
+ * The file on the office's machine a Markdown image in a reply names (`/Users/me/shot.png`,
+ * `~/Pictures/a.png`, `docs/chart.svg` or `file:///tmp/a.png`), for the Thread to load through
+ * `/api/thread/file?raw=image`; undefined for web, data and other URLs the client loads itself.
+ */
+export function localImagePath(src: string): string | undefined {
+  let s = src.trim();
+  if (s.startsWith('<') && s.endsWith('>')) s = s.slice(1, -1).trim();
+  const file = /^file:\/\/(?:localhost)?(?=\/)/i.exec(s);
+  if (file) s = s.slice(file[0].length);
+  else if (URL_SCHEME.test(s) || s.startsWith('//') || s.startsWith('#') || s.startsWith('?')) return undefined;
+  if (/%[0-9a-f]{2}/i.test(s)) {
+    try {
+      s = decodeURIComponent(s);
+    } catch {
+      return undefined;
+    }
+  }
+  return s && !s.includes('\0') ? s : undefined;
+}

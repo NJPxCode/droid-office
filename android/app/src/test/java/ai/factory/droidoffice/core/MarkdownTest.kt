@@ -7,6 +7,27 @@ import org.junit.Test
 
 class MarkdownTest {
     @Test
+    fun imagesOnTheirOwnLineAreImageBlocksAndInlineOnesShowTheirAltText() {
+        val src = "### 2. Cozy Cinema & Media Den\nA camel bouclé swivel chair.\n\n  ![Cozy Cinema and Media Den](/Users/nik/Pictures/chaise-room-designs/02-cozy-media-den.png)\n" +
+            "![plan](<docs/my plan.png> \"Plan\")\nSee ![the chart](docs/chart.png) here."
+        val blocks = Markdown.parse(src, paths = true, math = true)
+        assertEquals(Block.Image("Cozy Cinema and Media Den", "/Users/nik/Pictures/chaise-room-designs/02-cozy-media-den.png"), blocks[2])
+        assertEquals(Block.Image("plan", "docs/my plan.png"), blocks[3])
+        assertEquals("See the chart here.", (blocks[4] as Block.Paragraph).spans.joinToString("") { it.text })
+    }
+
+    @Test
+    fun localImagePathMatchesTheWebThread() {
+        assertEquals("/Users/nik/Pictures/chaise-room-designs/02-cozy-media-den.png", Markdown.localImagePath("/Users/nik/Pictures/chaise-room-designs/02-cozy-media-den.png"))
+        assertEquals("~/Pictures/a b.png", Markdown.localImagePath(" <~/Pictures/a b.png> "))
+        assertEquals("docs/chart.svg", Markdown.localImagePath("docs/chart.svg"))
+        assertEquals("/tmp/shot 1+2.png", Markdown.localImagePath("file:///tmp/shot%201+2.png"))
+        assertEquals("/tmp/a.png", Markdown.localImagePath("file://localhost/tmp/a.png"))
+        for (web in listOf("https://example.com/a.png", "http://192.168.1.2:4600/a.png", "data:image/png;base64,AAAA", "blob:abc", "//cdn.example.com/a.png", "#top", "", "bad%E0%A4%A.png")) {
+            assertEquals(web, null, Markdown.localImagePath(web))
+        }
+    }
+    @Test
     fun linksWorkspacePathsOnlyWhenAsked() {
         val src = "Fixed `src/app.ts:12` and android/app/build.gradle.kts:4, see [docs](https://x.dev/src/a.ts) and `package.json`."
         assertEquals(null, Markdown.parse(src).flatMap { (it as Block.Paragraph).spans }.firstOrNull { it.file != null })

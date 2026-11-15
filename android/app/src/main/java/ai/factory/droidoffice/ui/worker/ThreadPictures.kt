@@ -50,11 +50,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import ai.factory.droidoffice.core.Markdown
 import ai.factory.droidoffice.core.PageMsg
 import ai.factory.droidoffice.core.PictureTransform
 import ai.factory.droidoffice.core.PictureZoom
@@ -158,6 +161,48 @@ private fun shape(image: ThreadImage, picture: ImageBitmap?): Float {
     val w = image.width ?: picture?.width
     val h = image.height ?: picture?.height
     return if (w != null && h != null && w > 0 && h > 0) (w.toFloat() / h).coerceIn(0.2f, 5f) else 4f / 3f
+}
+
+/**
+ * An image a reply's Markdown shows on a line of its own: a file on the office's machine (read from the
+ * worker's [PictureSource]) or a web picture, both fetched through the office. Its alt text stands in
+ * when it can't be shown.
+ */
+@Composable
+internal fun MarkdownImage(alt: String, src: String, style: TextStyle) {
+    val source = LocalPictureSource.current
+    val connection = LocalGraph.current.connection
+    val local = remember(src) { Markdown.localImagePath(src) }
+    val web = src.startsWith("https://", ignoreCase = true) || src.startsWith("http://", ignoreCase = true)
+    val key = "${source?.floor}/${source?.worker}/md:$src@$THUMB_SIDE"
+    var failed by remember(key) { mutableStateOf(if (local != null) source == null else !web) }
+    val picture by produceState(ThreadPictureCache.get(key), key, failed) {
+        if (value != null || failed) return@produceState
+        val bytes = if (local != null && source != null) connection.threadFileImage(source.floor, source.worker, local) else connection.webImage(src)
+        val decoded = bytes?.let { decodeScaled(it, THUMB_SIDE) }
+        if (decoded == null) failed = true
+        else {
+            ThreadPictureCache.put(key, decoded)
+            value = decoded
+        }
+    }
+    if (failed && picture == null) {
+        Text(alt.ifBlank { src }, style = style.copy(color = Palette.TextSecondary, fontStyle = FontStyle.Italic), maxLines = 2, overflow = TextOverflow.Ellipsis)
+        return
+    }
+    val ratio = picture?.let { (it.width.toFloat() / it.height).coerceIn(0.2f, 5f) } ?: (16f / 9f)
+    val shape = RoundedCornerShape(4.dp)
+    Box(
+        Modifier.fillMaxWidth().heightIn(max = 480.dp).aspectRatio(ratio, matchHeightConstraintsFirst = ratio < 1f)
+            .clip(shape).border(1.dp, Palette.Border, shape).background(Palette.Bg)
+            .semantics { contentDescription = alt }
+            .tagged(Tags.Worker.THREAD_MD_IMAGE),
+        contentAlignment = Alignment.Center,
+    ) {
+        val shown = picture
+        if (shown != null) Image(shown, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        else Spinner(Modifier.size(14.dp), Palette.TextSecondary)
+    }
 }
 
 /** One picture over everything, fit to the screen with pinch-zoom, until the owner taps it, ✕ or Back. */
