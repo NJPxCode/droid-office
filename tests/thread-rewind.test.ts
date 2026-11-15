@@ -115,7 +115,8 @@ test('a rewind point comes from the user message seq, not its projected entry in
   ];
   await writeFile(path.join(dir, `${source.sessionId}.jsonl`), `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
   const reader = new WorkerThreadReader(root);
-  assert.deepEqual(await reader.rewindPoint(source, 'abc:text'), { number: 3, preview: 'Use the Create tool to create notes.txt' });
+  assert.deepEqual(await reader.rewindPoint(source, 'abc:0'), { number: 3, preview: 'Use the Create tool to create notes.txt' });
+  assert.equal(await reader.rewindPoint(source, 'abc:text'), undefined, 'an array message uses its text part index');
   assert.equal(await reader.rewindPoint(source, 'def:text'), undefined);
   assert.equal(await reader.rewindPoint(source, 'missing:text'), undefined);
 });

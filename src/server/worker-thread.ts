@@ -326,23 +326,27 @@ export class WorkerThreadReader {
 
   /** The menu number and preview Droid shows for a user text entry's rewind point. */
   async rewindPoint(source: ThreadSession, entryId: string): Promise<{ number?: number; preview: string } | undefined> {
-    if (!entryId.endsWith(':text') || entryId.length > 170) return undefined;
+    const selected = /^(.*):(?:text|\d+)$/.exec(entryId);
+    if (!selected || entryId.length > 170) return undefined;
+    const recordId = selected[1];
     const file = await this.find(source);
     if (!file) return undefined;
     const raw = await readFile(file, 'utf8').catch(() => undefined);
     if (!raw) return undefined;
     for (const line of raw.split('\n')) {
-      if (!line.includes(entryId.slice(0, -5))) continue;
+      if (!line.includes(recordId)) continue;
       let row: Record<string, unknown>;
       try {
         row = object(JSON.parse(line));
       } catch {
         continue;
       }
-      if (row.type !== 'message' || `${clean(row.id, 160)}:text` !== entryId) continue;
+      if (row.type !== 'message' || clean(row.id, 160) !== recordId) continue;
       const message = object(row.message);
       if (message.role !== 'user' || Object.keys(message).some((key) => key.startsWith('hook'))) return undefined;
       if (message.visibility !== undefined && message.visibility !== 'both' && message.visibility !== 'user_only') return undefined;
+      const suffix = entryId.slice(recordId.length + 1);
+      if (suffix === 'text' ? typeof message.content !== 'string' : object(Array.isArray(message.content) ? message.content[Number(suffix)] : undefined).type !== 'text') return undefined;
       const preview = clean(contentText(message.content), 1000).replace(/\s+/g, ' ').trim();
       if (!preview) return undefined;
       const number = typeof row.seq === 'number' && Number.isSafeInteger(row.seq) && row.seq >= 0 ? row.seq + 1 : undefined;
