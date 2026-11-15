@@ -307,28 +307,18 @@ class OfficeApi(base: OkHttpClient = OkHttpClient()) {
     }
 
     /** A picture from a worker's Thread by the id its entry carries; null when the office no longer has it. */
-    suspend fun threadImage(base: String, auth: OfficeAuth, floor: String, worker: String, image: String): ByteArray? = withContext(Dispatchers.IO) {
-        val req = request(base, "api/thread/image", auth, "floor" to floor, "worker" to worker, "image" to image).get().build()
-        try {
-            client.newCall(req).await().use { res -> if (res.isSuccessful) res.body.bytes() else null }
-        } catch (_: IOException) {
-            null
-        }
-    }
+    suspend fun threadImage(base: String, auth: OfficeAuth, floor: String, worker: String, image: String): ByteArray? =
+        fetchBytes(request(base, "api/thread/image", auth, "floor" to floor, "worker" to worker, "image" to image).get().build())
 
     /** A picture on the office's machine a reply's Markdown names by its path (GET /api/thread/file?raw=image); null when the office won't show it. */
-    suspend fun threadFileImage(base: String, auth: OfficeAuth, floor: String, worker: String, path: String): ByteArray? = withContext(Dispatchers.IO) {
-        val req = request(base, "api/thread/file", auth, "floor" to floor, "worker" to worker, "path" to path, "raw" to "image").get().build()
-        try {
-            client.newCall(req).await().use { res -> if (res.isSuccessful) res.body.bytes() else null }
-        } catch (_: IOException) {
-            null
-        }
-    }
+    suspend fun threadFileImage(base: String, auth: OfficeAuth, floor: String, worker: String, path: String): ByteArray? =
+        fetchBytes(request(base, "api/thread/file", auth, "floor" to floor, "worker" to worker, "path" to path, "raw" to "image").get().build())
 
     /** A picture on the web a reply's Markdown shows, fetched by the office (GET /api/image) as its wall pictures are; null when it can't be. */
-    suspend fun webImage(base: String, auth: OfficeAuth, url: String): ByteArray? = withContext(Dispatchers.IO) {
-        val req = request(base, "api/image", auth, "url" to url).get().build()
+    suspend fun webImage(base: String, auth: OfficeAuth, url: String): ByteArray? =
+        fetchBytes(request(base, "api/image", auth, "url" to url).get().build())
+
+    private suspend fun fetchBytes(req: Request): ByteArray? = withContext(Dispatchers.IO) {
         try {
             client.newCall(req).await().use { res -> if (res.isSuccessful) res.body.bytes() else null }
         } catch (_: IOException) {

@@ -280,7 +280,8 @@ async function readMachineImage(abs: string): Promise<ThreadWorkspaceImage | Thr
   } catch {
     return { status: 404, error: 'File not found.' };
   }
-  const parts = real.split(path.sep);
+  // Lowercased: macOS folders match names case-insensitively, so `.SSH` is `.ssh`.
+  const parts = real.toLowerCase().split(path.sep);
   const office = parts.lastIndexOf('.droid-office');
   if (parts.some((seg) => SECRET_DIRS.has(seg)) || (office >= 0 && parts[office + 1] !== 'worktrees')) {
     return { status: 403, error: 'Pictures in private folders cannot be shown.' };

@@ -269,7 +269,8 @@ test('ThreadWorkspace.readImage serves absolute and ~/ image paths: workspace ru
   await writeFile(path.join(root, 'Pictures/den.png'), png);
   await writeFile(path.join(root, 'Pictures/plan.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
   await writeFile(path.join(root, '.git/leak.png'), png);
-  for (const dir of ['designs', '.ssh', '.droid-office/drops/w1', '.droid-office/worktrees/nibble']) await mkdir(path.join(outside, dir), { recursive: true });
+  for (const dir of ['designs', '.ssh', '.AWS', '.droid-office/drops/w1', '.droid-office/worktrees/nibble']) await mkdir(path.join(outside, dir), { recursive: true });
+  await writeFile(path.join(outside, '.AWS/creds.png'), png);
   await writeFile(path.join(outside, 'designs/02-cozy-media-den.png'), png);
   await writeFile(path.join(outside, 'designs/notes.png'), 'not a picture\n');
   await writeFile(path.join(outside, 'designs/plan.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
@@ -301,6 +302,7 @@ test('ThreadWorkspace.readImage serves absolute and ~/ image paths: workspace ru
   assert.equal(await status(path.join(outside, 'designs/notes.png')), 415, 'outside the workspace the bytes must be a picture');
   assert.equal(await status(path.join(outside, 'designs/plan.svg')), 415);
   assert.equal(await status(path.join(outside, '.ssh/key.png')), 403);
+  assert.equal(await status(path.join(outside, '.AWS/creds.png')), 403, 'secret folders are matched whatever their case');
   assert.equal(await status(path.join(outside, '.droid-office/drops/w1/a.png')), 403);
   assert.equal(await status(path.join(outside, 'designs/missing.png')), 404);
   assert.equal(await status(path.join(outside, 'designs')), 415);

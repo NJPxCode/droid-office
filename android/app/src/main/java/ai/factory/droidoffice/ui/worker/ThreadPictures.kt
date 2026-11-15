@@ -173,9 +173,9 @@ internal fun MarkdownImage(alt: String, src: String, style: TextStyle) {
     val source = LocalPictureSource.current
     val connection = LocalGraph.current.connection
     val local = remember(src) { Markdown.localImagePath(src) }
-    val web = src.startsWith("https://") || src.startsWith("http://")
+    val web = src.startsWith("https://", ignoreCase = true) || src.startsWith("http://", ignoreCase = true)
     val key = "${source?.floor}/${source?.worker}/md:$src@$THUMB_SIDE"
-    var failed by remember(key) { mutableStateOf(local == null && !web || local != null && source == null) }
+    var failed by remember(key) { mutableStateOf(if (local != null) source == null else !web) }
     val picture by produceState(ThreadPictureCache.get(key), key, failed) {
         if (value != null || failed) return@produceState
         val bytes = if (local != null && source != null) connection.threadFileImage(source.floor, source.worker, local) else connection.webImage(src)
@@ -187,7 +187,7 @@ internal fun MarkdownImage(alt: String, src: String, style: TextStyle) {
         }
     }
     if (failed && picture == null) {
-        Text(alt.ifBlank { src }, style = style.copy(color = Palette.TextSecondary, fontStyle = FontStyle.Italic))
+        Text(alt.ifBlank { src }, style = style.copy(color = Palette.TextSecondary, fontStyle = FontStyle.Italic), maxLines = 2, overflow = TextOverflow.Ellipsis)
         return
     }
     val ratio = picture?.let { (it.width.toFloat() / it.height).coerceIn(0.2f, 5f) } ?: (16f / 9f)
