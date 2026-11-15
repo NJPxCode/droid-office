@@ -34,6 +34,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.DisableSelection
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.DropdownMenu
@@ -52,6 +53,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -176,7 +178,7 @@ internal fun MarkdownText(
                         b.language.equals("suggestion", ignoreCase = true) -> SuggestionCard(b, mono)
                         else -> CodeBlockCard(b, mono)
                     }
-                    is Markdown.Block.Email -> EmailDraftCard(b, body)
+                    is Markdown.Block.Email -> EmailDraftCard(b, body, streaming)
                     is Markdown.Block.Widget -> WidgetBlock(b, streaming, mono)
                     is Markdown.Block.Math -> MathBlock(b, body)
                     is Markdown.Block.Image -> MarkdownImage(b.alt, b.src, body)
@@ -374,9 +376,17 @@ internal fun CopyActionChip(
 }
 
 @Composable
-private fun EmailDraftCard(email: Markdown.Block.Email, bodyStyle: TextStyle) {
+private fun EmailDraftCard(email: Markdown.Block.Email, bodyStyle: TextStyle, streaming: Boolean) {
     val uriHandler = LocalUriHandler.current
     val shape = RoundedCornerShape(4.dp)
+    var to by rememberSaveable(email.raw) { mutableStateOf(email.to) }
+    var cc by rememberSaveable(email.raw) { mutableStateOf(email.cc.orEmpty()) }
+    var bcc by rememberSaveable(email.raw) { mutableStateOf(email.bcc.orEmpty()) }
+    var subject by rememberSaveable(email.raw) { mutableStateOf(email.subject) }
+    var body by rememberSaveable(email.raw) { mutableStateOf(email.body) }
+    var target by rememberSaveable { mutableStateOf(Markdown.EmailSend.Mail) }
+    var targets by remember { mutableStateOf(false) }
+    val edited = email.copy(to = to, cc = cc.ifBlank { null }, bcc = bcc.ifBlank { null }, subject = subject, body = body)
     Column(Modifier.fillMaxWidth().panel(shape, ThreadPalette.Surface, ThreadPalette.Border).tagged(Tags.Worker.THREAD_EMAIL)) {
         DisableSelection {
             Column(Modifier.fillMaxWidth().background(ThreadPalette.SurfaceRaised).padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -385,39 +395,57 @@ private fun EmailDraftCard(email: Markdown.Block.Email, bodyStyle: TextStyle) {
                     Text("Email draft", style = MaterialTheme.typography.bodyMedium.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.weight(1f))
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    CopyActionChip("COPY BODY", email.body, "Email body", Tags.Worker.THREAD_EMAIL_COPY_BODY)
-                    CopyActionChip("COPY EMAIL", email.raw, "Email draft", Tags.Worker.THREAD_EMAIL_COPY_ALL)
-                    EmailActionButton("SEND", OfficeIcons.External, Tags.Worker.THREAD_EMAIL_OPEN) {
-                        runCatching { uriHandler.openUri(email.mailtoUri()) }
+                    CopyActionChip("COPY BODY", body, "Email body", Tags.Worker.THREAD_EMAIL_COPY_BODY)
+                    CopyActionChip("COPY EMAIL", Markdown.emailRaw(edited), "Email draft", Tags.Worker.THREAD_EMAIL_COPY_ALL)
+                    if (edited != email) EmailActionButton("REVERT", OfficeIcons.Retry, Tags.Worker.THREAD_EMAIL_REVERT) {
+                        to = email.to
+                        cc = email.cc.orEmpty()
+                        bcc = email.bcc.orEmpty()
+                        subject = email.subject
+                        body = email.body
+                    }
+                    Box {
+                        EmailActionButton(target.name.uppercase(), OfficeIcons.Chevron, Tags.Worker.THREAD_EMAIL_TARGET) { targets = true }
+                        DropdownMenu(expanded = targets, onDismissRequest = { targets = false }) {
+                            for (choice in Markdown.EmailSend.entries) DropdownMenuItem(
+                                text = { Text(choice.name) },
+                                onClick = { target = choice; targets = false },
+                                modifier = Modifier.tagged(Tags.Worker.threadEmailField("target.${choice.name.lowercase()}")),
+                            )
+                        }
+                    }
+                    EmailActionButton("SEND", OfficeIcons.External, Tags.Worker.THREAD_EMAIL_OPEN, enabled = !streaming) {
+                        runCatching { uriHandler.openUri(Markdown.emailUri(edited, target)) }
                     }
                 }
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
         Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (email.to.isNotEmpty()) EmailFieldRow("To", email.to, bold = false)
-            email.cc?.let { EmailFieldRow("Cc", it, bold = false) }
-            email.bcc?.let { EmailFieldRow("Bcc", it, bold = false) }
-            if (email.subject.isNotEmpty()) EmailFieldRow("Subject", email.subject, bold = true)
+            EmailFieldRow("To", to, enabled = !streaming) { to = it }
+            EmailFieldRow("Cc", cc, enabled = !streaming) { cc = it }
+            EmailFieldRow("Bcc", bcc, enabled = !streaming) { bcc = it }
+            EmailFieldRow("Subject", subject, enabled = !streaming) { subject = it }
         }
-        if (email.body.isNotEmpty()) {
-            Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
-            Text(
-                email.body,
-                style = bodyStyle.copy(fontSize = 14.sp, lineHeight = 20.sp),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
-            )
-        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
+        BasicTextField(
+            body,
+            onValueChange = { body = it },
+            enabled = !streaming,
+            textStyle = bodyStyle.copy(color = ThreadPalette.Text, fontSize = 14.sp, lineHeight = 20.sp),
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(ThreadPalette.Accent),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp).tagged(Tags.Worker.threadEmailField("body")),
+        )
     }
 }
 
 @Composable
-private fun EmailActionButton(label: String, icon: ImageVector, tag: String, onClick: () -> Unit) {
+private fun EmailActionButton(label: String, icon: ImageVector, tag: String, enabled: Boolean = true, onClick: () -> Unit) {
     val shape = RoundedCornerShape(3.dp)
     Row(
         Modifier.clip(shape)
             .border(1.dp, ThreadPalette.BorderStrong, shape)
-            .clickable(role = Role.Button, onClick = onClick)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .tagged(tag)
             .heightIn(min = 28.dp)
             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -425,27 +453,31 @@ private fun EmailActionButton(label: String, icon: ImageVector, tag: String, onC
         horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Icon(icon, null, tint = ThreadPalette.Accent, modifier = Modifier.size(12.dp))
-        Text(label, style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.Text), maxLines = 1)
+        Text(label, style = LocalOfficeType.current.eyebrow.copy(color = if (enabled) ThreadPalette.Text else ThreadPalette.TextSecondary), maxLines = 1)
     }
 }
 
 @Composable
-private fun EmailFieldRow(label: String, value: String, bold: Boolean) {
+private fun EmailFieldRow(label: String, value: String, enabled: Boolean, onChange: (String) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         Text(
             label.uppercase(),
             style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary),
             modifier = Modifier.width(64.dp).padding(top = 2.dp),
         )
-        Text(
+        BasicTextField(
             value,
-            style = MaterialTheme.typography.bodyMedium.copy(
+            onValueChange = onChange,
+            enabled = enabled,
+            singleLine = true,
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(ThreadPalette.Accent),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
                 fontSize = 13.5.sp,
                 lineHeight = 19.sp,
-                fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal,
+                fontWeight = if (label == "Subject") FontWeight.SemiBold else FontWeight.Normal,
                 color = ThreadPalette.Text,
             ),
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).tagged(Tags.Worker.threadEmailField(label.lowercase())),
         )
     }
 }

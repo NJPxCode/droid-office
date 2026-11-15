@@ -2867,7 +2867,7 @@ math { font-family: 'STIX Two Math', math; }
 .md.wt-md .wt-md-table { position: relative; width: fit-content; max-width: calc(100% - 32px); margin: 0 0 8px; }
 .md.wt-md * + .wt-md-table { margin-top: 16px; }
 .md.wt-md :is(h1, h2, h3, h4, h5, h6) + .wt-md-table { margin-top: 8px; }
-.wt-md-table-scroll { max-width: 100%; overflow-x: auto; padding-bottom: 8px; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.wt-md-table-scroll { max-width: 100%; overflow-x: auto; padding-bottom: 8px; }
 .md.wt-md table { display: table; width: auto; max-width: none; margin: 0; overflow: visible; border: 1px solid var(--border-strong); border-collapse: separate; border-spacing: 0; border-radius: 4px; font-size: 12px; overflow-wrap: normal; word-break: normal; }
 .md.wt-md :is(th, td) { min-width: 0; padding: 8px 13px; border: 0; background: none; vertical-align: top; white-space: normal; overflow-wrap: normal; word-break: normal; hyphens: none; }
 .md.wt-md :is(th, td):not([align]) { text-align: left; }
@@ -2892,7 +2892,7 @@ math { font-family: 'STIX Two Math', math; }
 .wt-md-code-lang { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wt-md-code-copy { flex: none; display: grid; place-items: center; padding: 2px; border: 0; border-radius: 4px; background: transparent; color: var(--text-tertiary); opacity: .5; cursor: pointer; transition: opacity 100ms ease-out; }
 .wt-md-code-copy:is(:hover, :focus-visible), .wt-md-code-copy.copied { opacity: 1; transition: none; }
-.wt-md-code-body { padding: 8px; background: var(--surface); scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.wt-md-code-body { padding: 8px; background: var(--surface); }
 .wt-md-code-body.collapsed { max-height: 180px; overflow: hidden; }
 .wt-md-code-body.expanded { max-height: 500px; overflow: auto; }
 .md.wt-md pre.wt-md-code-pre { margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); overflow: visible; font: 400 12px/1.725 var(--font-mono); letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }

@@ -151,7 +151,7 @@ function executeRow(action: ThreadModelAction, entry: ThreadEntry | undefined, c
   const images = entry ? ctx.pictures(entry, action.title, command, ctx.owner) : null;
   let hint: HTMLElement | null = null;
   // `at` arrives with the live Thread layer (ThreadEntry.at); older offices don't send it.
-  const started = live?.startedAt ?? (entry as { at?: number } | undefined)?.at;
+  const started = live?.startedAt ?? entry?.at;
   if (state === 'working' && started !== undefined) {
     hint = h('span.wt-tr-hint', { hidden: true }, 'Click to see progress');
     const show = () => {

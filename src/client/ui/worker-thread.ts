@@ -28,9 +28,10 @@ import { openFilePreviewModal, threadFileImageUrl } from './file-preview';
 import { icon } from './icons';
 import { promptImages } from './images';
 import { expandPastes, insertQuote, isLargePaste, livePastes, type PastedText, pastedText, replacePaste } from './thread-compose';
-import { viewPicture } from './picture-viewer';
 import { renderTurnChanges, setDisclosureOpen, type ThreadCardRenderContext } from './thread-diff-view';
-import { renderThreadActivity } from './thread-tool-activity';
+import { refreshLiveOutput, renderThreadActivity } from './thread-tool-activity';
+import { openImageLightbox } from './thread-md-lightbox';
+import { attachQuoteReply } from './thread-md-quote';
 import { threadMarkdown, threadUserMarkdown, type WorkspacePathRef } from './thread-markdown';
 import { applyMention, findMentionQuery, rankWorkspacePaths, type MentionQuery, type WorkspaceMentionItem } from './thread-mention';
 
@@ -815,8 +816,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   const progress = mountThreadStatusRow();
   const blockedText = h('p.wt-blocked-text');
   const blockedNote = h('div.wt-blocked.note.warn', { role: 'status', hidden: true }, icon('lock', 15), blockedText, opts.blockedAction ?? null);
-  // Quote: text selected in the conversation goes into the draft at its cursor as Markdown quote lines.
-  const quote = h('button.btn.sm.wt-quote', { type: 'button', hidden: true, onmousedown: (event: Event) => event.preventDefault(), onclick: () => quoteSelection() }, 'Quote');
   const element = h(
     'section.worker-thread',
     { 'aria-label': `${worker.name} thread` },
@@ -831,7 +830,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     blockedNote,
     planBar,
     form,
-    quote,
   );
   element.addEventListener('keydown', (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
@@ -840,54 +838,18 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     }
   });
   images.dropZone(form);
-  const quotable = () => {
-    if (input.disabled || !form.checkVisibility()) return undefined;
-    const selection = document.getSelection();
-    if (!selection?.rangeCount || selection.isCollapsed) return undefined;
-    const inTranscript = (node: Node | null) => {
-      const el = node instanceof Element ? node : node?.parentElement;
-      return !!el?.closest('.wt-entry') && (list.contains(el) || teamBody.contains(el));
-    };
-    if (!inTranscript(selection.anchorNode) || !inTranscript(selection.focusNode)) return undefined;
-    const text = selection.toString();
-    if (!text.trim()) return undefined;
-    const range = selection.getRangeAt(0);
-    const rects = range.getClientRects();
-    return { text, rect: rects[rects.length - 1] ?? range.getBoundingClientRect() };
-  };
-  let quoteFrame = 0;
-  const placeQuote = () => {
-    quoteFrame = 0;
-    const found = quotable();
-    const view = scroll.getBoundingClientRect();
-    if (!found || found.rect.bottom < view.top || found.rect.top > view.bottom) {
-      quote.hidden = true;
-      return;
-    }
-    quote.hidden = false;
-    const frame = element.getBoundingClientRect();
-    const x = Math.min(Math.max(found.rect.right - frame.left - quote.offsetWidth / 2, 8), frame.width - quote.offsetWidth - 8);
-    const y = Math.min(Math.max(found.rect.bottom - frame.top + 6, view.top - frame.top + 4), view.bottom - frame.top - quote.offsetHeight - 4);
-    quote.style.setProperty('--quote-x', `${Math.round(x)}px`);
-    quote.style.setProperty('--quote-y', `${Math.round(y)}px`);
-  };
-  const scheduleQuote = () => {
-    if (!quoteFrame) quoteFrame = requestAnimationFrame(placeQuote);
-  };
-  const quoteSelection = () => {
-    const found = quotable();
-    quote.hidden = true;
-    if (!found) return;
-    const next = insertQuote(input.value, input.selectionStart ?? input.value.length, input.selectionEnd ?? input.value.length, found.text);
-    if (!next) return;
-    input.value = next.value;
-    document.getSelection()?.removeAllRanges();
-    input.focus();
-    input.setSelectionRange(next.cursor, next.cursor);
-    edited();
-  };
-  document.addEventListener('selectionchange', scheduleQuote);
-  scroll.addEventListener('scroll', scheduleQuote, { passive: true });
+  const detachQuote = attachQuoteReply(
+    element,
+    (_quote, text) => {
+      const next = insertQuote(input.value, input.selectionStart ?? input.value.length, input.selectionEnd ?? input.value.length, text);
+      if (!next) return;
+      input.value = next.value;
+      input.focus();
+      input.setSelectionRange(next.cursor, next.cursor);
+      edited();
+    },
+    () => active && !input.disabled && form.checkVisibility(),
+  );
 
   const nodes = new Map<string, { key: string; node: HTMLElement; sourceIds: string[] }>();
   const expandedMessages = new Set<string>();
@@ -1020,13 +982,19 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     lastScrollTop = top;
     if (viewportWidth === scroll.clientWidth && viewportHeight === scroll.clientHeight) {
       const distance = scroll.scrollHeight - top - scroll.clientHeight;
-      if (delta < -1 || distance > 80) followingLayout = false;
+      if ((delta < -1 && distance > 1) || distance > 80) followingLayout = false;
       else if (distance <= 16 && !inspecting) followingLayout = true;
     }
     updateLatest();
     updatePin();
   });
   scroll.addEventListener('click', (event) => {
+    const toolTrigger = event.target instanceof Element ? event.target.closest('.wt-tr-trigger, .wt-sg-trigger') : null;
+    if (toolTrigger?.getAttribute('aria-expanded') === 'true') {
+      inspecting = true;
+      followingLayout = false;
+      updateLatest();
+    }
     const summary = event.target instanceof Element ? event.target.closest('summary') : null;
     const details = summary?.parentElement;
     if (details instanceof HTMLDetailsElement && !details.open)
@@ -1068,15 +1036,20 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   const pictures = (entry: ThreadEntry | undefined, title: string, about?: string, owner: WorkerInfo = worker) => {
     const imgs = !owner.cloud && opts.floor ? (entry?.images ?? []) : [];
     if (!imgs.length) return null;
+    const gallery = imgs.map((image, i) => ({
+      src: withToken(`/api/thread/image?${new URLSearchParams({ floor: opts.floor ?? '', worker: owner.id, image: image.id })}`),
+      alt: imgs.length > 1 ? `${title} · ${i + 1} of ${imgs.length}` : title,
+      description: [about, image.width && image.height ? `${image.width} × ${image.height}` : undefined].filter(Boolean).join(' · '),
+      filename: `image.${image.type.substring('image/'.length).replace('jpeg', 'jpg')}`,
+    }));
     return h(
       'div.wt-images',
       {},
       ...imgs.map((image, i) => {
-        const src = withToken(`/api/thread/image?${new URLSearchParams({ floor: opts.floor ?? '', worker: owner.id, image: image.id })}`);
-        const name = imgs.length > 1 ? `${title} · ${i + 1} of ${imgs.length}` : title;
+        const { src, alt: name } = gallery[i];
         return h(
           'button.wt-image',
-          { type: 'button', title: 'Open the picture', 'aria-label': `Open ${name}`, onclick: () => viewPicture(src, name, { width: image.width, height: image.height, about }) },
+          { type: 'button', title: 'Open the picture', 'aria-label': `Open ${name}`, onclick: () => openImageLightbox(gallery, i) },
           h('img', { src, alt: name, loading: 'lazy', decoding: 'async', width: image.width, height: image.height, draggable: 'false' }),
         );
       }),
@@ -1114,6 +1087,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const node = h('article.wt-entry', { 'data-entry': row.id });
     const openChanges = changesOf(author);
     if (row.kind === 'activity') {
+      node.setAttribute('data-response-message-id', row.id);
       const cardCtx: ThreadCardRenderContext = {
         owner: author,
         floorDir: resolveFloorDir(),
@@ -1127,15 +1101,14 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         openChanges,
         ...(opts.sendToWhiteboard && canOpenFiles(author) ? { sendToWhiteboard: (path: string) => opts.sendToWhiteboard?.(author.id, path) } : {}),
       };
-      return renderThreadActivity(node, row, loaded, asking, { ...cardCtx, thought: (block, entry) => thought(block, entry, toggles) });
+      return renderThreadActivity(node, row, loaded, asking, { ...cardCtx, thought: (block, entry) => thought(block, entry, toggles), live: (id) => liveTools.get(id) });
     }
 
     node.classList.add(row.role, row.kind === 'message' ? 'text' : 'notice');
     if (row.kind === 'notice') {
-      const compaction = (row as { name?: string; tone?: string }).name === 'compaction' || (row as { tone?: string }).tone === 'compaction';
+      const compaction = loaded.get(row.id)?.name === 'compaction' || row.id.startsWith('compaction:');
       if (compaction) {
-        const tokens = (row as { tokens?: number }).tokens;
-        node.append(h('div.wt-compact-divider', { role: 'separator' }, h('span', {}, `Compacted${tokens ? ` ${tokens.toLocaleString('en-US')} tokens` : ''}`)));
+        node.append(h('div.wt-compact-divider', { role: 'separator' }, h('span', {}, 'Compacted')));
         return node;
       }
       const imgs = row.tone === 'attachment' ? pictures(loaded.get(row.id), row.role === 'user' ? 'Picture you sent' : `Picture from ${author.name}`, undefined, author) : null;
@@ -1153,6 +1126,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       }
       const streaming = isBusy(author.status) && Boolean(renderOpts.isLastRow);
       const body = threadMarkdown(text, {
+        key: row.id,
         streaming,
         onOpenPath: onOpenPathFor(author),
         ...(canOpenFiles(author) ? { imageUrl: (path: string) => threadFileImageUrl({ floor: opts.floor ?? '', workerId: author.id, path }) } : {}),
@@ -1163,6 +1137,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     }
 
     // The pictures sent with the prompt, above its text, in place of where the office kept them.
+    node.setAttribute('data-response-message-id', row.id);
     const sent = pictures(entry, 'Picture you sent', undefined, author);
     if (sent) node.append(sent);
     if (sent && !text.trim()) return node;
@@ -1504,8 +1479,21 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       const key = JSON.stringify([row, asking, streamFlag, turnEnd, hasDelegateCard(row) ? rosterKey : '', rowContent(row, loaded)]);
       let had = nodes.get(row.id);
       if (!had || had.key !== key) {
+        const groupPositions = new Map(
+          [...(had?.node.querySelectorAll<HTMLElement>('.wt-sg-scroll') ?? [])].map((content) => [content.closest<HTMLElement>('[data-disclosure]')?.dataset.disclosure, { top: content.scrollTop, touched: content.dataset.touched }]),
+        );
         const positions = [...(had?.node.querySelectorAll<HTMLElement>('pre, .wt-horizontal-content') ?? [])].map((content) => [content.scrollTop, content.scrollLeft]);
         const node = render(row, loaded, asking, { isLastRow, turnEnd });
+        for (const content of node.querySelectorAll<HTMLElement>('.wt-sg-scroll')) {
+          const position = groupPositions.get(content.closest<HTMLElement>('[data-disclosure]')?.dataset.disclosure);
+          if (position) {
+            if (position.touched) content.dataset.touched = position.touched;
+            if (position.touched || !content.closest('.wt-sg.is-live'))
+              requestAnimationFrame(() => {
+                if (content.isConnected) content.scrollTop = position.top;
+              });
+          }
+        }
         if (!had && paintedOnce && !older) {
           node.classList.add('wt-enter');
           node.addEventListener('animationend', () => node.classList.remove('wt-enter'), { once: true });
@@ -1660,13 +1648,14 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       liveView = nextLive;
       liveTools.clear();
       for (const tool of nextLive.tools) if (tool.id) liveTools.set(tool.id, tool);
+      refreshLiveOutput(element, (id) => liveTools.get(id));
       paintLive();
       paintSettings();
       paintProgress();
       if (stick) motion.follow();
       return;
     }
-    const rewound = msg as unknown as { t: string; workerId: string; ok: boolean; text?: string; error?: string };
+    const rewound = msg;
     if (rewound.t === 'worker.rewound' && rewound.workerId === worker.id) {
       if (rewound.ok) {
         history.clear(worker.sessionId);
@@ -1686,7 +1675,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       }
       return;
     }
-    if (msg.t === 'thread.snapshot' && typeof (msg as { child?: unknown }).child === 'string') return;
+    if (msg.t === 'thread.snapshot' && msg.child) return;
     if (msg.t === 'floor.enter' || msg.t === 'welcome') {
       if (msg.t === 'welcome' || watchedWorkerId !== ORCHESTRATOR_ID) {
         watchedWorkerId = '';
@@ -2027,8 +2016,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       teamSection.removeEventListener('toggle', teamDisclosure, true);
       teamSection.removeEventListener('focusout', teamFocus);
       document.removeEventListener('selectionchange', teamSelection);
-      document.removeEventListener('selectionchange', scheduleQuote);
-      cancelAnimationFrame(quoteFrame);
+      detachQuote();
       off();
       offFactory();
       resize.disconnect();

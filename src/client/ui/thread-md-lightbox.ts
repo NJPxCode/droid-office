@@ -8,6 +8,8 @@ import { mdIcon } from './thread-md-icons';
 export interface LightboxImage {
   src: string;
   alt?: string;
+  description?: string;
+  filename?: string;
 }
 
 /** Factory's image zoom stops. */
@@ -76,7 +78,7 @@ export function openImageLightbox(images: readonly LightboxImage[], index = 0): 
     h('span.wt-lightbox-sep', { 'aria-hidden': 'true' }),
     iconButton('download', 'Download image', () => {
       const src = images[at]?.src;
-      if (src) saveUrl(src, downloadName(src, 'image.png'));
+      if (src) saveUrl(src, images[at].filename ?? downloadName(src, 'image.png'));
     }),
     h('span.wt-lightbox-sep', { 'aria-hidden': 'true' }),
     iconButton('x', 'Close preview', () => modal.close()),
@@ -124,6 +126,9 @@ export function openImageLightbox(images: readonly LightboxImage[], index = 0): 
     fitWidth = 0;
     img.src = images[at]?.src ?? '';
     img.alt = images[at]?.alt ?? '';
+    img.title = images[at]?.description ?? '';
+    content.setAttribute('aria-label', images[at]?.alt || 'Image preview');
+    content.setAttribute('aria-description', images[at]?.description ?? '');
     paint();
   };
   const go = (d: number) => {

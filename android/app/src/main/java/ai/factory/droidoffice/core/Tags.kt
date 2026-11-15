@@ -618,6 +618,15 @@ object Tags {
         const val THREAD_REWIND_RESTORE = "worker.thread.rewind.restore"
         const val THREAD_REWIND_CONFIRM = "worker.thread.rewind.confirm"
         const val THREAD_REWIND_CANCEL = "worker.thread.rewind.cancel"
+        const val THREAD_IMAGE_PREVIOUS = "worker.thread.image_viewer.previous"
+        const val THREAD_IMAGE_NEXT = "worker.thread.image_viewer.next"
+        const val THREAD_IMAGE_COUNT = "worker.thread.image_viewer.count"
+        const val THREAD_IMAGE_DOWNLOAD = "worker.thread.image_viewer.download"
+        const val THREAD_DIAGRAM_DOWNLOAD = "worker.thread.diagram.download"
+        const val THREAD_DIAGRAM_SHARE = "worker.thread.diagram.share"
+        const val THREAD_EMAIL_REVERT = "worker.thread.email.revert"
+        const val THREAD_EMAIL_TARGET = "worker.thread.email.target"
+        fun threadEmailField(field: String) = "worker.thread.email.$field"
 
         /** A quick key, by what TalkBack calls it: "Shift Tab" is `key.shift_tab`. */
         fun key(spoken: String) = "key." + spoken.lowercase().replace(' ', '_')

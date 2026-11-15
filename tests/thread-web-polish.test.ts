@@ -266,19 +266,18 @@ test('selected reply or diff text is quoted into the draft at its cursor', { ski
   ];
   await push(page, entries);
   const input = page.locator('textarea.wt-input');
-  const quote = page.locator('.wt-quote');
+  const quote = page.locator('.wt-quote-btn');
   assert.equal(await quote.isHidden(), true);
 
   await input.fill('Thanks.');
   await selectText(page, '.wt-entry[data-entry="a1"] .md');
   assert.equal(await quote.isVisible(), true, 'a selection in a reply offers Quote');
   const placed = await page.evaluate(() => {
-    const q = document.querySelector('.wt-quote')!.getBoundingClientRect();
-    const s = document.querySelector('.wt-scroll')!.getBoundingClientRect();
+    const q = document.querySelector('.wt-quote-pill')!.getBoundingClientRect();
     const end = window.getSelection()!.getRangeAt(0).getBoundingClientRect();
-    return q.top >= s.top && q.bottom <= s.bottom && q.top >= end.bottom - 1;
+    return q.top >= 0 && q.bottom <= innerHeight && (q.bottom <= end.top || q.top >= end.bottom);
   });
-  assert.equal(placed, true, 'Quote sits below the selection, inside the conversation');
+  assert.equal(placed, true, 'Add to chat sits above or below the selection, inside the viewport');
   await quote.click();
   assert.equal(await input.inputValue(), 'Thanks.\n\n> I brightened the button text.\n>\n> It now matches the header color.\n\n');
   assert.equal(await page.evaluate(() => document.activeElement?.matches('textarea.wt-input')), true);

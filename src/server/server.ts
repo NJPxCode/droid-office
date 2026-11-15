@@ -1903,7 +1903,7 @@ export async function startServer(cfg: Config) {
             return;
           }
           threadWatches?.notifyWorker(w.wid);
-          const result = await w.floor.workers.rewind(w.wid, entryId, point, restore);
+          const result = await w.floor.workers.rewind(w.wid, entryId, source.sessionId, point, restore);
           threadWatches?.notifyWorker(w.wid);
           if (!result.ok) {
             const error = `Failed to rewind conversation: ${result.error ?? 'Droid did not finish the rewind.'}`;

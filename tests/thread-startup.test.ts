@@ -459,10 +459,11 @@ test('a thread shows the pictures a worker read and was sent, and opens them ful
   assert.equal(await page.locator('[data-entry="prompt-only:0"] .wt-image').getAttribute('aria-label'), 'Open Picture you sent');
   assert.equal(await page.locator('[data-entry="prompt-only:0"] .wt-user-text').count(), 0, 'a prompt that was only a picture has no empty bubble');
   await readRow.locator('.wt-image').click();
-  const viewer = page.locator('.modal.wt-picture-window');
-  assert.equal(await viewer.locator('h2').textContent(), 'Read icon.png');
-  assert.equal(await viewer.locator('.sub').textContent(), '/project/icon.png · 192 × 192');
-  assert.equal(await viewer.locator('img.wt-picture-full').getAttribute('src'), await read.getAttribute('src'));
+  const viewer = page.locator('.wt-image-lightbox');
+  assert.equal(await viewer.getAttribute('aria-label'), 'Read icon.png');
+  assert.equal(await viewer.getAttribute('aria-description'), '/project/icon.png · 192 × 192');
+  assert.equal(await viewer.locator('img.wt-lightbox-img').getAttribute('src'), await read.getAttribute('src'));
+  assert.equal(await viewer.getByRole('button', { name: 'Download image', exact: true }).count(), 1);
   await page.keyboard.press('Escape');
   assert.equal(await viewer.count(), 0);
   await page.evaluate(() => (window as any).thread.dispose());

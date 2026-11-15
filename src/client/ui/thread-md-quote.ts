@@ -41,7 +41,11 @@ function selectedQuote(container: HTMLElement): { text: string; rect: DOMRect } 
   const el = common instanceof Element ? common : common.parentElement;
   if (!el || !container.contains(el)) return undefined;
   const own = el.closest(`[${QUOTABLE_ATTR}]`);
-  const roots = own ? [own] : [...container.querySelectorAll(`[${QUOTABLE_ATTR}]`)].filter((r) => range.intersectsNode(r));
+  if (own) {
+    const text = sel.toString().trim();
+    return text ? { text, rect: range.getBoundingClientRect() } : undefined;
+  }
+  const roots = [...container.querySelectorAll(`[${QUOTABLE_ATTR}]`)].filter((r) => range.intersectsNode(r));
   const parts: string[] = [];
   for (const root of roots) {
     const part = document.createRange();
@@ -59,7 +63,7 @@ function selectedQuote(container: HTMLElement): { text: string; rect: DOMRect } 
  * Shows Factory's "Add to chat" pill for selections inside `[data-response-message-id]` replies
  * under `container`, calling `onQuote` with the selection as a Markdown quote. Returns a detach.
  */
-export function attachQuoteReply(container: HTMLElement, onQuote: (quote: string, text: string) => void): () => void {
+export function attachQuoteReply(container: HTMLElement, onQuote: (quote: string, text: string) => void, enabled: () => boolean = () => true): () => void {
   const button = h('button.wt-quote-btn', { type: 'button' }, mdIcon('textQuote', 14), h('span', {}, 'Add to chat'));
   const pill = h('div.wt-quote-pill', { role: 'toolbar', 'aria-label': 'Selection actions' }, button);
   let current: string | undefined;
@@ -73,6 +77,7 @@ export function attachQuoteReply(container: HTMLElement, onQuote: (quote: string
     releaseEsc = undefined;
   };
   const place = () => {
+    if (!enabled()) return hide();
     const hit = selectedQuote(container);
     if (!hit || (hit.rect.width === 0 && hit.rect.height === 0)) return hide();
     current = hit.text;

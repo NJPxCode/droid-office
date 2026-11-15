@@ -432,7 +432,7 @@ private fun ToolRow(
                     if (canOpen) {
                         Modifier.disclosure(isOpen) {
                             if (!isOpen) reveal.ask()
-                            onToggle?.invoke()
+                            onToggle()
                         }
                     } else Modifier,
                 )
@@ -765,7 +765,7 @@ private fun FileChangeRow(action: ThreadModelAction, change: ThreadFileChange, c
         },
         endLabel = if (action.state == ActivityState.Failed) action.failedLabel ?: ToolCards.changeError(change.kind) else ToolCards.endLabel(action),
         end = when {
-            deliverable -> ({ PreviewChip("Preview $name", Tags.Worker.threadChangePreview(changeKey)) { openAt?.invoke(null) } })
+            deliverable -> ({ PreviewChip("Preview $name", Tags.Worker.threadChangePreview(changeKey)) { openAt(null) } })
             openAt != null -> ({ RowIcon(ToolIcons.ArrowRight, "Open $name in Files") { openAt(ThreadView.targetLine(change)) } })
             else -> null
         },

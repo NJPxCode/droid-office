@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { driveDroidRewind } from '../src/server/worker-rewind.js';
 import { WorkerThreadReader } from '../src/server/worker-thread.js';
+import { WorkerManager } from '../src/server/workers.js';
 import { readRewindMenu, readRewindRestore, rewindProcessing, rewindWithoutFiles, rewound } from '../src/shared/thread-rewind.js';
 
 // Droid 1.12.1, Haiku 5.5 at 120x40, from the approved scratch run. Unrelated transcript rows are
@@ -91,6 +92,25 @@ test('the driver selects the older message, conversation-only, and clears the pr
   assert.equal(writes.at(-1), '\x15');
 });
 
+test('a menu number whose preview belongs to another fork is never selected', async () => {
+  let screen: string[] = [];
+  const writes: string[] = [];
+  const result = await driveDroidRewind(
+    {
+      write(data) {
+        writes.push(data);
+        if (data === '/rewind-conversation') screen = MENU;
+      },
+      rows: () => screen,
+    },
+    { number: 12, preview: 'A different prompt from another session' },
+    'conversation',
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? '', /conversation changed/);
+  assert.equal(writes.filter((data) => data === '\r').length, 1, 'only the slash command was submitted');
+});
+
 test('a menu that never opens is a clean failure', async () => {
   const writes: string[] = [];
   const result = await driveDroidRewind({ write: (data) => writes.push(data), rows: () => [] }, { number: 4, preview: 'Hello' }, 'files');
@@ -99,7 +119,7 @@ test('a menu that never opens is a clean failure', async () => {
   assert.ok(writes.includes('\x1b'));
 });
 
-test('a rewind point comes from the user message seq, not its projected entry index', async (t) => {
+test('reader-generated ids resolve duplicate prompts to their own seq, including string content', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'office-rewind-point-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const cwd = path.join(root, 'project');
@@ -109,14 +129,74 @@ test('a rewind point comes from the user message seq, not its projected entry in
   const rows = [
     { type: 'session_start', id: source.sessionId, cwd },
     { type: 'message', id: 'hook', seq: 0, message: { role: 'user', content: [], visibility: 'user_only', hookEventName: 'SessionStart' } },
-    { type: 'message', id: 'context-abc', seq: 1, message: { role: 'user', content: [{ type: 'text', text: '<system-reminder>hidden</system-reminder>' }], visibility: 'llm_only' } },
-    { type: 'message', id: 'abc', seq: 2, timestamp: '2026-11-15T03:58:31.089Z', message: { role: 'user', content: [{ type: 'text', text: 'Use the Create tool to create notes.txt' }] } },
-    { type: 'message', id: 'def', seq: 3, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    { type: 'message', id: 'context-first', seq: 1, message: { role: 'user', content: [{ type: 'text', text: '<system-reminder>hidden</system-reminder>' }], visibility: 'llm_only' } },
+    { type: 'message', id: 'first', seq: 2, timestamp: '2026-11-15T03:58:31.089Z', message: { role: 'user', content: [{ type: 'text', text: 'Repeat this exact prompt' }] } },
+    { type: 'message', id: 'answer', seq: 3, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    { type: 'message', id: 'second', seq: 4, timestamp: '2026-11-15T03:59:31.089Z', message: { role: 'user', content: [{ type: 'text', text: 'Repeat this exact prompt' }] } },
+    { type: 'message', id: 'string', seq: 5, timestamp: '2026-11-15T04:00:31.089Z', message: { role: 'user', content: 'String content prompt' } },
+    { type: 'message', id: 'legacy', timestamp: '2026-11-15T04:01:31.089Z', message: { role: 'user', content: [{ type: 'text', text: 'Repeat this exact prompt' }] } },
   ];
   await writeFile(path.join(dir, `${source.sessionId}.jsonl`), `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
   const reader = new WorkerThreadReader(root);
-  assert.deepEqual(await reader.rewindPoint(source, 'abc:0'), { number: 3, preview: 'Use the Create tool to create notes.txt' });
-  assert.equal(await reader.rewindPoint(source, 'abc:text'), undefined, 'an array message uses its text part index');
-  assert.equal(await reader.rewindPoint(source, 'def:text'), undefined);
+  // These are the ids the Android Thread actually receives, not ids invented for rewindPoint.
+  const users = (await reader.read(source)).entries.filter((entry) => entry.role === 'user' && entry.kind === 'text');
+  assert.equal(users.length, 4);
+  assert.notEqual(users[0].id, users[1].id);
+  assert.deepEqual(await reader.rewindPoint(source, users[0].id), { number: 3, preview: 'Repeat this exact prompt' });
+  assert.deepEqual(await reader.rewindPoint(source, users[1].id), { number: 5, preview: 'Repeat this exact prompt' });
+  assert.deepEqual(await reader.rewindPoint(source, users[2].id), { number: 6, preview: 'String content prompt' });
+  assert.equal(await reader.rewindPoint(source, users[3].id), undefined, 'without a seq, equal prompts cannot be selected safely');
+  const assistant = (await reader.read(source)).entries.find((entry) => entry.role === 'assistant');
+  assert.equal(await reader.rewindPoint(source, assistant!.id), undefined);
   assert.equal(await reader.rewindPoint(source, 'missing:text'), undefined);
+});
+
+test('a session fork during the async entry lookup refuses before touching the terminal', async () => {
+  const worker = { info: { kind: 'agent', name: 'Ada', sessionId: 'forked-session', status: 'idle' } };
+  const manager = Object.create(WorkerManager.prototype) as WorkerManager;
+  Reflect.set(manager, 'workers', new Map([['worker', worker]]));
+  const result = await manager.rewind('worker', 'first:0', 'original-session', { number: 3, preview: 'Repeat this exact prompt' }, 'conversation');
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? '', /conversation changed/);
+  assert.equal(worker.info.sessionId, 'forked-session');
+  assert.equal(Reflect.get(worker, 'rewind'), undefined);
+});
+
+test('a rewind point beyond 120 prompts remains reachable in the descending picker', async () => {
+  let number = 132;
+  let phase = 'input';
+  let down = 0;
+  const result = await driveDroidRewind(
+    {
+      write(data) {
+        if (data === '\r') {
+          if (phase === 'input') phase = 'menu';
+          else if (phase === 'menu') {
+            assert.equal(number, 1, 'select the exact oldest duplicate prompt');
+            phase = 'restore';
+          } else if (phase === 'restore') phase = 'done';
+        } else if (data === '\x1b[B' && phase === 'menu') {
+          down++;
+          number--;
+        }
+      },
+      rows: () =>
+        phase === 'menu'
+          ? MENU.map((line) =>
+              line
+                .replace('> 12', `> ${number}`)
+                .replace('  4    Use the Create tool to create notes.txt containing the single line: hello. Then reply wit…', `  ${number - 1}    Reply with just the word: two`)
+                .replace('Showing 1-2 of 2', 'Showing 1-2 of 132'),
+            )
+          : phase === 'restore'
+            ? RESTORE_NONE
+            : phase === 'done'
+              ? REWOUND
+              : [],
+    },
+    { number: 1, preview: 'Reply with just the word: two' },
+    'conversation',
+  );
+  assert.deepEqual(result, { ok: true });
+  assert.ok(down > 120);
 });

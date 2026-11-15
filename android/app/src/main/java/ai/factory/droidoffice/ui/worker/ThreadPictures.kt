@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -117,16 +118,18 @@ private suspend fun decodeScaled(bytes: ByteArray, side: Int): ImageBitmap? = wi
 
 @Composable
 private fun rememberPicture(connection: OfficeConnection, source: PictureSource, image: ThreadImage, side: Int): ImageBitmap? {
-    val key = "${source.floor}/${source.worker}/${image.id}@$side"
-    val picture by produceState(ThreadPictureCache.get(key), key) {
-        if (value != null) return@produceState
-        val bytes = connection.threadImage(source.floor, source.worker, image.id) ?: return@produceState
-        decodeScaled(bytes, side)?.let {
-            ThreadPictureCache.put(key, it)
-            value = it
+    val cacheKey = "${source.floor}/${source.worker}/${image.id}@$side"
+    return key(cacheKey) {
+        val picture by produceState(ThreadPictureCache.get(cacheKey), cacheKey) {
+            if (value != null) return@produceState
+            val bytes = connection.threadImage(source.floor, source.worker, image.id) ?: return@produceState
+            decodeScaled(bytes, side)?.let {
+                ThreadPictureCache.put(cacheKey, it)
+                value = it
+            }
         }
+        picture
     }
-    return picture
 }
 
 /**
@@ -138,7 +141,7 @@ internal fun ThreadPictures(images: List<ThreadImage>, title: String, about: Str
     val source = LocalPictureSource.current ?: return
     if (images.isEmpty()) return
     val connection = LocalGraph.current.connection
-    var viewing by remember { mutableStateOf<Pair<ThreadImage, String>?>(null) }
+    var viewing by remember(images) { mutableStateOf<Int?>(null) }
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = if (end) Alignment.End else Alignment.Start) {
         images.forEachIndexed { i, image ->
             val name = if (images.size > 1) "$title · ${i + 1} of ${images.size}" else title
@@ -148,7 +151,7 @@ internal fun ThreadPictures(images: List<ThreadImage>, title: String, about: Str
             Box(
                 Modifier.widthIn(max = 360.dp).heightIn(max = 280.dp).aspectRatio(ratio, matchHeightConstraintsFirst = ratio < 1f)
                     .clip(shape).border(1.dp, Palette.Border, shape).background(Palette.Bg)
-                    .clickable(role = Role.Image, onClickLabel = "Open the picture") { viewing = image to name }
+                    .clickable(role = Role.Image, onClickLabel = "Open the picture") { viewing = i }
                     .semantics { contentDescription = name }
                     .tagged(Tags.Worker.threadImage(image.id)),
                 contentAlignment = Alignment.Center,
@@ -158,7 +161,7 @@ internal fun ThreadPictures(images: List<ThreadImage>, title: String, about: Str
             }
         }
     }
-    viewing?.let { (image, name) -> PictureViewer(connection, source, image, name, about) { viewing = null } }
+    viewing?.let { index -> PictureViewer(connection, source, images, index, title, about, onPage = { viewing = it }, onClose = { viewing = null }) }
 }
 
 private fun shape(image: ThreadImage, picture: ImageBitmap?): Float {
@@ -228,14 +231,27 @@ internal fun MarkdownImage(alt: String, src: String, style: TextStyle) {
         if (shown != null) Image(shown, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
         else Spinner(Modifier.size(14.dp), Palette.TextSecondary)
     }
-    if (viewing) FullscreenPictureDialog(picture, null, null, alt.ifBlank { "Image preview" }, src, onClose = { viewing = false })
+    val full by produceState<ImageBitmap?>(null, key, viewing) {
+        if (viewing) {
+            val bytes = if (local != null && source != null) connection.threadFileImage(source.floor, source.worker, local) else connection.webImage(src)
+            value = bytes?.let { decodeScaled(it, FULL_SIDE) }
+        }
+    }
+    val download = rememberThreadDownload("image", "image/*") {
+        if (local != null && source != null) connection.threadFileImage(source.floor, source.worker, local) else connection.webImage(src)
+    }
+    if (viewing) FullscreenPictureDialog(full ?: picture, null, null, alt.ifBlank { "Image preview" }, src, onDownload = download, onClose = { viewing = false })
 }
 
 /** One picture over everything, fit to the screen with pinch-zoom, until the owner taps it, ✕ or Back. */
 @Composable
-private fun PictureViewer(connection: OfficeConnection, source: PictureSource, image: ThreadImage, name: String, about: String?, onClose: () -> Unit) {
+private fun PictureViewer(connection: OfficeConnection, source: PictureSource, images: List<ThreadImage>, index: Int, title: String, about: String?, onPage: (Int) -> Unit, onClose: () -> Unit) {
+    val image = images[index]
+    val name = if (images.size > 1) "$title · ${index + 1} of ${images.size}" else title
     val picture = rememberPicture(connection, source, image, FULL_SIDE) ?: rememberPicture(connection, source, image, THUMB_SIDE)
-    FullscreenPictureDialog(picture, image.width, image.height, name, about, onClose)
+    val extension = image.type.substringAfter('/').replace("jpeg", "jpg")
+    val download = rememberThreadDownload("image.$extension", image.type) { connection.threadImage(source.floor, source.worker, image.id) }
+    FullscreenPictureDialog(picture, image.width, image.height, name, about, index, images.size, onPage, download, onClose)
 }
 
 /** Opens a tapped Raw TTY Kitty image in the shared fullscreen viewer. */
@@ -247,7 +263,10 @@ internal fun KittyPictureViewer(image: PageMsg.Image, about: String?, onClose: (
         } ?: return@produceState
         value = decodeScaled(bytes, FULL_SIDE)
     }
-    FullscreenPictureDialog(picture, image.width, image.height, "Terminal image", about, onClose)
+    val download = rememberThreadDownload("terminal-image.png", "image/png") {
+        runCatching { Base64.decode(image.data, Base64.DEFAULT) }.getOrNull()
+    }
+    FullscreenPictureDialog(picture, image.width, image.height, "Terminal image", about, onDownload = download, onClose = onClose)
 }
 
 @Composable
@@ -257,6 +276,10 @@ internal fun FullscreenPictureDialog(
     height: Int?,
     name: String,
     about: String?,
+    page: Int = 0,
+    pages: Int = 1,
+    onPage: ((Int) -> Unit)? = null,
+    onDownload: (() -> Unit)? = null,
     onClose: () -> Unit,
 ) {
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
@@ -270,6 +293,15 @@ internal fun FullscreenPictureDialog(
                     Text(name, style = MaterialTheme.typography.titleSmall, color = Palette.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val sub = listOfNotNull(about, if (width != null && height != null) "$width × $height" else null).joinToString(" · ")
                     if (sub.isNotEmpty()) Text(sub, style = LocalOfficeType.current.monoBody.copy(color = Palette.TextSecondary), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (pages > 1) Row(Modifier.align(Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { onPage?.invoke(page - 1) }, enabled = page > 0, modifier = Modifier.tagged(Tags.Worker.THREAD_IMAGE_PREVIOUS)) {
+                    Icon(OfficeIcons.ChevronLeft, "Previous image", tint = Palette.TextSecondary)
+                }
+                Text("${page + 1} / $pages", style = LocalOfficeType.current.monoBody.copy(color = Palette.TextSecondary), modifier = Modifier.tagged(Tags.Worker.THREAD_IMAGE_COUNT))
+                IconButton(onClick = { onPage?.invoke(page + 1) }, enabled = page < pages - 1, modifier = Modifier.tagged(Tags.Worker.THREAD_IMAGE_NEXT)) {
+                    Icon(OfficeIcons.Chevron, "Next image", tint = Palette.TextSecondary)
                 }
             }
             Box(
@@ -367,6 +399,9 @@ internal fun FullscreenPictureDialog(
                 }
                 IconButton(onClick = onClose, modifier = Modifier.tagged(Tags.Worker.THREAD_IMAGE_CLOSE)) {
                     Icon(Icons.Filled.Close, contentDescription = "Close the picture", tint = Palette.TextSecondary)
+                }
+                if (onDownload != null) IconButton(onClick = onDownload, modifier = Modifier.tagged(Tags.Worker.THREAD_IMAGE_DOWNLOAD)) {
+                    Icon(OfficeIcons.Download, "Download image", tint = Palette.TextSecondary)
                 }
             }
         }

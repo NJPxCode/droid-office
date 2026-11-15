@@ -2,8 +2,8 @@ import { readRewindMenu, readRewindRestore, rewindWithoutFiles, rewound, type Re
 import { textSignature } from '../shared/thread-live.js';
 
 export interface RewindDriveTarget {
-  /** Droid's menu number, when the conversation file supplied one. */
-  number?: number;
+  /** Droid's menu number (JSONL seq + 1), so equal prompts stay distinguishable. */
+  number: number;
   preview: string;
 }
 
@@ -55,21 +55,26 @@ export async function driveDroidRewind(io: { write(data: string): void; rows(): 
   // after every key rather than trusting the first two visible rows.
   let previous = '';
   let chosen = false;
-  for (let step = 0; step < 120; step++) {
+  const visited = new Set<number>();
+  for (;;) {
     const current = rows();
     menu = readRewindMenu(current);
     if (!menu) return fail('Droid closed its rewind menu before a message was selected.');
-    const index = menu.rows.findIndex((row) => (target.number !== undefined ? row.number === target.number : samePreview(row.preview, target.preview)));
+    const numbered = menu.rows.find((row) => row.number === target.number);
+    if (numbered && !samePreview(numbered.preview, target.preview)) return fail('The active conversation changed. Read the Thread again before rewinding.');
+    const index = numbered ? menu.rows.indexOf(numbered) : -1;
+    const selected = menu.rows.findIndex((row) => row.selected);
+    const currentNumber = menu.rows[selected]?.number;
+    if (currentNumber === undefined || visited.has(currentNumber)) return fail('The requested message is not in Droid’s rewind menu.');
+    visited.add(currentNumber);
     if (index >= 0) {
-      const selected = menu.rows.findIndex((row) => row.selected);
       if (selected === index) {
         chosen = true;
         break;
       }
       io.write(index > selected ? DOWN : UP);
     } else {
-      const first = menu.rows[0]?.number;
-      io.write(target.number !== undefined && first !== undefined && target.number < first ? UP : DOWN);
+      io.write(target.number < currentNumber ? DOWN : UP);
     }
     await pause(55);
     const signature = rows().join('\n');

@@ -1694,14 +1694,14 @@ export class WorkerManager {
     return this.delivery.urgentPrompt(id, text, images);
   }
 
-  /** Clears all pending messages, or the single 1-based item. */
   /** Drives Droid's rewind picker while holding this worker's one-rewind-at-a-time guard. */
-  async rewind(id: string, entryId: string, target: RewindDriveTarget, restore: 'files' | 'conversation'): Promise<{ ok: boolean; error?: string }> {
+  async rewind(id: string, entryId: string, sessionId: string, target: RewindDriveTarget, restore: 'files' | 'conversation'): Promise<{ ok: boolean; error?: string }> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'No such worker' };
     if (w.info.kind !== 'agent' || w.info.cloud || w.info.remote) return { ok: false, error: `${w.info.name} has no local conversation to rewind` };
     if (w.rewind) return { ok: false, error: `${w.info.name} is already rewinding its conversation` };
     if (w.info.status === 'working' || w.info.status === 'starting' || w.info.status === 'needs_input') return { ok: false, error: `${w.info.name} is busy. Wait for its turn and any question to finish before rewinding.` };
+    if (w.info.sessionId !== sessionId) return { ok: false, error: `${w.info.name}'s conversation changed. Read the Thread again before rewinding.` };
     if (!w.pty || !w.term) return { ok: false, error: `${w.info.name} is not running` };
     w.rewind = { entryId, since: Date.now() };
     try {
@@ -1713,6 +1713,7 @@ export class WorkerManager {
     }
   }
 
+  /** Clears all pending messages, or the single 1-based item. */
   clearQueue(id: string, index?: number) {
     return this.delivery.clearQueue(id, index);
   }

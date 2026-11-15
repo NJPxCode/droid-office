@@ -4,6 +4,7 @@ import ai.factory.droidoffice.R
 import ai.factory.droidoffice.core.Markdown
 import ai.factory.droidoffice.core.RichPage
 import ai.factory.droidoffice.core.Tags
+import ai.factory.droidoffice.ui.LocalSnackbar
 import ai.factory.droidoffice.ui.components.Spinner
 import ai.factory.droidoffice.ui.components.panel
 import ai.factory.droidoffice.ui.components.tagged
@@ -13,7 +14,6 @@ import ai.factory.droidoffice.ui.theme.Palette
 import ai.factory.droidoffice.ui.theme.ThreadPalette
 import android.content.ClipData
 import android.content.Context
-import android.content.Intent
 import android.graphics.Color
 import android.view.View
 import android.view.ViewGroup
@@ -83,6 +83,7 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import java.io.ByteArrayInputStream
 
 /** What the page drew: a diagram's sanitized SVG (null for an equation), and the height (dp) it took at the Thread's width. */
@@ -115,6 +116,8 @@ private object Drawings {
  */
 private class RichBlockPage(context: Context, zoom: Boolean, private val onMessage: (RichPage.Msg) -> Unit) {
     val view = WebView(context)
+    var onZoom: ((Int) -> Unit)? = null
+    private var initialScale = 0f
     private var ready = false
     private var destroyed = false
     private var pending: String? = null
@@ -183,6 +186,11 @@ private class RichBlockPage(context: Context, zoom: Boolean, private val onMessa
     }
 
     private inner class Client(private val loader: WebViewAssetLoader) : WebViewClient() {
+        override fun onScaleChanged(view: WebView, oldScale: Float, newScale: Float) {
+            if (initialScale == 0f) initialScale = newScale
+            onZoom?.invoke((newScale / initialScale * 100).toInt())
+        }
+
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse =
             loader.shouldInterceptRequest(request.url) ?: refused()
 
@@ -264,7 +272,9 @@ internal fun MermaidBlock(b: Markdown.Block.Code, streaming: Boolean, mono: Font
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val shape = RoundedCornerShape(4.dp)
+    val snackbar = LocalSnackbar.current
     val shown = drawing
+    val download = rememberThreadDownload("diagram.svg", "image/svg+xml") { drawing?.svg?.toByteArray() }
     val pending = b.open || (streaming && source.isEmpty())
     Column(
         Modifier.fillMaxWidth().panel(shape, ThreadPalette.Surface, ThreadPalette.BorderStrong).tagged(Tags.Worker.THREAD_DIAGRAM)
@@ -308,17 +318,28 @@ internal fun MermaidBlock(b: Markdown.Block.Code, streaming: Boolean, mono: Font
                                 modifier = Modifier.tagged(Tags.Worker.THREAD_DIAGRAM_COPY),
                             )
                             DropdownMenuItem(
+                                text = { Text("Download as SVG") },
+                                enabled = shown.svg != null,
+                                onClick = { actions = false; download() },
+                                modifier = Modifier.tagged(Tags.Worker.THREAD_DIAGRAM_DOWNLOAD),
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Share SVG") },
                                 enabled = shown.svg != null,
                                 onClick = {
                                     actions = false
                                     val svg = shown.svg ?: return@DropdownMenuItem
-                                    val send = Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_TEXT, svg)
+                                    scope.launch {
+                                        try {
+                                            shareThreadSvg(context, svg)
+                                        } catch (cancelled: CancellationException) {
+                                            throw cancelled
+                                        } catch (_: Exception) {
+                                            snackbar.showSnackbar("Couldn't share this diagram")
+                                        }
                                     }
-                                    runCatching { context.startActivity(Intent.createChooser(send, "Share SVG")) }
                                 },
+                                modifier = Modifier.tagged(Tags.Worker.THREAD_DIAGRAM_SHARE),
                             )
                         }
                     }
@@ -363,7 +384,7 @@ private fun DiagramViewer(source: String, drawing: Drawing, raw: String, onClose
                         Modifier.fillMaxSize().semantics { contentDescription = "Mermaid diagram" },
                         onDrawn = {},
                         onFailed = { failed = true },
-                        onPage = { page = it },
+                        onPage = { next -> page = next; next.onZoom = { zoomPercent = it } },
                     )
                 }
                 Row(
@@ -373,11 +394,11 @@ private fun DiagramViewer(source: String, drawing: Drawing, raw: String, onClose
                         .padding(horizontal = 8.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = { if (page?.view?.zoomOut() == true) zoomPercent = (zoomPercent - 10).coerceAtLeast(25) }, enabled = !failed && zoomPercent > 25) {
+                    IconButton(onClick = { page?.view?.zoomOut() }, enabled = !failed && zoomPercent > 25) {
                         Icon(OfficeIcons.Minus, "Zoom out", tint = Palette.TextSecondary)
                     }
                     Text("$zoomPercent%", style = LocalOfficeType.current.monoBody.copy(color = Palette.TextSecondary), modifier = Modifier.width(52.dp), textAlign = TextAlign.Center)
-                    IconButton(onClick = { if (page?.view?.zoomIn() == true) zoomPercent = (zoomPercent + 10).coerceAtMost(400) }, enabled = !failed && zoomPercent < 400) {
+                    IconButton(onClick = { page?.view?.zoomIn() }, enabled = !failed && zoomPercent < 400) {
                         Icon(OfficeIcons.Plus, "Zoom in", tint = Palette.TextSecondary)
                     }
                     IconButton(onClick = {

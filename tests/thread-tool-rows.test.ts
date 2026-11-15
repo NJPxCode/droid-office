@@ -70,6 +70,13 @@ test('exploration tools and thoughts fold into one summary, live only at the wor
   assert.deepEqual(segments([thought('t1')]), [{ kind: 'thought', blockId: 't1' }]);
 });
 
+test('AskUser counts current questionnaire markers as well as legacy arrays', () => {
+  const questionnaire = '1. [question] Pick a mode\n[topic] Mode\n[option] Auto\n[option] Spec\n\n2. [question] Which checks? (multi)\n[topic] Checks\n[option] Web\n[option] Android';
+  const [current, pending] = actions([tool('a1', 'AskUser', { questionnaire }), tool('a2', 'AskUser', { questionnaire }, { output: undefined })]);
+  assert.equal(current.verb, 'Asked user 2 questions');
+  assert.equal(pending.verb, 'Asking user 2 questions');
+});
+
 test('repeating command summaries and five or more subagents fold into Factory groups', () => {
   const repeated = ['x1', 'x2', 'x3', 'x4'].map((id, index) => tool(id, 'Execute', { command: `npm run ${index}`, summary: index % 2 ? 'build it' : 'test it' }));
   assert.deepEqual(segments(repeated), [{ kind: 'repeat', id: 'repeat:x1', actionIds: ['x1', 'x2', 'x3', 'x4'], summaries: ['Test it', 'Build it'], times: 2, live: false, open: false }]);

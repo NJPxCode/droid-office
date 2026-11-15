@@ -128,7 +128,8 @@ export function summaryGroup(opts: SummaryGroupOptions): HTMLElement {
     requestAnimationFrame(() => {
       if (scroll.isConnected && scroll.dataset.touched !== 'true') scroll.scrollTop = scroll.scrollHeight;
     });
-  scroll.addEventListener('wheel', () => (scroll.dataset.touched = 'true'), { passive: true });
+  const touched = () => (scroll.dataset.touched = 'true');
+  for (const event of ['wheel', 'pointerdown', 'touchstart', 'keydown']) scroll.addEventListener(event, touched, { passive: true });
   const fade = () => {
     const over = scroll.scrollHeight > scroll.clientHeight + 1;
     scroll.parentElement?.toggleAttribute('data-top-fade', over && scroll.scrollTop > 0);

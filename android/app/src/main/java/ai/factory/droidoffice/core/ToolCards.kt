@@ -187,7 +187,7 @@ object ToolCards {
             val gap = when {
                 firstNew == null -> 0
                 lastNew == null -> firstNew - 1
-                else -> firstNew - lastNew!! - 1
+                else -> firstNew - lastNew - 1
             }.coerceAtLeast(0)
             hide(trimmedHead, gap)
 

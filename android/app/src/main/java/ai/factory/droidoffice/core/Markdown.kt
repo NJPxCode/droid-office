@@ -524,18 +524,40 @@ object Markdown {
     private fun urlEncodeComponent(value: String): String =
         URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
 
-    private fun buildMailtoUri(email: Block.Email): String {
+    enum class EmailSend { Mail, Gmail, Outlook }
+
+    fun emailRaw(email: Block.Email): String = buildString {
+        append("To: ").append(email.to).append('\n')
+        email.cc?.takeIf { it.isNotBlank() }?.let { append("Cc: ").append(it).append('\n') }
+        email.bcc?.takeIf { it.isNotBlank() }?.let { append("Bcc: ").append(it).append('\n') }
+        append("Subject: ").append(email.subject).append("\n\n")
+        append(email.body)
+    }
+
+    private fun buildMailtoUri(email: Block.Email): String = emailUri(email, EmailSend.Mail)
+
+    fun emailUri(email: Block.Email, target: EmailSend): String {
         val recipients = email.to.split(',').mapNotNull { part ->
             val trimmed = part.trim().ifEmpty { return@mapNotNull null }
             val addr = angleAddr.find(trimmed)?.groupValues?.get(1) ?: trimmed
             urlEncodeComponent(addr).replace("%40", "@")
         }.joinToString(",")
-        val params = ArrayList<String>(4)
+        val params = ArrayList<String>(6)
+        if (target == EmailSend.Gmail) {
+            params += "view=cm"
+            params += "fs=1"
+        }
+        if (target != EmailSend.Mail) params += "to=${urlEncodeComponent(email.to)}"
         email.cc?.takeIf { it.isNotEmpty() }?.let { params += "cc=${urlEncodeComponent(it)}" }
         email.bcc?.takeIf { it.isNotEmpty() }?.let { params += "bcc=${urlEncodeComponent(it)}" }
-        if (email.subject.isNotEmpty()) params += "subject=${urlEncodeComponent(email.subject)}"
+        if (email.subject.isNotEmpty()) params += "${if (target == EmailSend.Gmail) "su" else "subject"}=${urlEncodeComponent(email.subject)}"
         if (email.body.isNotEmpty()) params += "body=${urlEncodeComponent(email.body)}"
-        return if (params.isEmpty()) "mailto:$recipients" else "mailto:$recipients?${params.joinToString("&")}"
+        val base = when (target) {
+            EmailSend.Mail -> "mailto:$recipients"
+            EmailSend.Gmail -> "https://mail.google.com/mail/"
+            EmailSend.Outlook -> "https://outlook.office.com/mail/deeplink/compose"
+        }
+        return if (params.isEmpty()) base else "$base?${params.joinToString("&")}"
     }
 
     private val delimiterCell = Regex("""^:?-+:?$""")

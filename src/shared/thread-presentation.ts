@@ -742,7 +742,7 @@ function toolFace(action: ThreadAction, changes: readonly ThreadFileChange[] | u
       return { icon: 'bot', verb: meta.workerName ? `Hired ${meta.workerName}` : (meta.role ?? 'Subagent'), subject: meta.summary };
     }
     case 'askuser': {
-      const count = Array.isArray(args.questions) ? Math.max(1, args.questions.length) : 1;
+      const count = Array.isArray(args.questions) ? Math.max(1, args.questions.length) : Math.max(1, (str(args.questionnaire).match(/^\s*\d+\.\s*\[question]/gm) ?? []).length);
       const asking = action.state === 'working' || action.state === 'incomplete';
       return { icon: 'ask', verb: `${asking ? 'Asking' : 'Asked'} user ${count === 1 ? 'a question' : `${count} questions`}`, failedLabel: 'AskUser failed' };
     }

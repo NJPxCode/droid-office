@@ -251,6 +251,58 @@ test('worker-thread subscribes via thread.watch, consumes push snapshots immedia
   assert.deepEqual(errors, []);
 });
 
+test('live tool output and nested reading positions survive canonical updates, and compaction stays factual', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountV3Thread(t);
+  const entries: ThreadEntry[] = Array.from({ length: 70 }, (_, i) => ({
+    id: `r${i}`,
+    seq: i,
+    role: 'assistant',
+    kind: 'tool',
+    name: 'Read',
+    input: JSON.stringify({ file_path: `src/file-${i}.ts` }),
+    output: i < 69 ? 'File contents' : undefined,
+  }));
+  const push = async (next: ThreadEntry[], busy = true) => {
+    await page.evaluate(
+      ({ entries, rows }) => {
+        (window as any).receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+      },
+      { entries: next, rows: presentThread(next, busy) },
+    );
+  };
+  await push(entries);
+  const scroll = page.locator('.wt-sg-scroll');
+  await page.waitForFunction(() => {
+    const el = document.querySelector<HTMLElement>('.wt-sg-scroll');
+    return el && el.scrollTop > 0;
+  });
+  await scroll.evaluate((el) => {
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+    el.scrollTop = 85;
+  });
+  await push([...entries.slice(0, -1), { ...entries[69], output: 'Finished file' }]);
+  await page.waitForFunction(() => document.querySelector<HTMLElement>('.wt-sg-scroll')?.scrollTop === 85);
+  assert.equal(await scroll.getAttribute('data-touched'), 'true');
+
+  const command: ThreadEntry = { id: 'tool:cmd', seq: 71, role: 'assistant', kind: 'tool', name: 'Execute', input: JSON.stringify({ command: 'npm test', summary: 'Run checks' }) };
+  await push([...entries, command]);
+  await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').click();
+  await page.evaluate(() => {
+    (window as any).receive({
+      t: 'thread.live',
+      workerId: 'worker-1',
+      sessionId: 'session-1',
+      live: { rev: 1, at: Date.now(), status: 'responding', working: 'executing_tool', after: 'tool:cmd', tools: [{ id: 'tool:cmd', name: 'Execute', phase: 'running', startedAt: Date.now(), output: 'Live output before JSONL result' }] },
+    });
+  });
+  assert.match(await page.locator('.wt-cmd-out').innerText(), /Live output before JSONL result/);
+  await push([...entries, { ...command, output: 'Canonical final result' }, { id: 'compaction:done', seq: 72, role: 'system', kind: 'notice', name: 'compaction', text: 'Conversation compacted' }], false);
+  assert.match(await page.locator('.wt-cmd-out').innerText(), /Canonical final result/);
+  assert.doesNotMatch(await page.locator('.wt-cmd-out').innerText(), /Live output/);
+  assert.equal(await page.locator('.wt-compact-divider').innerText(), 'Compacted');
+  assert.deepEqual(errors, []);
+});
+
 test('renders Factory exploration groups and tool, file, command, and delegation rows with toggle persistence', { skip: chromium }, async (t) => {
   const { page, errors } = await mountV3Thread(t);
 

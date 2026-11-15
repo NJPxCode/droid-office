@@ -325,7 +325,7 @@ export class WorkerThreadReader {
   }
 
   /** The menu number and preview Droid shows for a user text entry's rewind point. */
-  async rewindPoint(source: ThreadSession, entryId: string): Promise<{ number?: number; preview: string } | undefined> {
+  async rewindPoint(source: ThreadSession, entryId: string): Promise<{ number: number; preview: string } | undefined> {
     const selected = /^(.*):(?:text|\d+)$/.exec(entryId);
     if (!selected || entryId.length > 170) return undefined;
     const recordId = selected[1];
@@ -333,6 +333,7 @@ export class WorkerThreadReader {
     if (!file) return undefined;
     const raw = await readFile(file, 'utf8').catch(() => undefined);
     if (!raw) return undefined;
+    let found: { number: number; preview: string } | undefined;
     for (const line of raw.split('\n')) {
       if (!line.includes(recordId)) continue;
       let row: Record<string, unknown>;
@@ -349,10 +350,10 @@ export class WorkerThreadReader {
       if (suffix === 'text' ? typeof message.content !== 'string' : object(Array.isArray(message.content) ? message.content[Number(suffix)] : undefined).type !== 'text') return undefined;
       const preview = clean(contentText(message.content), 1000).replace(/\s+/g, ' ').trim();
       if (!preview) return undefined;
-      const number = typeof row.seq === 'number' && Number.isSafeInteger(row.seq) && row.seq >= 0 ? row.seq + 1 : undefined;
-      return { ...(number !== undefined ? { number } : {}), preview };
+      if (typeof row.seq !== 'number' || !Number.isSafeInteger(row.seq) || row.seq < 0 || found) return undefined;
+      found = { number: row.seq + 1, preview };
     }
-    return undefined;
+    return found;
   }
 
   private unavailable(error = 'Conversation is unavailable for this worker.'): ThreadPage {

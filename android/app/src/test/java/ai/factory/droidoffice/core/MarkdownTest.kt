@@ -251,6 +251,21 @@ class MarkdownTest {
     }
 
     @Test
+    fun editedEmailCopiesAndComposeTargetsUseCurrentFields() {
+        val original = requireNotNull(Markdown.parseEmail("To: old@example.com\nSubject: Old\n\nOld body"))
+        val edited = original.copy(to = "Alice <alice@example.com>", cc = "team@example.com", bcc = "audit@example.com", subject = "Café & +", body = "New body\n\nNext line +")
+        val raw = Markdown.emailRaw(edited)
+        assertEquals("To: Alice <alice@example.com>\nCc: team@example.com\nBcc: audit@example.com\nSubject: Café & +\n\nNew body\n\nNext line +", raw)
+        val parsed = requireNotNull(Markdown.parseEmail(raw))
+        assertEquals(edited.copy(raw = raw), parsed)
+        assertEquals("mailto:alice@example.com?cc=team%40example.com&bcc=audit%40example.com&subject=Caf%C3%A9%20%26%20%2B&body=New%20body%0A%0ANext%20line%20%2B", Markdown.emailUri(edited, Markdown.EmailSend.Mail))
+        assertEquals("https://mail.google.com/mail/?view=cm&fs=1&to=Alice%20%3Calice%40example.com%3E&cc=team%40example.com&bcc=audit%40example.com&su=Caf%C3%A9%20%26%20%2B&body=New%20body%0A%0ANext%20line%20%2B", Markdown.emailUri(edited, Markdown.EmailSend.Gmail))
+        assertEquals("https://outlook.office.com/mail/deeplink/compose?to=Alice%20%3Calice%40example.com%3E&cc=team%40example.com&bcc=audit%40example.com&subject=Caf%C3%A9%20%26%20%2B&body=New%20body%0A%0ANext%20line%20%2B", Markdown.emailUri(edited, Markdown.EmailSend.Outlook))
+        assertEquals("mailto:", Markdown.emailUri(original.copy(to = "", subject = "", body = ""), Markdown.EmailSend.Mail))
+        assertEquals("To: old@example.com\nSubject: Old\n\nOld body", original.raw)
+    }
+
+    @Test
     fun extractsJsonRenderWidgetsOutsideCodeAndHandlesStreamingAndCycles() {
         val widgetJson = """{"root":"root","elements":{
             "root":{"type":"Card","props":{"title":"Build Summary","padding":"md"},"children":["row","bar","spark","tbl","lst","call","tl","div","nl","sp"]},
