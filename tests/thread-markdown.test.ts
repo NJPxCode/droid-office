@@ -209,6 +209,7 @@ test('real Chromium exercises Factory Thread Markdown blocks, streaming, lightbo
       tableModalOpen,
       alertClass: el.querySelector('blockquote')!.className,
       alertTitle: el.querySelector('.wt-md-alert-title')!.textContent,
+      alertColor: getComputedStyle(el.querySelector('.wt-md-alert-title')!).color,
       suggestion: el.querySelector('.wt-md-suggest-line')!.textContent,
       mathBlocks: el.querySelectorAll('.wt-math-block math').length,
       editedTitle,
@@ -235,6 +236,7 @@ test('real Chromium exercises Factory Thread Markdown blocks, streaming, lightbo
   assert.equal(result.tableModalOpen, true);
   assert.match(result.alertClass, /wt-md-alert-warning/);
   assert.equal(result.alertTitle, 'Custom caution');
+  assert.equal(result.alertColor, 'rgb(247, 168, 40)');
   assert.equal(result.suggestion, '+const improved = true;');
   assert.equal(result.mathBlocks, 1);
   assert.equal(result.editedTitle, 'Email draft · Edited');

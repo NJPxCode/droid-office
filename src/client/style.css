@@ -2912,10 +2912,10 @@ math { font-family: 'STIX Two Math', math; }
 
 /* GitHub alerts in Factory's colors: a 4px bar and an icon title, no fill. */
 .md.wt-md blockquote.wt-md-alert { --alert: var(--border-strong); margin: 0 0 16px; padding: 8px 16px; border-left: 4px solid var(--alert); border-radius: 0; background: none; color: var(--text); }
-.md.wt-md .wt-md-alert:is(.wt-md-alert-note, .wt-md-alert-tip) { --alert: #b5ada7; }
-.md.wt-md .wt-md-alert-important { --alert: #ffa675; }
-.md.wt-md .wt-md-alert-warning { --alert: #f7a828; }
-.md.wt-md .wt-md-alert-caution { --alert: #f0442e; }
+.md.wt-md blockquote.wt-md-alert:is(.wt-md-alert-note, .wt-md-alert-tip) { --alert: #b5ada7; }
+.md.wt-md blockquote.wt-md-alert-important { --alert: #ffa675; }
+.md.wt-md blockquote.wt-md-alert-warning { --alert: #f7a828; }
+.md.wt-md blockquote.wt-md-alert-caution { --alert: #f0442e; }
 .wt-md-alert-title { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; color: var(--alert); font-size: 13px; font-weight: 500; line-height: 1.5; }
 .wt-md-alert-title svg { flex: none; }
 .md.wt-md .wt-md-alert > .wt-md-alert-title + * { margin-top: 0; }
