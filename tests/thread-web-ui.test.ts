@@ -735,3 +735,89 @@ test('a created Markdown, HTML or picture file offers Preview and Send to Whiteb
   await page.evaluate(() => (window as any).thread.dispose());
   assert.deepEqual(errors, []);
 });
+
+test('a Thread to raw terminal round trip keeps the reader’s scroll position and the following state', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountV3Thread(t);
+  await page.setViewportSize({ width: 1024, height: 600 });
+  const entries: ThreadEntry[] = Array.from({ length: 24 }, (_, i) => ({
+    id: `m${i}`,
+    seq: i + 1,
+    role: i % 2 ? 'assistant' : 'user',
+    kind: 'text',
+    text: `Message ${i + 1}\n\n${'A paragraph long enough to wrap across the column several times over. '.repeat(30)}`,
+  }));
+  await page.evaluate(
+    ({ entries, rows }) => {
+      (window as any).receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+    },
+    { entries, rows: presentThread(entries, false) },
+  );
+  const frames = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  let seq = entries.length;
+  const roundTrip = async () => {
+    await page.evaluate(() => {
+      const w = window as any;
+      w.thread.activate(false);
+      w.parked = document.createElement('div');
+      w.thread.element.replaceWith(w.parked);
+    });
+    await frames();
+    // The worker keeps streaming while the raw terminal shows: the detached transcript repaints.
+    seq++;
+    const more = [...entries, { id: `m${seq}`, seq, role: 'assistant' as const, kind: 'text' as const, text: `Streamed while parked ${seq}` }];
+    entries.splice(0, entries.length, ...more);
+    await page.evaluate(
+      ({ entries, rows }) => {
+        const w = window as any;
+        w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+        w.thread.update({ ...w.worker, activity: 'streaming' }, true);
+      },
+      { entries: more, rows: presentThread(more, true) },
+    );
+    await frames();
+    await page.evaluate(() => {
+      const w = window as any;
+      w.parked.replaceWith(w.thread.element);
+      w.thread.activate(true);
+    });
+    await frames();
+    return reading();
+  };
+  // The row at the top of the viewport and how far it starts above it: what the reader sees.
+  const reading = () =>
+    page.evaluate(() => {
+      const s = document.querySelector<HTMLElement>('.wt-scroll')!;
+      const top = s.getBoundingClientRect().top;
+      const row = [...s.querySelectorAll<HTMLElement>('.wt-list > .wt-entry')].find((el) => el.getBoundingClientRect().bottom > top);
+      return { top: Math.round(s.scrollTop), max: s.scrollHeight - s.clientHeight, row: row?.dataset.entry, offset: Math.round((row?.getBoundingClientRect().top ?? 0) - top) };
+    });
+  await frames();
+
+  // Part way into a long row, deeper than the 160px rows are estimated at before they lay out.
+  await page.evaluate(() => {
+    const s = document.querySelector<HTMLElement>('.wt-scroll')!;
+    const row = s.querySelectorAll<HTMLElement>('.wt-list > .wt-entry')[12];
+    s.scrollTop += row.getBoundingClientRect().top - s.getBoundingClientRect().top + 240;
+    s.dispatchEvent(new Event('scroll'));
+  });
+  await frames();
+  const middle = await reading();
+  assert.ok(middle.top > 200 && middle.offset < -200, `reading part way into a long row: ${JSON.stringify(middle)}`);
+  await page.locator('textarea.wt-input').fill('half-typed draft');
+  const parked = await roundTrip();
+  assert.equal(parked.row, middle.row, 'same row at the top');
+  assert.ok(Math.abs(parked.offset - middle.offset) <= 2 && Math.abs(parked.top - middle.top) <= 2, `scroll kept: ${JSON.stringify(middle)} -> ${JSON.stringify(parked)}`);
+  assert.equal(await page.locator('textarea.wt-input').inputValue(), 'half-typed draft');
+
+  await page.evaluate(() => {
+    const s = document.querySelector<HTMLElement>('.wt-scroll')!;
+    s.scrollTop = s.scrollHeight;
+    s.dispatchEvent(new Event('scroll'));
+  });
+  await frames();
+  const followed = await roundTrip();
+  assert.ok(followed.max - followed.top <= 2, `still following latest: ${followed.top}/${followed.max}`);
+
+  await page.evaluate(() => (window as any).thread.dispose());
+  assert.deepEqual(errors, []);
+});

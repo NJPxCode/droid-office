@@ -792,7 +792,32 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   // to the bottom: keep following it.
   resize.observe(list);
   let inspecting = false;
-  const atBottom = () => scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 80;
+  // While the pane shows the raw terminal the transcript is detached and measures 0×0, which reads as
+  // "at the bottom": answer from where the reader was until it is back and laid out, and put a scrolled-up
+  // reader back on the row they were reading. Detaching also drops the sizes `content-visibility: auto`
+  // remembered, so every row would come back at its 160px estimate: pin each row's measured height first.
+  let parked: { following: boolean; entry?: string; offset: number } | undefined;
+  const atBottom = () => (parked ? parked.following : scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 80);
+  const readingSpot = (): NonNullable<typeof parked> => {
+    if (followingLayout) return { following: true, offset: 0 };
+    const top = scroll.getBoundingClientRect().top;
+    for (const node of list.children) {
+      const box = node.getBoundingClientRect();
+      if (node instanceof HTMLElement && box.bottom > top) return { following: false, entry: node.dataset.entry, offset: box.top - top };
+    }
+    return { following: false, offset: 0 };
+  };
+  const holdRowHeights = () => {
+    const rows = [...list.children].filter((el): el is HTMLElement => el instanceof HTMLElement);
+    const heights = rows.map((row) => row.getBoundingClientRect().height);
+    rows.forEach((row, index) => {
+      if (heights[index]) row.style.setProperty('contain-intrinsic-block-size', `auto ${heights[index]}px`);
+    });
+  };
+  const returnTo = (spot: NonNullable<typeof parked>) => {
+    const node = spot.entry ? [...list.children].find((el) => el instanceof HTMLElement && el.dataset.entry === spot.entry) : undefined;
+    if (node) scroll.scrollTop += node.getBoundingClientRect().top - scroll.getBoundingClientRect().top - spot.offset;
+  };
   const follow = () => {
     inspecting = false;
     followingLayout = true;
@@ -1397,6 +1422,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     stop.hidden = !busy && !waiting;
     stop.disabled = !allowed || sending || stopping;
     sendLabel.textContent = sending ? 'Sending…' : busy ? (cloud ? 'Queue' : 'Send now') : 'Send';
+    send.classList.toggle('icon', sendLabel.textContent === 'Send');
+    send.setAttribute('aria-label', sendLabel.textContent);
     send.title = busy ? (cloud ? `Sent to ${worker.name} once this turn is over` : `Steer ${worker.name}: it reads this now, during the turn`) : '';
     const placeholder = () => {
       if (broken) return `${worker.name} can’t take messages`;
@@ -1697,10 +1724,25 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     dropZone: (zone, mark) => images.dropZone(zone, mark),
     activate(on) {
       if (active === on) return;
+      if (!on && scroll.isConnected) {
+        parked = readingSpot();
+        holdRowHeights();
+      }
       active = on;
       pending = undefined;
       syncWatch();
       if (on) {
+        const spot = parked;
+        if (spot) {
+          returnTo(spot);
+          requestAnimationFrame(() => {
+            if (parked !== spot || !active) return;
+            parked = undefined;
+            if (spot.following) follow();
+            else returnTo(spot);
+            updateLatest();
+          });
+        }
         net.send({ t: 'worker.attach', workerId: worker.id });
         read(undefined, 0);
         loadSlash();
