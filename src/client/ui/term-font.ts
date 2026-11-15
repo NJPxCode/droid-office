@@ -1,6 +1,6 @@
 // The terminal window starts at 14 px. Its adjustable size is saved in this browser.
 
-export const TERM_FONT_DESKTOP = 14;
+const TERM_FONT_DESKTOP = 14;
 export const TERM_FONT_MIN = 10;
 export const TERM_FONT_MAX = 36;
 const STEP = 2;
@@ -9,7 +9,7 @@ const base = TERM_FONT_DESKTOP;
 const storageKey = 'droid-office.term-font';
 const listeners = new Set<(px: number) => void>();
 
-export function clampTermFont(px: number): number {
+function clampTermFont(px: number): number {
   if (!Number.isFinite(px)) return base;
   return Math.max(TERM_FONT_MIN, Math.min(TERM_FONT_MAX, Math.round(px)));
 }

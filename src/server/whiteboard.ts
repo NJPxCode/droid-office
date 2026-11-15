@@ -76,13 +76,13 @@ import { SDK_SCRIPT, SDK_VERSION } from './whiteboard-sdk.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 /** An epoch the record hasn't heard from in this long is dropped from it. */
-export const EPOCH_TTL_MS = 14 * DAY;
+const EPOCH_TTL_MS = 14 * DAY;
 /** The most epochs the record keeps; the least recently used go first. */
-export const EPOCH_MAX = 1000;
+const EPOCH_MAX = 1000;
 /** How long a file the window uploaded waits for the batch that uses it. */
-export const STAGE_TTL_MS = 60 * 60 * 1000;
+const STAGE_TTL_MS = 60 * 60 * 1000;
 /** How often a linked file is looked at, besides the watcher (which can miss a folder being deleted). */
-export const LINK_POLL_MS = 2000;
+const LINK_POLL_MS = 2000;
 const LINK_DEBOUNCE_MS = 150;
 
 export { CARD_SANDBOX };
@@ -295,7 +295,7 @@ export interface RenderStatus extends WhiteboardRendererStatus {
   error?: { message: string; at: number; rev: number };
 }
 
-export const NO_RENDERER_REASON = 'Cards are not rendered to images in this office yet: it has no renderer (a headless Chromium) set up, so there are no PNGs, thumbnails or wall images. Everything else on the board works.';
+const NO_RENDERER_REASON = 'Cards are not rendered to images in this office yet: it has no renderer (a headless Chromium) set up, so there are no PNGs, thumbnails or wall images. Everything else on the board works.';
 
 /** The renderer an office has until a real one is plugged in: renders are unavailable, and it says why. */
 export class NoRenderer implements WhiteboardRenderer {

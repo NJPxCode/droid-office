@@ -38,7 +38,7 @@ export function latencies(sends, frames, { window = 250 } = {}) {
 
 const nowNs = () => process.hrtime.bigint();
 
-export async function measure({ cdp, trace, trials, w, h }) {
+async function measure({ cdp, trace, trials, w, h }) {
   const sends = [];
   let x = w / 2;
   for (let i = 0; i < trials; i++) {

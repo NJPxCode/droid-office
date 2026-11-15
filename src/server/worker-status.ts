@@ -230,7 +230,7 @@ export function summarizeFactoryQuotas(factory: FactoryState | undefined, models
   });
 }
 
-export function inspectFactoryModelStatus(factory: FactoryState | undefined, model: string | undefined, now: number, retry?: WorkerRetryStatus): WorkerModelCooldown | undefined {
+function inspectFactoryModelStatus(factory: FactoryState | undefined, model: string | undefined, now: number, retry?: WorkerRetryStatus): WorkerModelCooldown | undefined {
   if (!factory || !model) return undefined;
   const availability = factoryModelAvailability(factory, { id: model }, now);
   const usage = factoryModelUsage(factory, { id: model }, now);

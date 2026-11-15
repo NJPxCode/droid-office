@@ -27,7 +27,7 @@ const svg = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string,
  * badge sits on. `size` counts the quiet zone. The finder eyes stay square: rounded ones look
  * friendlier but some phone scanners (OpenCV's, for one) stop finding the code.
  */
-export function qrShape(text: string): { size: number; path: string; badge: number } {
+function qrShape(text: string): { size: number; path: string; badge: number } {
   const qr = encode(text, { ecc: 'Q', border: QUIET });
   const n = qr.size - 2 * QUIET;
   const badge = BADGE + ((n - BADGE) % 2);

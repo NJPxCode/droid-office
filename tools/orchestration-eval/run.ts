@@ -141,7 +141,7 @@ function currentCommit(): string {
   }
 }
 
-export async function measureAllContexts(): Promise<ContextBreakdown[]> {
+async function measureAllContexts(): Promise<ContextBreakdown[]> {
   const roles: EvalRole[] = ['orchestrator', 'external-bot', 'floor-lead', 'subagent'];
   const results: ContextBreakdown[] = [];
   for (const role of roles) {

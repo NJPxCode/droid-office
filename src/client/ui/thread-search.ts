@@ -35,7 +35,7 @@ function publish() {
 }
 
 /** Every case-insensitive match of [query] in the visible text under [root], in document order. */
-export function findRanges(root: Element, query: string): Range[] {
+function findRanges(root: Element, query: string): Range[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [];
   const ranges: Range[] = [];

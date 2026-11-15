@@ -49,7 +49,7 @@ const runOsascript: HapticRunner = (script) => {
 };
 
 /** The least gap between two `tick` spawns; a charge crosses a segment about every 94 ms. */
-export const HAPTIC_TICK_MIN_MS = 70;
+const HAPTIC_TICK_MIN_MS = 70;
 
 export interface HapticResult {
   ok: boolean;

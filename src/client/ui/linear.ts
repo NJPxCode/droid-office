@@ -45,13 +45,13 @@ async function ticketDetail(id: string): Promise<LinearTicketDetail> {
 /** Bars for low, medium and high, a filled mark for urgent: the way Linear draws priorities. */
 const PRIORITY_MARK = ['', '!', '▮▮▮', '▮▮▯', '▮▯▯'];
 
-export function priorityChip(p: number) {
+function priorityChip(p: number) {
   if (p < 1 || p > 4) return '';
   return h('span.linear-prio', { class: p === 1 ? 'urgent' : '', title: `${PRIORITY_NAMES[p]} priority` }, h('span.linear-prio-mark', { 'aria-hidden': 'true' }, PRIORITY_MARK[p]), PRIORITY_NAMES[p]);
 }
 
 /** The ticket's state, with the dot in the team's own color for it. */
-export function stateChip(t: Pick<LinearTicket, 'state'>) {
+function stateChip(t: Pick<LinearTicket, 'state'>) {
   const chip = h('span.linear-state', { class: t.state.type }, t.state.name);
   chip.style.setProperty('--dot', t.state.color || '#95a2b3');
   return chip;
@@ -132,7 +132,7 @@ function commentCard(c: LinearComment) {
 }
 
 /** The task a worker gets for a ticket: the "Linear ticket" prompt with its description. */
-export function linearPrompt(t: { identifier: string; title: string; url: string; description?: string; branchName?: string }): string {
+function linearPrompt(t: { identifier: string; title: string; url: string; description?: string; branchName?: string }): string {
   return officePrompt('linear.work', linearPromptVars(t));
 }
 

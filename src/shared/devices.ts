@@ -71,8 +71,8 @@ export function companionLink(base: string, token?: string): string {
 }
 
 /** The pairing link's scheme and version (see pairingLink). */
-export const PAIRING_SCHEME = 'droidoffice://pair';
-export const PAIRING_VERSION = 1;
+const PAIRING_SCHEME = 'droidoffice://pair';
+const PAIRING_VERSION = 1;
 
 /**
  * The pairing QR code's text: `droidoffice://pair?v=1&name=…&t=<LAN token>&u=<base url>&u=…`, every

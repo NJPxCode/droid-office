@@ -12,7 +12,7 @@ const execFileP = promisify(execFile);
 /** Where the office keeps its workers' worktrees, relative to the project. */
 export const WORKTREES_DIR = path.join('.droid-office', 'worktrees');
 /** Their branches are office/<worker>-<id>. */
-export const BRANCH_PREFIX = 'office/';
+const BRANCH_PREFIX = 'office/';
 /** A fetch this recent is fresh enough for the next worktree: a burst of hires shares one. */
 const FETCH_FRESH_MS = 15_000;
 const FETCH_TIMEOUT_MS = 15_000;

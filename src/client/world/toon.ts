@@ -120,8 +120,8 @@ export type TextOpts = {
 const TEXT_SCALE = 0.0055;
 
 /** Factory's signal orange and secondary gray, as signs and labels print them. */
-export const SIGNAL = '#ee6018';
-export const SECONDARY = '#8c8c8c';
+const SIGNAL = '#ee6018';
+const SECONDARY = '#8c8c8c';
 /** A plate's hairline, when the caller doesn't name one. */
 const HAIRLINE = 'rgba(255, 255, 255, .18)';
 /** How a sign's mono type is set, as fractions of its `size`: smaller than the old bold sans, with wide tracking. */
@@ -408,7 +408,7 @@ export function cardSprite(o: CardOpts): THREE.Sprite {
 }
 
 /** Greedy word wrap to at most `maxLines`, ending in "…" when the text doesn't fit. */
-export function wrapText(ctx: CanvasRenderingContext2D, text: string, maxW: number, maxLines: number, px: number): string[] {
+function wrapText(ctx: CanvasRenderingContext2D, text: string, maxW: number, maxLines: number, px: number): string[] {
   const fits = (s: string) => measure(ctx, s, px) <= maxW;
   const lines: string[] = [];
   let line = '';

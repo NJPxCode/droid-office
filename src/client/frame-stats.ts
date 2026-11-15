@@ -2,7 +2,7 @@
 // longer than the frame rate limit meant. Average FPS hides both. Pure and loadable in Node (tests/frame-stats.test.ts).
 
 /** The parts of a frame timed on the CPU, in the order `drawFrame` (main.ts) runs them. */
-export const FRAME_PASSES = ['update', 'scene', 'hands', 'finish'] as const;
+const FRAME_PASSES = ['update', 'scene', 'hands', 'finish'] as const;
 export type FramePass = (typeof FRAME_PASSES)[number];
 
 /** One drawn frame. */

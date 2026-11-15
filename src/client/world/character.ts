@@ -44,13 +44,13 @@ export function emoteEnvelope(t: number, seconds: number): number {
 }
 
 /** Overshoots 1 a little on the way there (p = 0..1), for things that pop in. */
-export function popCurve(p: number): number {
+function popCurve(p: number): number {
   const u = Math.min(1, p) - 1;
   return 1 + 2.7 * u * u * u + 1.7 * u * u;
 }
 
 /** A full mug of coffee standing on y = 0, with its handle on the -x side. */
-export function coffeeMug(scale = 1): THREE.Group {
+function coffeeMug(scale = 1): THREE.Group {
   const mug = new THREE.Group();
   const r = 0.05 * scale;
   const height = 0.1 * scale;
@@ -65,7 +65,7 @@ export function coffeeMug(scale = 1): THREE.Group {
  * An open cardboard box with someone's desk things in it: a plant, a photo, a mug, a rubber duck and
  * some papers. It stands on y = 0 with its front toward +z.
  */
-export function boxOfStuff(): THREE.Group {
+function boxOfStuff(): THREE.Group {
   const g = new THREE.Group();
   const W = 0.52;
   const H = 0.26;

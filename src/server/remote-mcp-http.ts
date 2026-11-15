@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { isLoopback } from './lan.js';
-import { handleOfficeImages, OFFICE_IMAGES_PATH, parseImageRoute } from './office-images.js';
+import { handleOfficeImages, parseImageRoute } from './office-images.js';
 import { createOfficeMcp, OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER, type OfficeMcpDeps } from './office-mcp/index.js';
 import type { RemoteOffice } from './remote-office.js';
 import type { GrokBotInput } from './remote-workers.js';
@@ -82,12 +82,8 @@ function readSaved(file: string): Saved {
   }
 }
 
-export function remoteMcpUrl(hostname: string, httpsPort: number): string {
+function remoteMcpUrl(hostname: string, httpsPort: number): string {
   return `https://${hostname}${httpsPort === 443 ? '' : `:${httpsPort}`}${OFFICE_MCP_PATH}`;
-}
-
-export function remoteImagesUrl(hostname: string, httpsPort: number): string {
-  return `https://${hostname}${httpsPort === 443 ? '' : `:${httpsPort}`}${OFFICE_IMAGES_PATH}`;
 }
 
 export interface RemoteMcpOptions {

@@ -14,13 +14,13 @@ export function placeholderProvider(key: SubscriptionProviderKey): SubscriptionP
 }
 
 /** The providers to show: DroidProxy's own list, or the featured two until it answers. */
-export function shownProviders(): SubscriptionProvider[] {
+function shownProviders(): SubscriptionProvider[] {
   const listed = store.subscriptions.providers;
   return listed.length ? listed : FEATURED_PROVIDERS.map(placeholderProvider);
 }
 
 /** One bar per usage window of an account: how much is left, and when it resets. */
-export function usageBars(a: SubscriptionAccount, now = Date.now()): HTMLElement | null {
+function usageBars(a: SubscriptionAccount, now = Date.now()): HTMLElement | null {
   if (!a.windows.length) return a.usageError ? h('small.subs-usage-error', {}, `Usage unavailable: ${a.usageError}`) : null;
   return h(
     'ul.subs-usage',
@@ -76,7 +76,7 @@ export function connect(net: Net, p: SubscriptionProvider) {
 }
 
 /** DroidProxy's phase in a line for the owner. */
-export function proxyWords(p: ProxyState): string {
+function proxyWords(p: ProxyState): string {
   const v = p.version ? ` ${p.version}` : '';
   switch (p.phase) {
     case 'unsupported':

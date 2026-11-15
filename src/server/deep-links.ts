@@ -4,7 +4,7 @@
 // `intent://` redirect with a self-hosted fallback card when the app isn't installed or on desktop.
 
 import type http from 'node:http';
-import { androidIntentDeepLink, appDeepLink, cardDeepLink, deepLinkPathAndQuery, floorDeepLink, normalizeDeepLinkBase, parseDeepLink, questionDeepLink, workerDeepLink, type DeepLinkTarget } from '../shared/deep-links.js';
+import { androidIntentDeepLink, appDeepLink, deepLinkPathAndQuery, normalizeDeepLinkBase, parseDeepLink, type DeepLinkTarget } from '../shared/deep-links.js';
 import { COMPANION_PATH } from '../shared/devices.js';
 
 const ANDROID_APK_RELEASES = 'https://github.com/nikships/droid-office/releases/latest';
@@ -115,5 +115,3 @@ export function serveDeepLinkBounce(req: http.IncomingMessage, res: http.ServerR
   res.writeHead(200, { ...headers, 'content-type': 'text/html; charset=utf-8' });
   res.end(req.method === 'HEAD' ? undefined : html);
 }
-
-export { workerDeepLink, floorDeepLink, cardDeepLink, questionDeepLink };

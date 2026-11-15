@@ -20,19 +20,19 @@ export const WALL_H = 960;
 export const WALL_ASPECT = WALL_W / WALL_H;
 
 /** How many cards the grid shows; with more, the last tile reads +N. */
-export const GRID_COLS = 3;
-export const GRID_ROWS = 3;
+const GRID_COLS = 3;
+const GRID_ROWS = 3;
 export const GRID_MAX = GRID_COLS * GRID_ROWS;
 
 const PAD = 28;
 const HEADER_H = 64;
 const GAP = 18;
 /** A grid tile's caption strip under its thumbnail. */
-export const CAPTION_H = 66;
+const CAPTION_H = 66;
 /** The narrowest region of a page the artifact view zooms to, in canonical px. */
 export const MIN_REGION_W = 320;
 /** The owner's name for themselves on the wall, and their color. */
-export const OWNER_NAME = 'You';
+const OWNER_NAME = 'You';
 export const OWNER_COLOR = '#ee6018';
 
 const BG = SCREEN_BLACK;

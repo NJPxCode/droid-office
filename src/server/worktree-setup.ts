@@ -134,7 +134,7 @@ export function writeSetupScript(dataDir: string): string {
  * office when it starts and how it went through the worker's own hook URL. It always exits 0: the
  * agent starts either way. Plain CommonJS with no dependencies, so any node can run it.
  */
-export const SETUP_SCRIPT = `'use strict';
+const SETUP_SCRIPT = `'use strict';
 const { execFileSync, spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');

@@ -67,7 +67,7 @@ export interface FactoryFetchInit {
 }
 
 /** What factoryFetch throws: the server's message, and its HTTP status (0 when the office didn't answer). */
-export class FactoryFetchError extends Error {
+class FactoryFetchError extends Error {
   constructor(
     message: string,
     readonly status: number,

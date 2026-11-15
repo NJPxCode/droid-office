@@ -10,15 +10,15 @@ import { callGeminiDecisions, type DecisionAnswer, type DecisionQuestion, type F
 
 export type WakeChannel = 'team_report' | 'done' | 'lead_notify' | 'team_note' | 'visit_tell';
 
-export const WAKE_TIMEOUT_MS = 2500;
+const WAKE_TIMEOUT_MS = 2500;
 /** `block_and_coach` needs the traffic choice at least this sure... */
 export const BLOCK_TRAFFIC_MIN = 0.85;
 /** ...and the independent pure-chatter check at least this sure. */
 export const BLOCK_CHATTER_MIN = 0.88;
 /** A quieter-than-wake route needs at least this much of the traffic probability; less wakes. */
-export const QUIET_MIN = 0.5;
+const QUIET_MIN = 0.5;
 /** A working sibling is interrupted mid-turn by a team_note only at or above this relevance. */
-export const SIBLING_NOTICE_MIN = 0.6;
+const SIBLING_NOTICE_MIN = 0.6;
 export const CHATTER_WINDOW_MS = 5 * 60_000;
 const MAX_SIBLING_QUESTIONS = 12;
 const MAX_TEAMMATES = 14;

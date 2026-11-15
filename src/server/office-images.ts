@@ -13,7 +13,7 @@ import type { WhiteboardStore } from './whiteboard.js';
 import type { CardOut } from './whiteboard-agent.js';
 
 export const OFFICE_IMAGES_PATH = '/office/images';
-export const OFFICE_IMAGES_DIR = 'images';
+const OFFICE_IMAGES_DIR = 'images';
 const OFFICE_MCP_WORKER_HEADER = 'x-droid-office-worker-id';
 
 const MAX_STORED_IMAGES = 500;

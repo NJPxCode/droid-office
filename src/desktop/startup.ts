@@ -8,7 +8,7 @@ import { checkRequirements, type Machine } from './requirements.js';
 import { formatStartupFailure, nativeModuleFailure, type StartupFailure } from './startup-failure.js';
 
 /** Set by CI and nothing else: the packaged app starts, checks and exits without a window or a dialog (`--startup-check`). */
-export const STARTUP_CHECK_FLAG = '--startup-check';
+const STARTUP_CHECK_FLAG = '--startup-check';
 
 export function isStartupCheck(argv: readonly string[] = process.argv): boolean {
   return argv.includes(STARTUP_CHECK_FLAG);
@@ -22,7 +22,7 @@ function chipBrand(): string | undefined {
   }
 }
 
-export function readMachine(env: NodeJS.ProcessEnv = process.env): Machine {
+function readMachine(env: NodeJS.ProcessEnv = process.env): Machine {
   return { platform: process.platform, arch: process.arch, release: os.release(), brand: chipBrand(), allowAnyChip: env.DROID_OFFICE_ALLOW_ANY_CHIP === '1' };
 }
 

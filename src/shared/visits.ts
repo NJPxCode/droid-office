@@ -30,7 +30,6 @@ export interface Visit {
 }
 
 export const VISIT_KINDS: readonly VisitKind[] = ['tell', 'ask', 'handoff'];
-export const VISIT_PHASES: readonly VisitPhase[] = ['walking', 'talking', 'returning'];
 
 /** Walking speed in m/s, the server's timing and the client's walk alike: an errand, not a stroll. */
 export const VISIT_WALK_SPEED = 1.6;

@@ -2,7 +2,6 @@ import { extractThreadChanges, threadShortPath, toolLeaf, type ThreadFileChange,
 import { todoItems } from './todos.js';
 import type { ThreadEntry } from './worker-thread.js';
 
-export { threadShortPath };
 export type { ThreadDiffLine, ThreadDiffSpan, ThreadFileChange, ThreadFileText } from './thread-diff.js';
 
 export type ActivityState = 'working' | 'complete' | 'incomplete' | 'failed' | 'cancelled';
@@ -520,7 +519,7 @@ function ownerCancellations(source: ThreadEntry[], late: Set<string>): { ids: Se
   return { ids, causes };
 }
 
-export function threadPlan(text: string): PlanStep[] {
+function threadPlan(text: string): PlanStep[] {
   return text.split('\n').flatMap((line) => {
     const match = /^\d+\.\s*\[(completed|in progress|in_progress|pending)]\s*(.*)$/.exec(line.trim());
     return match ? [{ done: match[1] === 'completed', active: match[1].replace('_', ' ') === 'in progress', text: match[2].trim() }] : [];
@@ -569,7 +568,7 @@ export function latestThreadPlan(entries: readonly ThreadEntry[], busy: boolean)
   };
 }
 
-export function threadStop(reason: string): string {
+function threadStop(reason: string): string {
   const copy: Record<string, string> = {
     error: 'The turn stopped on an error',
     model_authentication_failed: "The turn stopped: the model's sign-in failed",

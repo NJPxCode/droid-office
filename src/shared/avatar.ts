@@ -12,18 +12,6 @@ export interface Look {
   style: number;
 }
 
-function hash(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return h >>> 0;
-}
-
-/** A look picked from a seed, for people who haven't chosen one. */
-export function lookFromSeed(seed: string): Look {
-  const h = hash(seed);
-  return { skin: h % SKIN_TONES.length, hair: (h >>> 3) % HAIR_COLORS.length, style: (h >>> 7) % HAIR_STYLES.length };
-}
-
 export function randomLook(): Look {
   const pick = (n: number) => Math.floor(Math.random() * n);
   return { skin: pick(SKIN_TONES.length), hair: pick(HAIR_COLORS.length), style: pick(HAIR_STYLES.length) };
@@ -38,8 +26,4 @@ export function sanitizeLook(x: unknown, fallback: Look): Look {
     hair: idx(o.hair, HAIR_COLORS.length, fallback.hair),
     style: idx(o.style, HAIR_STYLES.length, fallback.style),
   };
-}
-
-export function sameLook(a: Look, b: Look): boolean {
-  return a.skin === b.skin && a.hair === b.hair && a.style === b.style;
 }

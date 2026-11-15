@@ -6,7 +6,7 @@
 export type FactorySessionStatus = 'idle' | 'pending' | 'running';
 
 /** Where the Factory web app shows a session (its own share links are `<app>/sessions/<id>`). */
-export const FACTORY_APP = 'https://app.factory.ai';
+const FACTORY_APP = 'https://app.factory.ai';
 export const sessionWebUrl = (id: string) => `${FACTORY_APP}/sessions/${encodeURIComponent(id)}`;
 
 /** The settings a session takes, as the API spells them. */
@@ -17,8 +17,6 @@ export const SESSION_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'ima
 export type SessionEffort = (typeof SESSION_EFFORTS)[number];
 export type SessionMode = (typeof SESSION_MODES)[number];
 export type SessionAutonomy = (typeof SESSION_AUTONOMY)[number];
-
-export const MODE_LABEL: Record<SessionMode, string> = { auto: 'Auto', spec: 'Spec', agi: 'AGI', mission: 'Mission' };
 
 /** Something a session made: a pull request, mostly. */
 export interface FactorySessionArtifact {
@@ -114,7 +112,7 @@ export interface FactorySessionsState {
   credits: FactoryCredits;
 }
 
-export function emptyCredits(): FactoryCredits {
+function emptyCredits(): FactoryCredits {
   return { days: [], today: 0, week: 0, since: 0, top: [] };
 }
 
@@ -269,7 +267,7 @@ export interface FactoryMessage {
 /** The most a block keeps: a long tool output or a huge paste is cut, with a note that it was. */
 export const TEXT_MAX = 60_000;
 export const RESULT_MAX = 16_000;
-export const INPUT_MAX = 4_000;
+const INPUT_MAX = 4_000;
 /** Images bigger than this (base64 characters) aren't sent to the page: just a placeholder. */
 export const IMAGE_MAX = 1_500_000;
 

@@ -290,7 +290,7 @@ export interface PipelinePolicy {
   copy: PipelineCopy;
 }
 
-export const GITHUB_PIPELINES: PipelinePolicy = {
+const GITHUB_PIPELINES: PipelinePolicy = {
   startedBy: 'workflow-file',
   fullRerunKeepsId: true,
   form: 'workflow',
@@ -315,7 +315,7 @@ export const GITHUB_PIPELINES: PipelinePolicy = {
   },
 };
 
-export const GITLAB_PIPELINES: PipelinePolicy = {
+const GITLAB_PIPELINES: PipelinePolicy = {
   startedBy: 'branch',
   fullRerunKeepsId: false,
   form: 'variables',
@@ -341,7 +341,7 @@ export const GITLAB_PIPELINES: PipelinePolicy = {
 };
 
 /** The two forges. An unknown forge reads as GitHub, which is what the boards did before a project loaded. */
-export const PIPELINE_POLICIES: Record<Forge, PipelinePolicy> = { github: GITHUB_PIPELINES, gitlab: GITLAB_PIPELINES };
+const PIPELINE_POLICIES: Record<Forge, PipelinePolicy> = { github: GITHUB_PIPELINES, gitlab: GITLAB_PIPELINES };
 
 export function pipelinePolicy(forge: Forge | undefined): PipelinePolicy {
   return forge ? PIPELINE_POLICIES[forge] : PIPELINE_POLICIES.github;

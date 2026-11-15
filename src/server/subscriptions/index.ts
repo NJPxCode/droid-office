@@ -83,7 +83,7 @@ const POLL_FAST_MS = 2000;
 const POLL_DOWN_MS = 30_000;
 const RELEASE_EVERY_MS = 6 * 60 * 60_000;
 /** Availability judged longer ago than this is unknown: nobody is refused on it. */
-export const STALE_MS = 5 * 60_000;
+const STALE_MS = 5 * 60_000;
 /** How long DroidProxy gets to answer after the office opens it. */
 const START_WAIT_MS = 30_000;
 /** The office puts DroidProxy's models into Droid by itself at most this often, while Droid has none of them. */

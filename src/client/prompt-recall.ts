@@ -6,7 +6,7 @@ export const PROMPT_HISTORY_MAX = 50;
 const HISTORY_KEY = 'droid-office.prompt-history';
 
 /** As the office keeps a prompt: Windows line ends and outer whitespace don't count. */
-export function normPrompt(text: string): string {
+function normPrompt(text: string): string {
   return text.replace(/\r\n?/g, '\n').trim();
 }
 

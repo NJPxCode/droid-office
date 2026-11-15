@@ -58,7 +58,7 @@ export function worktreePref(): boolean {
   }
 }
 
-export function setWorktreePref(worktree: boolean) {
+function setWorktreePref(worktree: boolean) {
   try {
     localStorage.setItem(WT_KEY, worktree ? '1' : '0');
   } catch {

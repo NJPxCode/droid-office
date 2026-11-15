@@ -12,7 +12,7 @@ export type HapticPattern = 'tick' | 'charged' | 'super';
  */
 
 /** How many ticks a full charge is divided into: one about every 94 ms of the 750 ms hold. */
-export const CHARGE_HAPTIC_SEGMENTS = 8;
+const CHARGE_HAPTIC_SEGMENTS = 8;
 
 /** Which segment `progress` (0…1) is in, 0 before the first tick and `segments` when full. */
 export function chargeHapticSegment(progress: number, segments = CHARGE_HAPTIC_SEGMENTS): number {

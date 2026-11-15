@@ -7,7 +7,7 @@
 
 import type { PairingAddress } from './devices.js';
 
-export const DEEP_LINK_SCHEME = 'droidoffice';
+const DEEP_LINK_SCHEME = 'droidoffice';
 export const DEEP_LINK_OPEN_PREFIX = '/open/';
 
 export type DeepLinkTarget =

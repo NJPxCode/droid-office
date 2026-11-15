@@ -53,14 +53,14 @@ function saveCwd(computerId: string, cwd: string) {
 }
 
 /** The account's computers a session can start on now, while the office is connected to Factory. */
-export function cloudComputers(): CloudComputer[] {
+function cloudComputers(): CloudComputer[] {
   const f = store.factory;
   if (!f.connection.connected || f.connection.rejected) return [];
   return f.computers.items.filter(canHost).map((c) => ({ id: c.id, name: c.name, providerType: c.providerType, status: c.status, remoteUser: c.remoteUser }));
 }
 
 /** The account's Environments a computer can start from now, the default first. */
-export function cloudEnvironments(): FactoryEnvironment[] {
+function cloudEnvironments(): FactoryEnvironment[] {
   const f = store.factory;
   if (!f.connection.connected || f.connection.rejected) return [];
   return f.environments.items.filter(canStartFrom).sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name));
@@ -192,11 +192,6 @@ export function sendCloudHome(net: Net, w: WorkerInfo) {
 let current: { workerId: string; modal: Modal } | null = null;
 /** What was typed in each cloud worker's window, kept while the page is open. */
 const drafts = new Map<string, string>();
-
-/** The cloud worker whose window is open, if any. */
-export function openCloudFor(): string | null {
-  return current?.workerId ?? null;
-}
 
 /**
  * A cloud worker's window: where it runs, its session in Factory's web app, and its Thread

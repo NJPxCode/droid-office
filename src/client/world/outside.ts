@@ -222,7 +222,7 @@ function park(group: THREE.Group, colliders: Collider[], kind: CarKind, color: s
   rect(-0.6, 0.6, -1.3, 0.1, CAR.roof);
 }
 
-export function tree(scale: number): THREE.Group {
+function tree(scale: number): THREE.Group {
   const t = new THREE.Group();
   t.add(mesh(new THREE.CylinderGeometry(0.22, 0.3, 2.2, 8), toon('#3b3029'), 0, 1.1, 0));
   t.add(mesh(new THREE.SphereGeometry(1.6, 12, 10), toon('#3d6b45'), 0, 3.2, 0));
@@ -415,7 +415,7 @@ const BILLBOARDS: [number, BillboardCopy][] = [
 ];
 
 /** A street lamp on the sidewalk at (x, z), its arm reaching out over the road toward `toward` (±1 in z). */
-export function streetLamp(parts: THREE.Group, night: NightParts, glass: THREE.MeshToonMaterial, colliders: Collider[], x: number, z: number, toward: number) {
+function streetLamp(parts: THREE.Group, night: NightParts, glass: THREE.MeshToonMaterial, colliders: Collider[], x: number, z: number, toward: number) {
   const ink = toon('#1c1c1c');
   const H = 5;
   parts.add(mesh(new THREE.CylinderGeometry(0.2, 0.24, 0.5, 10), ink, x, G + 0.25, z));
@@ -452,15 +452,6 @@ const NEIGHBOURS: [number, number, number, number, number, string][] = [
 
 /** Which way a neighbour at (x, z) is turned: its front to the office. */
 const facing = (x: number, z: number) => (Math.abs(x) > 40 ? (x > 0 ? -Math.PI / 2 : Math.PI / 2) : z > 0 ? Math.PI : 0);
-
-/** The neighbours' footprints, and how tall each stands (roof cap included) above the street. */
-export function neighbourBoxes(): { minX: number; maxX: number; minZ: number; maxZ: number; top: number }[] {
-  return NEIGHBOURS.map(([x, z, w, h, d]) => {
-    // Turned a quarter, its width runs along z.
-    const [hx, hz] = Math.abs(Math.sin(facing(x, z))) > 0.5 ? [d / 2, w / 2] : [w / 2, d / 2];
-    return { minX: x - hx - 0.2, maxX: x + hx + 0.2, minZ: z - hz - 0.2, maxZ: z + hz + 0.2, top: h + 0.4 };
-  });
-}
 
 /**
  * Everything outside, down on the street: grass, the lot in front of the garage, a road with

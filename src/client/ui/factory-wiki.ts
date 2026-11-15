@@ -54,7 +54,7 @@ export interface WikiTab {
 const active = (job: FactoryWikiJob | undefined) => job?.state === 'starting' || job?.state === 'running';
 
 /** How long something has taken: 45s, 12m 05s, 1h 04m. */
-export function elapsed(ms: number): string {
+function elapsed(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -63,7 +63,7 @@ export function elapsed(ms: number): string {
 }
 
 /** What's on a run's label in the version menu and the status line: when, which commit, how many pages. */
-export function runLabel(r: FactoryWikiRun): string {
+function runLabel(r: FactoryWikiRun): string {
   return [r.createdAt ? new Date(r.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'undated', r.commitHash?.slice(0, 7), `${r.pageCount} page${r.pageCount === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
 }
 

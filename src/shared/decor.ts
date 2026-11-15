@@ -203,7 +203,7 @@ export const SIZES = [
  * A picture from the owner's computer, kept in the floor's .droid-office/pictures/ under the hash of
  * its bytes, in a format every browser draws.
  */
-export const UPLOAD_REF = /^upload:([0-9a-f]{64}\.(?:png|jpg|gif|webp|avif))$/;
+const UPLOAD_REF = /^upload:([0-9a-f]{64}\.(?:png|jpg|gif|webp|avif))$/;
 /** The biggest file the office takes from the computer to convert or keep (a camera's RAW photo fits). */
 export const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
 

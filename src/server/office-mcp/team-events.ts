@@ -39,9 +39,9 @@ const HISTORY_MAX = 20;
 const EVENT_ID = /^team:([a-z0-9-]+):(\d+)$/;
 const ASK_ID = /^ask:([a-z0-9-]+):(.+):([0-9a-f]{12}|permission|terminal)$/;
 
-export const eventId = (floor: string, seq: number) => `team:${floor}:${seq}`;
+const eventId = (floor: string, seq: number) => `team:${floor}:${seq}`;
 const iso = (at: number) => new Date(at).toISOString();
-export function summary(text: string): string {
+function summary(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length > SUMMARY_MAX ? `${flat.slice(0, SUMMARY_MAX - 1)}…` : flat;
 }
@@ -209,7 +209,7 @@ export function compactEventText(e: CompactEvent): string {
 }
 
 /** The floors whose teams a caller's team tools cover: its own, or for a building agent every open floor (or the one named). */
-export function teamScopes(caller: OfficeMcpCaller, deps: OfficeMcpDeps, floor?: string): TeamScope[] | string {
+function teamScopes(caller: OfficeMcpCaller, deps: OfficeMcpDeps, floor?: string): TeamScope[] | string {
   if (caller.building && deps.remote) {
     const all = deps.remote.floors();
     if (floor === undefined) return all.length ? all : 'No floor is open.';
@@ -302,7 +302,7 @@ export function terminalQuestion(scope: TeamScope, w: WorkerInfo): OpenQuestion 
 }
 
 /** Every question waiting on `lead` across scopes: its subagents' team_report questions and their terminal questions. */
-export function openQuestions(scopes: TeamScope[], lead: string, watched?: ReadonlySet<string>): OpenQuestion[] {
+function openQuestions(scopes: TeamScope[], lead: string, watched?: ReadonlySet<string>): OpenQuestion[] {
   return scopes.flatMap((s) => {
     const asked = s.team
       .questions(lead)
@@ -374,7 +374,7 @@ const questionOut = z.looseObject({
   why: z.string().optional(),
   deepLink: z.string().optional(),
 });
-export const statusOutput = { workers: z.array(workerOut), news: z.array(eventOut), cursor: z.string() };
+const statusOutput = { workers: z.array(workerOut), news: z.array(eventOut), cursor: z.string() };
 
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const cursorArg = z.string().trim().min(1).max(4000).describe('Cursor or team:<floor>:<seq> id; considers events after it.');
@@ -658,7 +658,7 @@ interface Matched {
 }
 
 /** Resolves with what `check` finds, at once or on the next team signal that makes it true; undefined on timeout or abort. Always unsubscribes. */
-export function waitFor(scopes: TeamScope[], opts: { check(): Matched | undefined; timeoutMs: number; signal: AbortSignal; progress: OfficeProgress }): Promise<Matched | undefined> {
+function waitFor(scopes: TeamScope[], opts: { check(): Matched | undefined; timeoutMs: number; signal: AbortSignal; progress: OfficeProgress }): Promise<Matched | undefined> {
   const first = opts.check();
   if (first || opts.signal.aborted) return Promise.resolve(first);
   return new Promise((resolve) => {

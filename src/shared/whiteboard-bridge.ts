@@ -16,7 +16,6 @@
 import type { ActionPing, Anchor, Author, Json, Op, Point, StateObject } from './whiteboard.js';
 
 export const BRIDGE_CHANNEL = 'droid-office-whiteboard';
-export const BRIDGE_VERSION = 1;
 
 /** The card frame's sandbox flags, which the card routes' CSP repeats: never allow-same-origin. */
 export const CARD_SANDBOX = 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads';

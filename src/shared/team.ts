@@ -66,7 +66,7 @@ export const TEAM_MARK: Record<TeamEmblem, string> = { chevron: 'âŒƒ', star: 'â˜
 type Look = Pick<TeamBadge, 'accent' | 'emblem'>;
 
 /** Each team on the floor once, by id, as the first worker wearing it shows it. */
-export function teamsWorn(workers: Iterable<WorkerInfo>): Map<string, TeamBadge> {
+function teamsWorn(workers: Iterable<WorkerInfo>): Map<string, TeamBadge> {
   const teams = new Map<string, TeamBadge>();
   for (const w of workers) if (w.team && !teams.has(w.team.id)) teams.set(w.team.id, w.team);
   return teams;

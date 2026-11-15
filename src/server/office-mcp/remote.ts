@@ -26,7 +26,7 @@ export function buildingInstructions(worker: Pick<WorkerInfo, 'id' | 'name' | 'r
 }
 
 /** The office issues each bot its worker id with its key; this says it at `initialize`, so the client needn't keep it. */
-export function remoteIdentityInstructions(worker: Pick<WorkerInfo, 'id' | 'name'>): string {
+function remoteIdentityInstructions(worker: Pick<WorkerInfo, 'id' | 'name'>): string {
   return `You are ${worker.name}, worker id ${worker.id}. Your bearer key identifies you (${OFFICE_MCP_WORKER_HEADER} is optional and echoed in responses).`;
 }
 

@@ -1,4 +1,4 @@
-import type { KeyboardInputEvent, MouseInputEvent, MouseWheelInputEvent } from 'electron';
+import type { MouseInputEvent, MouseWheelInputEvent } from 'electron';
 
 /**
  * What `native/presenter/src/input_view.mm` reports about the native view. Every event is a plain object (numbers, strings,
@@ -153,11 +153,6 @@ export function wheelEvent(e: NativeScroll, p: { x: number; y: number }): MouseW
     hasPreciseScrollingDeltas: e.precise,
     modifiers: electronModifiers(e.mods),
   };
-}
-
-/** `webContents.sendInputEvent` fallback shape for a key, used only when CDP is not attached. */
-export function keyboardEvent(type: 'keyDown' | 'keyUp' | 'char', keyCode: string, mods: number): KeyboardInputEvent {
-  return { type, keyCode, modifiers: electronModifiers(mods) as KeyboardInputEvent['modifiers'] };
 }
 
 /** Parameters for CDP `Input.dispatchKeyEvent`. */

@@ -41,7 +41,7 @@ export interface StepPlan {
 }
 
 /** An account requests can use: signed in and switched on. */
-export function usableAccount(a: SubscriptionAccount): boolean {
+function usableAccount(a: SubscriptionAccount): boolean {
   return !a.expired && !a.disabled;
 }
 
@@ -50,7 +50,7 @@ export function providerConnected(p: SubscriptionProvider): boolean {
 }
 
 /** A provider's connect in flight that hasn't failed. */
-export function connectingNow(p: SubscriptionProvider): boolean {
+function connectingNow(p: SubscriptionProvider): boolean {
   return !!p.connecting && !p.connecting.error;
 }
 

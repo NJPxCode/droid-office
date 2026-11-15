@@ -21,7 +21,7 @@ async function git(cwd: string, args: string[]): Promise<string> {
 
 export const workerCwd = (dir: string, worker: WorkerInfo) => (worker.worktree ? path.resolve(dir, worker.worktree.path) : dir);
 
-export async function commitAt(cwd: string, ref: string): Promise<string> {
+async function commitAt(cwd: string, ref: string): Promise<string> {
   return (await git(cwd, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`])).trim();
 }
 
@@ -39,7 +39,7 @@ export function canonicalPath(cwd: string): string {
   return realpathSync(cwd);
 }
 
-export async function registeredWorktrees(dir: string) {
+async function registeredWorktrees(dir: string) {
   return (await git(dir, ['worktree', 'list', '--porcelain', '-z']))
     .split('\0\0')
     .filter(Boolean)

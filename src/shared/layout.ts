@@ -348,7 +348,7 @@ export interface SeatDef {
  * Where people can sit: the office's couches, beanbags, chairs and the balcony bench (buildOffice puts
  * them there). Workers have their own seats, the desks and bean bags in SEATS.
  */
-export const SEATING: SeatDef[] = [
+const SEATING: SeatDef[] = [
   // The lounge couch, its back to the room, facing the TV.
   { id: 'couch', label: '🛋️ Couch', x: 10.5, y: 0, z: 0, rotY: Math.PI / 2, places: [-1.2, 0, 1.2], hips: 0.5, depth: -0.05, out: 0.9 },
   // Beanbags either side of the lounge, turned to the TV.

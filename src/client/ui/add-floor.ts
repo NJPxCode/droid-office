@@ -386,10 +386,6 @@ export function createAddFloorSection(opts: AddFloorSectionOptions): AddFloorSec
 
 let currentModal: Modal | null = null;
 
-export function addFloorModalOpen(): boolean {
-  return !!currentModal;
-}
-
 /** Opens the standalone Add floor dialog in the web or Mac companion. */
 export function openAddFloor(net: Net, onOpenFloor: (floorId: string) => void): void {
   if (currentModal) return;

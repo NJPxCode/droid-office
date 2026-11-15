@@ -52,11 +52,11 @@ import { WorkerDelivery } from './worker-runtime/delivery.js';
 import { WorkerHooks, STOP_GRACE_MS } from './worker-runtime/hooks.js';
 import { WorkerHookSpool, HOOK_VERSION, SPOOL_MAX_BYTES, SPOOL_RECHECK_MS, safeEq } from './worker-runtime/hook-transport.js';
 import { WorkerLaunchSettings } from './worker-runtime/launch-settings.js';
-import { childEnv, runAsNode, defaultShell, setupLine, setupFailedNote, resolveCommand, resolveAgent, WIN, shellRun, shq } from './worker-runtime/process.js';
+import { childEnv, runAsNode, defaultShell, setupLine, setupFailedNote, resolveAgent, WIN, shellRun, shq } from './worker-runtime/process.js';
 import { WorkerStateStore } from './worker-runtime/persistence.js';
 import { truncate } from './worker-runtime/activity.js';
 
-export { STOP_GRACE_MS, HOOK_VERSION, SPOOL_MAX_BYTES, childEnv, runAsNode, defaultShell, setupLine, setupFailedNote, resolveCommand, resolveAgent };
+export { STOP_GRACE_MS, HOOK_VERSION, SPOOL_MAX_BYTES, childEnv, runAsNode, defaultShell, setupLine, setupFailedNote, resolveAgent };
 
 type HeadlessTerminal = InstanceType<typeof headless.Terminal>;
 type Worktree = NonNullable<WorkerInfo['worktree']>;
@@ -2577,7 +2577,7 @@ function originRepo(dir: string): string | undefined {
 }
 
 /** owner/name#12 for a pull request on GitHub (which links it with its title), else its URL. */
-export function prRef(url: string): string {
+function prRef(url: string): string {
   const m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(url);
   return m ? `${m[1]}#${m[2]}` : url;
 }
@@ -2632,7 +2632,7 @@ function clamp(v: number, lo: number, hi: number) {
 }
 
 /** How long a worker has spent working (ms), the stretch it's in now included. */
-export function workedMs(info: WorkerInfo, now = Date.now()): number | undefined {
+function workedMs(info: WorkerInfo, now = Date.now()): number | undefined {
   const ms = (info.workedMs ?? 0) + (info.workingSince === undefined ? 0 : Math.max(0, now - info.workingSince));
   return ms > 0 ? ms : undefined;
 }

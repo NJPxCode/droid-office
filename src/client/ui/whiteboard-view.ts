@@ -11,7 +11,7 @@ import { CANONICAL_WIDTH, OWNER, cardChanged, cardFormat, cardsNewestFirst, chan
 export const ZOOM_MIN = 0.25;
 export const ZOOM_MAX = 4;
 /** Where zoom in and zoom out stop. */
-export const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.25, 1.5, 2, 3, 4] as const;
+const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.25, 1.5, 2, 3, 4] as const;
 /** Room left round a canvas's marks when the window fits them (canonical px). The renderer uses 48; pass this into canvasBounds. */
 export const CANVAS_MARGIN = 80;
 
@@ -212,7 +212,7 @@ export function cardFormatBadge(format: CardFormat): string {
   }
 }
 
-export function cardMatchesFilter(board: Board, card: Card, filter: GridFilter): boolean {
+function cardMatchesFilter(board: Board, card: Card, filter: GridFilter): boolean {
   switch (filter) {
     case 'all':
       return true;

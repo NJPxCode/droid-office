@@ -38,8 +38,6 @@ import type { RemoteKeyId } from '../remote-workers.js';
 import type { OfficeImageStore } from '../office-images.js';
 import type { WakeGate } from '../wake-filter.js';
 
-export { sendResponse } from './node-http.js';
-
 export const OFFICE_MCP_PATH = '/office/mcp';
 export const OFFICE_MCP_WORKER_HEADER = 'x-droid-office-worker-id';
 /** The worker's own office, so whichever office the shared profile entry points at can route to it. */

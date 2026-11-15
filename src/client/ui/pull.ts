@@ -83,7 +83,7 @@ function methodLabel(m: GhMergeMethod): string {
 }
 
 /** The merge dialog's remembered defaults. */
-export function mergePref(methods: GhMergeMethod[]): { method: GhMergeMethod; deleteBranch: boolean } {
+function mergePref(methods: GhMergeMethod[]): { method: GhMergeMethod; deleteBranch: boolean } {
   const p = pref<MergePref>(MERGE_KEY, {});
   return { method: p.method && methods.includes(p.method) ? p.method : methods[0], deleteBranch: p.deleteBranch ?? true };
 }
@@ -211,17 +211,13 @@ export interface MergeStatus {
   auto: boolean;
 }
 
-export function pullDetail(number: number): Promise<GhPullDetail> {
-  return getJson<GhPullDetail>(`/api/gh/pull?number=${number}`);
-}
-
 /** An open PR whose branch can't merge until someone resolves conflicts with the base. */
 function conflicted(d: GhPullDetail) {
   return d.state === 'OPEN' && !d.isDraft && (d.mergeable === 'CONFLICTING' || d.mergeStateStatus === 'DIRTY');
 }
 
 /** Whether a PR can merge, and what the merge box says. */
-export function mergeStatus(d: GhPullDetail): MergeStatus {
+function mergeStatus(d: GhPullDetail): MergeStatus {
   const failing = d.checks.filter((c) => c.state === 'fail').length;
   const pending = d.checks.filter((c) => c.state === 'pending').length;
   if (d.state === 'MERGED') return { icon: '🎉', text: 'Merged.', cls: 'ok', can: false, auto: false };

@@ -7,9 +7,9 @@ import { OWNER, cardFormat, changesFor, findCard, readPoint, type ArtifactFormat
 import { type PinnedCard, type RenderImage, type RenderStatus, type WhiteboardStore, renderKey, renderStatus, sameKey } from './whiteboard.js';
 
 /** How long a read with PNGs waits on each card's render by default. */
-export const READ_RENDER_TIMEOUT_MS = 30_000;
+const READ_RENDER_TIMEOUT_MS = 30_000;
 /** How many of a read's cards render at once. */
-export const READ_RENDERS_AT_ONCE = 3;
+const READ_RENDERS_AT_ONCE = 3;
 /** The page is sent as text in a read when it is HTML of at most this many bytes; otherwise read its file. */
 const HTML_INLINE_MAX = 2 * 1024 * 1024;
 

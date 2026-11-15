@@ -83,7 +83,7 @@ export function thermalHtml(summary, trials) {
 <small>Raw measurements stay local. Report generated without network access.</small></main></html>`;
 }
 
-export function writeThermalReport(out) {
+function writeThermalReport(out) {
   const trials = ['A1', 'B1', 'B2', 'A2'].map((label) => JSON.parse(readFileSync(path.join(out, label, 'result.json'), 'utf8')));
   const summary = summarizeTrials(trials);
   const samples = trials.map((r) =>

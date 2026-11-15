@@ -12,7 +12,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const assets = path.join(root, 'android/app/src/main/assets');
 
 /** Each vendored file: where it comes from under node_modules, and where it goes under assets. */
-export const VENDORED = [
+const VENDORED = [
   ['@xterm/xterm/lib/xterm.mjs', 'terminal/vendor/xterm.mjs'],
   ['@xterm/xterm/css/xterm.css', 'terminal/vendor/xterm.css'],
   ['@xterm/addon-unicode11/lib/addon-unicode11.mjs', 'terminal/vendor/addon-unicode11.mjs'],

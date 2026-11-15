@@ -16,15 +16,15 @@ import type { Team } from './team.js';
 import { WorkerManager, type HookEnv } from './workers.js';
 
 /** In the office's own `.droid-office/`: on or off, and the model and effort it runs on. */
-export const ORCHESTRATOR_FILE = 'orchestrator.json';
+const ORCHESTRATOR_FILE = 'orchestrator.json';
 /** Its folder in the office's own `.droid-office/`: where its session runs, never a checkout. */
-export const ORCHESTRATOR_DIR = 'orchestrator';
+const ORCHESTRATOR_DIR = 'orchestrator';
 /**
  * The building agents' Office MCP tools, by the two names Droid gives a tool of the `droid-office` server
  * (`droid-office___team_hire`, `mcp__droid-office__team_hire`). The Orchestrator calls these without Droid's
  * permission prompt: nobody sits at its terminal to approve a hire. Every other tool keeps its prompt.
  */
-export const ORCHESTRATOR_ALLOWED_TOOLS = `^(droid-office___|mcp__droid-office__)(${[...BUILDING_TOOLS].join('|')})$`;
+const ORCHESTRATOR_ALLOWED_TOOLS = `^(droid-office___|mcp__droid-office__)(${[...BUILDING_TOOLS].join('|')})$`;
 const ALLOWED = 'The Orchestrator works through the Office MCP: its own tools there need no approval.';
 
 /** One open floor, as the Orchestrator's team spans them. */

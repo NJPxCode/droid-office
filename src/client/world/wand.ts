@@ -26,9 +26,9 @@ export type Sidearm = 'wand' | 'magnum';
 /** The point of the emitter crystal, where a spell leaves the wand. */
 export const WAND_TIP = new THREE.Vector3(0, 0, 0.284);
 /** The middle of the emitter crystal. */
-export const CORE_AT = new THREE.Vector3(0, 0, 0.2782);
+const CORE_AT = new THREE.Vector3(0, 0, 0.2782);
 /** The rotor's hub, on the shaft's axis. */
-export const ROTOR_AT = new THREE.Vector3(0, 0, 0.2745);
+const ROTOR_AT = new THREE.Vector3(0, 0, 0.2745);
 /** The back of the pommel. */
 export const WAND_BACK = -0.064;
 /** The grip's radius to a corner of its octagon, and where it runs, back to front. */
@@ -135,7 +135,7 @@ let glowTex: THREE.DataTexture | null = null;
  * A soft round spot, white in the middle and falling off to nothing at the edge, for the light
  * at the tip and the spells' heads. Built from numbers, so it needs no canvas.
  */
-export function glowTexture(): THREE.DataTexture {
+function glowTexture(): THREE.DataTexture {
   if (glowTex) return glowTex;
   const n = 64;
   const data = new Uint8Array(n * n * 4);
@@ -277,7 +277,7 @@ export class Wand {
 /** Sparks for a spell landing on a worker: white-hot, orange and pale peach. */
 export const SPELL_HIT = ['#ffffff', ORANGE, ORANGE_HOT, '#ffd8c2', WHITE];
 /** A spell fizzling out on a wall or the floor: orange, steel and white. */
-export const SPELL_MISS = [ORANGE, '#8c8c8c', '#ffffff'];
+const SPELL_MISS = [ORANGE, '#8c8c8c', '#ffffff'];
 /** Sparks shaken off the tip as it casts. */
 export const SPELL_TIP = ['#ffffff', ORANGE_HOT, ORANGE];
 /** A super cast burns pale gold instead of the ordinary orange. */

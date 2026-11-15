@@ -34,7 +34,7 @@ function lastUsed(at: number | undefined, what?: string): string | undefined {
 const STATUS: Record<RemoteMcpState['status'], string> = { off: 'Off', starting: 'Starting…', serving: 'On your tailnet', unavailable: 'Waiting for Tailscale' };
 
 /** One line for the row's description: whether it's on, where, and how many bots. */
-export function remoteMcpSummary(s: RemoteMcpState): string {
+function remoteMcpSummary(s: RemoteMcpState): string {
   if (s.locked) return s.locked;
   if (!s.on) return 'Off. No bot can connect.';
   const bots = s.bots.length ? `${s.bots.length} bot${s.bots.length === 1 ? '' : 's'}` : 'no bots yet';

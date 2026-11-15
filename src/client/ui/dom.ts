@@ -18,14 +18,6 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K | `${K}.${string
   return el;
 }
 
-/** `text` as DOM children with every "DroidProxy" (and a colon right after it) drawn as the Factory pinwheel. */
-export function glyphText(text: string): (string | HTMLElement)[] {
-  return text
-    .split(/droidproxy:?/i)
-    .flatMap((part, i) => (i ? [h('img.glyph', { src: '/factory-glyph.svg', alt: '', 'aria-hidden': 'true' }), part] : [part]))
-    .filter((c) => c !== '');
-}
-
 export function $(id: string): HTMLElement {
   const el = document.getElementById(id);
   if (!el) throw new Error(`#${id} missing`);
@@ -43,7 +35,7 @@ export type ModalSize = 'sm' | 'lg' | 'xl' | 'full';
 export interface Modal {
   el: HTMLElement;
   backdrop: HTMLElement;
-  /** What having it open says you're doing (see doingNow). */
+  /** What having it open says you're doing (see openModalList). */
   doing?: string;
   /** You're reading while it's open: your character holds an open book. */
   reading?: boolean;
@@ -60,12 +52,6 @@ export function onModalChange(fn: (open: boolean) => void) {
 
 export function modalOpen(): boolean {
   return stack.length > 0;
-}
-
-/** What the open windows say you're doing: the topmost one that says anything (a merge dialog over a PR is still "reading PR #12"). */
-export function doingNow(): string | undefined {
-  for (let i = stack.length - 1; i >= 0; i--) if (stack[i].doing) return stack[i].doing;
-  return undefined;
 }
 
 /** The open windows, bottom to top: each one's aria-label (else its heading) and what it says you're doing. */

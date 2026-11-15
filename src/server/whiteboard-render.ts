@@ -34,31 +34,31 @@ import { BrowserError, browserStatus, classifyLaunchError, closeBrowser, ensureB
 import { CARD_HEADERS, CARD_SANDBOX, sameKey, type CardRenders, type DrawnMark, type PinnedCard, type RenderImage, type RenderKey, type RenderOutcome, type WhiteboardRenderer } from './whiteboard.js';
 
 /** Each PNG tile's height (px). A tile is CANONICAL_WIDTH wide. */
-export const TILE_HEIGHT = 2048;
+const TILE_HEIGHT = 2048;
 /** The most tiles a render captures: a page taller than TILE_HEIGHT × MAX_TILES is cut off there. */
-export const MAX_TILES = 8;
+const MAX_TILES = 8;
 /** The frame's height while the page first lays out (a laptop window); it then grows to the page. */
-export const FRAME_HEIGHT = 800;
+const FRAME_HEIGHT = 800;
 /** The thumbnail shows the top THUMB_SOURCE region of a page, scaled down to THUMB_WIDTH wide. */
-export const THUMB_SOURCE = { w: CANONICAL_WIDTH, h: 800 } as const;
+const THUMB_SOURCE = { w: CANONICAL_WIDTH, h: 800 } as const;
 export const THUMB_WIDTH = 640;
 /** Space around a canvas card's marks. */
 export const CANVAS_MARGIN = 48;
 /** A canvas wider than this is scaled down to it. */
-export const MAX_CANVAS_WIDTH = 4096;
+const MAX_CANVAS_WIDTH = 4096;
 /** A comment pin's diameter (px), centered on its point. */
-export const PIN_SIZE = 28;
+const PIN_SIZE = 28;
 
 /** Changes after which a card is rendered again wait this long for the next one. */
-export const DEBOUNCE_MS = 400;
+const DEBOUNCE_MS = 400;
 /** Background renders running at once, across every floor. */
-export const CONCURRENCY = 2;
+const CONCURRENCY = 2;
 /** Cards waiting for a background render, across every floor; the oldest gives way. */
-export const MAX_QUEUE = 64;
+const MAX_QUEUE = 64;
 /** A background render's hard timeout. A read's comes with the read. */
-export const RENDER_TIMEOUT_MS = 45_000;
+const RENDER_TIMEOUT_MS = 45_000;
 /** The longest a render waits for a page to settle before it captures it as it is. */
-export const SETTLE_MS = 10_000;
+const SETTLE_MS = 10_000;
 const NET_QUIET_MS = 500;
 const DOM_QUIET_MS = 300;
 /** A request in flight longer than this is long-lived (a stream, a long poll) and doesn't hold settling up. */
@@ -69,7 +69,7 @@ const DOWNLOAD_RETRY_MS = 10 * 60_000;
 const PROBE_MS = 60_000;
 
 /** The harness page's origin: answered by route interception only, never resolved or reached. */
-export const HARNESS_ORIGIN = 'https://render.droid-office.invalid';
+const HARNESS_ORIGIN = 'https://render.droid-office.invalid';
 const HARNESS_HOST = new URL(HARNESS_ORIGIN).host;
 
 /** What one capture produced, before it becomes a RenderImage. */
@@ -595,7 +595,7 @@ interface Draw {
  * Renders a pinned card in a fresh isolated context of `browser`. Every pin it serves from is the
  * caller's; the context is closed whatever happens, including when `o.signal` aborts it.
  */
-export async function capture(browser: Browser, pin: PinnedCard, o: CaptureOptions): Promise<Capture> {
+async function capture(browser: Browser, pin: PinnedCard, o: CaptureOptions): Promise<Capture> {
   const canvas = pin.card.kind === 'canvas' || !pin.card.content;
   const plan = canvas ? canvasPlan(pin.card) : undefined;
   const viewportW = plan ? Math.max(1, Math.round(plan.w * plan.scale)) : CANONICAL_WIDTH;
@@ -703,7 +703,7 @@ function drawn(m: Draw, plan?: { x: number; y: number }): DrawnMark {
 }
 
 /** Maximum bytes returned in one open-ended Range answer for video/audio inside headless Chromium, avoiding huge CDP buffers. */
-export const RENDER_MEDIA_CHUNK_BYTES = 2 * 1024 * 1024;
+const RENDER_MEDIA_CHUNK_BYTES = 2 * 1024 * 1024;
 
 /** Caps open-ended `bytes=<start>-` Range headers for media streams during headless renders so Chromium reads headers/frames without buffering whole 80+ MB clips over CDP. */
 export function capRenderMediaRange(range: string | undefined, mime: string | undefined, chunkBytes = RENDER_MEDIA_CHUNK_BYTES): string | undefined {

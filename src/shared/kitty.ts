@@ -16,9 +16,9 @@ import { CLEAR_DROID_QUEUE } from './droid-queue.js';
 
 export const KITTY_KB_DISAMBIGUATE = 1;
 export const KITTY_KB_REPORT_EVENTS = 2;
-export const KITTY_KB_REPORT_ALTERNATE = 4;
-export const KITTY_KB_REPORT_ALL = 8;
-export const KITTY_KB_REPORT_TEXT = 16;
+const KITTY_KB_REPORT_ALTERNATE = 4;
+const KITTY_KB_REPORT_ALL = 8;
+const KITTY_KB_REPORT_TEXT = 16;
 export const KITTY_KB_ALL_FLAGS = 31;
 
 const MAX_KB_STACK = 16;
@@ -411,8 +411,6 @@ export function isCancelInput(data: string): boolean {
 export const KITTY_CELL_PX_W = 18;
 export const KITTY_CELL_PX_H = 36;
 
-/** Unicode Private Use Area character reserved by Kitty for `U=1` virtual image cells. */
-export const KITTY_PLACEHOLDER_CP = 0x10eeee;
 export const KITTY_PLACEHOLDER_CHAR = '\udbfb\udeee';
 
 /**
@@ -700,7 +698,7 @@ export interface KittyControlParams {
 
 const NUMERIC_KEYS = new Set(['f', 'i', 'I', 'p', 'q', 'm', 's', 'v', 'c', 'r', 'x', 'y', 'w', 'h', 'X', 'Y', 'C', 'z', 'U']);
 
-export function parseKittyControl(body: string): { params: KittyControlParams; payload: string } {
+function parseKittyControl(body: string): { params: KittyControlParams; payload: string } {
   const semi = body.indexOf(';');
   const head = semi >= 0 ? body.slice(0, semi) : body;
   const payload = semi >= 0 ? body.slice(semi + 1) : '';
@@ -1145,7 +1143,7 @@ export function cellUnderlineId(cell: unknown): number {
 }
 
 /** Fast FNV-1a 32-bit hash over a base64 payload (full scan for <=512 chars, strided + head/tail for larger payloads). */
-export function hashKittyPayload(data: string): string {
+function hashKittyPayload(data: string): string {
   let h = 0x811c9dc5;
   const len = data.length;
   const head = Math.min(len, 256);

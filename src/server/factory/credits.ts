@@ -9,7 +9,7 @@ import { CREDIT_DAYS, type FactoryCredits } from '../../shared/factory-sessions.
 
 const DAY_MS = 86_400_000;
 /** Days of history the ledger keeps. */
-export const LEDGER_DAYS = 31;
+const LEDGER_DAYS = 31;
 /** A session nobody has seen for this long is forgotten (seeing it again counts it afresh). */
 const SEEN_MS = 90 * DAY_MS;
 const TOP = 5;

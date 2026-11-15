@@ -11,16 +11,16 @@ export const CARD_ALLOW = 'clipboard-write *; fullscreen *';
 export const BRIDGE_CHANNEL = 'droid-office-whiteboard';
 export const STICKY_COLORS = { yellow: '#ffd866', pink: '#ff9fc6', blue: '#8fd3ff', green: '#a6e3a1', orange: '#ffb070', purple: '#cdb4ff' };
 export const STICKY_SIZE = { w: 200, h: 160 };
-export const DRAG_MIN = 40;
+const DRAG_MIN = 40;
 /** The room the office's window leaves round a canvas's marks (CANVAS_MARGIN). */
 export const CANVAS_MARGIN = 80;
-export const CANVAS_EMPTY = { x: 0, y: 0, w: CANONICAL_WIDTH, h: 720 };
+const CANVAS_EMPTY = { x: 0, y: 0, w: CANONICAL_WIDTH, h: 720 };
 const OWNER = { kind: 'owner' };
 
 export const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 export const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 export const isPoint = (v) => isObj(v) && isNum(v.x) && isNum(v.y);
-export const isPath = (v) => Array.isArray(v) && v.every((k) => typeof k === 'string');
+const isPath = (v) => Array.isArray(v) && v.every((k) => typeof k === 'string');
 export function isAnchor(v) {
   if (!isObj(v) || !isPoint(v.point)) return false;
   if (v.kind === 'point') return true;

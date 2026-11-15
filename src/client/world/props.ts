@@ -138,26 +138,11 @@ export function propScene(name: string): THREE.Group | null {
   return cache.get(name)?.gltf ?? null;
 }
 
-/** The same as `prop` but synchronous; only valid for props already in the cache. */
-export function propOrNull(name: string, place: PropPlace = {}): THREE.Object3D | null {
-  return prop(name, place);
-}
-
-// A prop that was asked for before its GLB arrived: the group holding the procedural
-// stand-in, and the name to swap in once it lands.
-interface Pending {
-  node: THREE.Object3D;
-  name: string;
-}
-
-const pending: Pending[] = [];
-
 /**
  * Puts a prop inside `node`, replacing whatever is already in it.
  *
  * Returns true when the GLB is there now. Returns false when it has not arrived yet, in
- * which case the caller should build its procedural version and this is remembered; the
- * next call to `flushPendingProps()` swaps the contents in.
+ * which case the caller should build its procedural version.
  *
  * Swapping the *contents* rather than the node itself is deliberate. Callers keep
  * references to these groups - `main.ts` turns `desk.chair` to face the desk - so the node has
@@ -165,10 +150,7 @@ const pending: Pending[] = [];
  */
 export function useProp(node: THREE.Object3D, name: string): boolean {
   const entry = cache.get(name);
-  if (!entry) {
-    pending.push({ node, name });
-    return false;
-  }
+  if (!entry) return false;
   install(node, entry.gltf);
   return true;
 }
@@ -180,39 +162,4 @@ function install(node: THREE.Object3D, gltf: THREE.Group): void {
   model.scale.set(1, 1, 1);
   node.clear();
   node.add(model);
-}
-
-/**
- * Replaces every stand-in that was waiting on a GLB, and reports how many landed.
- * Called once the manifest's props have loaded; anything still missing stays procedural.
- */
-export function flushPendingProps(): number {
-  let swapped = 0;
-  for (const p of pending.splice(0)) {
-    const entry = cache.get(p.name);
-    if (!entry) continue;
-    install(p.node, entry.gltf);
-    swapped++;
-  }
-  return swapped;
-}
-
-/** Props still waiting on a GLB, for the perf budget test and the dev overlay. */
-export function pendingPropCount(): number {
-  return pending.length;
-}
-
-/** Loads every prop in the manifest. Used by the dev server and the contact sheet. */
-export async function loadAllProps(): Promise<number> {
-  const m = await loadPropManifest();
-  const names = Object.keys(m);
-  await preloadProps(names);
-  return cache.size;
-}
-
-/** Total triangles currently resident, for the perf budget test. */
-export function loadedTriangles(): number {
-  let n = 0;
-  for (const { info } of cache.values()) n += info.triangles;
-  return n;
 }

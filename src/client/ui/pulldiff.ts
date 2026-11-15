@@ -81,7 +81,7 @@ export function renderThread(root: GhReviewComment, replies: Map<number, GhRevie
 }
 
 /** Line comments on this file that are still on a line, keyed "RIGHT:12" / "LEFT:7". */
-export function threadsByLine(comments: GhReviewComment[], path: string): Map<string, GhReviewComment[]> {
+function threadsByLine(comments: GhReviewComment[], path: string): Map<string, GhReviewComment[]> {
   const out = new Map<string, GhReviewComment[]>();
   for (const c of comments) {
     if (c.replyTo || c.path !== path || c.line == null) continue;

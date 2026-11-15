@@ -2,7 +2,7 @@
 // Android terminal WebView (`terminal.js`), checked for parity with `src/shared/kitty.ts` by
 // `tests/android-terminal.test.ts`.
 
-export const KITTY_KB_ALL_FLAGS = 31;
+const KITTY_KB_ALL_FLAGS = 31;
 export const ALT_BUFFER_MODES = [47, 1047, 1049];
 export const KITTY_PLACEHOLDER_CHAR = '\udbfb\udeee';
 /** Implied cell size in device pixels for placements without `c`/`r`, matching the office's `CSI 16 t` answer. */
@@ -221,7 +221,7 @@ export class KittyApcSplitter {
   }
 }
 
-export function parseKittyControl(body) {
+function parseKittyControl(body) {
   const semi = body.indexOf(';');
   const head = semi >= 0 ? body.slice(0, semi) : body;
   const payload = semi >= 0 ? body.slice(semi + 1) : '';
@@ -465,7 +465,7 @@ export function cellUnderlineId(cell) {
   return (cell.getUnderlineColor?.() ?? 0) & 0xffffff;
 }
 
-export function hashKittyPayload(data) {
+function hashKittyPayload(data) {
   let h = 0x811c9dc5;
   const len = data.length;
   const head = Math.min(len, 256);

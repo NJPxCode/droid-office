@@ -111,7 +111,7 @@ const PIXELS: Record<string, string> = {
 };
 
 /** How wide `text` is in pixel letters `p` meters a pixel, a pixel between letters. */
-export function pixelWidth(text: string, p: number): number {
+function pixelWidth(text: string, p: number): number {
   return (text.length * 6 - 1) * p;
 }
 
@@ -119,7 +119,7 @@ export function pixelWidth(text: string, p: number): number {
  * `text` in pixel letters, `p` meters a pixel and `depth` deep, as one geometry: from x = 0 to its
  * width (pixelWidth), y = 0 to 7p, its face toward +z.
  */
-export function pixelText(text: string, p: number, depth: number): THREE.BufferGeometry {
+function pixelText(text: string, p: number, depth: number): THREE.BufferGeometry {
   const cubes: THREE.BufferGeometry[] = [];
   const s = p * 0.86;
   [...text.toUpperCase()].forEach((ch, n) => {

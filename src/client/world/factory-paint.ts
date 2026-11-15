@@ -8,11 +8,9 @@ import { SCREEN_BLACK } from './screen';
 // every small plate on one texture, and the LED ticker's dot matrix.
 
 export const INK = '#0a0a0a';
-export const BASE = '#020202';
 export const LIGHT = '#eeeeee';
 export const MUTED = '#8c8c8c';
 export const HAIR = '#2e2e2e';
-export const HAIR_SOFT = '#171717';
 export const ORANGE = '#ee6018';
 export const ORANGE_BRIGHT = '#ef6f2e';
 export const GREEN = '#3ccf91';
@@ -55,7 +53,7 @@ export function tracked(ctx: CanvasRenderingContext2D, text: string, x: number, 
 }
 
 /** How wide `tracked` would draw `text`. */
-export function trackedWidth(ctx: CanvasRenderingContext2D, text: string, track: number): number {
+function trackedWidth(ctx: CanvasRenderingContext2D, text: string, track: number): number {
   const chars = [...text];
   return chars.reduce((w, c) => w + ctx.measureText(c).width, 0) + track * Math.max(0, chars.length - 1);
 }

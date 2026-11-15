@@ -4,7 +4,7 @@ import { PROMPT_IMAGE_ID, PROMPT_IMAGES_MAX } from '../../shared/drops.js';
 import { DROID_MODEL_MAX, isValidDroidModel } from '../agents.js';
 
 export const floorRef = z.string().trim().min(1).max(128).describe('Floor id, number, or name.');
-export const workerRef = z.string().trim().min(1).max(64).describe('Worker id or name from office_roster.');
+const workerRef = z.string().trim().min(1).max(64).describe('Worker id or name from office_roster.');
 export const workerTarget = {
   worker: workerRef.optional().describe('Worker id or name from office_roster.'),
   workerId: workerRef.optional().describe('Alias for worker.'),

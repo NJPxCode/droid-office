@@ -48,10 +48,10 @@ export async function installPageHooks(cdp) {
   await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `${GUARD}${RAF_LOG}${PAGE_LIB}` });
 }
 
-export const pageReady = "typeof window.office === 'object' && !document.getElementById('loading')";
+const pageReady = "typeof window.office === 'object' && !document.getElementById('loading')";
 const warmupDone = "!document.querySelector('#warmup.on')";
 
-export async function waitFor(cdp, expression, { timeout = 240_000, every = 500 } = {}) {
+async function waitFor(cdp, expression, { timeout = 240_000, every = 500 } = {}) {
   const end = Date.now() + timeout;
   for (;;) {
     const ok = await cdp.eval(expression, { timeout: 10_000 }).catch(() => false);
@@ -114,7 +114,7 @@ export async function clockOffset(cdp) {
 }
 
 /** Page-side helpers, injected once per load. */
-export const PAGE_LIB = `(() => {
+const PAGE_LIB = `(() => {
   if (window.__bench) return;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const epoch = () => performance.now();

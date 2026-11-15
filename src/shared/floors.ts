@@ -47,7 +47,7 @@ export function floorPalette(i: number): FloorPalette {
 export type Forge = 'github' | 'gitlab';
 
 /** The GitLab instance a bare group/subgroup/project path means. */
-export const DEFAULT_GITLAB_HOST = 'gitlab.com';
+const DEFAULT_GITLAB_HOST = 'gitlab.com';
 
 const GH_OWNER = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/;
 const GH_NAME = /^[a-zA-Z0-9_.-]{1,100}$/;
@@ -144,10 +144,6 @@ const WORDS: Record<Forge, ForgeWords> = {
 /** GitHub's words unless the forge is GitLab. */
 export function forgeWords(forge: Forge | undefined): ForgeWords {
   return WORDS[forge ?? 'github'];
-}
-
-export function sameRepo(a: string | undefined, b: string | undefined): boolean {
-  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
 }
 
 /**

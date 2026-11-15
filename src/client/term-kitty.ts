@@ -103,7 +103,7 @@ async function inflateBytes(compressed: Uint8Array): Promise<Uint8Array> {
 }
 
 /** Decodes a Kitty image payload (`f=24|32|100`, optional `o='z'`) into a GPU-backed `ImageBitmap`. */
-export async function decodeKittyImageBitmap(format: KittyImageFormat, compression: 'z' | undefined, width: number, height: number, b64: string): Promise<ImageBitmap | null> {
+async function decodeKittyImageBitmap(format: KittyImageFormat, compression: 'z' | undefined, width: number, height: number, b64: string): Promise<ImageBitmap | null> {
   if (!b64 || typeof createImageBitmap === 'undefined') return null;
   try {
     let bytes = decodeBase64(b64);

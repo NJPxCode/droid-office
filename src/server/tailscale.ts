@@ -15,7 +15,7 @@ export interface TailscaleSelf {
 }
 
 /** Where the CLI is: on PATH, inside the Mac app, or Homebrew's (an app's PATH often lacks it). */
-export const TAILSCALE_BINARIES = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale'];
+const TAILSCALE_BINARIES = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale'];
 
 /** What `tailscale status --json` says about this machine, or undefined when it isn't up on a tailnet. */
 export function parseTailscaleStatus(json: unknown): TailscaleSelf | undefined {
@@ -47,7 +47,7 @@ export interface ServeRoute {
   funnel: boolean;
 }
 
-export function parseServeStatus(json: unknown, dnsName: string): ServeRoute[] {
+function parseServeStatus(json: unknown, dnsName: string): ServeRoute[] {
   if (!json || typeof json !== 'object') return [];
   const status = json as { TCP?: Record<string, unknown> | null; Web?: Record<string, { Handlers?: Record<string, { Proxy?: unknown } | undefined> } | undefined> | null; AllowFunnel?: Record<string, unknown> | null };
   const ports = new Set<number>();
@@ -62,7 +62,7 @@ export function parseServeStatus(json: unknown, dnsName: string): ServeRoute[] {
 }
 
 /** HTTPS ports the office tries for its own Serve mapping, in order. Never 443, which is the first one people use for their own services. */
-export const SERVE_PORTS = [8443, 8444, 8445, 8446, 8447, 8448, 8449, 10443];
+const SERVE_PORTS = [8443, 8444, 8445, 8446, 8447, 8448, 8449, 10443];
 
 /**
  * The port to serve `target` on: the one already proxying to it, else the office's previous port when

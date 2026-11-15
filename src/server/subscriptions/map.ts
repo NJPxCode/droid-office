@@ -150,7 +150,7 @@ export function fallbackName(id: string): string {
 }
 
 /** Why a model can't run, after a colon: lower case unless it starts with a name. */
-export function reasonWords(a: ModelAvailability, now: number): string {
+function reasonWords(a: ModelAvailability, now: number): string {
   const words = availabilityWords(a, now);
   return a.state === 'exhausted' || a.state === 'signed-out' ? words.charAt(0).toLowerCase() + words.slice(1) : words;
 }
@@ -158,9 +158,4 @@ export function reasonWords(a: ModelAvailability, now: number): string {
 /** The refusal of a hire on a model that can't run: "Can't hire on GPT 6.1 Sol: out of quota, back in 3 h 10 min (5-hour). Pick another model." */
 export function hireRefusal(name: string, a: ModelAvailability, now: number): string {
   return `Can't hire on ${name}: ${reasonWords(a, now)}.`;
-}
-
-/** A provider has a signed-in account requests can use. */
-export function usable(p: SubscriptionProvider | undefined): boolean {
-  return !!p?.accounts.some((a) => !a.expired && !a.disabled);
 }

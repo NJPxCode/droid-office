@@ -62,7 +62,7 @@ export const MUZZLE_AT = new THREE.Vector3(0, 0.062, 0.235);
 export const SPIN_AT = new THREE.Vector3(0, -0.007, 0.05);
 
 /** How far round the crane swings the cylinder out to the gun's left (+X), in radians about +Z. */
-export const CRANE_SWING = -1.75;
+const CRANE_SWING = -1.75;
 
 /** What each part of magnum.glb is called in a gun, by its material in the generator. */
 const PARTS: Record<string, string> = {

@@ -2,8 +2,8 @@
 // can check it in Node.
 
 /** The office's PTY limits (`resize` in src/server/workers.ts). */
-export const COLS = [20, 400];
-export const ROWS = [5, 200];
+const COLS = [20, 400];
+const ROWS = [5, 200];
 
 /** At most this many wheel events or arrow keys for one touch event, as Orca does. */
 export const MAX_STEPS = 32;
@@ -98,13 +98,13 @@ export class RowAccumulator {
 }
 
 /** Per millisecond, how much of a flick's speed is left: about a second to come to rest. */
-export const FRICTION = 0.996;
+const FRICTION = 0.996;
 /** Below this many pixels per millisecond, a flick has stopped. */
-export const MIN_SPEED = 0.02;
+const MIN_SPEED = 0.02;
 
 /** Maximum pointer movement (in CSS pixels) and duration (ms) for a stationary single-finger tap. */
 export const TAP_SLOP_PX = 8;
-export const TAP_MAX_MS = 350;
+const TAP_MAX_MS = 350;
 
 /** The speed left after `ms` of coasting from `speed` (px/ms). */
 export function coast(speed, ms) {

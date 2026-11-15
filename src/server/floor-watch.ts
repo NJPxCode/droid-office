@@ -94,7 +94,7 @@ export function workerLocation(w: WorkerInfo, floor: FloorTreeContext): { cwd?: 
 }
 
 /** Live local agent sessions can edit files and switch/commit git state in their working tree. */
-export function isLiveWriter(w: WorkerInfo): boolean {
+function isLiveWriter(w: WorkerInfo): boolean {
   return w.kind === 'agent' && !w.remote && !w.cloud && !isAsleep(w.status);
 }
 

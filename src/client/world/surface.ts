@@ -3,7 +3,7 @@ import { FLOOR } from '../../shared/layout';
 
 /** A finish changes only Remastered's response to light, not a material's Classic color. */
 export type SurfaceFinish = 'paint' | 'metal';
-export const SURFACE_FINISHES: Record<SurfaceFinish, readonly [number, number]> = {
+const SURFACE_FINISHES: Record<SurfaceFinish, readonly [number, number]> = {
   paint: [0.04, 0.72],
   metal: [0.55, 0.3],
 };

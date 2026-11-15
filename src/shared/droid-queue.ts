@@ -37,7 +37,6 @@ export interface DroidPendingSnapshot {
 
 /** The keys that clear, pull or review Droid's queue while it shows one. */
 export const CLEAR_DROID_QUEUE = '\x18';
-export const PULL_TOP_DROID_QUEUE = '\x07';
 export const REVIEW_DROID_QUEUE = '\x12';
 export const DELETE_DROID_QUEUE_ITEM = '\x04';
 export const DROID_QUEUE_UP = '\x1b[A';

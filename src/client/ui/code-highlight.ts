@@ -162,7 +162,7 @@ export async function preloadCodeLanguage(langOrPath?: string): Promise<boolean>
 }
 
 /** Pure Lezer tokenization into coalesced `{ text, cls }` runs (safe in Node without a DOM). */
-export function tokenizeWithParser(parser: CodeParser, code: string): CodeToken[] {
+function tokenizeWithParser(parser: CodeParser, code: string): CodeToken[] {
   if (!code || code.length > MAX_HIGHLIGHT_CHARS) return code ? [{ text: code, cls: '' }] : [];
   const tree = parser.parse(code);
   const tokens: CodeToken[] = [];

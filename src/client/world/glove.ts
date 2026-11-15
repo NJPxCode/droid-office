@@ -216,8 +216,6 @@ const LET_GO: readonly { hand: HandShape; trigger: readonly [number, number, num
   },
   { hand: SHAPES.spin, trigger: [SPIN_AT.x, SPIN_AT.y, SPIN_AT.z] },
 ];
-/** Where the middle of the trigger finger's middle bone is on the gun (gun.ts) in the fist round its grip. */
-export const GRIP_TRIGGER = new THREE.Vector3(...LET_GO[0].trigger);
 
 /** Which step of LET_GO `onFinger` is in, and how far along it. */
 function letGo(onFinger: number): [number, number] {
@@ -229,7 +227,7 @@ function letGo(onFinger: number): [number, number] {
 /** A HandShape that blend() can write into. */
 export type WritableShape = HandShape & { fingers: [number, number][]; thumbRoot: [number, number, number] };
 /** A shape to write into, for blend(). */
-export const newShape = (): WritableShape => ({
+const newShape = (): WritableShape => ({
   fingers: [
     [0, 0],
     [0, 0],
@@ -244,7 +242,7 @@ export const newShape = (): WritableShape => ({
 });
 
 /** The shape `k` of the way from `a` to `b`, written into `out`. */
-export function blend(a: HandShape, b: HandShape, k: number, out: WritableShape = newShape()): HandShape {
+function blend(a: HandShape, b: HandShape, k: number, out: WritableShape = newShape()): HandShape {
   const mix = (from: number, to: number) => from + (to - from) * k;
   for (let f = 0; f < 4; f++) {
     out.fingers[f][0] = mix(a.fingers[f][0], b.fingers[f][0]);
@@ -290,7 +288,7 @@ const LAST = 0.65;
  * palm flat on the grip's right panel, the knuckles by its front strap and the index finger level
  * with the trigger.
  */
-export const GRIP_AT = new THREE.Vector3(-0.037, -0.0385, -0.032);
+const GRIP_AT = new THREE.Vector3(-0.037, -0.0385, -0.032);
 
 /**
  * The droid wand's grip in the right glove's own frame (palm down, before its roll), closed round

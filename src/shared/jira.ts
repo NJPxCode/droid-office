@@ -219,7 +219,7 @@ export function childrenJql(epic: string): string {
 }
 
 /** The Jira tab's columns: Jira's status categories, which is how a board's To Do, In Progress and Done columns are usually drawn. */
-export const JIRA_COLUMNS: { name: string; category: JiraCategory }[] = [
+const JIRA_COLUMNS: { name: string; category: JiraCategory }[] = [
   { name: 'To Do', category: 'new' },
   { name: 'In Progress', category: 'indeterminate' },
   { name: 'Done', category: 'done' },

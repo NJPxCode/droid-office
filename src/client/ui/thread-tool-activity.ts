@@ -31,9 +31,9 @@ export interface ThreadActivityContext extends ThreadCardRenderContext {
 }
 
 /** Factory folds an Execute body to this many lines (`ceil(200 / (13 * 1.55)) + 1`) until expanded. */
-export const COMMAND_CLAMP_LINES = 11;
+const COMMAND_CLAMP_LINES = 11;
 /** After this long a running command says it can be opened to watch it. */
-export const PROGRESS_HINT_MS = 15_000;
+const PROGRESS_HINT_MS = 15_000;
 const EXIT_OK = /\n?\[Process exited with code 0\]\s*$/;
 const COPY_RESET_MS = 2000;
 
@@ -198,7 +198,7 @@ function diffStats(additions: number, deletions: number): HTMLElement {
 }
 
 /** Factory's file diff: one line-number column, a change marker, and runs of context folded away. */
-export function renderCompactDiff(change: ThreadFileChange): HTMLElement {
+function renderCompactDiff(change: ThreadFileChange): HTMLElement {
   const paired = pairIntralineSpans(change.lines);
   const numbered = change.lines.some((line) => line.oldLine !== undefined || line.newLine !== undefined);
   const rows = compactDiffRows(change.lines).map((row) => {

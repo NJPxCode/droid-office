@@ -39,7 +39,7 @@ interface Receipt {
   errors: { floorId: string; error: string }[];
 }
 
-export class FinderError extends Error {
+class FinderError extends Error {
   constructor(
     message: string,
     readonly status = 400,

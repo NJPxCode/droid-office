@@ -20,7 +20,7 @@ export const FACTORY_KEYS_URL = 'https://app.factory.ai/settings/api-keys';
 
 /** The Factory features the office polls, each with its own slice of FactoryState. */
 export type FactoryFeatureId = 'computers' | 'environments' | 'sessions' | 'ci' | 'wiki' | 'cloud' | 'limits';
-export const FACTORY_FEATURES: readonly FactoryFeatureId[] = ['computers', 'environments', 'sessions', 'ci', 'wiki', 'cloud', 'limits'];
+const FACTORY_FEATURES: readonly FactoryFeatureId[] = ['computers', 'environments', 'sessions', 'ci', 'wiki', 'cloud', 'limits'];
 
 export function isFactoryFeature(v: unknown): v is FactoryFeatureId {
   return typeof v === 'string' && (FACTORY_FEATURES as readonly string[]).includes(v);

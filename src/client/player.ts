@@ -11,7 +11,7 @@ const WALK = 4.6;
 const RUN = 7.5;
 const JUMP_V = 6.4;
 
-export const GRAVITY = 18;
+const GRAVITY = 18;
 /** Default and minimum camera height above your feet (the Person's eyes). */
 export const EYE_HEIGHT = 1.4;
 export const MAX_EYE_HEIGHT = EYE_HEIGHT * 3;

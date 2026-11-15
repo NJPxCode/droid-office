@@ -123,7 +123,7 @@ export interface TeamOptions {
 }
 
 /** Ten minutes: a hung teammate never strands its lead behind a held batch. */
-export const HOLD_MAX_MS = 10 * 60_000;
+const HOLD_MAX_MS = 10 * 60_000;
 
 export type TeamEventKind = 'report' | 'question' | 'pr' | 'done' | 'needs_input' | 'stopped' | 'left' | 'sent_home';
 
@@ -146,8 +146,8 @@ export interface WorkerReview {
   at: number;
 }
 
-export const RESULT_STATUSES: readonly ResultStatus[] = ['ok', 'blocked', 'failed', 'partial'];
-export const REVIEW_VERDICTS: readonly ReviewVerdict[] = ['approve', 'request_changes', 'comment'];
+const RESULT_STATUSES: readonly ResultStatus[] = ['ok', 'blocked', 'failed', 'partial'];
+const REVIEW_VERDICTS: readonly ReviewVerdict[] = ['approve', 'request_changes', 'comment'];
 
 /** What a subagent is doing, as team tools show it: its own status, or that it waits on an answer from its lead or the person. */
 export type TeamState = WorkerStatus | 'blocked_on_question';

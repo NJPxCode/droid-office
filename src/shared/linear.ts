@@ -236,7 +236,7 @@ export function linearPriority(value: unknown): number | undefined {
 // ---- The board ---------------------------------------------------------------------------------------
 
 /** The Linear tab's columns, by state type, as Linear's own board groups them. Canceled and duplicate tickets aren't shown. */
-export const LINEAR_COLUMNS: { name: string; types: LinearStateType[] }[] = [
+const LINEAR_COLUMNS: { name: string; types: LinearStateType[] }[] = [
   { name: 'Backlog', types: ['triage', 'backlog'] },
   { name: 'Todo', types: ['unstarted'] },
   { name: 'In Progress', types: ['started'] },

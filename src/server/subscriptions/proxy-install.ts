@@ -9,10 +9,10 @@ import { pipeline } from 'node:stream/promises';
 
 /** DroidProxy's release on GitHub, and how the office checks and installs it (docs/subscriptions.md). */
 
-export const DROIDPROXY_REPO = 'nikships/droidproxy';
+const DROIDPROXY_REPO = 'nikships/droidproxy';
 export const DROIDPROXY_BUNDLE_ID = 'com.droidproxy.app';
 /** DroidProxy's Developer ID team. */
-export const DROIDPROXY_TEAM = 'NW6B3R27LQ';
+const DROIDPROXY_TEAM = 'NW6B3R27LQ';
 export const APP_NAME = 'DroidProxy.app';
 const ZIP = 'DroidProxy-arm64.zip';
 const LATEST = `https://api.github.com/repos/${DROIDPROXY_REPO}/releases/latest`;
@@ -127,7 +127,7 @@ export async function readBundle(run: Runner, app: string): Promise<{ id: string
 }
 
 /** Why the app at `app` isn't DroidProxy as its team signed and Apple notarized it; undefined when it is. */
-export async function verifyApp(run: Runner, app: string): Promise<string | undefined> {
+async function verifyApp(run: Runner, app: string): Promise<string | undefined> {
   const bundle = await readBundle(run, app);
   if (bundle?.id !== DROIDPROXY_BUNDLE_ID) return `The download isn't DroidProxy (its bundle id is ${bundle?.id ?? 'missing'})`;
   const sig = await run('codesign', ['--verify', '--deep', '--strict', app], { timeoutMs: 120_000 });
@@ -150,7 +150,7 @@ async function writable(dir: string): Promise<boolean> {
 }
 
 /** Where to put DroidProxy: where it already is when the office can write there, else /Applications, else ~/Applications. */
-export async function targetDir(dirs: AppDirs, current: string | null): Promise<string> {
+async function targetDir(dirs: AppDirs, current: string | null): Promise<string> {
   const here = current ? path.dirname(current) : undefined;
   if (here && (await writable(here))) return here;
   if (await writable(dirs.system)) return dirs.system;

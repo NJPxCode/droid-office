@@ -28,7 +28,7 @@ export function phaseColor(phase: OrchestratorPhase): string {
 }
 
 /** The Orchestrator's headline and the line under it, for each phase. */
-export function orchestratorWords(v: Pick<MissionView, 'phase' | 'title' | 'activity' | 'blocked'>): { headline: string; sub: string } {
+function orchestratorWords(v: Pick<MissionView, 'phase' | 'title' | 'activity' | 'blocked'>): { headline: string; sub: string } {
   if (v.phase === 'off') return { headline: 'The Orchestrator is off', sub: 'Turn it on in ⚙️ Settings → Orchestrator' };
   if (v.phase === 'blocked') return { headline: "The Orchestrator can't start", sub: v.blocked ?? '' };
   if (v.phase === 'fresh') return { headline: 'Ready when you are', sub: 'Tell it what you want done, on any floor' };

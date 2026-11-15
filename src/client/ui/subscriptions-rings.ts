@@ -61,7 +61,7 @@ export function resetLine(w: UsageWindow, now: number, date: DateWords = (ms) =>
 }
 
 /** Why an account isn't used, if it isn't. */
-export function accountState(a: SubscriptionAccount): string | null {
+function accountState(a: SubscriptionAccount): string | null {
   if (a.expired) return 'Sign-in expired';
   return a.disabled ? 'Off in DroidProxy' : null;
 }

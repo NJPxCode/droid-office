@@ -519,7 +519,7 @@ function checkoutKey(dir: string): string {
 }
 
 /** The repository a remote URL points at, on GitHub or on a GitLab instance. */
-export function remoteRepo(url: string): string | undefined {
+function remoteRepo(url: string): string | undefined {
   if (/github\.com[/:]/i.test(url)) return normalizeRepo(url);
   const host = /^(?:(?:https?|ssh|git):\/\/)?(?:[\w.~%-]+@)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?::\d+)?[/:]/.exec(url.trim())?.[1];
   return host && isGitlabHost(host) ? normalizeRepo(url) : undefined;

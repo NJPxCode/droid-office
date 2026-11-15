@@ -113,7 +113,7 @@ function reposOf(v: unknown): FactoryEnvRepo[] {
     .map((r) => ({ url: String(r.url), script: typeof r.script === 'string' ? r.script : '' }));
 }
 
-export function sourceOf(raw: unknown, provider?: { id?: unknown; name?: unknown }): FactoryEnvSource | undefined {
+function sourceOf(raw: unknown, provider?: { id?: unknown; name?: unknown }): FactoryEnvSource | undefined {
   const r = obj(raw);
   if (!r || typeof r.id !== 'string' || !r.id) return undefined;
   const p = obj(r.provider) ?? provider ?? {};
@@ -128,7 +128,7 @@ export function sourceOf(raw: unknown, provider?: { id?: unknown; name?: unknown
   };
 }
 
-export function buildOf(raw: unknown): FactoryEnvBuild | undefined {
+function buildOf(raw: unknown): FactoryEnvBuild | undefined {
   const r = obj(raw);
   if (!r || typeof r.id !== 'string' || !r.id) return undefined;
   const repos = (Array.isArray(r.repositories) ? r.repositories : [])

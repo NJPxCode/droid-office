@@ -28,14 +28,6 @@ export function routeFloorMenuMessage(msg: ServerMsg) {
   if (msg.t === 'floor.branches') for (const fn of branchWaiters) fn(msg);
 }
 
-export function floorMenuOpen(): boolean {
-  return !!current;
-}
-
-export function closeFloorMenu() {
-  current?.close();
-}
-
 /** A floor's number on a badge in its palette's trim color (a custom property: the color is the floor's data). */
 export function floorNo(text: string, color: string): HTMLElement {
   const el = h('span.list-icon.floor-no', { 'aria-hidden': 'true' }, text);

@@ -8,4 +8,4 @@ export {
   SHIFT_ENTER,
   wantsCsiEnter,
 } from '../shared/csi-enter';
-export { encodeKittyKey, type KittyEncodeOpts, type KittyKeyEvent } from '../shared/kitty';
+export type { KittyEncodeOpts, KittyKeyEvent } from '../shared/kitty';

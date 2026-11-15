@@ -49,7 +49,7 @@ export function browsersPath({ platform = process.platform, env = process.env, h
 const require = createRequire(import.meta.url);
 const packageDir = () => path.dirname(require.resolve('playwright-core/package.json'));
 /** playwright-core's bundled command line: the one that downloads this release's browser. */
-export const playwrightCli = () => path.join(packageDir(), 'cli.js');
+const playwrightCli = () => path.join(packageDir(), 'cli.js');
 
 export interface Pinned {
   /** playwright-core's revision of the browser, which names its folder. */
@@ -124,7 +124,7 @@ export function installDepsCommand(node = process.execPath, cli = playwrightCli(
 }
 
 /** The commands that let the browser use unprivileged user namespaces under AppArmor. */
-export function apparmorCommand(): string {
+function apparmorCommand(): string {
   return ['droid-office browser apparmor-profile | sudo tee /etc/apparmor.d/droid-office-chromium', 'sudo apparmor_parser -r /etc/apparmor.d/droid-office-chromium'].join('\n');
 }
 

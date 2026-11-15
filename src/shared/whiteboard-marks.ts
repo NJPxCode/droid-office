@@ -34,7 +34,7 @@ export interface PlacedMark {
 const DRAG_MIN = 40;
 
 /** The blank canvas the window fits when a card has no marks yet (the renderer passes its own frame). */
-export const WINDOW_CANVAS_EMPTY: Box = { x: 0, y: 0, w: CANONICAL_WIDTH, h: 720 };
+const WINDOW_CANVAS_EMPTY: Box = { x: 0, y: 0, w: CANONICAL_WIDTH, h: 720 };
 
 /** One mark's top-left and size. `pin` centers a thread on its point; otherwise a thread is that point. */
 function placeMark(kind: PlacedMark['kind'], id: string, spot: MarkSpot, box?: Box, pin = 0): PlacedMark {

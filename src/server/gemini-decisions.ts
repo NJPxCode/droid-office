@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from '
 import path from 'node:path';
 import { fingerprintGeminiKey, GEMINI_DECISIONS_MODEL, isValidGeminiApiKey } from '../shared/gemini-vibes.js';
 
-export const GEMINI_DECISIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/decisions';
+const GEMINI_DECISIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/decisions';
 const DEFAULT_TIMEOUT_MS = 12_000;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 const ERROR_MAX = 220;

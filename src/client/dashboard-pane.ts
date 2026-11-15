@@ -30,7 +30,7 @@ import { orchestratorAwake } from './mission-office';
 /** What a sidebar row carries when it's dragged onto a pane. */
 export const WORKER_MIME = 'application/x-droid-worker';
 /** What a pane's number carries when it's dragged onto another pane. */
-export const SLOT_MIME = 'application/x-droid-slot';
+const SLOT_MIME = 'application/x-droid-slot';
 export const VIEW_KEY = 'droid-office.companion-view';
 
 export type PaneMode = 'empty' | 'terminal' | 'thread' | 'info';
@@ -134,7 +134,7 @@ export function workingBars(label = '') {
   return h('span.dash-bars', label ? { role: 'img', 'aria-label': label } : { 'aria-hidden': 'true' }, h('i'), h('i'), h('i'));
 }
 
-export function renderPreview(into: HTMLElement, id: string, max: number) {
+function renderPreview(into: HTMLElement, id: string, max: number) {
   const s = store.screens.get(id);
   if (!s) {
     into.replaceChildren(h('span.dash-preview-none', {}, 'No screen yet'));

@@ -51,11 +51,11 @@ const MIMES: Record<string, string> = {
   '.gltf': 'model/gltf+json',
 };
 
-export function mimeOf(file: string): string {
+function mimeOf(file: string): string {
   return MIMES[path.extname(file).toLowerCase()] ?? 'application/octet-stream';
 }
 
-export function sha256(bytes: Buffer): string {
+function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
@@ -352,7 +352,7 @@ export function pictureMime(b: Buffer): (typeof PICTURE_MIMES)[number] | undefin
 }
 
 /** Image formats an image artifact card supports: raster pictures plus SVG. */
-export function cardImageMime(b: Buffer, file = ''): (typeof IMAGE_CARD_MIMES)[number] | undefined {
+function cardImageMime(b: Buffer, file = ''): (typeof IMAGE_CARD_MIMES)[number] | undefined {
   const raster = pictureMime(b);
   if (raster) return raster;
   const head = b.subarray(0, Math.min(b.length, 4096)).toString('utf8');
@@ -363,7 +363,7 @@ export function cardImageMime(b: Buffer, file = ''): (typeof IMAGE_CARD_MIMES)[n
 }
 
 /** Video formats a video artifact card supports, detected from container magic bytes or extension. */
-export function videoMime(b: Buffer, file = ''): (typeof VIDEO_MIMES)[number] | undefined {
+function videoMime(b: Buffer, file = ''): (typeof VIDEO_MIMES)[number] | undefined {
   const ext = path.extname(file).toLowerCase();
   if (b.length >= 4 && b.readUInt32BE(0) === 0x1a45dfa3) return 'video/webm';
   if (b.length >= 4 && b.toString('ascii', 0, 4) === 'OggS') return 'video/ogg';

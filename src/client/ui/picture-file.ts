@@ -46,7 +46,7 @@ function encode(canvas: HTMLCanvasElement, type: string, quality?: number): Prom
 }
 
 /** The picture as the office should keep it: the file itself, or a smaller copy the browser drew. */
-export async function preparePicture(file: File): Promise<Blob> {
+async function preparePicture(file: File): Promise<Blob> {
   const vector = file.type === 'image/svg+xml' || /\.svg$/i.test(file.name);
   // An SVG is drawn into pixels rather than kept, so the office only ever serves raster pictures.
   const img = await decode(file);
@@ -87,7 +87,7 @@ export async function uploadPicture(file: File): Promise<string> {
 }
 
 /** Whether a file is one the Finder would offer: an image, or a format macOS opens as one. */
-export function isPictureFile(f: File): boolean {
+function isPictureFile(f: File): boolean {
   return f.type.startsWith('image/') || PICTURE_ACCEPT.split(',').some((a) => a.startsWith('.') && f.name.toLowerCase().endsWith(a));
 }
 

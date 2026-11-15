@@ -19,7 +19,7 @@ export function rowsWithin(rows: readonly ThreadRow[], entries: readonly ThreadE
  * Its summary is rebuilt from the actions it holds: the office's label, status and state describe the
  * whole run, which the office's own row now carries for the part this one no longer covers.
  */
-export function rowPrefix(row: ThreadRow, to: number, loaded: ReadonlyMap<string, ThreadEntry>): ThreadRow | undefined {
+function rowPrefix(row: ThreadRow, to: number, loaded: ReadonlyMap<string, ThreadEntry>): ThreadRow | undefined {
   if (row.kind !== 'activity' || row.from > to || row.to <= to) return undefined;
   const held = (id: string) => (loaded.get(id)?.seq ?? Number.POSITIVE_INFINITY) <= to;
   const sourceIds = row.sourceIds.filter(held);

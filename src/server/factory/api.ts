@@ -3,9 +3,9 @@ import { redact } from '../jira.js';
 /** Factory's public API; billing uses `/api` rather than `/api/v0`. */
 export const FACTORY_API = 'https://api.factory.ai';
 /** Most calls answer within a second or two; this is for a slow one. */
-export const TIMEOUT_MS = 20_000;
+const TIMEOUT_MS = 20_000;
 /** GET /sessions (and sometimes /sessions/{id}) hangs 30-90 s on a cold call, then answers in about 1 s. */
-export const SLOW_TIMEOUT_MS = 60_000;
+const SLOW_TIMEOUT_MS = 60_000;
 
 type Fetch = typeof fetch;
 type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';

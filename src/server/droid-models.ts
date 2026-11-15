@@ -7,7 +7,7 @@ import { askDroid, DROID_LIST } from './droid-rpc.js';
 import { isLabelEffort, type LabelEffort } from '../shared/worker-labels.js';
 
 export const DROID_SETTINGS_PATH = path.join(homedir(), '.factory', 'settings.json');
-export const DROID_CATALOGUE_TTL_MS = 60_000;
+const DROID_CATALOGUE_TTL_MS = 60_000;
 
 /** A Droid model described by the selectable or read-only discovery catalogue. */
 export interface DroidModelOption {

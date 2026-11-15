@@ -31,23 +31,23 @@ export const MAX_FILES_PER_CARD = 500;
 /** A card's state, as UTF-8 JSON. */
 export const MAX_STATE_BYTES = 256 * KB;
 /** How deep a card's state may nest, and so the longest state path. */
-export const MAX_STATE_DEPTH = 32;
-export const MAX_STATE_KEY_LENGTH = 200;
-export const MAX_ACTION_NAME_LENGTH = 100;
+const MAX_STATE_DEPTH = 32;
+const MAX_STATE_KEY_LENGTH = 200;
+const MAX_ACTION_NAME_LENGTH = 100;
 export const MAX_PING_TEXT_LENGTH = 4_000;
 export const MAX_PING_LABEL_LENGTH = 120;
 export const MAX_COMMENT_LENGTH = 10_000;
 export const MAX_STICKY_TEXT_LENGTH = 2_000;
-export const MAX_THREADS_PER_CARD = 300;
-export const MAX_MESSAGES_PER_THREAD = 200;
-export const MAX_STICKIES_PER_CARD = 300;
-export const MAX_PICTURES_PER_CARD = 100;
-export const MAX_OPS_PER_BATCH = 1000;
+const MAX_THREADS_PER_CARD = 300;
+const MAX_MESSAGES_PER_THREAD = 200;
+const MAX_STICKIES_PER_CARD = 300;
+const MAX_PICTURES_PER_CARD = 100;
+const MAX_OPS_PER_BATCH = 1000;
 /** How far from the page's origin a point or box may be, in canonical px. */
-export const MAX_COORD = 1_000_000;
+const MAX_COORD = 1_000_000;
 /** The smallest and largest side of a sticky or picture, in canonical px. */
-export const MIN_MARK_SIZE = 16;
-export const MAX_MARK_SIZE = 8192;
+const MIN_MARK_SIZE = 16;
+const MAX_MARK_SIZE = 8192;
 
 /** The colors a sticky comes in, by name; the board stores the name. */
 export const STICKY_COLORS = {
@@ -64,11 +64,9 @@ export const STICKY_SIZE = { w: 200, h: 160 } as const;
 export const PICTURE_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
 export const IMAGE_CARD_MIMES = [...PICTURE_MIMES, 'image/svg+xml'] as const;
 export const VIDEO_MIMES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/ogg'] as const;
-export const ARTIFACT_FORMATS = ['html', 'markdown', 'video', 'image'] as const;
+const ARTIFACT_FORMATS = ['html', 'markdown', 'video', 'image'] as const;
 export type ArtifactFormat = (typeof ARTIFACT_FORMATS)[number];
 
-/** Where the office saves plain form fields in a card's state, by field name or id. */
-export const FIELDS_KEY = 'fields';
 /** Where `whiteboard.action(name, data)` records the last press of each action, by name. */
 export const ACTIONS_KEY = 'actions';
 /**
@@ -365,7 +363,7 @@ export type Op =
 
 export type OpName = Op['op'];
 
-export const OP_NAMES: readonly OpName[] = [
+const OP_NAMES: readonly OpName[] = [
   'card.create',
   'card.title',
   'card.content',
@@ -481,7 +479,7 @@ export function pinged(state: StateObject, name: string): boolean {
 }
 
 /** Every leaf of a state: each value that isn't an object with keys (arrays are leaves, replaced whole). */
-export function stateLeaves(state: StateObject): Map<string, Json> {
+function stateLeaves(state: StateObject): Map<string, Json> {
   const out = new Map<string, Json>();
   const walk = (obj: StateObject, prefix: string[]) => {
     for (const k of Object.keys(obj)) {
@@ -507,7 +505,7 @@ export type PieceRef =
   | { kind: 'picture'; id: string; field: 'file' | 'box' | 'anchor' };
 
 /** Every stamped piece of a card. */
-export function cardPieces(card: Card): { ref: PieceRef; stamp: Stamp }[] {
+function cardPieces(card: Card): { ref: PieceRef; stamp: Stamp }[] {
   const out: { ref: PieceRef; stamp: Stamp }[] = [{ ref: { kind: 'title' }, stamp: card.stamps.title }];
   if (card.stamps.content) out.push({ ref: { kind: 'content' }, stamp: card.stamps.content });
   for (const [key, stamp] of Object.entries(card.stamps.state)) out.push({ ref: { kind: 'state', path: parseStatePathKey(key) }, stamp });
@@ -527,7 +525,7 @@ export function readPoint(board: Board, reader: ReaderId, card: string): number 
 }
 
 /** Changed for a reader: after their read point, by someone else. */
-export function isChanged(stamp: Pick<Stamp, 'rev' | 'author'>, reader: ReaderId, since: number): boolean {
+function isChanged(stamp: Pick<Stamp, 'rev' | 'author'>, reader: ReaderId, since: number): boolean {
   return stamp.rev > since && readerOf(stamp.author) !== reader;
 }
 
@@ -639,11 +637,11 @@ const HASH = /^[0-9a-f]{64}$/;
 const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:\s*;.*)?$/i;
 
 /** Card, mark and message ids: 1-64 letters, digits, `_` or `-`, starting with a letter or digit. */
-export function isPieceId(v: unknown): v is string {
+function isPieceId(v: unknown): v is string {
   return typeof v === 'string' && ID.test(v);
 }
 
-export function isAuthor(v: unknown): v is Author {
+function isAuthor(v: unknown): v is Author {
   if (!isObject(v)) return false;
   if (v.kind === 'owner') return true;
   return v.kind === 'worker' && isPieceId(v.id) && v.id !== OWNER && typeof v.name === 'string' && v.name.length > 0 && v.name.length <= 100 && typeof v.color === 'string' && v.color.length <= 32;

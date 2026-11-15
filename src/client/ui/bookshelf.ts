@@ -56,7 +56,7 @@ function markSubstring(text: string, needle: string): (string | HTMLElement)[] {
 }
 
 /** A heading's anchor, as GitHub makes them: lower case, punctuation dropped, spaces to dashes. */
-export function slug(text: string): string {
+function slug(text: string): string {
   return text
     .trim()
     .toLowerCase()

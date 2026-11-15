@@ -25,9 +25,9 @@ export interface FloorSignals {
 
 const HOUR_MS = 3_600_000;
 /** How long until a visit counts half as much (then a third, a quarter…: old visits still order floors). */
-export const VISIT_HALF_LIFE_MS = 24 * HOUR_MS;
+const VISIT_HALF_LIFE_MS = 24 * HOUR_MS;
 /** How long until a floor's last worker counts half as much. */
-export const WORKER_HALF_LIFE_MS = 72 * HOUR_MS;
+const WORKER_HALF_LIFE_MS = 72 * HOUR_MS;
 
 /** Counts past these add nothing more: ten waiting workers aren't twice as urgent as five. */
 const CAP = { needsInput: 5, unackedDone: 5, busy: 5, totalWorkers: 5, hires: 1023 } as const;

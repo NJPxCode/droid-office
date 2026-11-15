@@ -57,7 +57,7 @@ function clipOneLine(text: string, max = 120): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-export function extractToolCommand(tool: string, input: unknown): string | undefined {
+function extractToolCommand(tool: string, input: unknown): string | undefined {
   if (tool !== 'Execute' && tool !== 'Bash') return undefined;
   if (!input || typeof input !== 'object') return undefined;
   const obj = input as Record<string, unknown>;
@@ -66,7 +66,7 @@ export function extractToolCommand(tool: string, input: unknown): string | undef
   return clipOneLine(raw, 120);
 }
 
-export function isWatchCommand(command: string | undefined): boolean {
+function isWatchCommand(command: string | undefined): boolean {
   return !!command && WATCH_COMMAND_RE.test(command);
 }
 
@@ -95,7 +95,7 @@ export function detectBlockingTool(status: WorkerStatus, activeTools: ReadonlyMa
   return picked;
 }
 
-export function formatDurationShort(ms: number): string {
+function formatDurationShort(ms: number): string {
   const secs = Math.max(1, Math.round(ms / 1000));
   if (secs < 60) return `${secs}s`;
   const mins = Math.floor(secs / 60);

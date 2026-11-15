@@ -30,7 +30,7 @@ const BG = SCREEN_BLACK;
 const PX_PER_M = 400;
 const H_PX = Math.round(COMPUTE_WALL.height * PX_PER_M);
 
-export const PHASE_COLOR: Record<ComputerPhase, string> = { active: GREEN, asleep: MUTED, provisioning: ORANGE, waking: ORANGE, error: RED };
+const PHASE_COLOR: Record<ComputerPhase, string> = { active: GREEN, asleep: MUTED, provisioning: ORANGE, waking: ORANGE, error: RED };
 export const PHASE_WORD: Record<ComputerPhase, string> = { active: 'Active', asleep: 'Asleep', provisioning: 'Provisioning', waking: 'Waking', error: 'Error' };
 
 /** A short age: "just now", "4m", "3h", "2d". */

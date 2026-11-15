@@ -519,7 +519,7 @@ export const GUN_MOVES: Record<GunMoveId, GunMove> = {
   },
 };
 
-export function ease(kind: Ease, p: number): number {
+function ease(kind: Ease, p: number): number {
   switch (kind) {
     case 'linear':
       return p;

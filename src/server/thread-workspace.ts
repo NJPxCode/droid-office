@@ -15,7 +15,7 @@ const MAX_QUERY_RESULTS = 200;
 const MAX_STAT_BYTES = 2 * 1024 * 1024;
 const MAX_READ_BYTES = 512 * 1024;
 /** The largest picture a Thread shows or sends to the Whiteboard from a worker's workspace. */
-export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'out', 'target', 'vendor', 'coverage', '__pycache__', 'venv']);

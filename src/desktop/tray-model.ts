@@ -102,7 +102,7 @@ export function parseStatus(raw: unknown): OfficeStatus | undefined {
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** How many workers wait on the owner: the number beside the menu bar icon and on the Dock icon. */
-export function waitingCount(v: Pick<TrayView, 'state' | 'status'>): number {
+function waitingCount(v: Pick<TrayView, 'state' | 'status'>): number {
   return v.state === 'running' && v.status ? v.status.needsInput + v.status.done : 0;
 }
 

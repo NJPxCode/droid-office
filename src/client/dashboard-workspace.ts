@@ -35,8 +35,8 @@ export const LAYOUT_DIVIDERS: Record<LayoutMode, { col: boolean; row: boolean }>
 export const MAX_SLOTS = 8;
 export const FULL_RECT: Rect = [0, 0, 1, 1];
 /** How far a divider may go towards either edge, so no pane gets too thin to use. */
-export const RATIO_MIN = 0.22;
-export const RATIO_MAX = 0.78;
+const RATIO_MIN = 0.22;
+const RATIO_MAX = 0.78;
 
 export interface Workspace {
   layout: LayoutMode;
@@ -187,7 +187,7 @@ export function fillPanes(ws: Workspace, ids: readonly string[]): boolean {
 type LayoutWorker = Pick<WorkerInfo, 'id' | 'lead' | 'status' | 'createdAt'>;
 
 /** Active mains, mains needing input, active subagents, resting mains, then resting subagents. */
-export function panePriority(w: LayoutWorker): number {
+function panePriority(w: LayoutWorker): number {
   if (w.lead) return isBusy(w.status) ? 2 : 4;
   if (w.status === 'working' || w.status === 'starting') return 0;
   return w.status === 'needs_input' ? 1 : 3;

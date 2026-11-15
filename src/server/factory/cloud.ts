@@ -66,7 +66,7 @@ const clip = (s: string, n: number) => {
  * What cloud.context fills in for a cloud worker: its floor, the repository, where its session starts
  * and the branch to build on. `clone` is a session started in the repository's clone on its Environment's computer.
  */
-export function cloudContextVars(floor: Pick<CloudFloor, 'name' | 'repo'>, name: string, c: CloudWorker, branch: string | undefined, clone: boolean): PromptVars {
+function cloudContextVars(floor: Pick<CloudFloor, 'name' | 'repo'>, name: string, c: CloudWorker, branch: string | undefined, clone: boolean): PromptVars {
   const repo = floor.repo;
   const forge = forgeOf(repo);
   const w = forgeWords(forge);

@@ -483,8 +483,6 @@ export function openAddCard(floor: string, create: (ops: Op[], card: string) => 
   setTimeout(() => (source === 'markdown' ? mdArea : title).focus(), 30);
 }
 
-export const openAddHtml = openAddCard;
-
 /** Edit an unlinked Markdown card in place, keeping all existing comments, stickies, pictures, and card state. */
 export function openEditMarkdown(floor: string, card: Card, initialMarkdown: string, save: (ops: Op[]) => Promise<boolean>) {
   const currentTheme: DesignTheme = card.state.theme === 'light' ? 'light' : 'dark';

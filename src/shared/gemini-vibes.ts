@@ -8,7 +8,7 @@ export const GEMINI_AI_STUDIO_KEYS_URL = 'https://aistudio.google.com/apikey';
  * read from its reasoning against its task (a tool name or exit code alone never decides one).
  */
 export type WorkerVibePosture = 'flow' | 'investigating' | 'struggling' | 'deliberating' | 'steady';
-export const WORKER_VIBE_POSTURES: readonly WorkerVibePosture[] = ['flow', 'investigating', 'struggling', 'deliberating', 'steady'];
+const WORKER_VIBE_POSTURES: readonly WorkerVibePosture[] = ['flow', 'investigating', 'struggling', 'deliberating', 'steady'];
 
 export function isWorkerVibePosture(value: unknown): value is WorkerVibePosture {
   return (WORKER_VIBE_POSTURES as readonly unknown[]).includes(value);
@@ -74,7 +74,6 @@ export const FLOOR_EVENT_FX: Record<FloorEvent | 'ship_it', { hex: string; pulse
  * (on track, drifting, in trouble), judged from meaning rather than from error text appearing.
  */
 export type MonitorSpillTone = 'neutral' | 'emerald' | 'amber' | 'crimson';
-export const MONITOR_SPILL_TONES: readonly MonitorSpillTone[] = ['neutral', 'emerald', 'amber', 'crimson'];
 
 export function isMonitorSpillTone(value: unknown): value is MonitorSpillTone {
   return value === 'neutral' || value === 'emerald' || value === 'amber' || value === 'crimson';
@@ -82,7 +81,6 @@ export function isMonitorSpillTone(value: unknown): value is MonitorSpillTone {
 
 /** Studio-wide atmospheric fill mood crossfaded across the viewed 3D floor. */
 export type FloorMood = 'calm_planning' | 'deep_crunch' | 'debugging_tension' | 'celebration_swell';
-export const FLOOR_MOODS: readonly FloorMood[] = ['calm_planning', 'deep_crunch', 'debugging_tension', 'celebration_swell'];
 
 export function isFloorMood(value: unknown): value is FloorMood {
   return value === 'calm_planning' || value === 'deep_crunch' || value === 'debugging_tension' || value === 'celebration_swell';

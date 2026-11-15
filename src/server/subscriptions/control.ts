@@ -9,7 +9,7 @@ import path from 'node:path';
  */
 
 /** DroidProxy's default port, used when control.json doesn't say (an older DroidProxy writes none). */
-export const DROIDPROXY_PORT = 8317;
+const DROIDPROXY_PORT = 8317;
 const STATUS_TIMEOUT_MS = 5000;
 const ACTION_TIMEOUT_MS = 15_000;
 

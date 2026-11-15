@@ -94,7 +94,7 @@ export function computerHome(c: Pick<CloudComputer, 'providerType' | 'remoteUser
 }
 
 /** The longest folder the API takes. */
-export const CWD_MAX = 4096;
+const CWD_MAX = 4096;
 
 /**
  * The folder to start a session in, from what was typed: '' (or `~`) is the computer's home folder,

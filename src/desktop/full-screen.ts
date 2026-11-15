@@ -8,7 +8,7 @@ export interface FullScreenWindow {
 }
 
 /** How long to wait for macOS to animate out of full screen before going on regardless. */
-export const LEAVE_FULL_SCREEN_MS = 3000;
+const LEAVE_FULL_SCREEN_MS = 3000;
 
 /**
  * Takes a window out of full screen and settles once macOS has finished doing it (or the window is gone, or `timeoutMs` passed).

@@ -53,10 +53,6 @@ const skipped = new Set<WelcomeStepId>();
 /** The providers whose Connect the owner pressed here, in order. */
 const pressed: SubscriptionProviderKey[] = [];
 
-export function welcomeOpen(): boolean {
-  return !!current;
-}
-
 /**
  * Opens the welcome by itself once `loaded` settles, and again whenever the setup topic says the
  * office needs it, until the owner closes it in this tab.

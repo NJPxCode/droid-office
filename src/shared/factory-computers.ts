@@ -161,7 +161,7 @@ const pct = (used: number, total: number) => (total > 0 ? Math.round(Math.max(0,
 export const memPct = (s: FactoryMetricSample) => pct(s.memUsed, s.memTotal);
 export const diskPct = (s: FactoryMetricSample) => pct(s.diskUsed, s.diskTotal);
 
-export function pointOf(s: FactoryMetricSample): FactoryMetricPoint {
+function pointOf(s: FactoryMetricSample): FactoryMetricPoint {
   return [s.at, Math.round(Math.max(0, Math.min(100, s.cpuPct))), memPct(s), diskPct(s)];
 }
 

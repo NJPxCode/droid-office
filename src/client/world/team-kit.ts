@@ -55,10 +55,6 @@ export function setTeamKitModel(scene: THREE.Object3D, structural: Record<string
   for (const k of kits) k.refit();
 }
 
-export function teamKitReady(): boolean {
-  return pieces !== null;
-}
-
 interface LookMats {
   accent: THREE.MeshToonMaterial;
   emblem: THREE.MeshToonMaterial;
@@ -67,7 +63,7 @@ const looks = new Map<string, LookMats>();
 let focused: LookMats | null = null;
 
 /** The emblem plate's material: white under its glyph texture, too small for the cartoon outline. */
-export function emblemMaterial(map: THREE.Texture | null): THREE.MeshToonMaterial {
+function emblemMaterial(map: THREE.Texture | null): THREE.MeshToonMaterial {
   const m = toonUnique('#ffffff');
   if (map) m.map = map;
   m.userData.outlineParameters = { visible: false };
@@ -193,7 +189,7 @@ function emblemTexture(accent: string, emblem: TeamEmblem): THREE.Texture | null
 }
 
 /** Traces `emblem`, `r` across from its middle at (cx, cy), y down as a canvas has it. */
-export function emblemPath(g: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo' | 'closePath' | 'arc'>, emblem: TeamEmblem, cx: number, cy: number, r: number) {
+function emblemPath(g: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo' | 'closePath' | 'arc'>, emblem: TeamEmblem, cx: number, cy: number, r: number) {
   const poly = (pts: readonly (readonly [number, number])[]) => {
     pts.forEach(([x, y], i) => (i ? g.lineTo(cx + x * r, cy + y * r) : g.moveTo(cx + x * r, cy + y * r)));
     g.closePath();

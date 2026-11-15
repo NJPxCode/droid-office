@@ -4,7 +4,7 @@
 import { deskSeat, type DeskDef } from '../shared/layout';
 
 /** How far down you look on arriving at a desk. Camera presets and the elevator stay level, at -0.08. */
-export const DESK_LOOK_PITCH = -0.2;
+const DESK_LOOK_PITCH = -0.2;
 
 export interface ApproachPose {
   /** Where your feet go. */

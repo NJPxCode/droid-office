@@ -28,7 +28,7 @@ export function glab(args: string[], cwd: string, timeout = 30_000): Promise<str
 let hosts: string[] | undefined;
 
 /** The GitLab instances glab is signed in to (gitlab.com unless it says otherwise). */
-export function gitlabHosts(): string[] {
+function gitlabHosts(): string[] {
   if (hosts) return hosts;
   try {
     const out = execFileSync('glab', ['auth', 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000, env: { ...process.env, NO_COLOR: '1' } });
@@ -40,11 +40,6 @@ export function gitlabHosts(): string[] {
   }
   if (!hosts.length) hosts = ['gitlab.com'];
   return hosts;
-}
-
-/** Asks glab for its instances again next time: someone just ran `glab auth login`. */
-export function forgetGitlabHosts() {
-  hosts = undefined;
 }
 
 function parseHosts(out: string): string[] {

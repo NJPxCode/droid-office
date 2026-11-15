@@ -11,7 +11,7 @@ export type ThreadStatusMode = 'idle' | 'pondering' | 'responding' | 'waiting' |
 export const STATUS_ROTATE_MS = 10_000;
 export const STATUS_FADE_MS = 400;
 
-export const STATUS_PONDERS: readonly string[] = [
+const STATUS_PONDERS: readonly string[] = [
   'Following a thread here...',
   "There's something interesting about this...",
   'Let me trace this through...',
@@ -106,7 +106,7 @@ export const STATUS_PONDERS: readonly string[] = [
   'Layers slowly unfolding...',
 ];
 
-export const STATUS_RESPONDS: readonly string[] = [
+const STATUS_RESPONDS: readonly string[] = [
   'Gathering my thoughts...',
   'Finding the right words...',
   'Let me walk you through this...',
@@ -119,7 +119,7 @@ export const STATUS_RESPONDS: readonly string[] = [
   'Shaping the explanation...',
 ];
 
-export const STATUS_WAITS: readonly string[] = [
+const STATUS_WAITS: readonly string[] = [
   'Waiting on your thoughts...',
   'Standing by for your input...',
   'Ready when you are...',
@@ -199,19 +199,9 @@ export const STATUS_WAITS: readonly string[] = [
   'Time to weigh options...',
 ];
 
-export const STATUS_COMPACTING = 'Compacting conversation…';
-
-export const STATUS_TIPS: readonly string[] = ['Tip: Use @ to reference files', 'Tip: Press Esc to interrupt', 'Tip: Drag files to attach', 'Tip: Use /help for commands'];
+const STATUS_COMPACTING = 'Compacting conversation…';
 
 export const STATUS_TOOLTIP = 'Droid picked these phrases to entertain you while it works.';
-
-/** What the row says without the rotating phrases, as Factory's static mode does. */
-export const STATUS_STATIC: Readonly<Record<Exclude<ThreadStatusMode, 'idle'>, string>> = {
-  pondering: 'Droid is thinking...',
-  responding: 'Droid is streaming...',
-  waiting: 'Waiting for your input...',
-  compacting: STATUS_COMPACTING,
-};
 
 /**
  * The status row's mode: the live layer's when the office sends one, else what the worker's status says

@@ -45,7 +45,7 @@ const WMO: Record<number, [Weather, number]> = {
   99: ['storm', 1],
 };
 
-export function fromWmo(code: number): { weather: Weather; intensity: number } {
+function fromWmo(code: number): { weather: Weather; intensity: number } {
   const [weather, intensity] = WMO[code] ?? ['cloudy', 0.5];
   return { weather, intensity };
 }
@@ -58,7 +58,7 @@ interface Place {
 }
 
 /** The next spell of made-up weather: likelier to stay as it is, snow only in winter, storms in summer. */
-export function wander(prev: Weather | null, month: number, south: boolean): { weather: Weather; intensity: number } {
+function wander(prev: Weather | null, month: number, south: boolean): { weather: Weather; intensity: number } {
   const season = Math.floor((((south ? month + 6 : month) % 12) + 1) / 3) % 4; // 0 winter, 1 spring, 2 summer, 3 autumn
   const odds: Record<Weather, number>[] = [
     { clear: 30, cloudy: 25, rain: 10, storm: 0, snow: 25, fog: 10 },

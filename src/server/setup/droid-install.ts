@@ -5,7 +5,7 @@ import path from 'node:path';
 
 /** Factory's Developer ID team, which signs every macOS droid it publishes. */
 export const FACTORY_TEAM = 'SW6TL4V6Q5';
-export const DOWNLOADS = 'https://downloads.factory.ai/factory-cli';
+const DOWNLOADS = 'https://downloads.factory.ai/factory-cli';
 const MAX_REDIRECTS = 5;
 
 export interface RunResult {
@@ -103,7 +103,7 @@ export interface InstallOptions {
 }
 
 /** An install that failed one of its checks, named in words for the owner. */
-export class InstallError extends Error {}
+class InstallError extends Error {}
 
 /**
  * Installs Droid `version` into ~/.local/bin/droid as Factory's installer does, with more checks: the

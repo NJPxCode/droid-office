@@ -78,7 +78,7 @@ function duration(ms: number): string {
 }
 
 /** Whether Factory can change `w` in place: one of the files its own templates write. */
-export function ciEditable(w: Pick<FactoryCiWorkflow, 'path'>, kind: CiKind): 'code-review' | 'custom' | undefined {
+function ciEditable(w: Pick<FactoryCiWorkflow, 'path'>, kind: CiKind): 'code-review' | 'custom' | undefined {
   if (w.path === CI_REVIEW_PATH && kind === 'review') return 'code-review';
   if (/^\.github\/workflows\/factory-[a-z0-9-]+\.ya?ml$/.test(w.path)) return 'custom';
   return undefined;

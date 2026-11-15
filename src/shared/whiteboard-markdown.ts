@@ -60,7 +60,7 @@ const PLAY_ICON_SVG = '<svg viewBox="0 0 16 16" width="18" height="18" fill="non
 const DOWNLOAD_ICON_SVG =
   '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true"><path d="M8 2.5v7.5m0 0L5 7m3 3 3-3M3 13h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-export function escapeHtml(s: string): string {
+function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch);
 }
 

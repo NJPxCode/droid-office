@@ -399,7 +399,7 @@ const CRON_FIELD = /^[\d*/,\-A-Za-z]+$/;
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/;
 
 export const isGithubRepo = (v: unknown): v is string => typeof v === 'string' && GH_REPO.test(v) && !v.endsWith('/.') && !v.endsWith('/..');
-export const isWorkflowPath = (v: unknown): v is string => typeof v === 'string' && WORKFLOW_PATH.test(v);
+const isWorkflowPath = (v: unknown): v is string => typeof v === 'string' && WORKFLOW_PATH.test(v);
 /** Five space-separated cron fields, the way GitHub's `schedule` takes them. */
 export const isCron = (v: unknown): v is string =>
   typeof v === 'string' &&

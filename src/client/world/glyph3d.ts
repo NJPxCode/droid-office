@@ -4,7 +4,7 @@ import { FACTORY_GLYPH_PATH, FACTORY_GLYPH_VIEWBOX } from './glyph';
 let shapes: THREE.Shape[] | null = null;
 
 /** The pinwheel outline (one shape, eight cut-outs), one unit across, centered, +y up (SVG's y flipped). */
-export function glyphShapes(): THREE.Shape[] {
+function glyphShapes(): THREE.Shape[] {
   if (shapes) return shapes;
   const [vx, vy, vw, vh] = FACTORY_GLYPH_VIEWBOX;
   const size = Math.max(vw, vh);

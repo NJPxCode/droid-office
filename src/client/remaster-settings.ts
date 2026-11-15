@@ -143,7 +143,7 @@ export function probeCount(span: number, spacing: number): number {
 /** The most of each frame's main thread a GI bake slice takes, in ms, whatever the frame rate limit. */
 export const BAKE_BUDGET_MAX_MS = 14;
 /** The share of a frame a bake slice may take, leaving the rest for drawing the frame itself. */
-export const BAKE_FRAME_SHARE = 0.5;
+const BAKE_FRAME_SHARE = 0.5;
 
 /**
  * How long a GI bake slice may take of each frame: half of what one frame has, at most 14 ms. A frame has the limit's

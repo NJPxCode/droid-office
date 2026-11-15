@@ -57,8 +57,6 @@ const rest = (out: number): WandPose => {
 };
 /** Up in the hand, aimed at the crosshair. */
 export const WAND_READY: Readonly<WandPose> = Object.freeze(rest(1));
-/** Put away. */
-export const WAND_AWAY: Readonly<WandPose> = Object.freeze(rest(0));
 
 export interface WandMove {
   seconds: number;

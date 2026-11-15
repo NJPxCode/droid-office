@@ -162,7 +162,7 @@ export async function drawDiagram(pre: HTMLElement, source: string): Promise<voi
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /** `svg` as a standalone file with the Thread's surface color painted behind it. */
-export function standaloneSvg(svg: SVGSVGElement, background = '#0c0b0a'): string {
+function standaloneSvg(svg: SVGSVGElement, background = '#0c0b0a'): string {
   const copy = svg.cloneNode(true) as SVGSVGElement;
   copy.setAttribute('xmlns', SVG_NS);
   const vb = copy

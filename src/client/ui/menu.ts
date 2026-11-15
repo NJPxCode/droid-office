@@ -39,11 +39,6 @@ const PANEL_EL: Record<HudPanel, string> = { workers: 'workers-panel', floor: 'p
 
 const PIN_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M16 9V4h1a1 1 0 0 0 0-2H7a1 1 0 0 0 0 2h1v5a3 3 0 0 1-3 3v2h5.97v7l1 1 1-1v-7H19v-2a3 3 0 0 1-3-3z"/></svg>';
 
-/** The ✕ in a panel's heading, which hides it until you turn it back on from the ☰ menu. */
-export function panelHide(id: HudPanel): HTMLElement {
-  return h('button.panel-x', { type: 'button', 'data-hud': id, 'aria-label': 'Hide', title: 'Hide (☰ brings it back)' }, '✕');
-}
-
 export interface Hud {
   /** Redraws the top bar for a change the store doesn't announce (hanging a picture). */
   refresh(): void;
@@ -58,7 +53,7 @@ export function actionLabel(a: HudAction): string {
   return typeof a.label === 'string' ? a.label : a.label();
 }
 
-export function actionIcon(a: HudAction): string {
+function actionIcon(a: HudAction): string {
   return typeof a.icon === 'string' ? a.icon : a.icon();
 }
 

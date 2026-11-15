@@ -19,15 +19,15 @@ import type { InteractKind, Interactable } from './world/office';
 import type { VisitorInfo } from './world/visitors';
 
 /** The keys that use what you stand at (see DESK_KEYS in main.ts). */
-export const AUTOMATION_KEYS = ['E', 'P', 'R', 'X', 'B', 'C', 'O'] as const;
+const AUTOMATION_KEYS = ['E', 'P', 'R', 'X', 'B', 'C', 'O'] as const;
 export type AutomationKey = (typeof AUTOMATION_KEYS)[number];
 
 /** Fixed camera angles, relative to the way you face, so screenshots line up between runs. */
-export const CAMERA_PRESETS = ['first'] as const;
+const CAMERA_PRESETS = ['first'] as const;
 export type CameraPreset = (typeof CAMERA_PRESETS)[number];
 
 /** The commands `window.office` answers, and the only ones the server relay may call. */
-export const AUTOMATION_COMMANDS = ['goTo', 'interact', 'open', 'closeAll', 'ride', 'teleport', 'camera', 'height', 'frameStats', 'presenterStats', 'state', 'list', 'commands', 'visits'] as const;
+const AUTOMATION_COMMANDS = ['goTo', 'interact', 'open', 'closeAll', 'ride', 'teleport', 'camera', 'height', 'frameStats', 'presenterStats', 'state', 'list', 'commands', 'visits'] as const;
 export type AutomationCommand = (typeof AUTOMATION_COMMANDS)[number];
 
 /** The boards on the wall, which `goTo` lists as kind 'board'. */
@@ -404,7 +404,7 @@ export interface VisitsReport {
 }
 
 /** `report` with positions to centimetres and angles to hundredths, so it compares between runs. */
-export function roundVisits(report: VisitsReport): VisitsReport {
+function roundVisits(report: VisitsReport): VisitsReport {
   return {
     visits: report.visits,
     workers: report.workers.map((w) => ({ ...w, visit: w.visit && { ...w.visit, x: r2(w.visit.x), z: r2(w.visit.z), facing: angle(w.visit.facing), lean: r2(w.visit.lean) } })),

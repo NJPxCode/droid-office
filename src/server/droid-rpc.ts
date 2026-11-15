@@ -1,6 +1,6 @@
 import { DroidServerMethod, FACTORY_PROTOCOL_VERSION, JSONRPC_VERSION, LEGACY_FACTORY_API_VERSION, ProcessTransport } from '@factory/droid-sdk/node';
 
-export const DROID_ASK_TIMEOUT_MS = 20_000;
+const DROID_ASK_TIMEOUT_MS = 20_000;
 const DROID_ASK_MAX_OUTPUT = 4 * 1024 * 1024;
 
 /** The list methods the office asks droid, each answered from the CLI's own catalogue. */

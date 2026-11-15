@@ -10,7 +10,7 @@ import { fileIcon, folderIcon, glyph, iconSvg } from './file-icons';
 // project with thousands of files scrolls as smoothly as a small one.
 
 /** Row height in px; `.ft-row` in style.css is the same. */
-export const ROW_H = 24;
+const ROW_H = 24;
 /** Rows drawn above and below the visible ones. */
 const OVERSCAN = 12;
 /** A project at most this size opens with every folder expanded. */

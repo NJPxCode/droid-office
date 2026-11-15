@@ -58,7 +58,7 @@ function workerId(call: RecordedCall): string {
 }
 
 /** Approval must follow inspection and precede integration, even in cases focused on another skill. */
-export function integrationChecks(calls: RecordedCall[]): CheckResult[] {
+function integrationChecks(calls: RecordedCall[]): CheckResult[] {
   return called(calls, 'team_merge').map((merge) => {
     const prior = calls.slice(0, calls.indexOf(merge));
     const id = workerId(merge);
