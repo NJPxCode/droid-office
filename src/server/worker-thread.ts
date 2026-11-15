@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
+import { open, readFile, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { editedFilePaths } from '../shared/thread-diff.js';
 import { IMAGE_PLACEHOLDER, pageRows, presentThread, THREAD_MODEL_VERSION, type ThreadFileText, type ThreadPresentation, type ThreadRow } from '../shared/thread-presentation.js';
@@ -322,6 +322,33 @@ export class WorkerThreadReader {
     const head = await this.head(file);
     if (head?.calling !== source.sessionId) return undefined;
     return { sessionId: child, cwd: source.cwd, transcript: file, ...(source.drops ? { drops: source.drops } : {}) };
+  }
+
+  /** The menu number and preview Droid shows for a user text entry's rewind point. */
+  async rewindPoint(source: ThreadSession, entryId: string): Promise<{ number?: number; preview: string } | undefined> {
+    if (!entryId.endsWith(':text') || entryId.length > 170) return undefined;
+    const file = await this.find(source);
+    if (!file) return undefined;
+    const raw = await readFile(file, 'utf8').catch(() => undefined);
+    if (!raw) return undefined;
+    for (const line of raw.split('\n')) {
+      if (!line.includes(entryId.slice(0, -5))) continue;
+      let row: Record<string, unknown>;
+      try {
+        row = object(JSON.parse(line));
+      } catch {
+        continue;
+      }
+      if (row.type !== 'message' || `${clean(row.id, 160)}:text` !== entryId) continue;
+      const message = object(row.message);
+      if (message.role !== 'user' || Object.keys(message).some((key) => key.startsWith('hook'))) return undefined;
+      if (message.visibility !== undefined && message.visibility !== 'both' && message.visibility !== 'user_only') return undefined;
+      const preview = clean(contentText(message.content), 1000).replace(/\s+/g, ' ').trim();
+      if (!preview) return undefined;
+      const number = typeof row.seq === 'number' && Number.isSafeInteger(row.seq) && row.seq >= 0 ? row.seq + 1 : undefined;
+      return { ...(number !== undefined ? { number } : {}), preview };
+    }
+    return undefined;
   }
 
   private unavailable(error = 'Conversation is unavailable for this worker.'): ThreadPage {

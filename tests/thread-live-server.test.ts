@@ -1,0 +1,90 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { readSessionSettings, ThreadLiveTracker, type ThreadLiveInputs } from '../src/server/thread-live.js';
+import type { ThreadEntry } from '../src/shared/worker-thread.js';
+
+const entry = (id: string, extra: Partial<ThreadEntry> = {}): ThreadEntry => ({ id, role: 'assistant', kind: 'text', text: 'Earlier', seq: 0, ...extra });
+const base = (): ThreadLiveInputs => ({ sessionId: 'session', status: 'idle', activeTool: new Map() });
+
+test('session settings use Droid’s token fields and the next call’s context', () => {
+  assert.deepEqual(
+    readSessionSettings({
+      model: 'claude-haiku-5-5',
+      reasoningEffort: 'low',
+      interactionMode: 'auto',
+      autonomyLevel: 'high',
+      autonomyMode: 'auto-high',
+      tokenUsage: { inputTokens: 10, outputTokens: 20, cacheCreationTokens: 30, cacheReadTokens: 40, thinkingTokens: 5, factoryCredits: 0.25 },
+      inclusiveTokenUsage: { inputTokens: 100, outputTokens: 200, cacheCreationTokens: 0, cacheReadTokens: 0, thinkingTokens: 0 },
+      lastCallTokenUsage: { inputTokens: 1000, outputTokens: 50, cacheCreationTokens: 100, cacheReadTokens: 2000, thinkingTokens: 20 },
+      assistantActiveTimeMs: 12345,
+    }),
+    {
+      model: 'claude-haiku-5-5',
+      reasoningEffort: 'low',
+      interactionMode: 'auto',
+      autonomyLevel: 'high',
+      autonomyMode: 'auto-high',
+      tokens: { input: 10, output: 20, cacheCreation: 30, cacheRead: 40, thinking: 5, credits: 0.25 },
+      inclusiveTokens: { input: 100, output: 200, cacheCreation: 0, cacheRead: 0, thinking: 0 },
+      lastCall: { input: 1000, output: 50, cacheCreation: 100, cacheRead: 2000, thinking: 20 },
+      context: { used: 3150 },
+      activeMs: 12345,
+    },
+  );
+});
+
+test('idle live state still carries settings, and an unchanged computation keeps its rev', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'office-live-settings-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'session.jsonl');
+  await writeFile(path.join(root, 'session.settings.json'), JSON.stringify({ model: 'claude-haiku-5-5', lastCallTokenUsage: { inputTokens: 400, cacheReadTokens: 600, cacheCreationTokens: 0, outputTokens: 0 } }));
+  let now = 1000;
+  const tracker = new ThreadLiveTracker(() => now);
+  const inputs = { ...base(), screen: [' Auto (High) · allow all commands                       Haiku 5.5 (Low)', '╭────╮', '│ > │', '╰────╯', '[⏱ 11s, context: 5%] ? for help'] };
+  const first = await tracker.compute('w', inputs, [entry('last')], file);
+  assert.equal(first.changed, true);
+  assert.equal(first.live.status, 'idle');
+  assert.equal(first.live.settings?.model, 'claude-haiku-5-5');
+  assert.equal(first.live.settings?.modelName, 'Haiku 5.5 (Low)');
+  assert.deepEqual(first.live.settings?.context, { used: 1000, percent: 5, limit: 20000 });
+  assert.equal(first.live.after, 'last');
+  now += 1000;
+  const second = await tracker.compute('w', inputs, [entry('last')], file);
+  assert.equal(second.changed, false);
+  assert.equal(second.live.rev, first.live.rev);
+});
+
+test('a running Execute gets its canonical id, hook start and live output', async () => {
+  const tracker = new ThreadLiveTracker(() => 5000);
+  const tool = entry('tool:call', { kind: 'tool', name: 'Execute', input: '{"command":"printf ticks"}', at: 4000 });
+  const inputs: ThreadLiveInputs = {
+    ...base(),
+    status: 'working',
+    workingSince: 3000,
+    activeTool: new Map([['session', { tool: 'Execute', input: { command: 'printf ticks' }, startedAt: 4100 }]]),
+    screen: ['   Execute printf ticks', '    ↳ tick 1', '      tick 2', '', ' ⠙ Executing...  (Press ESC to stop)', '', '╭────╮', '│ > │', '╰────╯'],
+  };
+  const { live } = await tracker.compute('w', inputs, [tool]);
+  assert.equal(live.status, 'pondering');
+  assert.equal(live.working, 'executing_tool');
+  assert.deepEqual(live.tools, [{ id: 'tool:call', name: 'Execute', startedAt: 4100, phase: 'running', output: 'tick 1\ntick 2' }]);
+  assert.equal(live.turnStartedAt, 3000);
+});
+
+test('an ExitSpecMode wait attaches to its tool row, and rewind is explicit', async () => {
+  const tracker = new ThreadLiveTracker(() => 5000);
+  const waiting = entry('tool:spec', { kind: 'tool', name: 'ExitSpecMode' });
+  const inputs: ThreadLiveInputs = { ...base(), status: 'needs_input', ask: { kind: 'permission', tool: 'ExitSpecMode' }, activeTool: new Map() };
+  const { live } = await tracker.compute('w', inputs, [waiting]);
+  assert.equal(live.status, 'waiting');
+  assert.deepEqual(live.waiting, { kind: 'spec', toolId: 'tool:spec' });
+  assert.equal(live.tools[0].phase, 'waiting_permission');
+  const rewinding = await tracker.compute('w', { ...base(), rewind: { entryId: 'abc:text', since: 4000 } }, [waiting]);
+  assert.equal(rewinding.live.status, 'idle');
+  assert.equal(rewinding.live.label, 'Rewinding conversation...');
+  assert.deepEqual(rewinding.live.rewind, { entryId: 'abc:text', since: 4000 });
+});

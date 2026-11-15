@@ -5,6 +5,10 @@ import type { ServerMsg } from '../shared/protocol.js';
 import type { ThreadPage, ThreadSession, WorkerThreadReader } from './worker-thread.js';
 
 export type ThreadPushMsg = Extract<ServerMsg, { t: 'thread.snapshot' }>;
+export type ThreadLivePushMsg = Extract<ServerMsg, { t: 'thread.live' }>;
+export type ThreadWatchMsg = ThreadPushMsg | ThreadLivePushMsg;
+
+const watchKey = (workerId: string, child?: string) => (child ? `${workerId}\0${child}` : workerId);
 
 export interface WatchedThreadTarget {
   kind: 'local' | 'cloud';
@@ -14,10 +18,12 @@ export interface WatchedThreadTarget {
 }
 
 export interface ThreadWatchOptions {
-  workerThreads: Pick<WorkerThreadReader, 'read' | 'sessionPaths' | 'sessionPathsSync'>;
+  workerThreads: Pick<WorkerThreadReader, 'read' | 'sessionPaths' | 'sessionPathsSync' | 'childSession'>;
   resolveWorker(workerId: string): WatchedThreadTarget | undefined;
   readCloud?(workerId: string): Promise<ThreadPage> | undefined;
-  send(clientId: string, msg: ThreadPushMsg): void;
+  send(clientId: string, msg: ThreadWatchMsg): void;
+  /** The local worker's live state over the entries just read; the tracker revs only real changes. */
+  live?(workerId: string, entries: ThreadPushMsg['entries'], session?: ThreadSession): Promise<ThreadLivePushMsg['live'] | undefined>;
   localCoalesceMs?: number;
   cloudCoalesceMs?: number;
   maxWatchesPerClient?: number;
@@ -25,6 +31,7 @@ export interface ThreadWatchOptions {
 
 interface WorkerWatch {
   workerId: string;
+  child?: string;
   clients: Set<string>;
   kind?: 'local' | 'cloud';
   sessionKey?: string;
@@ -41,6 +48,7 @@ interface WorkerWatch {
   again: boolean;
   closed: boolean;
   lastDigest?: string;
+  liveRev?: number;
 }
 
 const MISSING_POLL_MIN_MS = 250;
@@ -76,10 +84,11 @@ export class ThreadWatchHub {
     this.maxPerClient = opts.maxWatchesPerClient ?? 16;
   }
 
-  watch(clientId: string, workerId: string, on: boolean): boolean {
+  watch(clientId: string, workerId: string, on: boolean, child?: string): boolean {
     if (this.stopped || !clientId || !workerId) return false;
+    const key = watchKey(workerId, child);
     if (!on) {
-      this.removeSubscription(clientId, workerId);
+      this.removeSubscription(clientId, key);
       return true;
     }
     const target = this.opts.resolveWorker(workerId);
@@ -93,33 +102,36 @@ export class ThreadWatchHub {
       clientSet = new Set();
       this.byClient.set(clientId, clientSet);
     }
-    clientSet.delete(workerId);
+    clientSet.delete(key);
     while (clientSet.size >= this.maxPerClient) {
       const oldest = clientSet.values().next().value;
       if (!oldest) break;
       this.removeSubscription(clientId, oldest);
     }
-    clientSet.add(workerId);
+    clientSet.add(key);
 
-    let entry = this.byWorker.get(workerId);
+    let entry = this.byWorker.get(key);
     if (!entry) {
       entry = {
         workerId,
+        ...(child ? { child } : {}),
         clients: new Set(),
         reading: false,
         again: false,
         closed: false,
       };
-      this.byWorker.set(workerId, entry);
+      this.byWorker.set(key, entry);
     }
     entry.clients.add(clientId);
-    this.refreshBinding(entry, target, false);
+    if (!child) this.refreshBinding(entry, target, false);
+    // Settings arrive here too, while the worker is idle, not only after its first change.
+    this.schedule(entry, 0);
     return true;
   }
 
   /** Records the latest hydrated page from `thread.read` so an unchanged wake never pushes a duplicate snapshot. */
-  seed(workerId: string, page: ThreadPage, busy: boolean): void {
-    const entry = this.byWorker.get(workerId);
+  seed(workerId: string, page: ThreadPage, busy: boolean, child?: string): void {
+    const entry = this.byWorker.get(watchKey(workerId, child));
     if (!entry || entry.closed || page.error) return;
     entry.lastDigest ??= threadPageDigest(page, busy);
   }
@@ -127,35 +139,43 @@ export class ThreadWatchHub {
   /** Wakes watchers on worker status/turn/session transitions or CloudStream deltas. */
   notifyWorker(workerId: string): void {
     if (this.stopped) return;
-    const entry = this.byWorker.get(workerId);
-    if (!entry || entry.closed || !entry.clients.size) return;
     const target = this.opts.resolveWorker(workerId);
     if (!target) {
       this.unwatchWorker(workerId);
       return;
     }
-    this.refreshBinding(entry, target, true);
-    this.schedule(entry, target.kind === 'cloud' ? this.cloudCoalesceMs : this.localCoalesceMs);
+    for (const entry of this.byWorker.values()) {
+      if (entry.workerId !== workerId || entry.closed || !entry.clients.size) continue;
+      if (!entry.child) this.refreshBinding(entry, target, true);
+      this.schedule(entry, target.kind === 'cloud' ? this.cloudCoalesceMs : this.localCoalesceMs);
+    }
+  }
+
+  /** A terminal repaint can change the streaming message or a running command's output alone. */
+  screenChanged(workerId: string): void {
+    if (this.stopped) return;
+    for (const entry of this.byWorker.values()) {
+      if (entry.workerId === workerId && !entry.child && entry.clients.size) this.schedule(entry, Math.max(100, this.localCoalesceMs));
+    }
   }
 
   unwatchClient(clientId: string, keepOrchestrator = false): void {
     const set = this.byClient.get(clientId);
     if (!set) return;
-    for (const workerId of [...set]) {
-      if (keepOrchestrator && workerId === ORCHESTRATOR_ID) continue;
-      this.removeSubscription(clientId, workerId);
+    for (const key of [...set]) {
+      if (keepOrchestrator && key === ORCHESTRATOR_ID) continue;
+      this.removeSubscription(clientId, key);
     }
   }
 
   unwatchWorker(workerId: string): void {
-    const entry = this.byWorker.get(workerId);
-    if (!entry) return;
-    for (const clientId of [...entry.clients]) {
-      this.removeSubscription(clientId, workerId);
-    }
-    if (this.byWorker.get(workerId) === entry) {
-      this.teardown(entry);
-      this.byWorker.delete(workerId);
+    for (const [key, entry] of [...this.byWorker]) {
+      if (entry.workerId !== workerId) continue;
+      for (const clientId of [...entry.clients]) this.removeSubscription(clientId, key);
+      if (this.byWorker.get(key) === entry) {
+        this.teardown(entry);
+        this.byWorker.delete(key);
+      }
     }
   }
 
@@ -171,19 +191,27 @@ export class ThreadWatchHub {
     this.byClient.clear();
   }
 
-  private removeSubscription(clientId: string, workerId: string): void {
+  private removeSubscription(clientId: string, key: string): void {
     const set = this.byClient.get(clientId);
     if (set) {
-      set.delete(workerId);
+      set.delete(key);
       if (!set.size) this.byClient.delete(clientId);
     }
-    const entry = this.byWorker.get(workerId);
+    const entry = this.byWorker.get(key);
     if (!entry) return;
     entry.clients.delete(clientId);
     if (!entry.clients.size) {
       this.teardown(entry);
-      this.byWorker.delete(workerId);
+      this.byWorker.delete(key);
     }
+  }
+
+  /** A child watch reads the subagent beside the worker's session, never an arbitrary session id. */
+  private async targetFor(entry: WorkerWatch): Promise<WatchedThreadTarget | undefined> {
+    const target = this.opts.resolveWorker(entry.workerId);
+    if (!target || !entry.child || target.kind !== 'local' || !target.local) return target;
+    const child = await this.opts.workerThreads.childSession(target.local, entry.child);
+    return { ...target, local: child };
   }
 
   private refreshBinding(entry: WorkerWatch, target: WatchedThreadTarget, wakeOnRebind: boolean): void {
@@ -312,7 +340,7 @@ export class ThreadWatchHub {
     entry.reading = true;
     let nextDelay = this.localCoalesceMs;
     try {
-      const target = this.opts.resolveWorker(entry.workerId);
+      const target = await this.targetFor(entry);
       if (!target) {
         this.unwatchWorker(entry.workerId);
         return;
@@ -338,12 +366,13 @@ export class ThreadWatchHub {
         if (paths) this.applyPaths(entry, paths);
         const page = await this.opts.workerThreads.read(target.local, undefined, busy);
         if (this.stopped || entry.closed || !entry.clients.size) return;
-        const after = this.opts.resolveWorker(entry.workerId);
+        const after = await this.targetFor(entry);
         if (!after || sessionKeyOf(after) !== key || after.busy !== busy) {
           entry.again = true;
           return;
         }
         if (page.error && entry.lastDigest === undefined) return;
+        await this.pushLive(entry, page, target.local);
         const digest = threadPageDigest(page, busy);
         if (digest === entry.lastDigest) return;
         entry.lastDigest = digest;
@@ -373,12 +402,22 @@ export class ThreadWatchHub {
     }
   }
 
+  private async pushLive(entry: WorkerWatch, page: ThreadPage, session?: ThreadSession): Promise<void> {
+    if (entry.child || !this.opts.live) return;
+    const live = await this.opts.live(entry.workerId, page.entries, session);
+    if (!live || live.rev === entry.liveRev || this.stopped || entry.closed || !entry.clients.size) return;
+    entry.liveRev = live.rev;
+    const msg: ThreadLivePushMsg = { t: 'thread.live', workerId: entry.workerId, ...(page.sessionId ? { sessionId: page.sessionId } : {}), live };
+    for (const clientId of entry.clients) this.opts.send(clientId, msg);
+  }
+
   private push(entry: WorkerWatch, page: ThreadPage): void {
     const msg: ThreadPushMsg = {
       t: 'thread.snapshot',
       workerId: entry.workerId,
       request: 'push',
       push: true,
+      ...(entry.child ? { child: entry.child } : {}),
       ...page,
     };
     for (const clientId of entry.clients) {

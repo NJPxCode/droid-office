@@ -48,6 +48,43 @@ class ProtocolTest {
         assertEquals(kotlinx.serialization.json.JsonNull, last["before"])
     }
 
+    @Test
+    fun readsThreadLiveChildSnapshotsAndRewindResults() {
+        val live = Protocol.decode(
+            """{"t":"thread.live","workerId":"w1","sessionId":"s1","live":{"rev":4,"at":1000,"status":"responding","working":"streaming_assistant_message","after":"a1:text","stream":{"kind":"text","text":"Working","since":900},"tools":[{"id":"tool:c1","name":"Execute","startedAt":800,"phase":"running","output":"tick"}],"settings":{"model":"claude-haiku-5-5","lastCall":{"input":10,"output":2},"context":{"used":12,"percent":5}},"rewind":{"entryId":"u1:text","since":700}}}""",
+        ) as ServerMsg.ThreadLiveUpdate
+        assertEquals("w1", live.workerId)
+        assertEquals(4L, live.live.rev)
+        assertEquals(ThreadLive.Status.Responding, live.live.status)
+        assertEquals("Working", live.live.stream?.text)
+        assertEquals("tick", live.live.tools.single().output)
+        assertEquals(10L, live.live.settings?.lastCall?.input)
+        assertEquals("u1:text", live.live.rewind?.entryId)
+
+        val child = Protocol.decode("""{"t":"thread.snapshot","workerId":"w1","request":"push","child":"s2","entries":[],"hasMore":false}""") as ServerMsg.ThreadSnapshot
+        assertEquals("s2", child.child)
+        val rewound = Protocol.decode("""{"t":"worker.rewound","workerId":"w1","entryId":"u1:text","ok":true,"sessionId":"s3","text":"Try again"}""") as ServerMsg.WorkerRewound
+        assertTrue(rewound.ok)
+        assertEquals("s3", rewound.sessionId)
+        assertEquals("Try again", rewound.text)
+    }
+
+    @Test
+    fun writesChildWatchesQueueActionsAndRewinds() {
+        val watch = Json.parseToJsonElement(ClientMsg.threadWatch("w1", true, "s2")).jsonObject
+        assertEquals("s2", watch.getValue("child").jsonPrimitive.content)
+        val read = Json.parseToJsonElement(ClientMsg.threadRead("w1", "r1", 4, "s2")).jsonObject
+        assertEquals("s2", read.getValue("child").jsonPrimitive.content)
+        val queue = Json.parseToJsonElement(ClientMsg.queueAction("w1", "delete", 2, "queued", "Later")).jsonObject
+        assertEquals("worker.queue", queue.getValue("t").jsonPrimitive.content)
+        assertEquals(2, queue.getValue("index").jsonPrimitive.content.toInt())
+        assertEquals("queued", queue.getValue("group").jsonPrimitive.content)
+        val rewind = Json.parseToJsonElement(ClientMsg.rewind("w1", "u1:text", false)).jsonObject
+        assertEquals("worker.rewind", rewind.getValue("t").jsonPrimitive.content)
+        assertEquals("conversation", rewind.getValue("restore").jsonPrimitive.content)
+        assertEquals("files", Json.parseToJsonElement(ClientMsg.rewind("w1", "u1:text", true)).jsonObject.getValue("restore").jsonPrimitive.content)
+    }
+
     private val welcome = """
         {"t":"welcome","connection":"c1","arrival":{"floor":"home","via":"start"},"version":"0.9.120",
          "floors":[{"id":"home","name":"droid-office","dir":"/x","palette":0,"local":true,"home":true,"workers":2,"busy":1,"waiting":1,"lastVisitedAt":1763000000000,"lastWorkerAt":1762999000000,"hires":14}],

@@ -67,6 +67,8 @@ export interface ThreadLive {
   tools: ThreadLiveTool[];
   waiting?: { kind: 'permission' | 'question' | 'spec' | 'other'; toolId?: string };
   settings?: ThreadSessionSettings;
+  /** A rewind the office is driving in the terminal (worker.rewind), until it ends. */
+  rewind?: { entryId: string; since: number };
 }
 
 /** Factory's status for a working state (its uEc): an open question or permission wins. */

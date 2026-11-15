@@ -29,6 +29,8 @@ data class ThreadLive(
     val tools: List<Tool> = emptyList(),
     val waiting: Waiting? = null,
     val settings: ThreadSessionSettings? = null,
+    /** The office-driven rewind in progress, if any. */
+    val rewind: Rewind? = null,
 ) {
     /** Factory's droidStatusIndicator states. */
     enum class Status(val wire: String) {
@@ -59,6 +61,8 @@ data class ThreadLive(
 
     /** `permission`, `question`, `spec` or `other`, and the call it asks about. */
     data class Waiting(val kind: String, val toolId: String? = null)
+
+    data class Rewind(val entryId: String, val since: Long)
 
     companion object {
         fun of(e: JsonElement?): ThreadLive? {
@@ -94,6 +98,7 @@ data class ThreadLive(
                 }?.take(64).orEmpty(),
                 waiting = (o["waiting"] as? JsonObject)?.let { Waiting(it.str("kind") ?: "other", it.str("toolId")) },
                 settings = ThreadSessionSettings.of(o["settings"]),
+                rewind = (o["rewind"] as? JsonObject)?.let { r -> r.str("entryId")?.let { Rewind(it, r.long("since") ?: at) } },
             )
         }
 
@@ -125,6 +130,7 @@ data class ThreadSessionSettings(
     val autonomyMode: String? = null,
     val tokens: ThreadTokens? = null,
     val inclusiveTokens: ThreadTokens? = null,
+    val lastCall: ThreadTokens? = null,
     val context: Context? = null,
     val activeMs: Long? = null,
 ) {
@@ -143,6 +149,7 @@ data class ThreadSessionSettings(
                 autonomyMode = o.str("autonomyMode"),
                 tokens = ThreadTokens.of(o["tokens"]),
                 inclusiveTokens = ThreadTokens.of(o["inclusiveTokens"]),
+                lastCall = ThreadTokens.of(o["lastCall"]),
                 context = (o["context"] as? JsonObject)?.let { c ->
                     val used = c.long("used") ?: return@let null
                     Context(used, (c["percent"] as? JsonPrimitive)?.doubleOrNull?.takeIf { it in 0.0..100.0 }, c.long("limit")?.takeIf { it > 0 })
