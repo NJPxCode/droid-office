@@ -499,6 +499,16 @@ class OfficeConnection(
         return api.threadImage(base, auth, floor, worker, image)
     }
 
+    suspend fun threadFileImage(floor: String, worker: String, path: String): ByteArray? {
+        val (base, auth) = current ?: return null
+        return api.threadFileImage(base, auth, floor, worker, path)
+    }
+
+    suspend fun webImage(url: String): ByteArray? {
+        val (base, auth) = current ?: return null
+        return api.webImage(base, auth, url)
+    }
+
     suspend fun threadFiles(floor: String?, worker: String, query: String): ThreadFiles? {
         val (base, auth) = current ?: return null
         return api.threadFiles(base, auth, floor, worker, query)

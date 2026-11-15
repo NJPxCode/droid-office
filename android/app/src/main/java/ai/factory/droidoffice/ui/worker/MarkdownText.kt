@@ -154,6 +154,7 @@ internal fun MarkdownText(
                 is Markdown.Block.Email -> EmailDraftCard(b, body)
                 is Markdown.Block.Widget -> WidgetBlock(b, streaming, mono)
                 is Markdown.Block.Math -> MathBlock(b, body)
+                is Markdown.Block.Image -> MarkdownImage(b.alt, b.src, body)
                 Markdown.Block.Rule -> Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).height(1.dp).background(Palette.Border))
                 is Markdown.Block.Table -> Table(b, body.copy(fontSize = 13.5.sp, lineHeight = 19.sp), mono, surface, opener)
             }

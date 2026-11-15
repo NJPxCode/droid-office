@@ -524,6 +524,8 @@ object Tags {
         const val THREAD_IMAGE_CLOSE = "worker.thread.image_viewer.close"
         /** A picture a tool returned or a message carried, by its image id: tapping it opens [THREAD_IMAGE_VIEWER]. */
         fun threadImage(id: String) = "worker.thread.image/$id"
+        /** An image a reply's Markdown shows on a line of its own; its content-desc is the alt text. */
+        const val THREAD_MD_IMAGE = "worker.thread.md_image"
 
         /** A slash command in [SLASH_MENU], by its name: `composer.slash/model`. */
         fun slash(name: String) = "composer.slash/$name"

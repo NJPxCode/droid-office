@@ -259,3 +259,50 @@ test('WorkspaceTexts reads edited files only inside the workspace and re-keys wh
   assert.notEqual(changed.key, first.key);
   assert.equal(changed.text(abs), 'one\ntwo\nthree\n');
 });
+
+test('ThreadWorkspace.readImage serves absolute and ~/ image paths: workspace rules inside, real raster pictures outside', async (t) => {
+  const root = await tempDir(t, 'office-thread-image-');
+  const outside = await tempDir(t, 'office-thread-image-out-');
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24)]);
+  await mkdir(path.join(root, 'Pictures'), { recursive: true });
+  await mkdir(path.join(root, '.git'), { recursive: true });
+  await writeFile(path.join(root, 'Pictures/den.png'), png);
+  await writeFile(path.join(root, 'Pictures/plan.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  await writeFile(path.join(root, '.git/leak.png'), png);
+  for (const dir of ['designs', '.ssh', '.droid-office/drops/w1', '.droid-office/worktrees/nibble']) await mkdir(path.join(outside, dir), { recursive: true });
+  await writeFile(path.join(outside, 'designs/02-cozy-media-den.png'), png);
+  await writeFile(path.join(outside, 'designs/notes.png'), 'not a picture\n');
+  await writeFile(path.join(outside, 'designs/plan.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  await writeFile(path.join(outside, '.ssh/key.png'), png);
+  await writeFile(path.join(outside, '.droid-office/drops/w1/a.png'), png);
+  await writeFile(path.join(outside, '.droid-office/worktrees/nibble/shot.png'), png);
+  const home = process.env.HOME;
+  process.env.HOME = outside;
+  t.after(() => {
+    process.env.HOME = home;
+  });
+
+  const ws = new ThreadWorkspace();
+  const read = (p: string) => ws.readImage(root, p);
+  const status = async (p: string) => {
+    const r = await read(p);
+    return 'error' in r ? r.status : 200;
+  };
+
+  const inside = await read(path.join(root, 'Pictures/den.png'));
+  assert.ok(!('error' in inside) && inside.type === 'image/png' && inside.body.equals(png));
+  assert.equal(await status(path.join(root, 'Pictures/plan.svg')), 200, 'an SVG inside the workspace is shown as a workspace file is');
+  assert.equal(await status(path.join(root, '.git/leak.png')), 403);
+
+  const den = await read(path.join(outside, 'designs/02-cozy-media-den.png'));
+  assert.ok(!('error' in den) && den.type === 'image/png' && den.body.equals(png));
+  assert.equal(await status('~/designs/02-cozy-media-den.png'), 200);
+  assert.equal(await status(path.join(outside, '.droid-office/worktrees/nibble/shot.png')), 200);
+  assert.equal(await status(path.join(outside, 'designs/notes.png')), 415, 'outside the workspace the bytes must be a picture');
+  assert.equal(await status(path.join(outside, 'designs/plan.svg')), 415);
+  assert.equal(await status(path.join(outside, '.ssh/key.png')), 403);
+  assert.equal(await status(path.join(outside, '.droid-office/drops/w1/a.png')), 403);
+  assert.equal(await status(path.join(outside, 'designs/missing.png')), 404);
+  assert.equal(await status(path.join(outside, 'designs')), 415);
+  assert.equal(await status('/etc/passwd'), 415);
+});

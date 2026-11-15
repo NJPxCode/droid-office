@@ -8,6 +8,7 @@ import { drawDiagram, renderMermaidSvg, renderThreadMermaid } from '../src/clien
 import { formatFilePreviewBytes, normalizeFilePreviewResponse, openFilePreviewModal, threadFilePreviewUrl } from '../src/client/ui/file-preview.js';
 import { buildMailtoHref, extractMathSegments, parseEmailDraft, parseWorkspacePathRefs, renderMathToMathMl, threadMarkdown, threadUserMarkdown } from '../src/client/ui/thread-markdown.js';
 import { browserStatus, closeBrowser, launchBrowser, newIsolatedContext } from '../src/server/whiteboard-browser.js';
+import { localImagePath } from '../src/shared/worker-thread.js';
 
 test('all five rich-markdown modules load cleanly in Node without touching window or document at import time', () => {
   assert.equal(typeof globalThis.window, 'undefined');
@@ -307,6 +308,17 @@ test('parseWorkspacePathRefs matches workspace paths and line ranges while rejec
       { path: 'README.md', line: 12, endLine: undefined },
     ],
   );
+});
+
+test('localImagePath finds the files on the office machine Markdown images name and leaves web URLs alone', () => {
+  assert.equal(localImagePath('/Users/nik/Pictures/chaise-room-designs/02-cozy-media-den.png'), '/Users/nik/Pictures/chaise-room-designs/02-cozy-media-den.png');
+  assert.equal(localImagePath(' <~/Pictures/a b.png> '), '~/Pictures/a b.png');
+  assert.equal(localImagePath('docs/chart.svg'), 'docs/chart.svg');
+  assert.equal(localImagePath('file:///tmp/shot%201.png'), '/tmp/shot 1.png');
+  assert.equal(localImagePath('file://localhost/tmp/a.png'), '/tmp/a.png');
+  for (const web of ['https://example.com/a.png', 'http://192.168.1.2:4600/a.png', 'data:image/png;base64,AAAA', 'blob:abc', '//cdn.example.com/a.png', '#top', '', 'bad%E0%A4%A.png']) {
+    assert.equal(localImagePath(web), undefined, web);
+  }
 });
 
 test('file-preview helpers normalize text, binary, truncated, and error responses cleanly', () => {
@@ -707,4 +719,54 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
   assert.equal(result.scrolledLine, 12);
   assert.equal(result.hasTruncatedBanner, true);
   assert.equal(result.modalClosedCleanly, true);
+});
+
+test('real Chromium points Thread Markdown images of files on the office machine at the workspace picture route', { skip: skipChromium }, async (t: TestContext) => {
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const context = await newIsolatedContext(browser);
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const bundle = buildSync({
+    stdin: { contents: `export { threadMarkdown } from './src/client/ui/thread-markdown.ts';`, resolveDir: fileURLToPath(new URL('../', import.meta.url)), sourcefile: 'md-images-entry.ts', loader: 'ts' },
+    bundle: true,
+    format: 'iife',
+    globalName: 'RichMD',
+    write: false,
+    target: 'es2022',
+  }).outputFiles[0].text;
+  await page.setContent('<!doctype html><div id="root"></div>');
+  await page.addScriptTag({ content: bundle });
+  await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
+
+  const { pointed, plain } = await page.evaluate(() => {
+    const w = window as any;
+    const src = [
+      '### 2. Cozy Cinema & Media Den',
+      '',
+      '![Cozy Cinema and Media Den](/Users/nik/Pictures/chaise-room-designs/02-cozy-media-den.png)',
+      '',
+      '![chart](docs/chart.png) ![tmp](file:///tmp/a%20b.png) ![web](https://example.com/a.png)',
+    ].join('\n');
+    const url = (path: string) => `/api/thread/file?${new URLSearchParams({ floor: 'home', worker: 'byte', path, raw: 'image' })}`;
+    const srcs = (el: HTMLElement) => [...el.querySelectorAll('img')].map((img) => [img.getAttribute('alt'), img.getAttribute('src')]);
+    return { pointed: srcs(w.RichMD.threadMarkdown(src, { imageUrl: url })), plain: srcs(w.RichMD.threadMarkdown(src)) };
+  });
+
+  assert.deepEqual(pointed, [
+    ['Cozy Cinema and Media Den', '/api/thread/file?floor=home&worker=byte&path=%2FUsers%2Fnik%2FPictures%2Fchaise-room-designs%2F02-cozy-media-den.png&raw=image'],
+    ['chart', '/api/thread/file?floor=home&worker=byte&path=docs%2Fchart.png&raw=image'],
+    ['tmp', '/api/thread/file?floor=home&worker=byte&path=%2Ftmp%2Fa+b.png&raw=image'],
+    ['web', 'https://example.com/a.png'],
+  ]);
+  assert.deepEqual(
+    plain.map(([alt, src]) => [alt, src]),
+    [
+      ['Cozy Cinema and Media Den', '/Users/nik/Pictures/chaise-room-designs/02-cozy-media-den.png'],
+      ['chart', 'docs/chart.png'],
+      ['tmp', null],
+      ['web', 'https://example.com/a.png'],
+    ],
+    'without imageUrl, images keep their own src (and the sanitizer drops file: URLs)',
+  );
 });
