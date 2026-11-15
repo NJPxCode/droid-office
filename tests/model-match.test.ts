@@ -61,10 +61,28 @@ test('an exact id or display name wins, and other matches come back for the lead
   const exact = matchModel('GPT-6.1 Sol', CATALOGUE);
   assert.ok(!('error' in exact));
   assert.deepEqual(exact.others, []);
+  const shared = matchModel('GPT-6.1 Sol', [{ id: 'custom:gpt-6.1-sol', displayName: 'GPT-6.1 Sol', custom: true }, ...CATALOGUE]);
+  assert.ok(!('error' in shared));
+  assert.equal(shared.model.id, 'gpt-6.1-sol', 'a BYOK entry reusing a Factory name loses to Factory');
+  assert.deepEqual(
+    shared.others.map((m) => m.id),
+    ['custom:gpt-6.1-sol'],
+  );
+});
+
+test('a BYOK model without a gateway in its id still ranks after Factory models', () => {
+  const models: DroidModelOption[] = [
+    { id: 'custom:gemini-4-carbon-interactions', displayName: 'Gemini 4 Carbon Interactions', custom: true },
+    { id: 'gemini-4-carbon', displayName: 'Gemini 4 Carbon', provider: 'google' },
+  ];
+  const hit = matchModel('carbon', models);
+  assert.ok(!('error' in hit));
+  assert.equal(hit.model.id, 'gemini-4-carbon');
 });
 
 test('nothing matching, or nothing typed, says what to pass instead', () => {
   assert.match(picked('dp sol'), /No model Droid offers here matches "dp sol".*team_models/);
   assert.match(picked('  '), /after \/model/);
+  assert.match(picked(':::'), /No model Droid offers here matches ":::"/, 'punctuation alone matches nothing rather than everything');
   assert.ok('error' in matchModel('sol', []));
 });

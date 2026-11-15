@@ -24,9 +24,13 @@ export function matchModel(query: string, models: readonly DroidModelOption[]): 
   const want = query.trim();
   if (!want) return { error: 'Name the model: what you would type after /model in Droid, or an exact id from team_models.' };
   const lower = want.toLowerCase();
-  const exact = models.find((m) => m.id.toLowerCase() === lower) ?? models.find((m) => m.displayName.toLowerCase() === lower);
-  if (exact) return { model: exact, others: [] };
+  const exactId = models.find((m) => m.id.toLowerCase() === lower);
+  if (exactId) return { model: exactId, others: [] };
+  // A BYOK entry can reuse a Factory model's display name; Droid lists BYOK first, but Factory wins.
+  const named = models.filter((m) => m.displayName.toLowerCase() === lower).sort((a, b) => Number(!!a.custom) - Number(!!b.custom));
+  if (named.length) return { model: named[0], others: named.slice(1) };
   const asked = words(want);
+  if (!asked.length) return { error: `No model Droid offers here matches "${want}". Call team_models for the ids and names.` };
   const scored = models.flatMap((m, index) => {
     const name = words(m.displayName);
     const pool = [...name, ...words(m.id)];
@@ -35,7 +39,7 @@ export function matchModel(query: string, models: readonly DroidModelOption[]): 
     const namesGateway = !!gateway && asked.some((w) => gateway.startsWith(w));
     const partial = asked.filter((w) => !pool.includes(w)).length;
     const extra = name.filter((n) => !asked.some((w) => n.startsWith(w))).length;
-    return [{ m, rank: [gateway && !namesGateway ? 1 : 0, partial, extra, index] }];
+    return [{ m, rank: [m.custom && !namesGateway ? 1 : 0, partial, extra, index] }];
   });
   if (!scored.length) return { error: `No model Droid offers here matches "${want}". Call team_models for the ids and names.` };
   scored.sort((a, b) => {

@@ -3493,4 +3493,7 @@ test('switchModel drives /model in a running session, pins the model for a resum
   const [, , third] = await waitFor(launches, (l) => l.length >= 3);
   assert.deepEqual(pinned(third), { model: 'custom:droidproxy:gpt-6.1-sol' });
   assert.ok('error' in (await workers.switchModel(worker.id, { id: 'bad model\nid', name: 'x' })), 'an id Droid could not take is refused');
+  workers.modelGate = (model) => (model === 'gpt-6.1-sol' ? 'GPT-6.1 Sol is out of quota' : undefined);
+  assert.deepEqual(await workers.switchModel(worker.id, { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }), { error: 'GPT-6.1 Sol is out of quota' }, 'the office’s model gate applies as it does to a hire');
+  assert.equal(workers.get(worker.id)?.model, 'custom:droidproxy:gpt-6.1-sol');
 });

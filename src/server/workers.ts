@@ -1751,7 +1751,7 @@ export class WorkerManager {
     const w = this.workers.get(id);
     if (!w) return { error: 'No such worker' };
     if (w.info.kind !== 'agent' || w.info.cloud || w.info.remote) return { error: `${w.info.name} has no local Droid session to change` };
-    const invalid = validateWorkerModel('agent', model.id) ?? validateWorkerEffort('agent', effort);
+    const invalid = validateWorkerModel('agent', model.id) ?? validateWorkerEffort('agent', effort) ?? this.modelGate?.(model.id);
     if (invalid) return { error: invalid };
     if (isAsleep(w.info.status) || !w.pty) {
       const error = this.choose(id, model.id, effort);
