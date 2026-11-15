@@ -6,7 +6,7 @@ import { buildSync } from 'esbuild';
 import { attachCopyFeedback, codeLanguageLabel, highlightCodeBlock, highlightLine, MAX_HIGHLIGHT_CHARS, preloadCodeLanguage, renderCodeFrame, resolveCodeLanguage, tokenizeCode } from '../src/client/ui/code-highlight.js';
 import { drawDiagram, renderMermaidSvg, renderThreadMermaid } from '../src/client/ui/diagram.js';
 import { formatFilePreviewBytes, normalizeFilePreviewResponse, openFilePreviewModal, threadFilePreviewUrl } from '../src/client/ui/file-preview.js';
-import { buildMailtoHref, extractMathSegments, parseEmailDraft, parseWorkspacePathRefs, renderMathToMathMl, threadMarkdown, threadUserMarkdown } from '../src/client/ui/thread-markdown.js';
+import { extractMathSegments, parseWorkspacePathRefs, renderMathToMathMl, threadMarkdown, threadUserMarkdown } from '../src/client/ui/thread-markdown.js';
 import { browserStatus, closeBrowser, launchBrowser, newIsolatedContext } from '../src/server/whiteboard-browser.js';
 import { localImagePath } from '../src/shared/worker-thread.js';
 
@@ -251,41 +251,6 @@ test('extractMathSegments and renderMathToMathMl render TeX math without trigger
 
   // Incomplete streaming TeX returns null rather than a styled error span.
   assert.equal(renderMathToMathMl('\\frac{1}{', false), null);
-});
-
-test('parseEmailDraft and buildMailtoHref parse RFC headers and encode mailto query parameters with %20', () => {
-  const raw = [
-    'To: Alice Smith <alice@example.com>, bob@example.com',
-    'Cc: lead@example.com',
-    'Bcc: archive@example.com',
-    'In-Reply-To: <msg-99@example.com>',
-    'Subject: Phase A Rich Markdown Ready',
-    '',
-    'Hi Alice,',
-    '',
-    'All 18 widgets and MathML checks are green.',
-  ].join('\n');
-
-  const draft = parseEmailDraft(raw);
-  assert.ok(draft);
-  assert.equal(draft.to, 'Alice Smith <alice@example.com>, bob@example.com');
-  assert.equal(draft.cc, 'lead@example.com');
-  assert.equal(draft.bcc, 'archive@example.com');
-  assert.equal(draft.inReplyTo, '<msg-99@example.com>');
-  assert.equal(draft.subject, 'Phase A Rich Markdown Ready');
-  assert.equal(draft.body, 'Hi Alice,\n\nAll 18 widgets and MathML checks are green.');
-
-  const href = buildMailtoHref(draft);
-  assert.ok(href.startsWith('mailto:alice@example.com,bob@example.com?'));
-  assert.match(href, /subject=Phase%20A%20Rich%20Markdown%20Ready/);
-  assert.match(href, /cc=lead%40example\.com/);
-  assert.match(href, /bcc=archive%40example\.com/);
-  assert.match(href, /in-reply-to=%3Cmsg-99%40example\.com%3E/);
-  assert.match(href, /body=Hi%20Alice%2C%0A%0AAll%2018%20widgets/);
-  assert.doesNotMatch(href, /\+/);
-
-  // Non-email content returns null so it stays a normal code block.
-  assert.equal(parseEmailDraft('just some arbitrary note without headers'), null);
 });
 
 test('parseWorkspacePathRefs matches workspace paths and line ranges while rejecting URLs, domains, mentions, and .. segments', () => {
@@ -534,7 +499,7 @@ test('openFilePreviewModal handles text, target line scrolling, binary files, an
 const status = browserStatus();
 const skipChromium = status.installed ? false : `Chromium is not installed in ${status.path}`;
 
-test('streamed email stays read-only through a closed fence and keyless Markdown is not quotable', { skip: skipChromium }, async (t: TestContext) => {
+test('email fences render as plain code blocks without form inputs and keyless Markdown is not quotable', { skip: skipChromium }, async (t: TestContext) => {
   const browser = await launchBrowser();
   t.after(closeBrowser);
   const context = await newIsolatedContext(browser);
@@ -559,23 +524,16 @@ test('streamed email stays read-only through a closed fence and keyless Markdown
   const result = await page.evaluate(() => {
     const render = (window as any).EmailTest.threadMarkdown;
     const fence = '```email\nTo: test@example.com\nSubject: Proof\n\nHello.\n```';
-    const open = render(fence.slice(0, -3), { streaming: true, key: 'reply' }) as HTMLElement;
-    const closed = render(fence, { streaming: true, key: 'reply' }) as HTMLElement;
-    const finished = render(fence, { streaming: false, key: 'reply' }) as HTMLElement;
-    const controls = (el: HTMLElement) => [...el.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('.wt-md-email-input, .wt-md-email-body')].map((input) => input.disabled);
+    const closed = render(fence, { streaming: false, key: 'reply' }) as HTMLElement;
     return {
-      open: controls(open),
-      closed: controls(closed),
-      finished: controls(finished),
-      send: [open, closed, finished].map((el) => el.querySelector<HTMLButtonElement>('.wt-md-email-send')?.disabled),
+      codeLang: closed.querySelector('.wt-md-code-lang')?.textContent,
+      forms: closed.querySelectorAll('input, textarea, .wt-md-email').length,
       keyed: closed.getAttribute('data-response-message-id'),
       keyless: render('Not a reply').hasAttribute('data-response-message-id'),
     };
   });
-  assert.deepEqual(result.open, [true, true, true, true, true]);
-  assert.deepEqual(result.closed, [true, true, true, true, true]);
-  assert.deepEqual(result.finished, [false, false, false, false, false]);
-  assert.deepEqual(result.send, [true, true, false]);
+  assert.equal(result.codeLang, 'email');
+  assert.equal(result.forms, 0);
   assert.equal(result.keyed, 'reply');
   assert.equal(result.keyless, false);
 });
@@ -810,8 +768,8 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
       inlineMathCount: el.querySelectorAll('.wt-math-inline math').length,
       blockMathCount: el.querySelectorAll('.wt-math-block math').length,
       currencyPreserved: (el.textContent ?? '').includes('Price is $100'),
-      emailTo: el.querySelector<HTMLInputElement>('.wt-md-email-input')?.value ?? '',
-      emailSendLabel: el.querySelector('.wt-md-email-send')?.textContent ?? '',
+      emailCodeLang: el.querySelector('.wt-md-code-lang')?.textContent ?? '',
+      emailFormCount: el.querySelectorAll('.wt-md-email').length,
       metricValue: el.querySelector('.jr-metric-value')?.textContent ?? '',
       openedRefs,
       userHasCodeCopy: Boolean(userEl.querySelector('.wt-md-code-copy')),
@@ -834,8 +792,8 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
   assert.equal(result.inlineMathCount, 1);
   assert.equal(result.blockMathCount, 1);
   assert.equal(result.currencyPreserved, true);
-  assert.equal(result.emailTo, 'nik@factory.ai');
-  assert.equal(result.emailSendLabel, 'Send');
+  assert.equal(result.emailCodeLang, 'email');
+  assert.equal(result.emailFormCount, 0);
   assert.equal(result.metricValue, '100%');
   assert.deepEqual(result.openedRefs, [{ path: 'src/client/ui/dom.ts', line: 12, endLine: 14 }, { path: 'package.json' }]);
   assert.equal(result.userHasCodeCopy, true);

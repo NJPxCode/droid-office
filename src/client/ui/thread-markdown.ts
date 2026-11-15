@@ -6,17 +6,16 @@ import { localImagePath } from '../../shared/worker-thread';
 import { h, openModal } from './dom';
 import { extractJsonRenderBlocks, renderJsonWidget } from './json-render';
 import { windowHeader } from './kit';
-import { renderMdCodeBlock, renderSuggestionBlock } from './thread-md-code';
-import { parseEmailDraft, renderEmailDraft } from './thread-md-email';
+import { renderMdCodeBlock } from './thread-md-code';
 import { type MdIconName, mdIcon, wireIconCopy } from './thread-md-icons';
 import { openImageLightbox } from './thread-md-lightbox';
 import { QUOTABLE_ATTR } from './thread-md-quote';
 
-// Rich Markdown renderer for Thread view, after Factory's chat Markdown: code blocks with copy and
-// "Show more", tables with Expand and Copy, colored alerts, Mermaid cards with a pan and zoom
-// viewer, an image lightbox, offline KaTeX MathML, editable email drafts, <json-render> widgets,
-// clickable inline-code file paths, and sanitized user-message Markdown. Free of window/document calls at import
-// time so Node unit tests import pure tokenizers and parsers directly.
+// Rich Markdown renderer for Thread view: code blocks with copy and "Show more", tables with
+// Expand and Copy, colored alerts, Mermaid cards with a pan and zoom viewer, an image lightbox,
+// offline KaTeX MathML, <json-render> widgets, clickable inline-code file paths, and sanitized
+// user-message Markdown. Free of window/document calls at import time so Node unit tests import
+// pure tokenizers and parsers directly.
 
 const md = new Marked({ gfm: true, breaks: true });
 
@@ -345,11 +344,6 @@ export function renderMathToMathMl(tex: string, displayMode: boolean): string | 
 }
 
 // ------------------------------------------------------------------------------------------------
-// Email draft blocks (```email): parsing and the editable card live in thread-md-email.ts
-
-export { buildMailtoHref, type EmailDraft, parseEmailDraft } from './thread-md-email';
-
-// ------------------------------------------------------------------------------------------------
 // Workspace path:line link parser and DOM linkifier
 
 export interface WorkspacePathRef {
@@ -668,7 +662,7 @@ function wireFileLink(el: HTMLElement, label: string, ref: WorkspacePathRef, onO
 /** Inline code that names a workspace file becomes Factory's file link chip. */
 function linkifyCodePaths(root: HTMLElement, onOpenPath: (ref: WorkspacePathRef) => void): void {
   for (const code of [...root.querySelectorAll('code')]) {
-    if (code.closest('pre, .wt-md-code, .jr-root, .wt-md-email') || code.childElementCount > 0) continue;
+    if (code.closest('pre, .wt-md-code, .jr-root') || code.childElementCount > 0) continue;
     const raw = code.textContent ?? '';
     const ref = codePathRef(raw);
     if (ref) wireFileLink(code, raw.trim(), ref, onOpenPath);
@@ -844,12 +838,12 @@ export function fenceClosed(raw: string): boolean {
 }
 
 /**
- * Replaces `pre` blocks with Factory's code blocks, and (for rich replies) ```mermaid, ```email,
- * ```suggestion and ```math fences with their cards. `closed` is each fence's {@link fenceClosed}
- * in document order, matched to the `pre` elements only when the counts agree.
+ * Replaces `pre` blocks with code blocks, and (for rich replies) ```mermaid and ```math fences
+ * with their rendered views. `closed` is each fence's {@link fenceClosed} in document order,
+ * matched to the `pre` elements only when the counts agree.
  */
 function upgradeFencedBlocks(root: HTMLElement, richBlocks: boolean, closed: readonly boolean[] | undefined, streaming: boolean): void {
-  const pres = [...root.querySelectorAll('pre')].filter((pre) => !pre.closest('.wt-md-code, .jr-root, .wt-md-email, .wt-mermaid-host'));
+  const pres = [...root.querySelectorAll('pre')].filter((pre) => !pre.closest('.wt-md-code, .jr-root, .wt-mermaid-host'));
   const matched = closed?.length === pres.length;
   pres.forEach((pre, i) => {
     const complete = matched && closed ? closed[i] : true;
@@ -859,11 +853,6 @@ function upgradeFencedBlocks(root: HTMLElement, richBlocks: boolean, closed: rea
     const lower = lang.toLowerCase();
 
     if (richBlocks && lower === 'mermaid') return pre.replaceWith(renderThreadMermaid(rawText, { complete: !streaming || complete }));
-    if (richBlocks && lower === 'email') {
-      const draft = parseEmailDraft(rawText);
-      if (draft) return pre.replaceWith(renderEmailDraft(draft, { streaming }));
-    }
-    if (richBlocks && lower === 'suggestion') return pre.replaceWith(renderSuggestionBlock(rawText));
     if (richBlocks && lower === 'math' && complete) {
       const math = displayMath(rawText);
       if (math) return pre.replaceWith(math);

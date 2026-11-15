@@ -1,6 +1,6 @@
 import { highlightCodeBlock } from './code-highlight';
 import { h } from './dom';
-import { mdIcon, wireIconCopy } from './thread-md-icons';
+import { wireIconCopy } from './thread-md-icons';
 
 // Factory's chat code block: language header with an icon copy button, wrapped (not scrolled)
 // lines, and a "Show more" footer once a block passes ten lines.
@@ -42,14 +42,4 @@ export function renderMdCodeBlock(code: string, lang?: string): HTMLElement {
     block.append(h('div.wt-md-code-foot', { 'data-testid': 'code-block-footer' }, toggle));
   }
   return block;
-}
-
-/** A GitHub ```suggestion fence as Factory's "Suggested change" card. */
-export function renderSuggestionBlock(code: string): HTMLElement {
-  const lines = code.replace(/\n$/, '');
-  const head = h('div.wt-md-suggest-head', {}, mdIcon('fileDiff', 12), h('span', {}, 'Suggested change'));
-  const body = lines.trim()
-    ? h('div.wt-md-suggest-lines', {}, ...lines.split('\n').map((line) => h('div.wt-md-suggest-line', {}, h('span.wt-md-suggest-mark', { 'aria-hidden': 'true' }, '+'), h('span', {}, line || ' '))))
-    : h('div.wt-md-suggest-empty', {}, 'Deletes the lines this comment is on');
-  return h('div.wt-md-suggest', {}, head, body);
 }

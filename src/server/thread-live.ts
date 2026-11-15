@@ -1,19 +1,7 @@
 import { stat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { WorkerAsk, WorkerStatus } from '../shared/protocol.js';
-import {
-  liveStatus,
-  readLiveScreen,
-  readScreenStream,
-  readScreenToolOutput,
-  sameCommand,
-  textSignature,
-  type ThreadLive,
-  type ThreadLiveTool,
-  type ThreadLiveWorking,
-  type ThreadSessionSettings,
-  type ThreadTokens,
-} from '../shared/thread-live.js';
+import { liveStatus, readLiveScreen, readScreenStream, readScreenToolOutput, sameCommand, textSignature, type ThreadLive, type ThreadLiveTool, type ThreadLiveWorking, type ThreadSessionSettings } from '../shared/thread-live.js';
 import type { ThreadEntry } from '../shared/worker-thread.js';
 import type { ActiveToolCall } from './worker-queue.js';
 
@@ -44,17 +32,9 @@ const OUTPUT_LINES = 40;
 /** Hooks name the compaction they wait on (worker-runtime/hooks.ts COMPACTING). */
 const COMPACTING = /compacting/i;
 
-const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 const str = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
 const object = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 const leaf = (name = '') => name.split(/[.:/]/).at(-1)?.toLowerCase() ?? '';
-
-function tokens(value: unknown): ThreadTokens | undefined {
-  const t = object(value);
-  if (!['inputTokens', 'outputTokens', 'cacheCreationTokens', 'cacheReadTokens', 'thinkingTokens', 'factoryCredits'].some((key) => typeof t[key] === 'number' && Number.isFinite(t[key]))) return undefined;
-  const credits = typeof t.factoryCredits === 'number' && Number.isFinite(t.factoryCredits) ? { credits: t.factoryCredits } : {};
-  return { input: num(t.inputTokens), output: num(t.outputTokens), cacheCreation: num(t.cacheCreationTokens), cacheRead: num(t.cacheReadTokens), thinking: num(t.thinkingTokens), ...credits };
-}
 
 /** A session's `<id>.settings.json`, as Droid 1.12 writes it beside the conversation file. */
 export function readSessionSettings(raw: unknown): ThreadSessionSettings {
@@ -64,17 +44,6 @@ export function readSessionSettings(raw: unknown): ThreadSessionSettings {
     const value = str(s[key]);
     if (value) out[key] = value;
   }
-  const total = tokens(s.tokenUsage);
-  if (total) out.tokens = total;
-  const inclusive = tokens(s.inclusiveTokenUsage);
-  if (inclusive) out.inclusiveTokens = inclusive;
-  const last = tokens(s.lastCallTokenUsage);
-  if (last) {
-    out.lastCall = last;
-    const used = last.input + last.cacheRead + last.cacheCreation + last.output;
-    if (used > 0) out.context = { used };
-  }
-  if (typeof s.assistantActiveTimeMs === 'number' && Number.isFinite(s.assistantActiveTimeMs) && s.assistantActiveTimeMs >= 0) out.activeMs = s.assistantActiveTimeMs;
   return out;
 }
 
@@ -159,13 +128,10 @@ export class ThreadLiveTracker {
     if (!stream) state.stream = undefined;
 
     const settings = await this.settings(state, file, now);
-    const merged: ThreadSessionSettings | undefined = settings || screen?.contextPercent !== undefined || screen?.model ? { ...settings } : undefined;
+    const merged: ThreadSessionSettings | undefined = settings || screen?.model ? { ...settings } : undefined;
     if (merged) {
       const name = merged.model ? inputs.modelName?.(merged.model) : undefined;
       if (name ?? screen?.model) merged.modelName = name ?? screen?.model;
-      if (screen?.contextPercent !== undefined && merged.context) {
-        merged.context = { ...merged.context, percent: screen.contextPercent };
-      }
     }
 
     const body: Omit<ThreadLive, 'rev' | 'at'> = {

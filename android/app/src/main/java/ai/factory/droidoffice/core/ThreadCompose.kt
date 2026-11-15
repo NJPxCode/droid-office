@@ -57,19 +57,6 @@ object ThreadCompose {
         return listOfNotNull(mode, model, effort?.replaceFirstChar { it.uppercase() }).joinToString(" · ")
     }
 
-    /** Context-window counts in the terminal footer's compact form: 900, 9.9k, 12k, 1.2M. */
-    fun compactCount(n: Long): String = when {
-        n < 1_000 -> n.toString()
-        n < 1_000_000 -> compact(n, 1_000L, "k")
-        else -> compact(n, 1_000_000L, "M")
-    }
-
-    private fun compact(n: Long, unit: Long, suffix: String): String {
-        val v = n / unit.toDouble()
-        return if (v < 10 && n % unit != 0L) "%.1f$suffix".format(Locale.US, v)
-        else "%,d$suffix".format(Locale.US, Math.round(v))
-    }
-
     /**
      * The draft as it is sent: each paste's first token replaced by its text, in one pass over [value]
      * so a paste whose text happens to contain another paste's token stays as pasted.

@@ -90,7 +90,7 @@ private fun QueueGroup(
             if (onAction != null) {
                 if (item.group == DroidQueue.Group.Queued) QueueAction(OfficeIcons.ArrowUp, "Send now", Tags.Worker.composerQueuedSendNow(n), connected) { onAction("promote", item) }
                 QueueAction(OfficeIcons.Trash, "Remove from queue", Tags.Worker.composerQueuedRemove(n), connected) { onAction("delete", item) }
-                QueueAction(OfficeIcons.SquarePen, "Edit message", Tags.Worker.composerQueuedEdit(n), connected) { onAction("edit", item) }
+                if (!item.preview) QueueAction(OfficeIcons.SquarePen, "Edit message", Tags.Worker.composerQueuedEdit(n), connected) { onAction("edit", item) }
             }
         }
     }

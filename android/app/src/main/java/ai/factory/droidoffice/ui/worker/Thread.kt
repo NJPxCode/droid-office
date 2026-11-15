@@ -228,7 +228,7 @@ internal fun Thread(
             }
         }
     }
-    LaunchedEffect(feed, connected, visible, polls) {
+    LaunchedEffect(feed, w.sessionId, connected, visible, polls) {
         if (!connected) {
             feed.disconnected()
             state = feed.state
@@ -237,7 +237,7 @@ internal fun Thread(
         if (!visible) return@LaunchedEffect
         while (isActive) {
             val now = System.currentTimeMillis()
-            feed.latest(now)?.let { req -> if (!connection.send(ClientMsg.threadRead(w.id, req))) feed.unsent(req) }
+            feed.latest(now, w.sessionId)?.let { req -> if (!connection.send(ClientMsg.threadRead(w.id, req))) feed.unsent(req) }
             feed.tick(now)
             state = feed.state
             delay(if (feed.state.phase == ThreadPhase.Loading) LOADING_POLL_MS else RECONCILE_POLL_MS)
@@ -303,11 +303,19 @@ internal fun Thread(
     LaunchedEffect(matches.size) {
         if (matches.isEmpty()) searchActive = 0 else searchActive = searchActive.coerceIn(0, matches.lastIndex)
     }
-    LaunchedEffect(search, matches.getOrNull(searchActive)?.rowId) {
+    LaunchedEffect(search, searchActive, matches.getOrNull(searchActive)?.rowId) {
         if (!search) return@LaunchedEffect
         val row = matches.getOrNull(searchActive)?.rowId ?: return@LaunchedEffect
         val at = rows.indexOfFirst { it.id == row }
-        if (at >= 0) list.animateScrollToItem(at + 1)
+        if (at >= 0) {
+            follow = false
+            autoScrolling = true
+            try {
+                list.animateScrollToItem(at + 1)
+            } finally {
+                autoScrolling = false
+            }
+        }
     }
     var rewindTarget by remember(feed) { mutableStateOf<ThreadRow.Message?>(null) }
     var rewindSent by remember(feed) { mutableStateOf(false) }

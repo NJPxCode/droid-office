@@ -97,14 +97,6 @@ class ThreadQueuePanelTest {
         assertEquals(6, panel.total)
         assertTrue(panel.review)
     }
-
-    @Test fun compactsContextCounts() {
-        assertEquals("900", ThreadCompose.compactCount(900))
-        assertEquals("1k", ThreadCompose.compactCount(1_000))
-        assertEquals("1.1k", ThreadCompose.compactCount(1_100))
-        assertEquals("12k", ThreadCompose.compactCount(12_000))
-        assertEquals("1.2M", ThreadCompose.compactCount(1_200_000))
-    }
 }
 class ThreadSearchTest {
     private val rows = listOf(

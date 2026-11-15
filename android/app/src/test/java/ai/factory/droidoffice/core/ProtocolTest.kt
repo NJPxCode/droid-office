@@ -51,14 +51,14 @@ class ProtocolTest {
     @Test
     fun readsThreadLiveChildSnapshotsAndRewindResults() {
         val live = Protocol.decode(
-            """{"t":"thread.live","workerId":"w1","sessionId":"s1","live":{"rev":4,"at":1000,"status":"responding","working":"streaming_assistant_message","after":"a1:text","stream":{"kind":"text","text":"Working","since":900},"tools":[{"id":"tool:c1","name":"Execute","startedAt":800,"phase":"running","output":"tick"}],"settings":{"model":"claude-haiku-5-5","lastCall":{"input":10,"output":2},"context":{"used":12,"percent":5}},"rewind":{"entryId":"u1:text","since":700}}}""",
+            """{"t":"thread.live","workerId":"w1","sessionId":"s1","live":{"rev":4,"at":1000,"status":"responding","working":"streaming_assistant_message","after":"a1:text","stream":{"kind":"text","text":"Working","since":900},"tools":[{"id":"tool:c1","name":"Execute","startedAt":800,"phase":"running","output":"tick"}],"settings":{"model":"claude-haiku-5-5","interactionMode":"spec"},"rewind":{"entryId":"u1:text","since":700}}}""",
         ) as ServerMsg.ThreadLiveUpdate
         assertEquals("w1", live.workerId)
         assertEquals(4L, live.live.rev)
         assertEquals(ThreadLive.Status.Responding, live.live.status)
         assertEquals("Working", live.live.stream?.text)
         assertEquals("tick", live.live.tools.single().output)
-        assertEquals(10L, live.live.settings?.lastCall?.input)
+        assertEquals("spec", live.live.settings?.interactionMode)
         assertEquals("u1:text", live.live.rewind?.entryId)
 
         val child = Protocol.decode("""{"t":"thread.snapshot","workerId":"w1","request":"push","child":"s2","entries":[],"hasMore":false}""") as ServerMsg.ThreadSnapshot

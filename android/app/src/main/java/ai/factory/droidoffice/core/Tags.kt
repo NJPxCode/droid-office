@@ -488,7 +488,7 @@ object Tags {
         const val THREAD_TABLE = "worker.thread.table"
         /** Copies a fenced code block's source to the clipboard. */
         const val THREAD_CODE_COPY = "worker.thread.code.copy"
-        /** A structured `email` draft card in a message, and its copy/mail actions. */
+        /** Reserved: former `email` draft card identifiers (```email fences render as ordinary code blocks). */
         const val THREAD_EMAIL = "worker.thread.email"
         const val THREAD_EMAIL_COPY_BODY = "worker.thread.email.copy_body"
         const val THREAD_EMAIL_COPY_ALL = "worker.thread.email.copy_all"
@@ -594,9 +594,8 @@ object Tags {
         const val THREAD_SEARCH_CLOSE = "worker.thread.search.close"
         /** The compaction divider ("Compacted 120k tokens"). */
         const val THREAD_COMPACTION = "worker.thread.compaction"
-        /** The composer's session settings chip (model, effort and Spec) and its context meter. */
+        /** The composer's session settings chip (model, effort and Spec). */
         const val COMPOSER_SETTINGS = "composer.settings"
-        const val COMPOSER_CONTEXT = "composer.context"
         /** Factory's queued messages panel at the top of the composer, and its Clear all. */
         const val COMPOSER_QUEUE = "composer.queue"
         const val COMPOSER_QUEUE_CLEAR = "composer.queue.clear"
@@ -624,9 +623,6 @@ object Tags {
         const val THREAD_IMAGE_DOWNLOAD = "worker.thread.image_viewer.download"
         const val THREAD_DIAGRAM_DOWNLOAD = "worker.thread.diagram.download"
         const val THREAD_DIAGRAM_SHARE = "worker.thread.diagram.share"
-        const val THREAD_EMAIL_REVERT = "worker.thread.email.revert"
-        const val THREAD_EMAIL_TARGET = "worker.thread.email.target"
-        fun threadEmailField(field: String) = "worker.thread.email.$field"
 
         /** A quick key, by what TalkBack calls it: "Shift Tab" is `key.shift_tab`. */
         fun key(spoken: String) = "key." + spoken.lowercase().replace(' ', '_')

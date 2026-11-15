@@ -181,7 +181,12 @@ class ThreadFeed(val workerId: String, private val prefix: String = UUID.randomU
     private fun nextId() = "$prefix-${++count}"
 
     /** A new request for the latest page, or null while one is still out, or once the office has shown it can't answer. */
-    fun latest(now: Long): String? {
+    fun latest(now: Long, sessionId: String? = state.sessionId): String? {
+        if (sessionId != null && sessionId != state.sessionId) {
+            latest = null
+            askedSince = null
+            if (state.phase == ThreadPhase.Unavailable) state = state.copy(phase = ThreadPhase.Loading)
+        }
         if (state.phase == ThreadPhase.Unavailable) return null
         latest?.let { if (now - it.at < RESEND_MS) return null }
         val id = nextId()

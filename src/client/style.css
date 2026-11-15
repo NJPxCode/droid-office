@@ -2901,15 +2901,6 @@ math { font-family: 'STIX Two Math', math; }
 .wt-md-code-more { margin: 2px 0; padding: 2px 4px; border: 0; border-radius: 4px; background: none; color: var(--text-secondary); font: 400 12px/1.5 var(--font-sans); letter-spacing: inherit; cursor: pointer; }
 .wt-md-code-more:is(:hover, :focus-visible) { color: var(--text); }
 
-/* ```suggestion fences */
-.wt-md-suggest { margin: 8px 0; border: 1px solid var(--border-strong); border-radius: 4px; overflow: hidden; }
-.wt-md-suggest-head { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--border-strong); background: var(--surface); color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
-.wt-md-suggest-head svg { color: var(--text-tertiary); }
-.wt-md-suggest-lines { padding-block: 4px; background: #0c150c; font: 400 12px/1.725 var(--font-mono); letter-spacing: 0; }
-.wt-md-suggest-line { display: flex; gap: 8px; padding-inline: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.wt-md-suggest-mark { flex: none; color: var(--wt-add, #6fae5d); user-select: none; }
-.wt-md-suggest-empty { padding: 8px; background: var(--surface); color: var(--text-tertiary); font-size: 12px; }
-
 /* GitHub alerts in Factory's colors: a 4px bar and an icon title, no fill. */
 .md.wt-md blockquote.wt-md-alert { --alert: var(--border-strong); margin: 0 0 16px; padding: 8px 16px; border-left: 4px solid var(--alert); border-radius: 0; background: none; color: var(--text); }
 .md.wt-md blockquote.wt-md-alert:is(.wt-md-alert-note, .wt-md-alert-tip) { --alert: #b5ada7; }
@@ -2981,38 +2972,6 @@ math { font-family: 'STIX Two Math', math; }
 .wt-quote-pill.above { transform: translate(-50%, -100%); }
 .wt-quote-btn { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 6px; border: 0; border-radius: 3px; background: none; color: #b5ada7; font: 500 12px/1 var(--font-sans); white-space: nowrap; cursor: pointer; }
 .wt-quote-btn:is(:hover, :focus-visible) { background: #151311; color: #fdfcfb; }
-
-/* Email drafts: an editable card with Copy, Revert and a split Send. */
-.wt-md-email { margin: 12px 0; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); }
-.wt-md-email-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 6px 6px 12px; border-bottom: 1px solid var(--border-strong); }
-.wt-md-email-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; font-weight: 500; }
-.wt-md-email-actions { flex: none; display: flex; align-items: center; gap: 4px; }
-.wt-md-email-btn { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: var(--text-secondary); font: 500 12px/1 var(--font-sans); letter-spacing: inherit; cursor: pointer; }
-.wt-md-email-btn:is(:hover, :focus-visible) { background: var(--surface-hover); color: var(--text); }
-.wt-md-email-btn[hidden] { display: none; }
-.wt-md-email-split { position: relative; display: inline-flex; }
-.wt-md-email-split > :is(.wt-md-email-send, .wt-md-email-send-more) { display: inline-flex; align-items: center; gap: 4px; height: 24px; border: 0; background: var(--text); color: var(--bg); font: 500 12px/1 var(--font-sans); letter-spacing: inherit; cursor: pointer; }
-.wt-md-email-send { padding: 0 8px; border-radius: 4px 0 0 4px; }
-.wt-md-email-split > .wt-md-email-send-more { padding: 0 4px; border-left: 1px solid rgb(0 0 0 / 20%); border-radius: 0 4px 4px 0; }
-.wt-md-email-split > :disabled { opacity: .5; cursor: default; }
-.wt-md-email-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 5; min-width: 220px; padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); box-shadow: 0 8px 12px rgb(0 0 0 / 50%); }
-.wt-md-email-menu[hidden] { display: none; }
-.wt-md-email-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 6px 8px; border: 0; border-radius: 4px; background: none; text-align: left; cursor: pointer; }
-.wt-md-email-item:is(:hover, :focus-visible) { background: var(--surface-hover); }
-.wt-md-email-item-label { color: var(--text); font-size: 13px; }
-.wt-md-email-item-desc { color: var(--text-tertiary); font-size: 12px; }
-.wt-md-email-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 12px; border-bottom: 1px solid var(--border-strong); }
-.wt-md-email-row[hidden] { display: none; }
-.wt-md-email-label { flex: 0 0 56px; color: var(--text-tertiary); font-size: 13px; }
-.wt-md-email-input, .wt-md-email-body { min-width: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text); font: 400 13px/1.725 var(--font-sans); letter-spacing: inherit; outline: none; }
-.wt-md-email-input { flex: 1; height: 26px; padding: 0 6px; }
-.wt-md-email-input:hover, .wt-md-email-body:hover { border-color: var(--wt-input-hover, #564e4a); }
-.wt-md-email-input:focus, .wt-md-email-body:focus { border-color: var(--wt-input-focus, #80756f); background: var(--bg); }
-.wt-md-email-cc { flex: none; padding: 2px 4px; border: 0; border-radius: 4px; background: none; color: var(--text-tertiary); font: 400 12px/1.5 var(--font-sans); cursor: pointer; }
-.wt-md-email-cc:is(:hover, :focus-visible) { color: var(--text); }
-.wt-md-email-cc[hidden] { display: none; }
-.wt-md-email-message { padding: 6px; }
-.wt-md-email-body { display: block; width: 100%; min-height: 64px; padding: 4px 6px; resize: none; field-sizing: content; }
 
 @media (prefers-reduced-motion: reduce) {
   .md.wt-md > [data-entering], .md.wt-md > [data-entering] :is(li, td, th), .wt-quote-pill { animation: none; }

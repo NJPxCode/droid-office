@@ -18,7 +18,6 @@ export interface LiveSettings {
   modelName?: string;
   reasoningEffort?: string;
   interactionMode?: string;
-  context?: { used: number; percent?: number; limit?: number };
 }
 
 export interface LiveView {
@@ -45,14 +44,11 @@ const obj = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? (
 function settingsOf(raw: unknown): LiveSettings | undefined {
   const s = obj(raw);
   if (!s) return undefined;
-  const context = obj(s.context);
-  const used = num(context?.used);
   return {
     model: str(s.model),
     modelName: str(s.modelName),
     reasoningEffort: str(s.reasoningEffort),
     interactionMode: str(s.interactionMode),
-    ...(used !== undefined ? { context: { used, percent: num(context?.percent), limit: num(context?.limit) } } : {}),
   };
 }
 

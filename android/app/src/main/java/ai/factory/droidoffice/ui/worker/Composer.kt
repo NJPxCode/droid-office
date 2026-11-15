@@ -42,7 +42,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -99,7 +98,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.factory.droidoffice.core.ClientMsg
-import ai.factory.droidoffice.core.DroidQueue
 import ai.factory.droidoffice.core.ORCHESTRATOR_ID
 import ai.factory.droidoffice.core.SlashCommands
 import ai.factory.droidoffice.core.Tags
@@ -401,9 +399,13 @@ fun Composer(
                         panel = queuePanel,
                         connected = connected,
                         onClear = {
-                            val cleared = graph.connection.send(ClientMsg.termInput(w.id, DroidQueue.CLEAR_INPUT)) &&
-                                graph.connection.send(ClientMsg.termInput(w.id, DroidQueue.CLEAR))
-                            if (!cleared) scope.launch { snackbar.showSnackbar("Couldn't reach the office. The queue is unchanged.") }
+                            val cleared = graph.connection.send(ClientMsg.queueAction(w.id, "clear"))
+                            if (cleared) {
+                                queueState?.clear()
+                                onQueued()
+                            } else {
+                                scope.launch { snackbar.showSnackbar("Couldn't reach the office. The queue is unchanged.") }
+                            }
                         },
                         onAction = onQueueAction,
                     )
@@ -444,23 +446,6 @@ fun Composer(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f).padding(horizontal = 4.dp).tagged(Tags.Worker.COMPOSER_SETTINGS),
                     )
-                    settings?.context?.let { usage ->
-                        val percent = usage.percent ?: usage.limit?.let { usage.used * 100.0 / it }
-                        Row(Modifier.padding(horizontal = 4.dp).tagged(Tags.Worker.COMPOSER_CONTEXT), verticalAlignment = Alignment.CenterVertically) {
-                            if (percent != null) CircularProgressIndicator(
-                                progress = { (percent / 100).toFloat().coerceIn(0f, 1f) },
-                                modifier = Modifier.size(13.dp),
-                                color = ThreadPalette.Accent,
-                                trackColor = ThreadPalette.Border,
-                                strokeWidth = 1.5.dp,
-                            )
-                            Text(
-                                usage.limit?.let { "${ThreadCompose.compactCount(usage.used)}/${ThreadCompose.compactCount(it)}" } ?: ThreadCompose.compactCount(usage.used),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, color = ThreadPalette.TextTertiary),
-                                modifier = Modifier.padding(start = 4.dp),
-                            )
-                        }
-                    }
                     if (queueable) {
                         Text(
                             "Queue",

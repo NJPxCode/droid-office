@@ -6,7 +6,6 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.doubleOrNull
 
 /**
  * What a worker's turn is doing right now, beyond what its session file says yet (`ThreadLive` in
@@ -106,25 +105,7 @@ data class ThreadLive(
     }
 }
 
-data class ThreadTokens(val input: Long = 0, val output: Long = 0, val cacheCreation: Long = 0, val cacheRead: Long = 0, val thinking: Long = 0, val credits: Double? = null) {
-    companion object {
-        fun of(e: JsonElement?): ThreadTokens? {
-            val o = e as? JsonObject ?: return null
-            val input = o.long("input")
-            val output = o.long("output")
-            val cacheCreation = o.long("cacheCreation")
-            val cacheRead = o.long("cacheRead")
-            val thinking = o.long("thinking")
-            val credits = (o["credits"] as? JsonPrimitive)?.doubleOrNull?.takeIf { it.isFinite() }
-            if (input == null && output == null && cacheCreation == null && cacheRead == null && thinking == null && credits == null) return null
-            return ThreadTokens(
-                input ?: 0, output ?: 0, cacheCreation ?: 0, cacheRead ?: 0, thinking ?: 0, credits,
-            )
-        }
-    }
-}
-
-/** A session's model, effort, mode, autonomy and context use, from its `settings.json` next to the session file. */
+/** A session's model, effort, mode and autonomy, from its `settings.json` next to the session file. */
 data class ThreadSessionSettings(
     val model: String? = null,
     val modelName: String? = null,
@@ -134,15 +115,7 @@ data class ThreadSessionSettings(
     /** `off`, `low`, `medium` or `high`. */
     val autonomyLevel: String? = null,
     val autonomyMode: String? = null,
-    val tokens: ThreadTokens? = null,
-    val inclusiveTokens: ThreadTokens? = null,
-    val lastCall: ThreadTokens? = null,
-    val context: Context? = null,
-    val activeMs: Long? = null,
 ) {
-    /** Tokens the next call starts from; [percent] as the terminal's footer shows it, and the window it implies. */
-    data class Context(val used: Long, val percent: Double? = null, val limit: Long? = null)
-
     companion object {
         fun of(e: JsonElement?): ThreadSessionSettings? {
             val o = e as? JsonObject ?: return null
@@ -153,14 +126,6 @@ data class ThreadSessionSettings(
                 interactionMode = o.str("interactionMode"),
                 autonomyLevel = o.str("autonomyLevel"),
                 autonomyMode = o.str("autonomyMode"),
-                tokens = ThreadTokens.of(o["tokens"]),
-                inclusiveTokens = ThreadTokens.of(o["inclusiveTokens"]),
-                lastCall = ThreadTokens.of(o["lastCall"]),
-                context = (o["context"] as? JsonObject)?.let { c ->
-                    val used = c.long("used") ?: return@let null
-                    Context(used, (c["percent"] as? JsonPrimitive)?.doubleOrNull?.takeIf { it in 0.0..100.0 }, c.long("limit")?.takeIf { it > 0 })
-                },
-                activeMs = o.long("activeMs"),
             )
         }
     }

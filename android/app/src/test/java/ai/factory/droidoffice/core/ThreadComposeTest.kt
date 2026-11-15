@@ -40,20 +40,6 @@ class ThreadComposeTest {
     }
 
     @Test
-    fun compactCountsKeepUnitThresholdsRoundingAndGrouping() {
-        val cases = listOf(
-            -1L to "-1", 0L to "0", 999L to "999",
-            1_000L to "1k", 1_001L to "1.0k", 1_250L to "1.3k",
-            9_999L to "10.0k", 10_000L to "10k", 10_500L to "11k",
-            999_999L to "1,000k", 1_000_000L to "1M",
-            1_250_000L to "1.3M", 9_999_999L to "10.0M",
-            10_000_000L to "10M", 10_500_000L to "11M",
-            1_000_000_000L to "1,000M",
-        )
-        for ((n, expected) in cases) assertEquals("count $n", expected, ThreadCompose.compactCount(n))
-    }
-
-    @Test
     fun aPasteBecomesAChipOnlyPastTheCharacterOrLineThreshold() {
         assertFalse(isLargePaste("x".repeat(PASTE_CHIP_CHARS)))
         assertTrue(isLargePaste("x".repeat(PASTE_CHIP_CHARS + 1)))

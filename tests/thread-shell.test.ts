@@ -68,7 +68,7 @@ test('thread.live parsing replaces only newer views and reads settings and timin
       after: 'a1',
       stream: { kind: 'text', text: 'draft', since: 8000 },
       tools: [{ id: 'tool:1', name: 'Execute', startedAt: 7000, phase: 'running', output: 'ok' }],
-      settings: { modelName: 'Opus 5.5', reasoningEffort: 'high', autonomyLevel: 'medium', interactionMode: 'spec', context: { used: 100, percent: 50 } },
+      settings: { modelName: 'Opus 5.5', reasoningEffort: 'high', autonomyLevel: 'medium', interactionMode: 'spec' },
     },
   };
   const view = liveFrom(msg, 'w1', 's1', undefined, 10_000);

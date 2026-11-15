@@ -324,8 +324,8 @@ export class WorkerThreadReader {
     return { sessionId: child, cwd: source.cwd, transcript: file, ...(source.drops ? { drops: source.drops } : {}) };
   }
 
-  /** The menu number and preview Droid shows for a user text entry's rewind point. */
-  async rewindPoint(source: ThreadSession, entryId: string): Promise<{ number: number; preview: string } | undefined> {
+  /** The menu number, single-line preview and full prompt text for a user text entry's rewind point. */
+  async rewindPoint(source: ThreadSession, entryId: string): Promise<{ number: number; preview: string; text: string } | undefined> {
     const selected = /^(.*):(?:text|\d+)$/.exec(entryId);
     if (!selected || entryId.length > 170) return undefined;
     const recordId = selected[1];
@@ -333,7 +333,7 @@ export class WorkerThreadReader {
     if (!file) return undefined;
     const raw = await readFile(file, 'utf8').catch(() => undefined);
     if (!raw) return undefined;
-    let found: { number: number; preview: string } | undefined;
+    let found: { number: number; preview: string; text: string } | undefined;
     for (const line of raw.split('\n')) {
       if (!line.includes(recordId)) continue;
       let row: Record<string, unknown>;
@@ -348,10 +348,13 @@ export class WorkerThreadReader {
       if (message.visibility !== undefined && message.visibility !== 'both' && message.visibility !== 'user_only') return undefined;
       const suffix = entryId.slice(recordId.length + 1);
       if (suffix === 'text' ? typeof message.content !== 'string' : object(Array.isArray(message.content) ? message.content[Number(suffix)] : undefined).type !== 'text') return undefined;
-      const preview = clean(contentText(message.content), 1000).replace(/\s+/g, ' ').trim();
+      const full = clean(contentText(message.content), FIELD_CHARS, true);
+      const sent = await promptPictures(full, source.drops);
+      const text = sent ? sent.text : full;
+      const preview = clean(full, 1000).replace(/\s+/g, ' ').trim();
       if (!preview) return undefined;
       if (typeof row.seq !== 'number' || !Number.isSafeInteger(row.seq) || row.seq < 0 || found) return undefined;
-      found = { number: row.seq + 1, preview };
+      found = { number: row.seq + 1, preview, text };
     }
     return found;
   }

@@ -25,15 +25,6 @@ export interface ThreadLiveTool {
   more?: number;
 }
 
-export interface ThreadTokens {
-  input: number;
-  output: number;
-  cacheCreation: number;
-  cacheRead: number;
-  thinking: number;
-  credits?: number;
-}
-
 export interface ThreadSessionSettings {
   model?: string;
   modelName?: string;
@@ -41,11 +32,6 @@ export interface ThreadSessionSettings {
   interactionMode?: string;
   autonomyLevel?: string;
   autonomyMode?: string;
-  tokens?: ThreadTokens;
-  inclusiveTokens?: ThreadTokens;
-  lastCall?: Partial<ThreadTokens>;
-  context?: { used: number; percent?: number; limit?: number };
-  activeMs?: number;
 }
 
 export interface ThreadLiveStream {
@@ -92,7 +78,6 @@ const SPINNER = /^\s*[\u2800-\u28ff]\s+(.+?)\s*\(Press ESC to stop\)\s*$/;
 const BOX_TOP = /^\s*╭─+╮\s*$/;
 const PLAN = /^Plan · \d+\/\d+/;
 const QUEUE_HEADING = /^\s*(?:Queued|Steering) messages:\s*$/;
-const FOOTER_CONTEXT = /\[⏱[^\]]*?context:\s*(\d{1,3})%\]/;
 const MESSAGE = /^⛬\s*/;
 const THOUGHT = /^ {0,3}Thinking:\s*$/;
 const RESULT = /^ {4}↳ ?/;
@@ -105,8 +90,6 @@ export interface LiveScreen {
   /** The spinner's words, e.g. "Thinking...", "Planning 8 actions". */
   label?: string;
   working?: ThreadLiveWorking;
-  /** The footer's "context: N%". */
-  contextPercent?: number;
   /** The model and effort on the mode line, e.g. "Haiku 5.5 (Low)". */
   model?: string;
   /** The conversation rows above the plan, queue and spinner. */
@@ -128,15 +111,7 @@ export function readLiveScreen(lines: readonly string[]): LiveScreen {
       box = i;
       break;
     }
-  let contextPercent: number | undefined;
-  for (let i = lines.length - 1; i > box && i >= 0; i--) {
-    const m = FOOTER_CONTEXT.exec(lines[i]);
-    if (m) {
-      contextPercent = Math.min(100, Number(m[1]));
-      break;
-    }
-  }
-  if (box < 0) return { transcript: [...lines], ...(contextPercent !== undefined ? { contextPercent } : {}) };
+  if (box < 0) return { transcript: [...lines] };
   let label: string | undefined;
   let chrome = box;
   // The mode line, with the model at its end or on a line of its own.
@@ -161,7 +136,6 @@ export function readLiveScreen(lines: readonly string[]): LiveScreen {
   return {
     transcript: lines.slice(0, chrome),
     ...(label !== undefined ? { label, working: spinnerWorking(label) } : {}),
-    ...(contextPercent !== undefined ? { contextPercent } : {}),
     ...(model ? { model } : {}),
   };
 }

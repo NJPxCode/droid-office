@@ -126,23 +126,12 @@ class ThreadLiveTest {
     }
 
     @Test
-    fun absentOrUnknownTokenFieldsNeverInventZeroUsage() {
-        for (raw in listOf("{}", """{"unknown":4}""", """{"input":null,"output":"invalid","credits":"NaN"}""")) {
-            assertEquals(raw, null, ThreadTokens.of(OfficeJson.parseToJsonElement(raw)))
-        }
-        assertEquals(ThreadTokens(), ThreadTokens.of(OfficeJson.parseToJsonElement("""{"input":0}""")))
-        assertEquals(ThreadTokens(input = 12), ThreadTokens.of(OfficeJson.parseToJsonElement("""{"input":12}""")))
-        assertEquals(ThreadTokens(credits = 0.25), ThreadTokens.of(OfficeJson.parseToJsonElement("""{"credits":0.25}""")))
-    }
-
-    @Test
     fun readsTheOfficesLiveTurn() {
         val json = """{"rev":4,"at":1000,"status":"pondering","working":"executing_tool","label":"Planning 8 actions","turnStartedAt":900,"phaseSince":950,
             "after":"e9","stream":{"kind":"thinking","text":"Hmm","since":960},
             "tools":[{"id":"tool:a","name":"Execute","startedAt":970,"phase":"running","output":"ok\n","more":3},{"phase":"running"}],
             "waiting":{"kind":"permission","toolId":"tool:a"},
-            "settings":{"model":"claude-opus-5-5","modelName":"Opus 5.5","reasoningEffort":"high","interactionMode":"spec","autonomyLevel":"medium",
-              "tokens":{"input":10,"output":2,"cacheCreation":1,"cacheRead":3,"thinking":0},"context":{"used":94000,"percent":47,"limit":200000},"activeMs":12}}"""
+            "settings":{"model":"claude-opus-5-5","modelName":"Opus 5.5","reasoningEffort":"high","interactionMode":"spec","autonomyLevel":"medium"}}"""
         val live = ThreadLive.of(OfficeJson.parseToJsonElement(json))!!
         assertEquals(4L, live.rev)
         assertEquals(ThreadLive.Status.Pondering, live.status)
@@ -153,8 +142,7 @@ class ThreadLiveTest {
         assertEquals(ThreadLive.Waiting("permission", "tool:a"), live.waiting)
         val s = live.settings!!
         assertEquals("spec", s.interactionMode)
-        assertEquals(ThreadSessionSettings.Context(94000, 47.0, 200000), s.context)
-        assertEquals(3L, s.tokens?.cacheRead)
+        assertEquals("Opus 5.5", s.modelName)
     }
 
     @Test

@@ -218,51 +218,28 @@ class MarkdownTest {
     }
 
     @Test
-    fun parsesEmailDraftBlocksAndFallsBackToCodeWithoutHeaders() {
+    fun emailAndSuggestionFencesStayPlainCodeBlocksLikeTheTui() {
         val md = """
             Draft ready:
             ```email
-            To: Alice <alice@example.com>, bob@example.com
-            Cc: team@example.com
-            Bcc: audit@example.com
+            To: Alice <alice@example.com>
             Subject: Thread V3 Android Parity
 
             Hi team,
 
             Android parity is green!
             ```
-            ```email
-            Not an email header
-            just plain text
+            ```suggestion
+            val improved = true
             ```
         """.trimIndent()
         val blocks = Markdown.parse(md)
         assertEquals(3, blocks.size)
-        val email = blocks[1] as Block.Email
-        assertEquals("Alice <alice@example.com>, bob@example.com", email.to)
-        assertEquals("team@example.com", email.cc)
-        assertEquals("audit@example.com", email.bcc)
-        assertEquals("Thread V3 Android Parity", email.subject)
-        assertEquals("Hi team,\n\nAndroid parity is green!", email.body)
-        val mailto = email.mailtoUri()
-        org.junit.Assert.assertTrue(mailto.startsWith("mailto:alice@example.com,bob@example.com?"))
-        org.junit.Assert.assertTrue("spaces encode as %20, not +", "+" !in mailto && "Thread%20V3%20Android%20Parity" in mailto)
-        assertEquals(Block.Code("Not an email header\njust plain text", "email"), blocks[2])
-    }
-
-    @Test
-    fun editedEmailCopiesAndComposeTargetsUseCurrentFields() {
-        val original = requireNotNull(Markdown.parseEmail("To: old@example.com\nSubject: Old\n\nOld body"))
-        val edited = original.copy(to = "Alice <alice@example.com>", cc = "team@example.com", bcc = "audit@example.com", subject = "Café & +", body = "New body\n\nNext line +")
-        val raw = Markdown.emailRaw(edited)
-        assertEquals("To: Alice <alice@example.com>\nCc: team@example.com\nBcc: audit@example.com\nSubject: Café & +\n\nNew body\n\nNext line +", raw)
-        val parsed = requireNotNull(Markdown.parseEmail(raw))
-        assertEquals(edited.copy(raw = raw), parsed)
-        assertEquals("mailto:alice@example.com?cc=team%40example.com&bcc=audit%40example.com&subject=Caf%C3%A9%20%26%20%2B&body=New%20body%0A%0ANext%20line%20%2B", Markdown.emailUri(edited, Markdown.EmailSend.Mail))
-        assertEquals("https://mail.google.com/mail/?view=cm&fs=1&to=Alice%20%3Calice%40example.com%3E&cc=team%40example.com&bcc=audit%40example.com&su=Caf%C3%A9%20%26%20%2B&body=New%20body%0A%0ANext%20line%20%2B", Markdown.emailUri(edited, Markdown.EmailSend.Gmail))
-        assertEquals("https://outlook.office.com/mail/deeplink/compose?to=Alice%20%3Calice%40example.com%3E&cc=team%40example.com&bcc=audit%40example.com&subject=Caf%C3%A9%20%26%20%2B&body=New%20body%0A%0ANext%20line%20%2B", Markdown.emailUri(edited, Markdown.EmailSend.Outlook))
-        assertEquals("mailto:", Markdown.emailUri(original.copy(to = "", subject = "", body = ""), Markdown.EmailSend.Mail))
-        assertEquals("To: old@example.com\nSubject: Old\n\nOld body", original.raw)
+        assertEquals(
+            Block.Code("To: Alice <alice@example.com>\nSubject: Thread V3 Android Parity\n\nHi team,\n\nAndroid parity is green!", "email"),
+            blocks[1],
+        )
+        assertEquals(Block.Code("val improved = true", "suggestion"), blocks[2])
     }
 
     @Test

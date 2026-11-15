@@ -132,10 +132,11 @@ export class ThreadWatchHub {
     return true;
   }
 
-  /** Records the latest hydrated page from `thread.read` so an unchanged wake never pushes a duplicate snapshot. */
-  seed(workerId: string, page: ThreadPage, busy: boolean, child?: string): void {
+  /** Records the latest hydrated page from `thread.read` when `clientId` is the sole watcher, so an unchanged wake never pushes a duplicate snapshot without starving other watching clients. */
+  seed(workerId: string, page: ThreadPage, busy: boolean, child?: string, clientId?: string): void {
     const entry = this.byWorker.get(watchKey(workerId, child));
     if (!entry || entry.closed || page.error) return;
+    if (entry.clients.size > 1 || (clientId && !entry.clients.has(clientId))) return;
     entry.lastDigest ??= threadPageDigest(page, busy);
   }
 

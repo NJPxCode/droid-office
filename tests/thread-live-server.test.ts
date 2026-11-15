@@ -9,7 +9,7 @@ import type { ThreadEntry } from '../src/shared/worker-thread.js';
 const entry = (id: string, extra: Partial<ThreadEntry> = {}): ThreadEntry => ({ id, role: 'assistant', kind: 'text', text: 'Earlier', seq: 0, ...extra });
 const base = (): ThreadLiveInputs => ({ sessionId: 'session', status: 'idle', activeTool: new Map() });
 
-test('session settings use Droid’s token fields and the next call’s context', () => {
+test('session settings keep model, effort, interaction mode and autonomy without non-TUI context meters', () => {
   assert.deepEqual(
     readSessionSettings({
       model: 'claude-haiku-5-5',
@@ -28,18 +28,9 @@ test('session settings use Droid’s token fields and the next call’s context'
       interactionMode: 'auto',
       autonomyLevel: 'high',
       autonomyMode: 'auto-high',
-      tokens: { input: 10, output: 20, cacheCreation: 30, cacheRead: 40, thinking: 5, credits: 0.25 },
-      inclusiveTokens: { input: 100, output: 200, cacheCreation: 0, cacheRead: 0, thinking: 0 },
-      lastCall: { input: 1000, output: 50, cacheCreation: 100, cacheRead: 2000, thinking: 20 },
-      context: { used: 3150 },
-      activeMs: 12345,
     },
   );
-});
-test('unknown token fields and invalid active times do not fabricate usage', () => {
   assert.deepEqual(readSessionSettings({ tokenUsage: { unknown: 99 }, inclusiveTokenUsage: {}, lastCallTokenUsage: { futureField: 1 }, assistantActiveTimeMs: Infinity }), {});
-  assert.equal(readSessionSettings({ assistantActiveTimeMs: -1 }).activeMs, undefined);
-  assert.deepEqual(readSessionSettings({ tokenUsage: { inputTokens: 0 } }).tokens, { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, thinking: 0 });
 });
 
 test('an earlier turn saying the same words cannot suppress the current live response', async () => {
@@ -66,7 +57,7 @@ test('idle live state still carries settings, and an unchanged computation keeps
   assert.equal(first.live.status, 'idle');
   assert.equal(first.live.settings?.model, 'claude-haiku-5-5');
   assert.equal(first.live.settings?.modelName, 'Haiku 5.5 (Low)');
-  assert.deepEqual(first.live.settings?.context, { used: 1000, percent: 5 }, 'a rounded footer percent does not establish a context-window limit');
+  assert.equal('context' in (first.live.settings ?? {}), false);
   assert.equal(first.live.after, 'last');
   now += 1000;
   const second = await tracker.compute('w', inputs, [entry('last')], file);

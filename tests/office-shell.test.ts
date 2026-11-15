@@ -63,15 +63,25 @@ test('the boss shell runs, restarts after exit, and is picked up after an office
     () => output.includes('starting another'),
     () => output,
   );
-  // The next shell is a fresh login, so give it a moment before typing.
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  shell.write('echo AFTER_RESTART\r');
+  output = '';
   await waitFor(
-    () => output.includes('AFTER_RESTART'),
+    () => output.length > 0,
+    () => output,
+  );
+  let lastProbeAt = 0;
+  await waitFor(
+    () => {
+      if (Date.now() - lastProbeAt >= 300) {
+        lastProbeAt = Date.now();
+        shell.write('echo AFTER_RESTART\r');
+      }
+      return output.includes('AFTER_RESTART');
+    },
     () => output,
   );
 
   const statePath = path.join(data, 'shell.json');
+
   const before = JSON.parse(readFileSync(statePath, 'utf8')) as { ptyId?: string };
   shell.shutdown(true);
   host.detach();

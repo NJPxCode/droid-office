@@ -199,6 +199,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   const search = mountThreadSearch(
     () => [list],
     (range) => {
+      followingLayout = false;
       const el = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
       el?.scrollIntoView({ block: 'center' });
       updateLatest();
@@ -214,8 +215,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       'aria-label': 'Scroll to pinned message',
       onclick: () => {
         if (!pinnedRow) return;
+        followingLayout = false;
         const top = scroll.getBoundingClientRect().top;
         scroll.scrollTop += pinnedRow.getBoundingClientRect().top - top - 8;
+        updateLatest();
         updatePin();
       },
     },
@@ -248,7 +251,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   // confirmations would answer a confirmed send with a refusal after typing the keys anyway.
   const typeKeys = (data: string) => net.send({ t: 'term.input', workerId: worker.id, data });
   let queueActionBusy = false;
-  const queueAction = async (action: 'promote' | 'delete' | 'clear', item?: { index: number; group: 'steering' | 'queued'; text: string }) => {
+  const queueAction = async (action: 'promote' | 'delete' | 'clear', item?: { index: number; group: 'steering' | 'queued'; text?: string }) => {
     if (queueActionBusy || !connected || cloud) return '';
     queueActionBusy = true;
     updateControls();
@@ -257,7 +260,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       id: worker.id,
       workerId: worker.id,
       action,
-      ...(item ? { index: item.index, group: item.group, text: item.text } : {}),
+      ...(item ? { index: item.index, group: item.group, ...(item.text ? { text: item.text } : {}) } : {}),
     } as unknown as ClientMsg;
     const why = await opts.send(msg);
     queueActionBusy = false;
@@ -273,19 +276,23 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     queued.sync(worker.sessionId, history.entries);
     const rows = screen?.();
     const pending = rows ? readDroidPending(rows) : undefined;
-    const shown = queued.shown(pending?.items);
+    const steering = (pending?.items.filter((row) => row.group === 'steering') ?? []).map((row, i) => ({
+      message: { key: `steer:${i}:${row.text}`, text: row.text, hasImage: false, preview: row.cut || row.more > 0, more: row.more },
+      group: 'steering' as const,
+      index: i + 1,
+    }));
+    const shownQueued = queued.shown(pending ? pending.items.filter((row) => row.group === 'queued') : undefined).map((message, i) => ({
+      message,
+      group: 'queued' as const,
+      index: i + 1,
+    }));
     if (queued.pending.length) localQueues.set(opts.queueKey, queued);
     else localQueues.delete(opts.queueKey);
     try {
       if (queued.pending.length) sessionStorage.setItem(opts.queueKey, JSON.stringify(queued));
       else sessionStorage.removeItem(opts.queueKey);
     } catch {}
-    const groupCounts = { steering: 0, queued: 0 };
-    const items = shown.map((message, i) => {
-      const group = pending?.items[i]?.group ?? 'queued';
-      const index = ++groupCounts[group];
-      return { message, group, index };
-    });
+    const items = [...steering, ...shownQueued];
     const canClear = connected && !cloud && items.length > 0;
     const key = JSON.stringify([items, canClear, queueActionBusy]);
     if (key === queueKey) return;
@@ -300,7 +307,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         h('div.wt-queue-heading', {}, h('span', {}, title), clear && canClear ? h('button.wt-queue-clear', { type: 'button', title: 'Clear all pending messages', disabled: queueActionBusy, onclick: clearQueue }, 'Clear all') : null),
         ...rowsInGroup.map(({ message, index }) => {
           const more = message.more > 0 ? `${message.more} more line${message.more === 1 ? '' : 's'}` : message.preview ? 'Shortened' : message.hasImage && message.text ? 'Image attached' : '';
-          const target = { index, group, text: message.text };
+          const target = { index, group, ...(message.preview ? {} : { text: message.text }) };
           const action = (label: string, glyph: 'arrowUp' | 'x' | 'file', onclick: () => void) => h('button.wt-queue-action', { type: 'button', 'aria-label': label, title: label, disabled: queueActionBusy, onclick }, icon(glyph, 12));
           const actions = cloud
             ? null
@@ -308,14 +315,16 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
                 'div.wt-queue-actions',
                 {},
                 group === 'queued' ? action('Send now', 'arrowUp', () => void queueAction('promote', target)) : null,
-                action('Edit message', 'file', () => {
-                  void queueAction('delete', target).then((why) => {
-                    if (why) return;
-                    input.value = message.text;
-                    edited();
-                    input.focus();
-                  });
-                }),
+                !message.preview
+                  ? action('Edit message', 'file', () => {
+                      void queueAction('delete', target).then((why) => {
+                        if (why) return;
+                        input.value = message.text;
+                        edited();
+                        input.focus();
+                      });
+                    })
+                  : null,
                 action('Remove from queue', 'x', () => void queueAction('delete', target)),
               );
           return h('div.wt-entry.user.wt-queued-message', { 'data-queued': message.key }, h('div.wt-queue-line', {}, h('div.wt-user-text', {}, message.text || 'Image attached'), actions), more ? h('div.wt-queued-more', {}, more) : null);
@@ -787,7 +796,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   const paintSettings = () => {
     const settings = liveView?.settings;
     const model = settings?.modelName ?? settings?.model;
-    const effort = effortLabel(settings?.reasoningEffort);
+    const rawEffort = effortLabel(settings?.reasoningEffort);
+    const effort = rawEffort && !model?.toLowerCase().includes(rawEffort.toLowerCase()) ? rawEffort : undefined;
     modelChip.hidden = !model;
     if (model) {
       modelChip.replaceChildren(h('span', {}, model), effort ? h('span.wt-model-effort', {}, effort) : '');

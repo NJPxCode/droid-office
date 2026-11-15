@@ -128,3 +128,36 @@ test('main and child watches push separate snapshots, with child echoed', async 
   hub.watch('client', 'worker', false, child);
   assert.equal(hub.watchedCount('client'), 1, 'turning off the child leaves the main watch');
 });
+
+test('one client seeding after a session change never suppresses the push to other watchers', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'office-multi-seed-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cwd = path.join(root, 'project');
+  const dir = path.join(root, cwd.replace(/[^a-zA-Z0-9-]/g, '-'));
+  await mkdir(dir, { recursive: true });
+  const write = async (sid: string, text: string) => {
+    await writeFile(path.join(dir, `${sid}.jsonl`), `${JSON.stringify({ type: 'session_start', id: sid, cwd })}\n${JSON.stringify({ type: 'message', id: `m-${sid}`, message: { role: 'assistant', content: [{ type: 'text', text }] } })}\n`);
+  };
+  await write('s1', 'Before rewind');
+  let sessionId = 's1';
+  const reader = new WorkerThreadReader(root);
+  const sent: { client: string; msg: ThreadWatchMsg }[] = [];
+  const hub = new ThreadWatchHub({
+    workerThreads: reader,
+    resolveWorker: () => ({ kind: 'local', floorId: null, busy: false, local: { sessionId, cwd } }),
+    send: (client, msg) => sent.push({ client, msg }),
+    localCoalesceMs: 30,
+  });
+  t.after(() => hub.close());
+  hub.watch('web', 'worker', true);
+  hub.watch('android', 'worker', true);
+  await waitUntil(() => sent.filter((s) => s.client === 'android' && s.msg.t === 'thread.snapshot').length === 1);
+
+  await write('s2', 'After rewind');
+  sessionId = 's2';
+  hub.notifyWorker('worker');
+  const page = await reader.read({ sessionId: 's2', cwd }, undefined, false);
+  hub.seed('worker', page, false, undefined, 'web');
+
+  await waitUntil(() => sent.some((s) => s.client === 'android' && s.msg.t === 'thread.snapshot' && s.msg.sessionId === 's2'));
+});

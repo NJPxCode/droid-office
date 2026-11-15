@@ -72,11 +72,10 @@ const IDLE = screen(`
 [⏱ 11s, context: 5%] ? for help                                                                            MCP ✗ | IDE ◌
 `);
 
-test('a running command: the spinner, model, context and its output so far', () => {
+test('a running command: the spinner, model and its output so far', () => {
   const live = readLiveScreen(EXECUTING);
   assert.equal(live.label, 'Executing...');
   assert.equal(live.working, 'executing_tool');
-  assert.equal(live.contextPercent, 4);
   assert.equal(live.model, 'Haiku 5.5 (Low)');
   assert.equal(live.transcript.at(-1), '    ↳ tick 5');
   const command = 'for i in 1 2 3 4 5 6; do echo tick $i; sleep 1; done';
@@ -104,7 +103,6 @@ test('an idle screen has no spinner, and the stream reads the last message', () 
   const live = readLiveScreen(IDLE);
   assert.equal(live.label, undefined);
   assert.equal(live.working, undefined);
-  assert.equal(live.contextPercent, 5);
   assert.equal(readScreenStream(live.transcript)?.text, 'Sea otters are among the few mammals that use tools.\n\nOtters are playful and social.');
 });
 

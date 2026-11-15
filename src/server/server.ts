@@ -1286,6 +1286,79 @@ export async function startServer(cfg: Config) {
       done(err, ORCHESTRATOR_ID);
     };
     const interruptOrchestrator = () => done(orchestrator.interrupt() ? undefined : 'The Orchestrator isn’t in the middle of a turn. Nothing was stopped.');
+    const handleWorkerQueue = (target: { wid: string; workers: typeof orchestrator.workers } | undefined, m: Extract<ClientMsg, { t: 'worker.queue' }>) => {
+      if (!target) return done('No such worker');
+      const action = m.action;
+      if (action !== 'promote' && action !== 'delete' && action !== 'clear') return stop('Unknown queue action.');
+      const rawIndex = typeof m.index === 'number' && Number.isSafeInteger(m.index) && m.index > 0 ? m.index : undefined;
+      const text = str(m.text, 20000) || undefined;
+      const group = m.group === 'steering' || m.group === 'queued' ? m.group : undefined;
+      const items = target.workers.queueState(target.wid)?.items ?? [];
+      let index: number | undefined;
+      if (action !== 'clear') {
+        const delivery = group === 'queued' ? 'after_turn' : group === 'steering' ? 'steering' : undefined;
+        const pool = delivery ? items.filter((item) => item.source === 'droid' && item.delivery === delivery) : items;
+        let selected = rawIndex !== undefined ? (delivery ? pool[rawIndex - 1] : items.find((item) => item.index === rawIndex)) : undefined;
+        if (text) {
+          if (!selected && rawIndex === undefined) {
+            const matches = pool.filter((item) => item.text === text);
+            if (matches.length === 1) selected = matches[0];
+          }
+          if (!selected || selected.text !== text) return stop('That queued message changed. Read the queue again.');
+        }
+        if (delivery && (!selected || selected.delivery !== delivery)) {
+          return stop('That queued message changed groups. Read the queue again.');
+        }
+        index = selected?.index ?? (delivery ? undefined : rawIndex);
+        if (index === undefined) return stop('Choose a queued message first.');
+      }
+      defer();
+      void (async () => {
+        const result = action === 'promote' ? await target.workers.promoteQueue(target.wid, { index }) : await target.workers.clearQueue(target.wid, action === 'delete' ? index : undefined);
+        if (result.error) return refuse(result.error);
+        done(undefined, target.wid);
+      })();
+    };
+    const handleWorkerRewind = (target: { wid: string; name: string; workers: typeof orchestrator.workers } | undefined, m: Extract<ClientMsg, { t: 'worker.rewind' }>) => {
+      const entryId = str(m.entryId, 180);
+      const restore = m.restore === 'files' ? 'files' : 'conversation';
+      const reply = (ok: boolean, error?: string, text?: string) => {
+        const sessionId = target?.workers.threadSession(target.wid)?.sessionId;
+        sendTo(c, { t: 'worker.rewound', workerId: target?.wid ?? str(m.workerId, 32), entryId, ok, ...(sessionId ? { sessionId } : {}), ...(text ? { text } : {}), ...(error ? { error } : {}) });
+      };
+      if (!target || !entryId) {
+        const error = 'No such worker or conversation entry.';
+        reply(false, error);
+        return stop(error);
+      }
+      const source = target.workers.threadSession(target.wid);
+      if (!source) {
+        const error = `${target.name} has no conversation to rewind.`;
+        reply(false, error);
+        return refuse(error);
+      }
+      defer();
+      void (async () => {
+        const point = await workerThreads.rewindPoint(source, entryId);
+        if (!point) {
+          const error = 'That user message is no longer in the active conversation.';
+          reply(false, error);
+          refuse(error);
+          return;
+        }
+        threadWatches?.notifyWorker(target.wid);
+        const result = await target.workers.rewind(target.wid, entryId, source.sessionId, point, restore);
+        threadWatches?.notifyWorker(target.wid);
+        if (!result.ok) {
+          const error = `Failed to rewind conversation: ${result.error ?? 'Droid did not finish the rewind.'}`;
+          reply(false, error);
+          refuse(error);
+          return;
+        }
+        reply(true, undefined, point.text);
+        done(undefined, target.wid);
+      })();
+    };
     // The Orchestrator is in Mission Control on every floor: its terminal, thread and turn are reachable from any.
     if (asked === ORCHESTRATOR_ID && /^(worker|term|thread|changes)\./.test(msg.t)) {
       const orch = orchestrator.workers;
@@ -1354,7 +1427,7 @@ export async function startServer(cfg: Config) {
               if (!selected) return none('That subagent conversation does not belong to the Orchestrator.');
               const page = await workerThreads.read(selected, before, busy);
               if (orch.threadSession(ORCHESTRATOR_ID)?.sessionId !== source.sessionId) return none('The Orchestrator’s conversation changed. Read the thread again.');
-              if (before === undefined) threadWatches?.seed(ORCHESTRATOR_ID, page, busy, child);
+              if (before === undefined) threadWatches?.seed(ORCHESTRATOR_ID, page, busy, child, c.id);
               sendTo(c, { ...reply, ...page });
             })();
           return unanswered();
@@ -1363,6 +1436,12 @@ export async function startServer(cfg: Config) {
           if (typeof msg.on !== 'boolean') return stop('Send {"on": true} or {"on": false}.');
           threadWatches?.watch(c.id, ORCHESTRATOR_ID, msg.on, str(msg.child, 160) || undefined);
           return done(undefined, ORCHESTRATOR_ID);
+        case 'worker.queue':
+          return handleWorkerQueue(orch.get(ORCHESTRATOR_ID) ? { wid: ORCHESTRATOR_ID, workers: orch } : undefined, msg);
+        case 'worker.rewind': {
+          const info = orch.get(ORCHESTRATOR_ID);
+          return handleWorkerRewind(info ? { wid: ORCHESTRATOR_ID, name: info.name, workers: orch } : undefined, msg);
+        }
         default:
           return done('The Orchestrator works from Mission Control: it has no desk, worktree or changes of its own.');
       }
@@ -1835,7 +1914,7 @@ export async function startServer(cfg: Config) {
             sendTo(c, { ...reply, entries: [], hasMore: false, error: 'The active floor or worker session changed. Read the thread again.' });
             return;
           }
-          if (before === undefined) threadWatches?.seed(workerId, page, busy, child);
+          if (before === undefined) threadWatches?.seed(workerId, page, busy, child, c.id);
           sendTo(c, { ...reply, ...page });
         })();
         break;
@@ -1849,71 +1928,12 @@ export async function startServer(cfg: Config) {
       }
       case 'worker.queue': {
         const w = worker(msg.workerId);
-        if (!w) return done('No such worker');
-        const action = msg.action;
-        if (action !== 'promote' && action !== 'delete' && action !== 'clear') return stop('Unknown queue action.');
-        let index = typeof msg.index === 'number' && Number.isSafeInteger(msg.index) && msg.index > 0 ? msg.index : undefined;
-        const text = str(msg.text, 20000) || undefined;
-        const group = msg.group === 'steering' || msg.group === 'queued' ? msg.group : undefined;
-        const items = w.floor.workers.queueState(w.wid)?.items ?? [];
-        if (text) {
-          const matches = items.filter((item) => item.text === text);
-          if (index === undefined && matches.length === 1) index = matches[0].index;
-          const selected = items.find((item) => item.index === index);
-          if (!selected || selected.text !== text) return stop('That queued message changed. Read the queue again.');
-        }
-        if (group) {
-          const selected = items.find((item) => item.index === index);
-          const delivery = group === 'queued' ? 'after_turn' : 'steering';
-          if (!selected || selected.delivery !== delivery) return stop('That queued message changed groups. Read the queue again.');
-        }
-        if (action !== 'clear' && index === undefined) return stop('Choose a queued message first.');
-        void (async () => {
-          const result = action === 'promote' ? await w.floor.workers.promoteQueue(w.wid, { index }) : await w.floor.workers.clearQueue(w.wid, action === 'delete' ? index : undefined);
-          if (result.error) return refuse(result.error);
-          done(undefined, w.wid);
-        })();
+        handleWorkerQueue(w ? { wid: w.wid, workers: w.floor.workers } : undefined, msg);
         break;
       }
       case 'worker.rewind': {
         const w = worker(msg.workerId);
-        const entryId = str(msg.entryId, 180);
-        const restore = msg.restore === 'files' ? 'files' : 'conversation';
-        const reply = (ok: boolean, error?: string, text?: string) => {
-          const sessionId = w?.floor.workers.threadSession(w.wid)?.sessionId;
-          sendTo(c, { t: 'worker.rewound', workerId: w?.wid ?? str(msg.workerId, 32), entryId, ok, ...(sessionId ? { sessionId } : {}), ...(text ? { text } : {}), ...(error ? { error } : {}) });
-        };
-        if (!w || !entryId) {
-          const error = 'No such worker or conversation entry.';
-          reply(false, error);
-          return stop(error);
-        }
-        const source = w.floor.workers.threadSession(w.wid);
-        if (!source) {
-          const error = `${w.info.name} has no conversation to rewind.`;
-          reply(false, error);
-          return refuse(error);
-        }
-        void (async () => {
-          const point = await workerThreads.rewindPoint(source, entryId);
-          if (!point) {
-            const error = 'That user message is no longer in the active conversation.';
-            reply(false, error);
-            refuse(error);
-            return;
-          }
-          threadWatches?.notifyWorker(w.wid);
-          const result = await w.floor.workers.rewind(w.wid, entryId, source.sessionId, point, restore);
-          threadWatches?.notifyWorker(w.wid);
-          if (!result.ok) {
-            const error = `Failed to rewind conversation: ${result.error ?? 'Droid did not finish the rewind.'}`;
-            reply(false, error);
-            refuse(error);
-            return;
-          }
-          reply(true, undefined, point.preview);
-          done(undefined, w.wid);
-        })();
+        handleWorkerRewind(w ? { wid: w.wid, name: w.info.name, workers: w.floor.workers } : undefined, msg);
         break;
       }
       case 'worker.interrupt': {

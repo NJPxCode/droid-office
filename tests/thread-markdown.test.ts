@@ -4,7 +4,6 @@ import test, { type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import { CODE_COLLAPSE_LINES, codeBlockCollapses, codeBlockLabel } from '../src/client/ui/thread-md-code.js';
-import { emailAsText, emailComposeHref, parseEmailDraft } from '../src/client/ui/thread-md-email.js';
 import { fitDiagramView, clampDiagramView, IMAGE_ZOOM_STEPS, nextImageZoom, zoomDiagramAt } from '../src/client/ui/thread-md-lightbox.js';
 import { quoteAsMarkdown, quotePillPosition } from '../src/client/ui/thread-md-quote.js';
 import { codePathRef, fenceClosed, trimProvisionalTable } from '../src/client/ui/thread-markdown.js';
@@ -68,23 +67,6 @@ test('quote reply produces Markdown and positions its pill above or below the se
   assert.deepEqual(quotePillPosition({ top: 10, bottom: 30, left: 0, width: 20 }, 60, { width: 800, height: 600 }), { top: 38, left: 68, above: false });
 });
 
-test('email compose links preserve edited fields for Mail, Gmail and Outlook', () => {
-  const draft = parseEmailDraft('To: Alice <alice@example.com>\nCc: lead@example.com\nSubject: Ship it\n\nHi Alice,\nReady now.');
-  assert.ok(draft);
-  assert.equal(emailAsText(draft), 'To: Alice <alice@example.com>\nCc: lead@example.com\nSubject: Ship it\n\nHi Alice,\nReady now.');
-  assert.match(emailComposeHref(draft, 'mail'), /^mailto:alice@example\.com\?/);
-  assert.match(emailComposeHref(draft, 'mail'), /subject=Ship%20it/);
-  const gmail = new URL(emailComposeHref(draft, 'gmail'));
-  assert.equal(gmail.origin, 'https://mail.google.com');
-  assert.equal(gmail.searchParams.get('to'), 'Alice <alice@example.com>');
-  assert.equal(gmail.searchParams.get('su'), 'Ship it');
-  assert.equal(gmail.searchParams.get('body'), 'Hi Alice,\nReady now.');
-  const outlook = new URL(emailComposeHref(draft, 'outlook'));
-  assert.equal(outlook.origin, 'https://outlook.office.com');
-  assert.equal(outlook.searchParams.get('subject'), 'Ship it');
-  assert.equal(outlook.searchParams.get('cc'), 'lead@example.com');
-});
-
 const status = browserStatus();
 const skipChromium = status.installed ? false : `Chromium is not installed in ${status.path}`;
 
@@ -135,7 +117,8 @@ test('real Chromium exercises Factory Thread Markdown blocks, streaming, lightbo
     const el = w.ThreadMD.threadMarkdown(source) as HTMLElement;
     document.getElementById('root')!.append(el);
 
-    const code = el.querySelector('.wt-md-code')!;
+    const codes = [...el.querySelectorAll('.wt-md-code')];
+    const code = codes[codes.length - 1]!;
     const initiallyCollapsed = code.querySelector('.wt-md-code-body')!.classList.contains('collapsed');
     code.querySelector<HTMLButtonElement>('.wt-md-code-more')!.click();
     const expanded = code.querySelector('.wt-md-code-body')!.classList.contains('expanded');
@@ -153,14 +136,8 @@ test('real Chromium exercises Factory Thread Markdown blocks, streaming, lightbo
     const emailSource = '```email\nTo: nik@factory.ai\nSubject: Ship it\n\nReady now.\n```';
     const email = w.ThreadMD.threadMarkdown(emailSource) as HTMLElement;
     document.getElementById('root')!.append(email);
-    const to = email.querySelector<HTMLInputElement>('.wt-md-email-input')!;
-    to.value = 'edited@example.com';
-    to.dispatchEvent(new Event('input', { bubbles: true }));
-    const editedTitle = email.querySelector('.wt-md-email-title')!.textContent;
-    email.querySelector<HTMLButtonElement>('.wt-md-email-revert')!.click();
-    const revertedTo = to.value;
-    const streamingEmail = w.ThreadMD.threadMarkdown('```email\nTo: nik@factory.ai\nSubject: Live\n\nBody', { streaming: true }) as HTMLElement;
-    const sendDisabled = streamingEmail.querySelector<HTMLButtonElement>('.wt-md-email-send')!.disabled;
+    const emailLang = email.querySelector('.wt-md-code-lang')?.textContent ?? '';
+    const hasEmailForm = Boolean(email.querySelector('.wt-md-email, input, textarea'));
     const pendingDiagram = w.ThreadMD.threadMarkdown('```mermaid\nflowchart LR\n A --> B', { streaming: true }) as HTMLElement;
     const diagramPending = Boolean(pendingDiagram.querySelector('.wt-mermaid-pending'));
 
@@ -220,11 +197,11 @@ test('real Chromium exercises Factory Thread Markdown blocks, streaming, lightbo
       alertClass: el.querySelector('blockquote')!.className,
       alertTitle: el.querySelector('.wt-md-alert-title')!.textContent,
       alertColor: getComputedStyle(el.querySelector('.wt-md-alert-title')!).color,
-      suggestion: el.querySelector('.wt-md-suggest-line')!.textContent,
+      suggestionLang: codes[0]!.querySelector('.wt-md-code-lang')!.textContent,
+      suggestionCardCount: el.querySelectorAll('.wt-md-suggest').length,
       mathBlocks: el.querySelectorAll('.wt-math-block math').length,
-      editedTitle,
-      revertedTo,
-      sendDisabled,
+      emailLang,
+      hasEmailForm,
       diagramPending,
       entering,
       lightboxCount,
@@ -249,11 +226,11 @@ test('real Chromium exercises Factory Thread Markdown blocks, streaming, lightbo
   assert.match(result.alertClass, /wt-md-alert-warning/);
   assert.equal(result.alertTitle, 'Custom caution');
   assert.equal(result.alertColor, 'rgb(247, 168, 40)');
-  assert.equal(result.suggestion, '+const improved = true;');
+  assert.equal(result.suggestionLang, 'suggestion');
+  assert.equal(result.suggestionCardCount, 0);
   assert.equal(result.mathBlocks, 1);
-  assert.equal(result.editedTitle, 'Email draft · Edited');
-  assert.equal(result.revertedTo, 'nik@factory.ai');
-  assert.equal(result.sendDisabled, true);
+  assert.equal(result.emailLang, 'email');
+  assert.equal(result.hasEmailForm, false);
   assert.equal(result.diagramPending, true);
   assert.deepEqual(result.entering, [false, true]);
   assert.equal(result.lightboxCount, '1 / 2');

@@ -1,6 +1,5 @@
 package ai.factory.droidoffice.core
 
-import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -14,7 +13,7 @@ import kotlinx.serialization.json.intOrNull
 
 /**
  * The part of Markdown a worker's replies use, parsed into blocks of styled runs for the thread to
- * lay out: headings, paragraphs, lists (with task boxes), quotes, rules, fenced code, `email` drafts,
+ * lay out: headings, paragraphs, lists (with task boxes), quotes, rules, fenced code,
  * `<json-render>` widgets, GitHub tables, and inline code, bold, italic, strikethrough and links.
  * Pipe rows that aren't a well-formed table (no delimiter row, or one with a different number of
  * columns than its header) stay as their own text in a code block, so nothing is lost or guessed at.
@@ -46,16 +45,6 @@ object Markdown {
         data class Alert(val kind: AlertKind, val title: String?, val paragraphs: List<List<Span>>) : Block
         /** [open] while the closing fence hasn't arrived yet (the message is still streaming). */
         data class Code(val text: String, val language: String? = null, val open: Boolean = false) : Block
-        data class Email(
-            val to: String,
-            val cc: String? = null,
-            val bcc: String? = null,
-            val subject: String,
-            val body: String,
-            val raw: String,
-        ) : Block {
-            fun mailtoUri(): String = buildMailtoUri(this)
-        }
         data class Widget(val rawJson: String, val complete: Boolean) : Block
         /** A `$$…$$` equation on its own line: [tex] without the dollars, [raw] as written. */
         data class Math(val tex: String, val raw: String) : Block
@@ -199,7 +188,6 @@ object Markdown {
                 b is Block.Math -> b.copy(tex = restore(b.tex), raw = restore(b.raw))
                 b is Block.Table -> (mapSpans(b, ::spans) as Block.Table).copy(raw = restore(b.raw))
                 b is Block.Image -> b.copy(alt = restore(b.alt), src = restore(b.src))
-                b is Block.Email -> b.copy(to = restore(b.to), cc = b.cc?.let(::restore), bcc = b.bcc?.let(::restore), subject = restore(b.subject), body = restore(b.body), raw = restore(b.raw))
                 else -> mapSpans(b, ::spans)
             }
         }
@@ -271,7 +259,6 @@ object Markdown {
                 val open = i >= lines.size
                 val rawBody = body.joinToString("\n")
                 out += when {
-                    lang?.equals("email", ignoreCase = true) == true -> parseEmail(rawBody) ?: Block.Code(rawBody, lang, open)
                     lang?.equals("math", ignoreCase = true) == true && !open && rawBody.isNotBlank() ->
                         Block.Math(rawBody.trim(), lines.subList(from, i + 1).joinToString("\n"))
                     else -> Block.Code(rawBody, lang, open)
@@ -476,88 +463,6 @@ object Markdown {
         }
         flushText()
         return chunks
-    }
-
-    private val knownEmailHeaders = setOf("to", "cc", "bcc", "in-reply-to", "subject", "from", "reply-to")
-    private val continuationHeader = Regex("""^[ \t]+\S.*$""")
-    private val angleAddr = Regex("""<([^<>@\s]+@[^<>@\s]+)>""")
-
-    /** Parses an `email` fenced code block with RFC-style headers before the blank line + body. */
-    fun parseEmail(raw: String): Block.Email? {
-        val normalized = raw.replace("\r\n", "\n").trimStart('\n')
-        if (normalized.isBlank()) return null
-        val blankIdx = normalized.indexOf("\n\n")
-        val headerPart = if (blankIdx == -1) normalized else normalized.substring(0, blankIdx)
-        val bodyPart = if (blankIdx == -1) "" else normalized.substring(blankIdx + 2)
-
-        val headers = LinkedHashMap<String, String>()
-        var lastKey = ""
-        for (line in headerPart.split('\n')) {
-            if (lastKey.isNotEmpty() && continuationHeader.matches(line)) {
-                headers[lastKey] = "${headers[lastKey].orEmpty()} ${line.trim()}".trim()
-                continue
-            }
-            val colon = line.indexOf(':')
-            if (colon <= 0) return null
-            val key = line.substring(0, colon).trim().lowercase()
-            if (key !in knownEmailHeaders) return null
-            val value = line.substring(colon + 1).trim()
-            val prev = headers[key]
-            headers[key] = if (!prev.isNullOrEmpty()) "$prev, $value" else value
-            lastKey = key
-        }
-
-        val to = headers["to"].orEmpty()
-        val subject = headers["subject"].orEmpty()
-        if (to.isEmpty() && subject.isEmpty()) return null
-
-        return Block.Email(
-            to = to,
-            cc = headers["cc"]?.takeIf { it.isNotEmpty() },
-            bcc = headers["bcc"]?.takeIf { it.isNotEmpty() },
-            subject = subject,
-            body = bodyPart.trimEnd('\n'),
-            raw = normalized.trimEnd('\n'),
-        )
-    }
-
-    private fun urlEncodeComponent(value: String): String =
-        URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
-
-    enum class EmailSend { Mail, Gmail, Outlook }
-
-    fun emailRaw(email: Block.Email): String = buildString {
-        append("To: ").append(email.to).append('\n')
-        email.cc?.takeIf { it.isNotBlank() }?.let { append("Cc: ").append(it).append('\n') }
-        email.bcc?.takeIf { it.isNotBlank() }?.let { append("Bcc: ").append(it).append('\n') }
-        append("Subject: ").append(email.subject).append("\n\n")
-        append(email.body)
-    }
-
-    private fun buildMailtoUri(email: Block.Email): String = emailUri(email, EmailSend.Mail)
-
-    fun emailUri(email: Block.Email, target: EmailSend): String {
-        val recipients = email.to.split(',').mapNotNull { part ->
-            val trimmed = part.trim().ifEmpty { return@mapNotNull null }
-            val addr = angleAddr.find(trimmed)?.groupValues?.get(1) ?: trimmed
-            urlEncodeComponent(addr).replace("%40", "@")
-        }.joinToString(",")
-        val params = ArrayList<String>(6)
-        if (target == EmailSend.Gmail) {
-            params += "view=cm"
-            params += "fs=1"
-        }
-        if (target != EmailSend.Mail) params += "to=${urlEncodeComponent(email.to)}"
-        email.cc?.takeIf { it.isNotEmpty() }?.let { params += "cc=${urlEncodeComponent(it)}" }
-        email.bcc?.takeIf { it.isNotEmpty() }?.let { params += "bcc=${urlEncodeComponent(it)}" }
-        if (email.subject.isNotEmpty()) params += "${if (target == EmailSend.Gmail) "su" else "subject"}=${urlEncodeComponent(email.subject)}"
-        if (email.body.isNotEmpty()) params += "body=${urlEncodeComponent(email.body)}"
-        val base = when (target) {
-            EmailSend.Mail -> "mailto:$recipients"
-            EmailSend.Gmail -> "https://mail.google.com/mail/"
-            EmailSend.Outlook -> "https://outlook.office.com/mail/deeplink/compose"
-        }
-        return if (params.isEmpty()) base else "$base?${params.joinToString("&")}"
     }
 
     private val delimiterCell = Regex("""^:?-+:?$""")
