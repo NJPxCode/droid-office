@@ -543,11 +543,7 @@ fun WorkerScreen(
                     worker, draft, visible = blocked == null && !waiting && (!directInput || !tty || worker.isCloud), focusRequest = composerFocus, thread = !tty,
                     quote = quote, onQuoted = { quote = null },
                     fill = composerFill, onFilled = { composerFill = null },
-                    settings = currentThreadLive?.settings,
                     prompts = remember(threadEntries) { ThreadTurns.prompts(threadEntries) },
-                    onSetting = if (connected && !cloud && !worker.isShell && data.threadActions) { setting, value ->
-                        if (!connection.send(ClientMsg.setting(workerId, setting, value))) scope.launch { snackbar.showSnackbar("Couldn't reach the office. Nothing was changed.") }
-                    } else null,
                     queueState = queueState, onQueued = { queueRevision++ },
                     queuePanel = queuePanel,
                     onQueueAction = if (connected && !cloud && !worker.isShell && data.threadActions) { action, item ->

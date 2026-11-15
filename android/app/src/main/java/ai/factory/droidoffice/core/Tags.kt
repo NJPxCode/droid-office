@@ -594,8 +594,6 @@ object Tags {
         const val THREAD_SEARCH_CLOSE = "worker.thread.search.close"
         /** The compaction divider ("Compacted 120k tokens"). */
         const val THREAD_COMPACTION = "worker.thread.compaction"
-        /** The composer's session settings chip (model, effort and Spec). */
-        const val COMPOSER_SETTINGS = "composer.settings"
         /** Factory's queued messages panel at the top of the composer, and its Clear all. */
         const val COMPOSER_QUEUE = "composer.queue"
         const val COMPOSER_QUEUE_CLEAR = "composer.queue.clear"
@@ -621,7 +619,6 @@ object Tags {
         const val THREAD_SIDE = "worker.thread.side"
         const val THREAD_SIDE_CLOSE = "worker.thread.side.close"
         const val THREAD_COPY = "worker.thread.copy"
-        const val COMPOSER_MODEL_MENU = "composer.model_menu"
         const val THREAD_IMAGE_PREVIOUS = "worker.thread.image_viewer.previous"
         const val THREAD_IMAGE_NEXT = "worker.thread.image_viewer.next"
         const val THREAD_IMAGE_COUNT = "worker.thread.image_viewer.count"
@@ -640,8 +637,6 @@ object Tags {
         fun removeImage(number: Int) = "composer.remove_image/$number"
         fun rewindFile(path: String) = "worker.thread.rewind.file/$path"
         fun copyChoice(choice: String) = "worker.thread.copy/$choice"
-        fun composerModel(id: String) = "composer.model/$id"
-        fun composerEffort(id: String) = "composer.effort/$id"
         /** A chip in [PASTES], by its paste's number: tapping it puts the text back in the draft. */
         fun paste(number: Int) = "composer.paste/$number"
         fun removePaste(number: Int) = "composer.remove_paste/$number"

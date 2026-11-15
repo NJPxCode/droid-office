@@ -71,20 +71,6 @@ object ThreadCompose {
         return Recall(at, prompts[at])
     }
 
-    private val EFFORT = mapOf("off" to "Off", "none" to "Off", "minimal" to "Minimal", "low" to "Low", "medium" to "Medium", "high" to "High", "xhigh" to "Extra high", "max" to "Max")
-
-    /** Droid's label for a reasoning effort id: "Extra high" for `xhigh`. */
-    fun effortLabel(effort: String): String = EFFORT[effort.lowercase(Locale.ROOT)] ?: effort
-
-    /** The composer's model and effort, with Spec when active; autonomy stays office-managed. */
-    fun settingsText(worker: WorkerInfo, settings: ThreadSessionSettings?): String {
-        val mode = "Spec".takeIf { settings?.interactionMode == "spec" }
-        val model = settings?.modelName ?: settings?.model ?: worker.activeModel ?: worker.model
-        val effort = (settings?.reasoningEffort ?: worker.activeEffort ?: worker.effort)?.let(::effortLabel)
-            ?.takeIf { model?.contains(it, ignoreCase = true) != true }
-        return listOfNotNull(mode, model, effort).joinToString(" · ")
-    }
-
     /**
      * The draft as it is sent: each paste's first token replaced by its text, in one pass over [value]
      * so a paste whose text happens to contain another paste's token stays as pasted.

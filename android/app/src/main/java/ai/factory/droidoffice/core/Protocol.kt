@@ -571,13 +571,6 @@ object ClientMsg {
         if (restore == "choose") put("files", JsonArray(files.map { JsonPrimitive(it) }))
     }
 
-    /** Changes the session's reasoning effort (`effort`, an effort id) or model (`model`, a model id) through Droid's own keys and /model picker. */
-    fun setting(workerId: String, setting: String, value: String) = obj("worker.setting") {
-        require(setting == "effort" || setting == "model")
-        put("workerId", workerId)
-        put("setting", setting)
-        put("value", value)
-    }
 
     /** Closes Droid's side chat (/btw) when the terminal shows it. */
     fun closeSide(workerId: String) = obj("worker.side") {

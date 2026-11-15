@@ -87,10 +87,6 @@ class ProtocolTest {
         val choose = Json.parseToJsonElement(ClientMsg.rewind("w1", "u1:text", "choose", listOf("src/a.ts"))).jsonObject
         assertEquals("choose", choose.getValue("restore").jsonPrimitive.content)
         assertEquals(listOf("src/a.ts"), choose.getValue("files").jsonArray.map { it.jsonPrimitive.content })
-        val setting = Json.parseToJsonElement(ClientMsg.setting("w1", "effort", "high")).jsonObject
-        assertEquals("worker.setting", setting.getValue("t").jsonPrimitive.content)
-        assertEquals("effort", setting.getValue("setting").jsonPrimitive.content)
-        assertEquals("high", setting.getValue("value").jsonPrimitive.content)
         val side = Json.parseToJsonElement(ClientMsg.closeSide("w1")).jsonObject
         assertEquals("worker.side", side.getValue("t").jsonPrimitive.content)
         assertEquals(true, side.getValue("close").jsonPrimitive.content.toBoolean())

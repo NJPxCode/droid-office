@@ -24,23 +24,6 @@ import org.junit.Test
 /** Mirrors tests/thread-compose.test.ts, so the phone's composer edits drafts as the web's does. */
 class ThreadComposeTest {
     @Test
-    fun settingsShowModelEffortAndSpecButNeverAutonomy() {
-        val worker = WorkerInfo(id = "w", model = "default", effort = "low", activeModel = "active", activeEffort = "medium")
-        assertEquals("active · Medium", ThreadCompose.settingsText(worker, null))
-        assertEquals("default · Low", ThreadCompose.settingsText(worker.copy(activeModel = null, activeEffort = null), null))
-        val settings = ThreadSessionSettings(model = "model-id", modelName = "Opus", reasoningEffort = "high")
-        for (level in listOf(null, "off", "low", "medium", "high")) {
-            val managed = settings.copy(autonomyLevel = level, autonomyMode = "yolo")
-            assertEquals("Opus · High", ThreadCompose.settingsText(worker, managed))
-            assertEquals("Spec · Opus · High", ThreadCompose.settingsText(worker, managed.copy(interactionMode = "spec")))
-        }
-        assertEquals("Opus High", ThreadCompose.settingsText(worker, settings.copy(modelName = "Opus High")))
-        assertEquals("model-id · High", ThreadCompose.settingsText(worker, settings.copy(modelName = null)))
-        assertEquals("Opus · Extra high", ThreadCompose.settingsText(worker, settings.copy(reasoningEffort = "xhigh")))
-        assertEquals("", ThreadCompose.settingsText(WorkerInfo(id = "empty"), ThreadSessionSettings(autonomyLevel = "high")))
-    }
-
-    @Test
     fun aPasteBecomesAChipOnlyPastTheCharacterOrLineThreshold() {
         assertFalse(isLargePaste("x".repeat(PASTE_CHIP_CHARS)))
         assertTrue(isLargePaste("x".repeat(PASTE_CHIP_CHARS + 1)))
@@ -144,12 +127,4 @@ class ThreadComposeTest {
         // A rewind can shorten the history mid-walk.
         assertEquals(ThreadCompose.Recall(0, "only"), ThreadCompose.recall(listOf("only"), 3, up = false, text = "gone", caret = 4, draft = "typing"))
         assertEquals(ThreadCompose.Recall(0, "only"), ThreadCompose.recall(listOf("only"), 3, up = true, text = "gone", caret = 4, draft = "typing"))
-    }
-
-    @Test
-    fun effortLabelsReadAsDroidNamesThem() {
-        assertEquals("Extra high", ThreadCompose.effortLabel("xhigh"))
-        assertEquals("Off", ThreadCompose.effortLabel("none"))
-        assertEquals("turbo", ThreadCompose.effortLabel("turbo"))
-    }
-}
+    }}

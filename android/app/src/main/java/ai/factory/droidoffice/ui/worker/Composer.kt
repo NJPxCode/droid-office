@@ -42,8 +42,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -107,12 +105,10 @@ import ai.factory.droidoffice.core.SlashCommands
 import ai.factory.droidoffice.core.Tags
 import ai.factory.droidoffice.core.ThreadCompose
 import ai.factory.droidoffice.core.ThreadQueue
-import ai.factory.droidoffice.core.ThreadSessionSettings
 import ai.factory.droidoffice.core.WorkerInfo
 import ai.factory.droidoffice.core.WorkspaceMention
 import ai.factory.droidoffice.net.ThreadFiles
 import ai.factory.droidoffice.ui.LocalGraph
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.factory.droidoffice.ui.LocalSnackbar
 import ai.factory.droidoffice.ui.components.Spinner
 import ai.factory.droidoffice.ui.components.tagged
@@ -159,11 +155,8 @@ fun Composer(
     /** Text selected in the Thread to quote at the cursor, then [onQuoted] once it is in the draft. */
     quote: String? = null,
     onQuoted: () -> Unit = {},
-    settings: ThreadSessionSettings? = null,
     /** This conversation's prompts, newest first: Up and Down on a hardware keyboard walk them. */
     prompts: List<String> = emptyList(),
-    /** Changes the model (`model`, a model id) or reasoning effort (`effort`) from the settings chip; null leaves it read-only. */
-    onSetting: ((setting: String, value: String) -> Unit)? = null,
     queuePanel: ThreadQueue.Panel = ThreadQueue.Panel.EMPTY,
     onQueueAction: ((action: String, item: ThreadQueue.Panel.Item) -> Unit)? = null,
 ) {
@@ -433,36 +426,34 @@ fun Composer(
                     )
                     Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
                 }
-                Box(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 12.dp, vertical = 10.dp), contentAlignment = Alignment.CenterStart) {
-                    if (text.isEmpty()) Text(
-                        hint, style = MaterialTheme.typography.bodyLarge, color = ThreadPalette.TextTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.clearAndSetSemantics {},
-                    )
-                    BasicTextField(
-                        value = value,
-                        onValueChange = ::typed,
-                        textStyle = if (w.isShell) LocalOfficeType.current.monoBody.copy(fontSize = 15.sp) else MaterialTheme.typography.bodyLarge.copy(color = ThreadPalette.Text),
-                        cursorBrush = SolidColor(ThreadPalette.Accent),
-                        singleLine = w.isShell,
-                        maxLines = if (w.isShell) 1 else if (ime) 3 else 6,
-                        keyboardOptions = if (w.isShell) {
-                            KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Send)
-                        } else {
-                            KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
-                        },
-                        keyboardActions = KeyboardActions(onSend = { send(false) }),
-                        modifier = Modifier.fillMaxWidth().focusRequester(focus).then(keys).semantics { contentDescription = hint.removeSuffix("…") }.tagged(Tags.Worker.INPUT),
-                    )
-                }
-                Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                // One row keeps the composer short: the draft grows upward and the buttons stay on its last line.
+                Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.Bottom) {
                     if (!w.isShell) {
                         Box(
                             Modifier.size(32.dp).clip(control).clickable { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }.tagged(Tags.Worker.ATTACH),
                             contentAlignment = Alignment.Center,
                         ) { Icon(Icons.Default.Add, "Attach pictures", tint = ThreadPalette.TextSecondary) }
                     }
-                    Box(Modifier.weight(1f)) {
-                        ModelChip(w, settings, onSetting)
+                    Box(Modifier.weight(1f).heightIn(min = 32.dp).padding(horizontal = 8.dp, vertical = 4.dp), contentAlignment = Alignment.CenterStart) {
+                        if (text.isEmpty()) Text(
+                            hint, style = MaterialTheme.typography.bodyLarge, color = ThreadPalette.TextTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clearAndSetSemantics {},
+                        )
+                        BasicTextField(
+                            value = value,
+                            onValueChange = ::typed,
+                            textStyle = if (w.isShell) LocalOfficeType.current.monoBody.copy(fontSize = 15.sp) else MaterialTheme.typography.bodyLarge.copy(color = ThreadPalette.Text),
+                            cursorBrush = SolidColor(ThreadPalette.Accent),
+                            singleLine = w.isShell,
+                            maxLines = if (w.isShell) 1 else if (ime) 3 else 6,
+                            keyboardOptions = if (w.isShell) {
+                                KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Send)
+                            } else {
+                                KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
+                            },
+                            keyboardActions = KeyboardActions(onSend = { send(false) }),
+                            modifier = Modifier.fillMaxWidth().focusRequester(focus).then(keys).semantics { contentDescription = hint.removeSuffix("…") }.tagged(Tags.Worker.INPUT),
+                        )
                     }
                     if (queueable) {
                         Text(
@@ -568,53 +559,6 @@ fun Composer(
     }
 }
 
-/**
- * The composer's model and effort as Droid's mode line shows them (with Spec when active). With
- * [onSetting] it opens a menu of the model's reasoning efforts and the models Droid offers, changed
- * through Droid's own Tab key and /model picker.
- */
-@Composable
-private fun ModelChip(w: WorkerInfo, settings: ThreadSessionSettings?, onSetting: ((setting: String, value: String) -> Unit)?) {
-    val graph = LocalGraph.current
-    val catalogue by graph.connection.catalogue.collectAsStateWithLifecycle()
-    var open by remember(w.id) { mutableStateOf(false) }
-    LaunchedEffect(open) { if (open && catalogue == null) graph.connection.models() }
-    val shape = RoundedCornerShape(3.dp)
-    Text(
-        ThreadCompose.settingsText(w, settings),
-        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ThreadPalette.TextSecondary),
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.padding(horizontal = 4.dp).clip(shape)
-            .then(if (onSetting != null) Modifier.clickable(role = Role.Button, onClickLabel = "Change the model or reasoning effort") { open = true } else Modifier)
-            .padding(horizontal = 4.dp, vertical = 6.dp).tagged(Tags.Worker.COMPOSER_SETTINGS),
-    )
-    if (onSetting == null) return
-    DropdownMenu(open, onDismissRequest = { open = false }, containerColor = ThreadPalette.Surface, modifier = Modifier.heightIn(max = 420.dp).tagged(Tags.Worker.COMPOSER_MODEL_MENU)) {
-        val models = catalogue?.models
-        val efforts = models?.firstOrNull { it.id == settings?.model }?.supportedReasoningEfforts.orEmpty()
-        @Composable
-        fun heading(text: String) = Text(text, style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextTertiary), modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
-        @Composable
-        fun row(label: String, current: Boolean, tag: String, pick: () -> Unit) = DropdownMenuItem(
-            text = { Text(label, color = if (current) ThreadPalette.Accent else ThreadPalette.Text) },
-            onClick = {
-                open = false
-                pick()
-            },
-            modifier = Modifier.tagged(tag),
-        )
-        if (efforts.size > 1) {
-            heading("REASONING EFFORT")
-            for (effort in efforts) row(ThreadCompose.effortLabel(effort), settings?.reasoningEffort == effort, Tags.Worker.composerEffort(effort)) { onSetting("effort", effort) }
-        }
-        heading("MODEL")
-        if (models == null) Text("Loading Droid models…", color = ThreadPalette.TextTertiary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
-        else for (model in models.filter { !it.legacy || it.id == settings?.model }) {
-            row(model.displayName.ifBlank { model.id }, model.id == settings?.model, Tags.Worker.composerModel(model.id)) { onSetting("model", model.id) }
-        }
-    }
-}
 
 /**
  * Droid's slash commands that start with what's typed, over the composer: tapping one fills it in.
