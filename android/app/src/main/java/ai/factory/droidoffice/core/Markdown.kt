@@ -1,6 +1,5 @@
 package ai.factory.droidoffice.core
 
-import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -14,7 +13,7 @@ import kotlinx.serialization.json.intOrNull
 
 /**
  * The part of Markdown a worker's replies use, parsed into blocks of styled runs for the thread to
- * lay out: headings, paragraphs, lists (with task boxes), quotes, rules, fenced code, `email` drafts,
+ * lay out: headings, paragraphs, lists (with task boxes), quotes, rules, fenced code,
  * `<json-render>` widgets, GitHub tables, and inline code, bold, italic, strikethrough and links.
  * Pipe rows that aren't a well-formed table (no delimiter row, or one with a different number of
  * columns than its header) stay as their own text in a code block, so nothing is lost or guessed at.
@@ -39,17 +38,13 @@ object Markdown {
         /** [marker] is "•", "1." and so on; [checked] is set for a task-list item. */
         data class Item(val marker: String, val depth: Int, val spans: List<Span>, val checked: Boolean? = null) : Block
         data class Quote(val spans: List<Span>) : Block
-        data class Code(val text: String, val language: String? = null) : Block
-        data class Email(
-            val to: String,
-            val cc: String? = null,
-            val bcc: String? = null,
-            val subject: String,
-            val body: String,
-            val raw: String,
-        ) : Block {
-            fun mailtoUri(): String = buildMailtoUri(this)
-        }
+        /**
+         * A GitHub alert quote (`> [!NOTE]`): [title] is the text after the marker, if any, and each of
+         * [paragraphs] is a run of quoted lines between blank ones.
+         */
+        data class Alert(val kind: AlertKind, val title: String?, val paragraphs: List<List<Span>>) : Block
+        /** [open] while the closing fence hasn't arrived yet (the message is still streaming). */
+        data class Code(val text: String, val language: String? = null, val open: Boolean = false) : Block
         data class Widget(val rawJson: String, val complete: Boolean) : Block
         /** A `$$…$$` equation on its own line: [tex] without the dollars, [raw] as written. */
         data class Math(val tex: String, val raw: String) : Block
@@ -57,10 +52,12 @@ object Markdown {
         data class Image(val alt: String, val src: String) : Block
         data object Rule : Block
         /** Every row has [align]'s number of cells; a short row is padded with empty ones, a long one widens the table. */
-        data class Table(val align: List<Align>, val header: List<List<Span>>, val rows: List<List<List<Span>>>) : Block
+        data class Table(val align: List<Align>, val header: List<List<Span>>, val rows: List<List<List<Span>>>, val raw: String = "") : Block
     }
 
     enum class Align { None, Left, Center, Right }
+
+    enum class AlertKind(val label: String) { Note("Note"), Tip("Tip"), Important("Important"), Warning("Warning"), Caution("Caution") }
 
     enum class TokenKind { Plain, Keyword, Type, String, Comment, Number }
 
@@ -112,6 +109,10 @@ object Markdown {
     private val urlScheme = Regex("""^[a-zA-Z][a-zA-Z0-9+.-]*:""")
     private val fileUrl = Regex("""^file://(?:localhost)?(?=/)""", RegexOption.IGNORE_CASE)
     private val percentEscape = Regex("""%[0-9a-fA-F]{2}""")
+    private val alertMarker = Regex("""^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)]\s*(.*)$""", RegexOption.IGNORE_CASE)
+    private val codePathChars = Regex("""^[A-Za-z0-9._@+~ /-]+$""")
+    private val codePathExtension = Regex("""\.[A-Za-z0-9_]{1,16}$""")
+    private val codePathLines = Regex(""":(\d+)(?::(\d+)|[-–](\d+))?$""")
 
     /**
      * The file on the office's machine an image [src] names (`/Users/me/shot.png`, `~/a.png`,
@@ -140,8 +141,8 @@ object Markdown {
 
     /**
      * With [breaks], a line break inside a paragraph stays one, as the owner typed it, rather than
-     * joining the lines with a space. With [paths], workspace file references in the prose and whole
-     * inline code spans (`src/a.ts:12`) carry [Span.file], as the web Thread links them. With
+     * joining the lines with a space. With [paths], whole inline code spans that name a workspace
+     * file (`src/a.ts:12`) carry [Span.file]; as in the Factory app, paths in plain prose stay text. With
      * [math], TeX math ([TexMath.extract]) is [Span.math], and a `$$…$$` line of its own is [Block.Math].
      */
     fun parse(source: String, breaks: Boolean = false, paths: Boolean = false, math: Boolean = false): List<Block> {
@@ -184,8 +185,9 @@ object Markdown {
                 display != null -> Block.Math(display.tex, display.raw)
                 // The fence rules here and in [parseChunk] differ at the edges; code shows as written.
                 b is Block.Code -> b.copy(text = restore(b.text))
+                b is Block.Math -> b.copy(tex = restore(b.tex), raw = restore(b.raw))
+                b is Block.Table -> (mapSpans(b, ::spans) as Block.Table).copy(raw = restore(b.raw))
                 b is Block.Image -> b.copy(alt = restore(b.alt), src = restore(b.src))
-                b is Block.Email -> b.copy(to = restore(b.to), cc = b.cc?.let(::restore), bcc = b.bcc?.let(::restore), subject = restore(b.subject), body = restore(b.body), raw = restore(b.raw))
                 else -> mapSpans(b, ::spans)
             }
         }
@@ -196,41 +198,42 @@ object Markdown {
         is Block.Paragraph -> b.copy(spans = f(b.spans))
         is Block.Item -> b.copy(spans = f(b.spans))
         is Block.Quote -> b.copy(spans = f(b.spans))
+        is Block.Alert -> b.copy(paragraphs = b.paragraphs.map(f))
         is Block.Table -> b.copy(header = b.header.map(f), rows = b.rows.map { r -> r.map(f) })
         else -> b
     }
 
     /**
-     * Marks the workspace files [spans] name: an inline code span that is one path as a whole, and
-     * each path in plain text ([WorkspacePaths.find]). Links keep their own target.
+     * Marks the workspace files [spans] name: an inline code span that is one path as a whole. Plain
+     * prose is left alone, as the Factory app links only inline code. Links keep their own target.
      */
-    fun linkPaths(spans: List<Span>): List<Span> {
-        val out = ArrayList<Span>(spans.size)
-        for (s in spans) {
-            if (s.link != null || s.file != null || s.math != null) {
-                out += s
-                continue
-            }
-            if (s.code) {
-                val raw = s.text.trim()
-                val ref = if (raw.isNotEmpty() && raw.none { it.isWhitespace() }) WorkspacePaths.validate(raw, true) else null
-                out += if (ref != null) s.copy(file = ref) else s
-                continue
-            }
-            val found = WorkspacePaths.find(s.text)
-            if (found.isEmpty()) {
-                out += s
-                continue
-            }
-            var at = 0
-            for (m in found) {
-                if (m.start > at) out += s.copy(text = s.text.substring(at, m.start))
-                out += s.copy(text = m.raw, file = m.ref)
-                at = m.end
-            }
-            if (at < s.text.length) out += s.copy(text = s.text.substring(at))
+    fun linkPaths(spans: List<Span>): List<Span> = spans.map { s ->
+        if (!s.code || s.link != null || s.file != null || s.math != null) return@map s
+        val raw = s.text.trim()
+        val ref = codePath(raw) ?: if (raw.none { it.isWhitespace() }) WorkspacePaths.validate(raw, true) else null
+        if (ref != null) s.copy(file = ref) else s
+    }
+
+    /** Factory's inline-code path detection, including absolute paths and paths with single spaces. */
+    private fun codePath(raw: String): WorkspacePaths.Ref? {
+        val text = raw.trim().replace('\\', '/')
+        if (text.isEmpty() || text.length > 512 || "  " in text || "://" in text || " /" in text || "/ " in text) return null
+        if (text.any { it.isWhitespace() && it != ' ' }) return null
+        val suffix = codePathLines.find(text)
+        val path = text.substring(0, suffix?.range?.first ?: text.length)
+        if (!codePathChars.matches(path)) return null
+        if (path.startsWith("//") || path.split('/').any { it == ".." }) return null
+        val base = path.substringAfterLast('/')
+        val extension = codePathExtension.find(base)?.value
+        if ('/' !in path && extension == null) return null
+        if (path.startsWith('@') && extension == null) return null
+        if ('/' !in path && extension != null) {
+            val stem = base.removeSuffix(extension)
+            if (stem.any { it.isUpperCase() } && stem != stem.uppercase() && stem.any { it.isLowerCase() }) return null
         }
-        return out
+        val line = suffix?.groupValues?.get(1)?.toIntOrNull()
+        val end = suffix?.groupValues?.get(3)?.toIntOrNull()?.let { maxOf(it, line ?: it) }
+        return WorkspacePaths.Ref(path, line, end)
     }
 
     private fun parseChunk(source: String, breaks: Boolean): List<Block> {
@@ -250,13 +253,15 @@ object Markdown {
                 val close = f.groupValues[1]
                 val lang = f.groupValues[2].ifBlank { null }
                 val body = ArrayList<String>()
+                val from = i
                 i++
                 while (i < lines.size && !lines[i].trimStart().startsWith(close)) body += lines[i++]
+                val open = i >= lines.size
                 val rawBody = body.joinToString("\n")
-                if (lang?.equals("email", ignoreCase = true) == true) {
-                    out += parseEmail(rawBody) ?: Block.Code(rawBody, lang)
-                } else {
-                    out += Block.Code(rawBody, lang)
+                out += when {
+                    lang?.equals("math", ignoreCase = true) == true && !open && rawBody.isNotBlank() ->
+                        Block.Math(rawBody.trim(), lines.subList(from, i + 1).joinToString("\n"))
+                    else -> Block.Code(rawBody, lang, open)
                 }
                 i++
                 continue
@@ -290,7 +295,7 @@ object Markdown {
                     flush()
                     val quoted = ArrayList<String>()
                     while (i < lines.size && lines[i].trimStart().startsWith(">")) quoted += lines[i++].trimStart().removePrefix(">").removePrefix(" ")
-                    out += Block.Quote(inline(quoted.joinToString(" ") { it.trim() }))
+                    out += alert(quoted) ?: Block.Quote(inline(quoted.joinToString(" ") { it.trim() }))
                     continue
                 }
                 bullet.matches(line) -> {
@@ -460,66 +465,6 @@ object Markdown {
         return chunks
     }
 
-    private val knownEmailHeaders = setOf("to", "cc", "bcc", "in-reply-to", "subject", "from", "reply-to")
-    private val continuationHeader = Regex("""^[ \t]+\S.*$""")
-    private val angleAddr = Regex("""<([^<>@\s]+@[^<>@\s]+)>""")
-
-    /** Parses an `email` fenced code block with RFC-style headers before the blank line + body. */
-    fun parseEmail(raw: String): Block.Email? {
-        val normalized = raw.replace("\r\n", "\n").trimStart('\n')
-        if (normalized.isBlank()) return null
-        val blankIdx = normalized.indexOf("\n\n")
-        val headerPart = if (blankIdx == -1) normalized else normalized.substring(0, blankIdx)
-        val bodyPart = if (blankIdx == -1) "" else normalized.substring(blankIdx + 2)
-
-        val headers = LinkedHashMap<String, String>()
-        var lastKey = ""
-        for (line in headerPart.split('\n')) {
-            if (lastKey.isNotEmpty() && continuationHeader.matches(line)) {
-                headers[lastKey] = "${headers[lastKey].orEmpty()} ${line.trim()}".trim()
-                continue
-            }
-            val colon = line.indexOf(':')
-            if (colon <= 0) return null
-            val key = line.substring(0, colon).trim().lowercase()
-            if (key !in knownEmailHeaders) return null
-            val value = line.substring(colon + 1).trim()
-            val prev = headers[key]
-            headers[key] = if (!prev.isNullOrEmpty()) "$prev, $value" else value
-            lastKey = key
-        }
-
-        val to = headers["to"].orEmpty()
-        val subject = headers["subject"].orEmpty()
-        if (to.isEmpty() && subject.isEmpty()) return null
-
-        return Block.Email(
-            to = to,
-            cc = headers["cc"]?.takeIf { it.isNotEmpty() },
-            bcc = headers["bcc"]?.takeIf { it.isNotEmpty() },
-            subject = subject,
-            body = bodyPart.trimEnd('\n'),
-            raw = normalized.trimEnd('\n'),
-        )
-    }
-
-    private fun urlEncodeComponent(value: String): String =
-        URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
-
-    private fun buildMailtoUri(email: Block.Email): String {
-        val recipients = email.to.split(',').mapNotNull { part ->
-            val trimmed = part.trim().ifEmpty { return@mapNotNull null }
-            val addr = angleAddr.find(trimmed)?.groupValues?.get(1) ?: trimmed
-            urlEncodeComponent(addr).replace("%40", "@")
-        }.joinToString(",")
-        val params = ArrayList<String>(4)
-        email.cc?.takeIf { it.isNotEmpty() }?.let { params += "cc=${urlEncodeComponent(it)}" }
-        email.bcc?.takeIf { it.isNotEmpty() }?.let { params += "bcc=${urlEncodeComponent(it)}" }
-        if (email.subject.isNotEmpty()) params += "subject=${urlEncodeComponent(email.subject)}"
-        if (email.body.isNotEmpty()) params += "body=${urlEncodeComponent(email.body)}"
-        return if (params.isEmpty()) "mailto:$recipients" else "mailto:$recipients?${params.joinToString("&")}"
-    }
-
     private val delimiterCell = Regex("""^:?-+:?$""")
 
     /**
@@ -548,7 +493,7 @@ object Markdown {
         while (i < lines.size && lines[i].isNotBlank() && '|' in lines[i] && fence.find(lines[i]) == null) body += cells(lines[i++])
         val width = maxOf(head.size, body.maxOfOrNull { it.size } ?: 0)
         fun row(cells: List<String>) = List(width) { c -> inline(cells.getOrElse(c) { "" }) }
-        return Block.Table(List(width) { align.getOrElse(it) { Align.None } }, row(head), body.map(::row)) to i
+        return Block.Table(List(width) { align.getOrElse(it) { Align.None } }, row(head), body.map(::row), lines.subList(at, i).joinToString("\n")) to i
     }
 
     /**
@@ -589,6 +534,21 @@ object Markdown {
         }
         out += cell.toString().trim()
         return out
+    }
+
+    private fun alert(quoted: List<String>): Block.Alert? {
+        val m = alertMarker.matchEntire(quoted.first().trim()) ?: return null
+        val kind = AlertKind.valueOf(m.groupValues[1].lowercase().replaceFirstChar { it.uppercase() })
+        val paragraphs = ArrayList<List<Span>>()
+        val para = ArrayList<String>()
+        for (l in quoted.drop(1) + "") {
+            if (l.isNotBlank()) para += l.trim()
+            else if (para.isNotEmpty()) {
+                paragraphs += inline(para.joinToString(" "))
+                para.clear()
+            }
+        }
+        return Block.Alert(kind, m.groupValues[2].trim().ifEmpty { null }, paragraphs)
     }
 
     private fun item(marker: String, indent: String, rest: String): Block.Item {
@@ -645,9 +605,11 @@ object Markdown {
                 val end = if (close > 0) s.indexOf(')', close + 2) else -1
                 if (close > 0 && end > 0 && !s.substring(i + 1, close).contains('[')) {
                     val url = s.substring(close + 2, end).trim()
-                    if (url.startsWith("http://") || url.startsWith("https://")) {
+                    val web = url.startsWith("http://") || url.startsWith("https://")
+                    val file = if (!web && url.startsWith("file://", ignoreCase = true)) localImagePath(url)?.let(::codePath) else null
+                    if (web || file != null) {
                         emit()
-                        parseInline(s.substring(i + 1, close), style.copy(link = url), out)
+                        parseInline(s.substring(i + 1, close), style.copy(link = if (web) url else null, file = file), out)
                         i = end + 1
                         continue
                     }

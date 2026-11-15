@@ -9,6 +9,20 @@ import org.junit.Test
 
 class RichPageTest {
     @Test
+    fun unfinishedMermaidWaitsOnlyWhileTheReplyStillStreams() {
+        val open = Markdown.parse("```mermaid\ngraph TD\nA --> B").single() as Markdown.Block.Code
+        assertEquals(RichPage.MermaidMode.Pending, RichPage.mermaidMode(open, streaming = true, showSource = false, failed = false))
+        assertEquals(RichPage.MermaidMode.Source, RichPage.mermaidMode(open, streaming = false, showSource = false, failed = false))
+        assertEquals(RichPage.MermaidMode.Pending, RichPage.mermaidMode(open, streaming = true, showSource = true, failed = true))
+        val complete = open.copy(open = false)
+        assertEquals(RichPage.MermaidMode.Drawing, RichPage.mermaidMode(complete, streaming = true, showSource = false, failed = false))
+        assertEquals(RichPage.MermaidMode.Drawing, RichPage.mermaidMode(complete, streaming = false, showSource = false, failed = false))
+        assertEquals(RichPage.MermaidMode.Source, RichPage.mermaidMode(complete, streaming = false, showSource = true, failed = false))
+        assertEquals(RichPage.MermaidMode.Source, RichPage.mermaidMode(complete, streaming = false, showSource = false, failed = true))
+        assertEquals(RichPage.MermaidMode.Pending, RichPage.mermaidMode(open.copy(text = ""), streaming = true, showSource = false, failed = false))
+    }
+
+    @Test
     fun decodesTheRichBlockPagesAnswers() {
         assertEquals(RichPage.Msg.Ready, RichPage.decode("""{"type":"ready"}"""))
         assertEquals(

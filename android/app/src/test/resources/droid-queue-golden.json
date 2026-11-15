@@ -26,6 +26,29 @@
       ]
     },
     {
+      "name": "a phone-sized terminal wraps the hint onto two rows",
+      "rows": [
+        "   Execute adb shell input tap 230 340",
+        "",
+        "   Queued messages:",
+        "   Push everything to the pull request at the e…",
+        "",
+        "   Ctrl+R to modify queue   Ctrl+G to pull top",
+        "   Ctrl+X to clear queue",
+        "",
+        " ⠋ Executing...  (Press ESC to stop)",
+        "",
+        " Auto (High) · allow all commands  Opus 5.5 (High)",
+        "╭──────────────────────────────────────────────╮",
+        "│ > Enter to steer · Ctrl+Enter to queue       │",
+        "╰──────────────────────────────────────────────╯",
+        "[⏱ 1h 58m, context: 79%] ? for help  MCP ✓ | IDE ○"
+      ],
+      "expected": [
+        { "text": "Push everything to the pull request at the e", "cut": true, "more": 0 }
+      ]
+    },
+    {
       "name": "a turn with nothing queued",
       "rows": [
         "   Run sleep 40 in a shell command, then say done.",

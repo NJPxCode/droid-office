@@ -46,7 +46,7 @@ type Fixture = {
 
 /** Keep the Droid CLI in this test fixture from seeing a user's config or credentials. */
 function isolateAgentEnvironment(f: Fixture, t: { after(fn: () => void): void }) {
-  const previous = {
+  const previous: Record<string, string | undefined> = {
     PATH: process.env.PATH,
     HOME: process.env.HOME,
     USERPROFILE: process.env.USERPROFILE,
@@ -64,12 +64,15 @@ function isolateAgentEnvironment(f: Fixture, t: { after(fn: () => void): void })
   process.env.XDG_DATA_HOME = path.join(f.root, 'xdg-data');
   process.env.XDG_STATE_HOME = path.join(f.root, 'xdg-state');
   process.env.XDG_CACHE_HOME = path.join(f.root, 'xdg-cache');
-  // Delete by variable name only. Do not read or log any credential value.
+  // Keep credential values only in memory to restore the parent environment; never log them.
   for (const key of Object.keys(process.env)) {
     // These are the office hook variables used by the in-process tests;
     // they are synthetic protocol values, not credentials.
     if (key.startsWith('DROID_OFFICE_')) continue;
-    if (/(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|SECRET|PASSWORD|CREDENTIAL|TOKEN)/i.test(key)) delete process.env[key];
+    if (/(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|SECRET|PASSWORD|CREDENTIAL|TOKEN)/i.test(key)) {
+      previous[key] = process.env[key];
+      delete process.env[key];
+    }
   }
   t.after(() => {
     for (const [key, value] of Object.entries(previous)) {
@@ -1160,6 +1163,25 @@ test("a subagent's hooks don't take over its worker's session (droid's own hook 
   hook('SessionStart', { source: 'resume' }, 'earlier-session');
   assert.equal(workers.get(worker.id)?.taskSince, undefined, 'switching sessions includes that session’s existing visible conversation');
   assert.equal(workers.get(worker.id)?.task, undefined, 'a different session cannot keep the previous session’s preview');
+});
+
+test('a late rewind SessionStart preserves the task but clear and later switches still reset it', async (t) => {
+  const { workers, worker, hook } = await liveWorker(t, 'original-session');
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'Keep this task over rewind' });
+  const task = workers.get(worker.id)?.task;
+  assert.ok(task);
+  const internal = Reflect.get(workers, 'workers').get(worker.id);
+  internal.rewindFork = { from: 'original-session', until: Date.now() + 30_000 };
+  hook('SessionStart', { source: 'resume' }, 'rewound-session');
+  assert.deepEqual(workers.get(worker.id)?.task, task);
+  assert.equal(internal.rewindFork, undefined);
+  hook('SessionStart', { source: 'clear' }, 'cleared-session');
+  assert.equal(workers.get(worker.id)?.task, undefined);
+  hook('UserPromptSubmit', { prompt: 'Another task' }, 'cleared-session');
+  internal.rewindFork = { from: 'cleared-session', until: Date.now() - 1 };
+  hook('SessionStart', { source: 'resume' }, 'another-session');
+  assert.equal(workers.get(worker.id)?.task, undefined);
 });
 
 test('session switches cannot resurrect the original hire preview after restart', async (t) => {

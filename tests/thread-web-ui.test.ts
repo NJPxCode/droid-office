@@ -251,7 +251,61 @@ test('worker-thread subscribes via thread.watch, consumes push snapshots immedia
   assert.deepEqual(errors, []);
 });
 
-test('renders V3 1-level exploration disclosures and top-level File Change, Command, and Delegation cards with user toggle persistence', { skip: chromium }, async (t) => {
+test('live tool output and nested reading positions survive canonical updates, and compaction stays factual', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountV3Thread(t);
+  const entries: ThreadEntry[] = Array.from({ length: 70 }, (_, i) => ({
+    id: `r${i}`,
+    seq: i,
+    role: 'assistant',
+    kind: 'tool',
+    name: 'Read',
+    input: JSON.stringify({ file_path: `src/file-${i}.ts` }),
+    output: i < 69 ? 'File contents' : undefined,
+  }));
+  const push = async (next: ThreadEntry[], busy = true) => {
+    await page.evaluate(
+      ({ entries, rows }) => {
+        (window as any).receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+      },
+      { entries: next, rows: presentThread(next, busy) },
+    );
+  };
+  await push(entries);
+  const scroll = page.locator('.wt-sg-scroll');
+  await page.waitForFunction(() => {
+    const el = document.querySelector<HTMLElement>('.wt-sg-scroll');
+    return el && el.scrollTop > 0;
+  });
+  await scroll.evaluate((el) => {
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+    el.scrollTop = 85;
+  });
+  await push([...entries.slice(0, -1), { ...entries[69], output: 'Finished file' }]);
+  await page.waitForFunction(() => document.querySelector<HTMLElement>('.wt-sg-scroll')?.scrollTop === 85);
+  assert.equal(await scroll.getAttribute('data-touched'), 'true');
+
+  const command: ThreadEntry = { id: 'tool:cmd', seq: 71, role: 'assistant', kind: 'tool', name: 'Execute', input: JSON.stringify({ command: 'npm test', summary: 'Run checks' }) };
+  await push([...entries, command]);
+  await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').click();
+  await page.evaluate(() => {
+    (window as any).receive({
+      t: 'thread.live',
+      workerId: 'worker-1',
+      sessionId: 'session-1',
+      live: { rev: 1, at: Date.now(), status: 'responding', working: 'executing_tool', after: 'tool:cmd', tools: [{ id: 'tool:cmd', name: 'Execute', phase: 'running', startedAt: Date.now(), output: 'Live output before JSONL result' }] },
+    });
+  });
+  assert.match(await page.locator('.wt-cmd-out').innerText(), /Live output before JSONL result/);
+  await push([...entries, { ...command, output: 'Canonical final result' }, { id: 'compaction:done', seq: 72, role: 'system', kind: 'notice', name: 'compaction', text: 'Conversation compacted' }], false);
+  assert.equal(await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').getAttribute('aria-expanded'), 'true');
+  await page.locator('.wt-cmd-out').scrollIntoViewIfNeeded();
+  assert.match(await page.locator('.wt-cmd-out').innerText(), /Canonical final result/);
+  assert.doesNotMatch(await page.locator('.wt-cmd-out').innerText(), /Live output/);
+  assert.equal(await page.locator('.wt-compact-divider').innerText(), 'Compacted');
+  assert.deepEqual(errors, []);
+});
+
+test('renders Factory exploration groups and tool, file, command, and delegation rows with toggle persistence', { skip: chromium }, async (t) => {
   const { page, errors } = await mountV3Thread(t);
 
   const bigOld = Array.from({ length: 95 }, (_, i) => `const line${i + 1} = ${i};`).join('\n');
@@ -374,64 +428,66 @@ test('renders V3 1-level exploration disclosures and top-level File Change, Comm
   assert.equal(await page.locator('.wt-user-md strong').textContent(), 'styles');
   assert.equal(await page.locator('.wt-user-md code').textContent(), 'src/client/style.css');
 
-  // 1-level compact exploration disclosure (no nested .wt-run!)
+  // Exploration calls and their thought fold into one Factory summary group.
   assert.equal(await page.locator('.wt-run').count(), 0);
-  const explore = page.locator('details.wt-explore');
+  const explore = page.locator('.wt-sg[data-disclosure="explore:r1"]');
   assert.equal(await explore.count(), 1);
-  assert.equal(await explore.evaluate((el) => (el as HTMLDetailsElement).open), false);
-  assert.match(await explore.locator('> summary').innerText(), /Read a file · Searched the code/);
+  assert.equal(await explore.evaluate((el) => el.classList.contains('is-open')), false);
+  assert.match(await explore.locator('.wt-sg-label').innerText(), /Explored 2 searches and thought 1 time/);
+  await explore.locator('.wt-sg-trigger').click();
+  assert.equal(await explore.locator('.wt-tr.is-dense').count(), 2);
+  assert.equal(await explore.locator('.wt-thinking').count(), 1);
+  assert.match(await explore.locator('.wt-tr[data-disclosure="r1"] .wt-tr-subject').innerText(), /src\/a\.ts/);
 
-  // Normal file change card is open by default; generated lockfile is collapsed by default
-  const styleCard = page.locator('details.wt-change-file[data-disclosure*="style.css"]');
-  const lockCard = page.locator('details.wt-change-file[data-disclosure*="package-lock.json"]');
-  assert.equal(await styleCard.evaluate((el) => (el as HTMLDetailsElement).open), true);
-  assert.equal(await lockCard.evaluate((el) => (el as HTMLDetailsElement).open), false);
+  // Every file row starts closed; its chip carries the file name and line totals.
+  const styleCard = page.locator('.wt-tr[data-disclosure*="style.css"]');
+  const lockCard = page.locator('.wt-tr[data-disclosure*="package-lock.json"]');
+  assert.equal(await styleCard.evaluate((el) => el.classList.contains('is-open')), false);
+  assert.equal(await lockCard.evaluate((el) => el.classList.contains('is-open')), false);
   assert.equal(await styleCard.locator('.wt-diff-add').textContent(), '+1');
   assert.equal(await styleCard.locator('.wt-diff-del').textContent(), '-1');
+  await styleCard.locator('.wt-tr-trigger').click();
   assert.ok((await styleCard.locator('.wt-diff-word-del').count()) >= 1);
   assert.ok((await styleCard.locator('.wt-diff-word-add').count()) >= 1);
 
-  // Clicking file path header opens openFilePreviewModal WITHOUT collapsing details.wt-change-file!
-  await styleCard.locator('button.wt-change-path').click();
+  // The open-file action targets the first changed line without collapsing the row.
+  await styleCard.locator('.wt-change-open').click();
   const previewModal = page.locator('.modal.wt-file-modal');
   await previewModal.locator('.wt-file-lines').waitFor();
-  assert.equal(await styleCard.evaluate((el) => (el as HTMLDetailsElement).open), true);
+  assert.equal(await styleCard.evaluate((el) => el.classList.contains('is-open')), true);
   assert.equal(await previewModal.locator('.wt-file-line.is-target').getAttribute('data-line'), '30');
-  assert.deepEqual(await styleCard.locator('.wt-diff-num.is-new').allTextContents(), ['30', '', '31', '32']);
+  assert.equal(await styleCard.locator('tr.wt-diff-row.is-add .wt-diff-num').textContent(), '31');
   await page.keyboard.press('Escape');
   assert.equal(await previewModal.count(), 0);
 
-  // 80-line diff clamping + Show full diff toggle. A diff this big starts closed.
-  const bigCard = page.locator('details.wt-change-file[data-disclosure*="src/big.ts"]');
-  assert.equal(await bigCard.evaluate((el) => (el as HTMLDetailsElement).open), false);
-  await bigCard.locator('> summary').click();
-  assert.equal(await bigCard.locator('.wt-diff-row').count(), 80);
-  // Its file isn't readable here, so it has no gutter rather than numbers counted from 1.
+  // A large unnumbered diff uses Factory's compact table rather than the old 80-line clamp.
+  const bigCard = page.locator('.wt-tr[data-disclosure*="src/big.ts"]');
+  assert.equal(await bigCard.evaluate((el) => el.classList.contains('is-open')), false);
+  await bigCard.locator('.wt-tr-trigger').click();
+  assert.equal(await bigCard.locator('.wt-diff-row').count(), 190);
   assert.equal(await bigCard.locator('table.wt-diff-table.is-unnumbered').count(), 1);
   assert.equal(await bigCard.locator('.wt-diff-num').first().isVisible(), false);
-  const moreBtn = bigCard.locator('.wt-diff-more');
-  assert.match((await moreBtn.textContent()) ?? '', /Show full diff \(111 more lines\)/);
-  await moreBtn.click();
-  assert.equal(await bigCard.locator('.wt-diff-row').count(), 191);
-  assert.equal(await moreBtn.textContent(), 'Show less');
+  assert.equal(await bigCard.locator('.wt-diff-more').count(), 0);
 
-  // Command cards: succeeded command closed by default, failed command auto-opened!
-  const okCmd = page.locator('details.wt-command[data-disclosure="cmd-ok"]');
-  const failCmd = page.locator('details.wt-command[data-disclosure="cmd-fail"]');
-  assert.equal(await okCmd.evaluate((el) => (el as HTMLDetailsElement).open), false);
-  assert.equal(await failCmd.evaluate((el) => (el as HTMLDetailsElement).open), true);
-  assert.match(await okCmd.locator('.wt-cmd-line').innerText(), /\$\s*npm run lint/);
-  // Clicking Copy on closed command card does NOT toggle it open
-  await okCmd.locator('.wt-cmd-copy').click();
-  assert.equal(await okCmd.evaluate((el) => (el as HTMLDetailsElement).open), false);
+  // Commands start closed, including failed ones, and show their terminal body on demand.
+  const okCmd = page.locator('.wt-tr[data-disclosure="cmd-ok"]');
+  const failCmd = page.locator('.wt-tr[data-disclosure="cmd-fail"]');
+  assert.equal(await okCmd.evaluate((el) => el.classList.contains('is-open')), false);
+  assert.equal(await failCmd.evaluate((el) => el.classList.contains('is-open')), false);
+  assert.equal(await failCmd.locator('.wt-tr-state').textContent(), 'Command failed');
+  await okCmd.locator('.wt-tr-trigger').click();
+  assert.match(await okCmd.locator('.wt-cmd-out').innerText(), /\$\s*npm run lint/);
+  await okCmd.locator('.wt-tr-button[aria-label="Copy contents"]').click();
+  assert.equal(await okCmd.evaluate((el) => el.classList.contains('is-open')), true);
+  await failCmd.locator('.wt-tr-trigger').click();
+  assert.match(await failCmd.locator('.wt-cmd-out').innerText(), /FAIL tests\/app\.test\.ts/);
+  assert.equal(await failCmd.locator('.wt-tr-state').isVisible(), false);
 
-  // User manually closes styleCard and failCmd -> preserved across re-render when new message arrives!
-  await styleCard.locator('> summary').click();
-  await failCmd.locator('> summary').click();
-  // The thread records a toggle when its (asynchronous) toggle event arrives; the rows below re-render the cards.
-  await page.waitForFunction(() => [...document.querySelectorAll<HTMLElement>('details.wt-change-file[data-disclosure*="style.css"], details.wt-command[data-disclosure="cmd-fail"]')].every((el) => el.dataset.expectedOpen === 'false'));
-  assert.equal(await styleCard.evaluate((el) => (el as HTMLDetailsElement).open), false);
-  assert.equal(await failCmd.evaluate((el) => (el as HTMLDetailsElement).open), false);
+  // The owner's open and closed choices survive a later snapshot.
+  await styleCard.locator('.wt-tr-trigger').click();
+  await failCmd.locator('.wt-tr-trigger').click();
+  assert.equal(await styleCard.evaluate((el) => el.classList.contains('is-open')), false);
+  assert.equal(await failCmd.evaluate((el) => el.classList.contains('is-open')), false);
 
   const updatedEntries: ThreadEntry[] = [...entries, { id: 'm-after', seq: 11, role: 'assistant', kind: 'text', text: 'Fixed the failure.' }];
   await page.evaluate(
@@ -449,13 +505,14 @@ test('renders V3 1-level exploration disclosures and top-level File Change, Comm
     },
     { entries: updatedEntries, rows: presentThread(updatedEntries, false) },
   );
-  assert.equal(await styleCard.evaluate((el) => (el as HTMLDetailsElement).open), false, 'user-collapsed file change stays collapsed');
-  assert.equal(await failCmd.evaluate((el) => (el as HTMLDetailsElement).open), false, 'user-collapsed failed command stays collapsed');
+  assert.equal(await styleCard.evaluate((el) => el.classList.contains('is-open')), false, 'user-collapsed file change stays collapsed');
+  assert.equal(await failCmd.evaluate((el) => el.classList.contains('is-open')), false, 'user-collapsed failed command stays collapsed');
+  assert.equal(await okCmd.evaluate((el) => el.classList.contains('is-open')), true, 'user-opened command stays open');
 
-  // Delegation card Open thread button routes to child workerId
-  const delegateCard = page.locator('.wt-delegate-card');
-  assert.equal(await delegateCard.locator('.wt-delegate-agent').textContent(), 'Byte');
-  assert.equal(await delegateCard.locator('.wt-delegate-branch').textContent(), 'thread-v3-android');
+  // A delegated worker's row keeps the one-click jump to its Thread.
+  const delegateCard = page.locator('.wt-tr[data-disclosure="del-1"]');
+  assert.equal(await delegateCard.locator('.wt-tr-verb').textContent(), 'Hired Byte');
+  assert.equal(await delegateCard.locator('.wt-tr-subject').textContent(), 'Android Thread Parity');
   await delegateCard.locator('.wt-delegate-open').click();
   assert.deepEqual(await page.evaluate(() => (window as any).openedWorkers), ['45c311aadfc4']);
 
@@ -463,6 +520,88 @@ test('renders V3 1-level exploration disclosures and top-level File Change, Comm
   assert.deepEqual(errors, []);
 });
 
+test('opens live Factory groups, folds repeats and subagents, and expands long command output', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountV3Thread(t);
+  const push = (entries: ThreadEntry[], busy: boolean) =>
+    page.evaluate(
+      ({ entries, rows }) => {
+        (window as any).receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+      },
+      { entries, rows: presentThread(entries, busy) },
+    );
+
+  const exploration: ThreadEntry[] = [
+    { id: 'r1', seq: 1, role: 'assistant', kind: 'tool', name: 'Read', input: JSON.stringify({ file_path: 'src/a.ts' }), output: 'a' },
+    { id: 'g2', seq: 2, role: 'assistant', kind: 'tool', name: 'Grep', input: JSON.stringify({ pattern: 'a' }), output: 'src/a.ts:1:a' },
+  ];
+  await push(exploration, true);
+  const explore = page.locator('.wt-sg[data-disclosure="explore:r1"]');
+  assert.equal(await explore.evaluate((el) => el.classList.contains('is-open')), true);
+  // The group's rows stagger in; its label is read once it has painted.
+  await page.waitForFunction(() => /Exploring 2 searches/.test((document.querySelector('.wt-sg[data-disclosure="explore:r1"] .wt-sg-label') as HTMLElement | null)?.innerText ?? ''));
+  await push(exploration, false);
+  await page.waitForFunction(() => {
+    const group = document.querySelector('.wt-sg[data-disclosure="explore:r1"]');
+    return group && !group.classList.contains('is-open') && group.querySelector('.wt-sg-content')?.hasAttribute('hidden');
+  });
+
+  const repeated = ['x1', 'x2', 'x3', 'x4'].map(
+    (id, index): ThreadEntry => ({
+      id,
+      seq: index + 1,
+      role: 'assistant',
+      kind: 'tool',
+      name: 'Execute',
+      input: JSON.stringify({ command: `npm run ${index}`, summary: index % 2 ? 'build it' : 'test it' }),
+      output: 'ok',
+    }),
+  );
+  await push(repeated, false);
+  const repeat = page.locator('.wt-sg[data-disclosure="repeat:x1"]');
+  assert.equal(await repeat.locator('.wt-sg-label').textContent(), 'Test it → Build it 2 times');
+  assert.equal(await repeat.evaluate((el) => el.classList.contains('is-open')), false);
+  await repeat.locator('.wt-sg-trigger').click();
+  assert.equal(await repeat.locator('.wt-tr[data-testid="execute-row"]').count(), 4);
+  assert.deepEqual(await repeat.locator('.wt-tr-verb').allTextContents(), ['Ran', 'Ran', 'Ran', 'Ran']);
+
+  const delegated = ['t1', 't2', 't3', 't4', 't5'].map(
+    (id, index): ThreadEntry => ({
+      id,
+      seq: index + 1,
+      role: 'assistant',
+      kind: 'tool',
+      name: 'Task',
+      input: JSON.stringify({ subagent_type: 'explorer', description: `Inspect ${id}` }),
+      output: 'done',
+    }),
+  );
+  await push(delegated, false);
+  const tasks = page.locator('.wt-sg[data-disclosure="tasks:t1"]');
+  assert.equal(await tasks.locator('.wt-sg-action').textContent(), 'Ran 5 explorer subagents');
+  assert.equal(await tasks.locator('.wt-sg-count').textContent(), '5/5');
+  assert.equal(await tasks.evaluate((el) => el.classList.contains('is-open')), true);
+  assert.equal(await tasks.locator('.wt-tr[data-testid="task-row"]').count(), 5);
+
+  const output = `${Array.from({ length: 20 }, (_, index) => `output ${index + 1}`).join('\n')}\n[Process exited with code 0]`;
+  const command: ThreadEntry[] = [{ id: 'c1', seq: 1, role: 'assistant', kind: 'tool', name: 'Execute', input: JSON.stringify({ command: 'npm test', summary: 'Run tests' }), output }];
+  await push(command, false);
+  const row = page.locator('.wt-tr[data-disclosure="c1"]');
+  await row.locator('.wt-tr-trigger').click();
+  assert.equal(await row.locator('.wt-cmd-row').count(), 21);
+  assert.equal(
+    await row
+      .locator('.wt-cmd-out')
+      .innerText()
+      .then((text) => text.includes('[Process exited with code 0]')),
+    false,
+  );
+  assert.equal(await row.locator('.wt-cmd-clamp').evaluate((el) => el.classList.contains('is-clamped')), true);
+  await row.locator('.wt-cmd-expand').click();
+  assert.equal(await row.locator('.wt-cmd-clamp').evaluate((el) => el.classList.contains('is-clamped')), false);
+
+  await page.evaluate(() => (window as any).thread.dispose());
+  assert.deepEqual(errors, []);
+});
 test('renders rich Markdown replies, sticky collapsible Plan Bar, @file workspace autocomplete, and responsive viewports without overflow', { skip: chromium }, async (t) => {
   const { page, errors } = await mountV3Thread(t);
 
@@ -511,7 +650,7 @@ test('renders rich Markdown replies, sticky collapsible Plan Bar, @file workspac
   // Rich Markdown checks: <json-render>, MathML, code block, clickable workspace path:line
   assert.equal(await page.locator('.jr-metric-value').textContent(), '92%');
   assert.equal(await page.locator('.wt-math-inline math').count(), 1);
-  assert.equal(await page.locator('.wt-code-block .wt-code-lang').textContent(), 'TypeScript');
+  assert.equal(await page.locator('.wt-md-code .wt-md-code-lang').textContent(), 'ts');
   await page.locator('.wt-md .wt-file-link').first().click();
   await page.locator('.modal.wt-file-modal .wt-file-lines').waitFor();
   assert.equal(await page.locator('.modal.wt-file-modal .wt-file-line.is-target').getAttribute('data-line'), '15');
@@ -620,7 +759,7 @@ test('renders rich Markdown replies, sticky collapsible Plan Bar, @file workspac
   assert.deepEqual(errors, []);
 });
 
-test('folds a run of cards into one group, ends a finished turn with what it changed, and highlights commands', { skip: chromium }, async (t) => {
+test('keeps file and command rows flat, ends a finished turn with what it changed, and highlights commands', { skip: chromium }, async (t) => {
   const { page, errors } = await mountV3Thread(t);
   const edit = (id: string, seq: number, file: string, from: string, to: string): ThreadEntry => ({
     id,
@@ -649,19 +788,17 @@ test('folds a run of cards into one group, ends a finished turn with what it cha
     );
   await push(presentThread(entries, false));
 
-  // The earlier turn's three cards fold under one closed group that counts its files.
-  const group = page.locator('details.wt-card-group[data-disclosure="group:tools:e1"]');
-  assert.equal(await group.evaluate((el) => (el as HTMLDetailsElement).open), false);
-  assert.match(await group.locator('> summary').innerText(), /Edited 2 files · Ran a command[\s\S]*2 files[\s\S]*\+3[\s\S]*-2/);
-  assert.equal(await group.locator('.wt-group-body .wt-change-card').count(), 2);
-  assert.equal(await group.locator('.wt-group-body .wt-command-card').count(), 1);
-  await group.locator('> summary').click();
-  // Diffs from before the latest turn start closed.
-  assert.deepEqual(await group.locator('details.wt-change-file').evaluateAll((els) => els.map((el) => (el as HTMLDetailsElement).open)), [false, false]);
+  // Factory renders the turn's edits and command as separate closed rows, not a card group.
+  assert.equal(await page.locator('.wt-card-group').count(), 0);
+  const firstActivity = page.locator('.wt-entry.activity').first();
+  assert.equal(await firstActivity.locator(':scope > .wt-tr').count(), 3);
+  assert.deepEqual(await firstActivity.locator(':scope > .wt-tr').evaluateAll((els) => els.map((el) => el.classList.contains('is-open'))), [false, false, false]);
 
-  // The command line is highlighted as shell.
-  const cmd = page.locator('details.wt-command[data-disclosure="c1"] .wt-cmd-text');
-  await page.waitForFunction(() => document.querySelector('details.wt-command[data-disclosure="c1"] .wt-cmd-text [class*="tok-"]'));
+  // Opening the command reveals its shell-highlighted command line.
+  const cmdRow = page.locator('.wt-tr[data-disclosure="c1"]');
+  await cmdRow.locator('.wt-tr-trigger').click();
+  const cmd = cmdRow.locator('.wt-cmd-text');
+  await page.waitForFunction(() => document.querySelector('.wt-tr[data-disclosure="c1"] .wt-cmd-text [class*="tok-"]'));
   assert.equal(await cmd.innerText(), 'grep -rn "TODO" docs | wc -l');
 
   // The earlier turn ends on its summary, under its last message; the latest turn's opens its small diff.
@@ -674,7 +811,7 @@ test('folds a run of cards into one group, ends a finished turn with what it cha
   const preview = page.locator('.modal.wt-file-modal');
   await preview.locator('.wt-file-lines').waitFor();
   await page.keyboard.press('Escape');
-  assert.equal(await page.locator('details.wt-change-file[data-disclosure*="docs/c.md"]').evaluate((el) => (el as HTMLDetailsElement).open), true);
+  assert.equal(await page.locator('.wt-tr[data-disclosure*="docs/c.md"]').evaluate((el) => el.classList.contains('is-open')), false);
   assert.equal(await page.locator('.wt-turn-changes').count(), 2);
 
   // While the latest turn runs it has no summary yet.
@@ -710,8 +847,8 @@ test('a created Markdown, HTML or picture file offers Preview and Send to Whiteb
   );
 
   // Only the Markdown and the picture are deliverables; the source file isn't.
-  assert.equal(await page.locator('.wt-change-actions').count(), 2);
-  const report = page.locator('.wt-change-deliverable', { has: page.locator('details[data-disclosure*="docs/report.md"]') });
+  assert.equal(await page.locator('.wt-tr-actions').count(), 2);
+  const report = page.locator('.wt-tr[data-disclosure*="docs/report.md"]');
   await report.locator('.wt-change-board').click();
   assert.deepEqual(await page.evaluate(() => (window as any).sentToBoard), [['worker-1', 'docs/report.md']]);
   await report.locator('.wt-change-preview').click();
@@ -723,14 +860,98 @@ test('a created Markdown, HTML or picture file offers Preview and Send to Whiteb
   // A picture previews as itself, read as bytes from the workspace.
   await page.route('http://office.test/api/thread/file?**', (route) => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>' }));
   await page.evaluate(() => document.head.append(Object.assign(document.createElement('base'), { href: 'http://office.test/' })));
-  await page
-    .locator('.wt-change-deliverable', { has: page.locator('details[data-disclosure*="docs/chart.svg"]') })
-    .locator('.wt-change-preview')
-    .click();
+  await page.locator('.wt-tr[data-disclosure*="docs/chart.svg"]').locator('.wt-change-preview').click();
   const src = await page.locator('.modal.wt-file-modal img.wt-file-image').getAttribute('src');
   assert.match(src ?? '', /\/api\/thread\/file\?.*path=docs%2Fchart\.svg.*raw=image/);
   await page.locator('.modal.wt-file-modal').getByText('4 × 4').waitFor();
   await page.keyboard.press('Escape');
+
+  await page.evaluate(() => (window as any).thread.dispose());
+  assert.deepEqual(errors, []);
+});
+
+test('a Thread to raw terminal round trip keeps the reader’s scroll position and the following state', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountV3Thread(t);
+  await page.setViewportSize({ width: 1024, height: 600 });
+  const entries: ThreadEntry[] = Array.from({ length: 24 }, (_, i) => ({
+    id: `m${i}`,
+    seq: i + 1,
+    role: i % 2 ? 'assistant' : 'user',
+    kind: 'text',
+    text: `Message ${i + 1}\n\n${'A paragraph long enough to wrap across the column several times over. '.repeat(30)}`,
+  }));
+  await page.evaluate(
+    ({ entries, rows }) => {
+      (window as any).receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+    },
+    { entries, rows: presentThread(entries, false) },
+  );
+  const frames = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  let seq = entries.length;
+  const roundTrip = async () => {
+    await page.evaluate(() => {
+      const w = window as any;
+      w.thread.activate(false);
+      w.parked = document.createElement('div');
+      w.thread.element.replaceWith(w.parked);
+    });
+    await frames();
+    // The worker keeps streaming while the raw terminal shows: the detached transcript repaints.
+    seq++;
+    entries.push({ id: `m${seq}`, seq, role: 'assistant', kind: 'text', text: `Streamed while parked ${seq}` });
+    await page.evaluate(
+      ({ entries, rows }) => {
+        const w = window as any;
+        w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+        w.thread.update({ ...w.worker, activity: 'streaming' }, true);
+      },
+      { entries, rows: presentThread(entries, true) },
+    );
+    await frames();
+    await page.evaluate(() => {
+      const w = window as any;
+      w.parked.replaceWith(w.thread.element);
+      w.thread.activate(true);
+    });
+    await frames();
+    return reading();
+  };
+  // The row at the top of the viewport and how far it starts above it: what the reader sees.
+  const reading = () =>
+    page.evaluate(() => {
+      const s = document.querySelector<HTMLElement>('.wt-scroll')!;
+      const top = s.getBoundingClientRect().top;
+      const row = [...s.querySelectorAll<HTMLElement>('.wt-list > .wt-entry')].find((el) => el.getBoundingClientRect().bottom > top);
+      return { top: Math.round(s.scrollTop), max: s.scrollHeight - s.clientHeight, row: row?.dataset.entry, offset: Math.round((row?.getBoundingClientRect().top ?? 0) - top) };
+    });
+  await frames();
+
+  // Lay out an unclamped assistant row before moving past its intrinsic-size estimate.
+  await page.locator('[data-entry="m13"]').scrollIntoViewIfNeeded();
+  await frames();
+  await page.evaluate(() => {
+    const s = document.querySelector<HTMLElement>('.wt-scroll')!;
+    const row = s.querySelector<HTMLElement>('[data-entry="m13"]')!;
+    s.scrollTop += row.getBoundingClientRect().top - s.getBoundingClientRect().top + 180;
+    s.dispatchEvent(new Event('scroll'));
+  });
+  await frames();
+  const middle = await reading();
+  assert.ok(middle.top > 200 && middle.offset < -160, `reading part way into a long row: ${JSON.stringify(middle)}`);
+  await page.locator('textarea.wt-input').fill('half-typed draft');
+  const parked = await roundTrip();
+  assert.equal(parked.row, middle.row, 'same row at the top');
+  assert.ok(Math.abs(parked.offset - middle.offset) <= 2 && Math.abs(parked.top - middle.top) <= 2, `scroll kept: ${JSON.stringify(middle)} -> ${JSON.stringify(parked)}`);
+  assert.equal(await page.locator('textarea.wt-input').inputValue(), 'half-typed draft');
+
+  await page.evaluate(() => {
+    const s = document.querySelector<HTMLElement>('.wt-scroll')!;
+    s.scrollTop = s.scrollHeight;
+    s.dispatchEvent(new Event('scroll'));
+  });
+  await frames();
+  const followed = await roundTrip();
+  assert.ok(followed.max - followed.top <= 2, `still following latest: ${followed.top}/${followed.max}`);
 
   await page.evaluate(() => (window as any).thread.dispose());
   assert.deepEqual(errors, []);

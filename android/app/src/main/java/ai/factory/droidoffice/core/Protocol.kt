@@ -250,7 +250,7 @@ data class FloorRoster(
 )
 
 sealed interface ServerMsg {
-    data class Welcome(val connection: String, val arrival: Arrival, val floors: List<FloorInfo>, val version: String, val view: FloorView, val availability: Map<String, ModelAvailability> = emptyMap(), val subscriptions: SubscriptionState? = null, val hiddenModels: Set<String> = emptySet(), val workerAnswerMultiSelect: Boolean = false, val factory: FactoryState? = null, val missionControl: MissionControlState? = null, val building: List<FloorRoster>? = null) : ServerMsg
+    data class Welcome(val connection: String, val arrival: Arrival, val floors: List<FloorInfo>, val version: String, val view: FloorView, val availability: Map<String, ModelAvailability> = emptyMap(), val subscriptions: SubscriptionState? = null, val hiddenModels: Set<String> = emptySet(), val workerAnswerMultiSelect: Boolean = false, val threadActions: Boolean = false, val factory: FactoryState? = null, val missionControl: MissionControlState? = null, val building: List<FloorRoster>? = null) : ServerMsg
     data class ActionResult(val requestId: String, val ok: Boolean, val error: String?) : ServerMsg
     data class HiddenModels(val ids: Set<String>) : ServerMsg
     /** Raw Factory state, including token-limit windows; OfficeJson tolerates newer unknown fields. */
@@ -294,7 +294,13 @@ sealed interface ServerMsg {
         val presentation: ThreadPresentation? = null,
         /** Sent unprompted while `thread.watch` is active for [workerId]. */
         val push: Boolean = false,
+        /** The subagent session this page answers, when thread.read/watch named one. */
+        val child: String? = null,
     ) : ServerMsg
+    /** A watched local worker's live turn state; each one replaces the last by rev. */
+    data class ThreadLiveUpdate(val workerId: String, val sessionId: String?, val live: ThreadLive) : ServerMsg
+    /** The result of ClientMsg.rewind; text is the rewound prompt for the composer. */
+    data class WorkerRewound(val workerId: String, val entryId: String, val ok: Boolean, val sessionId: String?, val text: String?, val error: String?, val note: String? = null) : ServerMsg
     data class Ignored(val t: String) : ServerMsg
 }
 
@@ -325,6 +331,7 @@ object Protocol {
             subscriptions = Subscriptions.parse(o["subscriptions"]),
             hiddenModels = strings(o["hiddenModels"]),
             workerAnswerMultiSelect = o.bool("workerAnswerMultiSelect") == true,
+            threadActions = o.bool("threadActions") == true,
             factory = FactoryCloud.parse(o["factory"]),
             missionControl = MissionControl.parse(o["missionControl"]),
             building = building(o["building"]),
@@ -363,6 +370,8 @@ object Protocol {
         "whiteboard", "whiteboard.rendered", "whiteboard.renderer" -> ServerMsg.Whiteboard(t, o)
         "whiteboard.pinged" -> WbPinged.of(o)?.let { ServerMsg.Pinged(it) } ?: ServerMsg.Ignored(t)
         "thread.snapshot" -> threadSnapshot(o) ?: ServerMsg.Ignored(t)
+        "thread.live" -> ThreadLive.of(o["live"])?.let { live -> ServerMsg.ThreadLiveUpdate(o.str("workerId").orEmpty(), o.str("sessionId"), live) } ?: ServerMsg.Ignored(t)
+        "worker.rewound" -> ServerMsg.WorkerRewound(o.str("workerId").orEmpty(), o.str("entryId").orEmpty(), o.bool("ok") == true, o.str("sessionId"), o.str("text"), o.str("error"), o.str("note"))
         "action.result" -> ServerMsg.ActionResult(o.str("requestId").orEmpty(), o.bool("ok") == true, o.str("error"))
         else -> ServerMsg.Ignored(t)
     }
@@ -419,6 +428,7 @@ object Protocol {
             request = request,
             before = o.long("before") ?: (o["before"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()?.toLong(),
             sessionId = o.str("sessionId")?.takeIf { it.isNotEmpty() },
+            child = o.str("child")?.takeIf { it.isNotEmpty() },
             entries = (o["entries"] as? JsonArray)?.mapNotNull(ThreadEntry::of).orEmpty(),
             hasMore = o.bool("hasMore") ?: false,
             error = o.str("error")?.takeIf { it.isNotBlank() },
@@ -525,16 +535,54 @@ object ClientMsg {
     }
 
     /** The latest page of a worker's conversation, or the page before seq [before]; [request] comes back on the answer. */
-    fun threadRead(workerId: String, request: String, before: Long? = null) = obj("thread.read") {
+    fun threadRead(workerId: String, request: String, before: Long? = null, child: String? = null) = obj("thread.read") {
         put("workerId", workerId)
         put("request", request)
         if (before != null) put("before", before)
+        child?.let { put("child", it) }
     }
 
-    /** Subscribes ([on] true) or unsubscribes ([on] false) to server-pushed latest `thread.snapshot` updates for [workerId]. */
-    fun threadWatch(workerId: String, on: Boolean) = obj("thread.watch") {
+    /** Subscribes ([on] true) or unsubscribes ([on] false) to snapshots and live state, optionally for one subagent. */
+    fun threadWatch(workerId: String, on: Boolean, child: String? = null) = obj("thread.watch") {
         put("workerId", workerId)
         put("on", on)
+        child?.let { put("child", it) }
+    }
+
+    /** Send now, remove, or clear Droid's pending messages; index is 1-based when one item is chosen. */
+    fun queueAction(workerId: String, action: String, index: Int? = null, group: String? = null, text: String? = null) = obj("worker.queue") {
+        require(action == "promote" || action == "delete" || action == "clear")
+        put("workerId", workerId)
+        put("action", action)
+        index?.let { put("index", it) }
+        group?.let { put("group", it) }
+        text?.let { put("text", it) }
+    }
+
+    /**
+     * Rewind before a user ThreadEntry: [restore] is `conversation` (keep every file), `files` (restore
+     * them all) or `choose` (restore only [files], as Droid's "Choose files to restore..." picks them).
+     */
+    fun rewind(workerId: String, entryId: String, restore: String, files: List<String> = emptyList()) = obj("worker.rewind") {
+        require(restore == "conversation" || restore == "files" || restore == "choose")
+        put("workerId", workerId)
+        put("entryId", entryId)
+        put("restore", restore)
+        if (restore == "choose") put("files", JsonArray(files.map { JsonPrimitive(it) }))
+    }
+
+    /** Changes the session's reasoning effort (`effort`, an effort id) or model (`model`, a model id) through Droid's own keys and /model picker. */
+    fun setting(workerId: String, setting: String, value: String) = obj("worker.setting") {
+        require(setting == "effort" || setting == "model")
+        put("workerId", workerId)
+        put("setting", setting)
+        put("value", value)
+    }
+
+    /** Closes Droid's side chat (/btw) when the terminal shows it. */
+    fun closeSide(workerId: String) = obj("worker.side") {
+        put("workerId", workerId)
+        put("close", true)
     }
 
     fun attach(workerId: String) = obj("worker.attach") { put("workerId", workerId) }

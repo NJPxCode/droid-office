@@ -590,7 +590,7 @@ function disposePanes() {
   panes.length = 0;
 }
 function viewOf(id: string) {
-  return workerView(ws, id, read(VIEW_KEY) === 'thread' ? 'thread' : 'terminal');
+  return workerView(ws, id, read(VIEW_KEY) === 'terminal' ? 'terminal' : 'thread');
 }
 function changeLayout(mode: LayoutMode) {
   setLayout(ws, mode);

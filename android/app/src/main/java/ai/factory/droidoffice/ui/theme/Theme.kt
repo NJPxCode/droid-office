@@ -45,6 +45,47 @@ object Palette {
     val Info = Color(0xFF5AA9E6)
 }
 
+// The worker Thread's palette, as the Factory app draws a conversation (src/client/style.css
+// .worker-thread): a pure black ground, warm greys, a raised slab for the owner's words, blue
+// links and Factory's diff colours. Accent and status colours stay the office's.
+object ThreadPalette {
+    val Bg = Color(0xFF000000)
+    val Surface = Color(0xFF0C0B0A)
+    val SurfaceRaised = Color(0xFF100E0D)
+    val SurfaceHover = Color(0xFF151311)
+    val SurfaceHigh = Color(0xFF1D1A18)
+    val Border = Color(0xFF1D1A18)
+    val BorderStrong = Color(0xFF2E2926)
+    val Text = Color(0xFFFDFCFB)
+    val TextSecondary = Color(0xFFB5ADA7)
+    val TextTertiary = Color(0xFF80756F)
+    val Accent = Palette.Accent
+    val AccentHover = Palette.AccentHover
+    val AccentMuted = Palette.AccentMuted
+    val Success = Palette.Success
+    val Warning = Palette.Warning
+    val Danger = Palette.Danger
+    val Info = Palette.Info
+    val UserSlab = Color(0xFF282523)
+    val Code = Color(0xFF151311)
+    val Link = Color(0xFF50ACF2)
+    val InputBorder = Color(0xFF463F3C)
+    val Add = Color(0xFF6FAE5D)
+    val Del = Color(0xFFF0442E)
+    // color-mix(var(--bg) 84%, #4f8f41 / #d72d17 16%) and 78/22 for the gutters, worked out against Bg.
+    val AddRow = Color(0xFF121B0F)
+    val DelRow = Color(0xFF270B08)
+    val AddGutter = Color(0xFF162312)
+    val DelGutter = Color(0xFF340E09)
+    // Factory's core-v2 dark tokens the transcript shell reads: tool and thought labels, the stronger
+    // hairline, and the Stop button's tungsten square-in-square.
+    val ToolLabel = Color(0xFFB5ADA7)
+    val BorderEmphasis = Color(0xFF564E4A)
+    val StopFill = Color(0xFF342F2D)
+    val StopFillPressed = Color(0xFF403A37)
+    val StopMark = Color(0xFFD8D4D2)
+}
+
 @Immutable
 data class OfficeType(
     val mono: FontFamily,

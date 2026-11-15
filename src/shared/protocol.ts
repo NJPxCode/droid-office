@@ -19,6 +19,7 @@ import type { Visit } from './visits.js';
 import type { SetupState } from './setup.js';
 import type { SubscriptionProviderKey, SubscriptionsState } from './subscriptions.js';
 import type { ThreadPresentation } from './thread-presentation.js';
+import type { ThreadLive } from './thread-live.js';
 import type { ThreadEntry } from './worker-thread.js';
 import type { WorkerLabelSettings, WorkerLabelState } from './worker-labels.js';
 import type { FloorVibesState, GeminiConnectionState } from './gemini-vibes.js';
@@ -864,8 +865,19 @@ type ClientMessage =
   /** Push a worktree worker's branch and open a pull request for it, drafted from its task. */
   | { t: 'worker.pr'; workerId: string }
   | { t: 'term.input'; workerId: string; data: string }
-  | { t: 'thread.read'; workerId: string; request: string; before?: number }
-  | { t: 'thread.watch'; workerId: string; on: boolean }
+  | { t: 'thread.read'; workerId: string; request: string; before?: number; child?: string }
+  | { t: 'thread.watch'; workerId: string; on: boolean; child?: string }
+  /** Drives Droid's pending-message review: a 1-based index, optionally checked by group and text. */
+  | { t: 'worker.queue'; workerId: string; action: 'promote' | 'delete' | 'clear'; index?: number; group?: 'steering' | 'queued'; text?: string }
+  /**
+   * Rewinds before a user ThreadEntry; restore defaults to conversation only. `choose` restores only
+   * `files` (paths as the Thread knows them) from Droid's "Choose files to restore..." list.
+   */
+  | { t: 'worker.rewind'; workerId: string; entryId: string; restore?: 'files' | 'conversation' | 'choose'; files?: string[] }
+  /** Changes the session's reasoning effort (an effort id) or model (a model id, with an optional effort) through Droid's Tab key and /model picker. */
+  | { t: 'worker.setting'; workerId: string; setting: 'effort' | 'model'; value: string; effort?: string }
+  /** Closes Droid's side chat (/btw) when the terminal shows it. */
+  | { t: 'worker.side'; workerId: string; close: true }
   | { t: 'term.resize'; workerId: string; cols: number; rows: number }
   /** Open the boss monitor's shell (see OFFICE_SHELL_ID). It is not a worker. */
   | { t: 'shell.attach' }
@@ -1064,7 +1076,11 @@ export interface Arrival {
 
 export type ServerMsg =
   /** `presentation` is how the clients show `entries`: the rows for them, built over everything the office has read (src/shared/thread-presentation.ts). */
-  | { t: 'thread.snapshot'; workerId: string; request: string; before?: number; push?: boolean; sessionId?: string; entries: ThreadEntry[]; hasMore: boolean; presentation?: ThreadPresentation; error?: string }
+  | { t: 'thread.snapshot'; workerId: string; request: string; before?: number; push?: boolean; sessionId?: string; child?: string; entries: ThreadEntry[]; hasMore: boolean; presentation?: ThreadPresentation; error?: string }
+  /** The watched local worker's turn as it happens; replaces its previous live state wholesale. */
+  | { t: 'thread.live'; workerId: string; sessionId?: string; live: ThreadLive }
+  /** The outcome of worker.rewind. text is the rewound prompt, ready for the composer. */
+  | { t: 'worker.rewound'; workerId: string; entryId: string; ok: boolean; sessionId?: string; text?: string; error?: string; note?: string }
   | { t: 'action.result'; requestId: string; ok: boolean; error?: string; workerId?: string; note?: string }
   | ({
       t: 'welcome';
@@ -1091,6 +1107,8 @@ export type ServerMsg =
       workerLabels?: WorkerLabelState;
       /** Confirmed worker.answer supports a complete checkbox selection and optional custom text. */
       workerAnswerMultiSelect?: boolean;
+      /** The office drives worker.rewind, worker.queue, worker.setting and worker.side in a worker's terminal. An older one leaves them unanswered. */
+      threadActions?: boolean;
       /** The office's prompts, and the worker a new one starts on when nobody picks. */
       prompts: PromptsState;
       /** The office's Factory connection and every Factory feature's read state (see docs/factory.md). */

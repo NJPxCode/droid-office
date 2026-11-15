@@ -6,12 +6,12 @@
     "presentation": "{ version: 1, rows: ThreadRow[] } on thread.snapshot. A client that gets a version it doesn't know, or none, says so and offers Raw TTY instead of guessing.",
     "message": "{ kind: 'message', id: entry id, from, to: its seq, role: 'user' | 'assistant', startsTurn: boolean (first assistant message after the owner's, or the first one: the only one that carries the worker's name), turnChanges?: TurnChanges }",
     "notice": "{ kind: 'notice', id: entry id, from, to: its seq, role, text: string (the copy shown), tone: 'quiet' | 'danger' | 'attachment' }",
-    "activity": "{ kind: 'activity', id: 'activity:' + first entry id, from, to: seqs of its first and last entry (hidden ones included), sourceIds: every entry it stands for, label: the closed line, state, live: newest while busy, open: false (the default disclosure), status?: cancellation and missing-result counts only, running?: newest working action's title while live, failed: { id, title, preview }[] (diagnostic metadata, never a callout), blocks: Block[], groups?: Group[], turnChanges?: TurnChanges }",
-    "group": "{ id: 'group:' + its first block's id, blockIds: the consecutive blocks from the Activity's first card block to its last (only with three or more card blocks), label, state, live, open: true in the latest turn, false before it, files, additions, deletions: what its finished change cards changed, each file counted once }",
+    "activity": "{ kind: 'activity', id: 'activity:' + first entry id, from, to: seqs of its first and last entry (hidden ones included), sourceIds: every entry it stands for, label: the closed line, state, live: newest while busy, open: false (the default disclosure), status?: cancellation and missing-result counts only, running?: newest working action's title while live, failed: { id, title, preview }[] (diagnostic metadata, never a callout), blocks: Block[], segments: Segment[], turnChanges?: TurnChanges }",
+    "segment": "Factory rows for the Activity, in order: { kind: 'explore', id, blockIds, actionIds, action, details, providers?, live, open } for exploration tools and their thoughts; { kind: 'thought', blockId }; { kind: 'tool', blockId, actionId }; { kind: 'repeat', id, actionIds, summaries, times, live, open } for repeating Execute summaries; or { kind: 'tasks', id, actionIds, label, settled, failed, live, open } for five or more consecutive Task calls. A live explore/repeat/tasks tail opens and later closes itself; tasks also start open when settled.",
     "turnChanges": "{ count: files the turn's finished change cards changed, each counted once, additions, deletions, files: { path, shortPath, additions, deletions }[] (the first 20, in first-changed order) }, on the last message or Activity row of a turn that changed files, absent on the latest turn while busy",
     "thought": "{ kind: 'thought', id: entry id, preview: first non-blank line, asterisks stripped, clipped to 120, live: busy and the last entry, open: false }",
     "tools": "{ kind: 'tools', id: 'tools:' + first visible entry id of the block, label, state, live, open: false, card?: 'change' | 'command' | 'delegate' (single-action V3 card block; absent on grouped exploration blocks), actions: Action[], plan?: { done, active, text }[] (the run's plan, only when it changed since the last one shown) }",
-    "action": "{ id: tool entry id, title: human, never a raw command, JSON or home path, detail?: short path, pattern or subagent type, category, state: 'complete' | 'working' | 'failed' | 'incomplete' | 'cancelled', status: the state in words or '', causedBy?: the child entry whose failure this wrapper repeats, arguments?: { label, field? } (field: key of the input JSON, '.' for a JSON string, absent for the whole input), result: 'Result' | 'Error' | 'Cancelled', open: false, card?: 'change' | 'command' | 'delegate', changes?: (ThreadFileChange & { open?: boolean })[] (open: the diff starts open), command?: { command, summary? }, delegation?: { agent, role?, summary, workerId?, workerName?, branch? } }",
+    "action": "{ id: tool entry id, title: human, never a raw command, JSON or home path, detail?: short path, pattern or subagent type, category, state: 'complete' | 'working' | 'failed' | 'incomplete' | 'cancelled', status: the state in words or '', causedBy?: the child entry whose failure this wrapper repeats, arguments?: { label, field? } (field: key of the input JSON, '.' for a JSON string, absent for the whole input), result: 'Result' | 'Error' | 'Cancelled', open: false, card?: 'change' | 'command' | 'delegate', changes?: (ThreadFileChange & { open?: boolean })[] (open is always false: Factory file rows start collapsed), command?: { command, summary? }, delegation?: { agent, role?, summary, workerId?, workerName?, branch? }, icon?: ThreadToolIcon, verb: Factory row action words ('' for Execute), subject?: row detail, failedLabel?: right-aligned failure copy }",
     "paging": "{ name, busy, steps: { snapshot: thread.snapshot fields (before?, entries, hasMore, presentation), expected: { entries: ids loaded, rows: ThreadRow[] held } }[] }. A latest page replaces the rows from its first row on; an earlier page adds only rows that end before the first row already held.",
     "rules": [
       "Messages and shown notices are top-level rows. Everything between them is one Activity row holding, in order, its thoughts, grouped exploration tool runs, and single-action V3 card blocks (change, command, delegate); thoughts and card actions split exploration runs in chronological order without splitting the Activity. An Activity with nothing to show leaves no row.",
@@ -21,8 +21,8 @@
       "Turn ended · completed is hidden; Turn cancelled is a quiet notice. Only an exact CLI by-user result proves owner cancellation; a bare 'Tool execution was interrupted' stays failed.",
       "A call with no output is 'working' only in the live run; otherwise 'incomplete'. Never 'complete' without output.",
       "Labels: verb phrases per kind in first-seen order, then 'N more' past three kinds; edited and created files are unique; failed bookkeeping isn't counted. An Activity with only thoughts is 'Thought'.",
-      "Every disclosure starts closed except in the latest turn (a turn runs from one owner message to the next): there card groups start open, and so do its first three diffs of at most 40 changed lines that aren't generated. Clients keep the owner's choices by id across polls, result updates and earlier pages, and drop them for a new session.",
-      "An Activity with three or more card blocks folds the blocks from its first card to its last under one group. A finished turn that changed files ends with what it changed, on its last message or Activity row."
+      "Every tool row and file diff starts closed. A live explore, repeat or tasks group at the newest working tail starts open and closes itself when it stops unless the owner chose a state; tasks groups start open when settled too. Clients keep the owner's choices by id across polls, result updates and earlier pages, and drop them for a new session.",
+      "Exploration tools and the thoughts between them fold into one explore segment. Consecutive Execute summaries repeating with period 1..8 for at least two cycles fold into a repeat segment; five or more consecutive Task calls fold into a tasks segment. File changes never fold into card groups. A finished turn that changed files ends with what it changed, on its last message or Activity row."
     ]
   },
   "cases": [
@@ -100,7 +100,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": "/tmp/a.kt"
                 }
               ]
             },
@@ -130,7 +133,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": "/tmp/b.kt"
                 }
               ]
             },
@@ -140,6 +146,26 @@
               "preview": "Next thought",
               "live": true,
               "open": false
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:read-before",
+              "blockIds": [
+                "tools:tool:read-before",
+                "thinking:first",
+                "tools:tool:read-after",
+                "thinking:last"
+              ],
+              "actionIds": [
+                "tool:read-before",
+                "tool:read-after"
+              ],
+              "action": "Exploring",
+              "details": "2 searches and thinking",
+              "live": true,
+              "open": true
             }
           ]
         }
@@ -301,7 +327,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": ".../.github/workflows/release.yml"
                 }
               ],
               "plan": [
@@ -342,7 +371,11 @@
                   "command": {
                     "command": "gh pr view 307 --repo nikships/droid-office --json state,mergeCommit",
                     "summary": "Check PR 307 merge state"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "Check PR 307 merge state",
+                  "failedLabel": "Command failed"
                 }
               ]
             },
@@ -371,7 +404,11 @@
                   "command": {
                     "command": "gh release view v0.1.611 --repo nikships/droid-office",
                     "summary": "View the published release"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "View the published release",
+                  "failedLabel": "Command failed"
                 }
               ]
             },
@@ -400,26 +437,44 @@
                   "card": "command",
                   "command": {
                     "command": "gh run view 40426951831 --repo nikships/droid-office --log > /Users/nik/repos/droid-office/.droid-office/worktrees/byte-090d/run.log"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "gh run view 40426951831 --repo nikships/droid-office --log > run.log",
+                  "failedLabel": "Command failed"
                 }
               ]
             }
           ],
-          "groups": [
+          "segments": [
             {
-              "id": "group:tools:tool:toolu_5",
+              "kind": "explore",
+              "id": "explore:tool:toolu_4",
               "blockIds": [
-                "tools:tool:toolu_5",
-                "tools:tool:toolu_8",
-                "tools:tool:toolu_9"
+                "tools:tool:toolu_4"
               ],
-              "label": "Ran 3 commands",
-              "state": "complete",
+              "actionIds": [
+                "tool:toolu_4"
+              ],
+              "action": "Explored",
+              "details": "1 file",
               "live": false,
-              "open": true,
-              "files": 0,
-              "additions": 0,
-              "deletions": 0
+              "open": false
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_5",
+              "actionId": "tool:toolu_5"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_8",
+              "actionId": "tool:toolu_8"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_9",
+              "actionId": "tool:toolu_9"
             }
           ]
         },
@@ -551,7 +606,9 @@
                     "label": "Arguments"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "plan",
+                  "verb": "Couldn't update the plan"
                 },
                 {
                   "id": "tool:toolu_3",
@@ -563,7 +620,10 @@
                     "label": "Arguments"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "skill",
+                  "verb": "Skill",
+                  "subject": "factory-design"
                 },
                 {
                   "id": "tool:toolu_4",
@@ -576,7 +636,9 @@
                     "field": "script"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "terminal",
+                  "verb": "Ran a script"
                 },
                 {
                   "id": "tool:toolu_5",
@@ -589,9 +651,52 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": ".../byte-090d/src/b.ts"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_2",
+              "actionId": "tool:toolu_2"
+            },
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_3",
+              "blockIds": [
+                "tools:tool:toolu_2"
+              ],
+              "actionIds": [
+                "tool:toolu_3"
+              ],
+              "action": "Loaded",
+              "details": "1 skill",
+              "live": false,
+              "open": false
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_2",
+              "actionId": "tool:toolu_4"
+            },
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_5",
+              "blockIds": [
+                "tools:tool:toolu_2"
+              ],
+              "actionIds": [
+                "tool:toolu_5"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
             }
           ]
         },
@@ -678,7 +783,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": ".../worktrees/byte-090d/package.json"
                 }
               ]
             },
@@ -707,9 +815,34 @@
                   "command": {
                     "command": "npm test",
                     "summary": "Run the tests"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "Run the tests",
+                  "failedLabel": "Command failed"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_2",
+              "blockIds": [
+                "tools:tool:toolu_2"
+              ],
+              "actionIds": [
+                "tool:toolu_2"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_3",
+              "actionId": "tool:toolu_3"
             }
           ]
         }
@@ -788,7 +921,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": ".../worktrees/byte-090d/package.json"
                 }
               ]
             },
@@ -817,9 +953,34 @@
                   "command": {
                     "command": "npm test",
                     "summary": "Run the tests"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "Run the tests",
+                  "failedLabel": "Command failed"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_2",
+              "blockIds": [
+                "tools:tool:toolu_2"
+              ],
+              "actionIds": [
+                "tool:toolu_2"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_3",
+              "actionId": "tool:toolu_3"
             }
           ]
         }
@@ -910,9 +1071,20 @@
                   "command": {
                     "command": "sleep 600",
                     "summary": "Wait for the build"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "Wait for the build",
+                  "failedLabel": "Command failed"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_2",
+              "actionId": "tool:toolu_2"
             }
           ]
         },
@@ -957,9 +1129,28 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": ".../worktrees/byte-090d/build.log"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_4",
+              "blockIds": [
+                "tools:tool:toolu_4"
+              ],
+              "actionIds": [
+                "tool:toolu_4"
+              ],
+              "action": "Exploring",
+              "details": "1 file",
+              "live": true,
+              "open": true
             }
           ]
         }
@@ -1055,7 +1246,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": ".../byte-090d/src/a.ts"
                 }
               ]
             },
@@ -1084,9 +1278,34 @@
                   "command": {
                     "command": "git status --short",
                     "summary": "Show working tree status"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "Show working tree status",
+                  "failedLabel": "Command failed"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_3",
+              "blockIds": [
+                "tools:tool:toolu_3"
+              ],
+              "actionIds": [
+                "tool:toolu_3"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_4",
+              "actionId": "tool:toolu_4"
             }
           ]
         },
@@ -1180,7 +1399,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": ".../byte-090d/src/a.ts"
                 },
                 {
                   "id": "tool:toolu_3",
@@ -1193,9 +1415,32 @@
                     "field": "script"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "terminal",
+                  "verb": "Ran a script"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_2",
+              "blockIds": [
+                "tools:tool:toolu_2"
+              ],
+              "actionIds": [
+                "tool:toolu_2"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_2",
+              "actionId": "tool:toolu_3"
             }
           ]
         },
@@ -1454,7 +1699,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": "/tmp/a.txt"
                 }
               ],
               "plan": [
@@ -1469,6 +1717,22 @@
                   "text": "Write the report"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_2",
+              "blockIds": [
+                "tools:tool:toolu_2"
+              ],
+              "actionIds": [
+                "tool:toolu_2"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
             }
           ]
         },
@@ -1514,9 +1778,28 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": "/tmp/b.txt"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_5",
+              "blockIds": [
+                "tools:tool:toolu_5"
+              ],
+              "actionIds": [
+                "tool:toolu_5"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
             }
           ]
         },
@@ -1562,7 +1845,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": "/tmp/c.txt"
                 }
               ],
               "plan": [
@@ -1577,6 +1863,22 @@
                   "text": "Write the report"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_8",
+              "blockIds": [
+                "tools:tool:toolu_8"
+              ],
+              "actionIds": [
+                "tool:toolu_8"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
             }
           ]
         }
@@ -1706,7 +2008,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": "/tmp/a.txt"
                 },
                 {
                   "id": "tool:toolu_3",
@@ -1719,9 +2024,29 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": "/tmp/b.txt"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_2",
+              "blockIds": [
+                "tools:tool:toolu_2"
+              ],
+              "actionIds": [
+                "tool:toolu_2",
+                "tool:toolu_3"
+              ],
+              "action": "Explored",
+              "details": "2 files",
+              "live": false,
+              "open": false
             }
           ]
         },
@@ -1872,7 +2197,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": ".../ui/worker/Thread.kt, limit: 300"
                 }
               ]
             },
@@ -1902,9 +2230,32 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "search",
+                  "verb": "Grepped for",
+                  "subject": "\"Promise.allSettled\" in .../worktrees/byte-090d/src"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:msg-2:1",
+              "blockIds": [
+                "msg-2:1",
+                "tools:tool:toolu_3",
+                "msg-4:1",
+                "tools:tool:toolu_5"
+              ],
+              "actionIds": [
+                "tool:toolu_3",
+                "tool:toolu_5"
+              ],
+              "action": "Explored",
+              "details": "2 searches and thought 2 times",
+              "live": false,
+              "open": false
             }
           ]
         },
@@ -2074,7 +2425,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "glob",
+                  "verb": "Searched files for",
+                  "subject": "**/*.kt, **/*.ts in .../.droid-office/worktrees/byte-090d"
                 },
                 {
                   "id": "tool:toolu_2",
@@ -2087,7 +2441,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "list",
+                  "verb": "Listed content of",
+                  "subject": ".../worktrees/byte-090d/android"
                 }
               ]
             },
@@ -2135,9 +2492,13 @@
                           "text": "b"
                         }
                       ],
-                      "open": true
+                      "open": false
                     }
-                  ]
+                  ],
+                  "icon": "edit",
+                  "verb": "Edit 2 lines",
+                  "subject": "README.md",
+                  "failedLabel": "Error editing file"
                 }
               ]
             },
@@ -2182,9 +2543,13 @@
                           "newLine": 1
                         }
                       ],
-                      "open": true
+                      "open": false
                     }
-                  ]
+                  ],
+                  "icon": "create",
+                  "verb": "Write 1 line",
+                  "subject": "thread.md",
+                  "failedLabel": "Error writing file"
                 }
               ]
             },
@@ -2231,7 +2596,11 @@
                       "lines": [],
                       "open": false
                     }
-                  ]
+                  ],
+                  "icon": "patch",
+                  "verb": "Change file",
+                  "subject": "worker-thread.ts, thread-presentation.ts",
+                  "failedLabel": "Error changing file"
                 }
               ]
             },
@@ -2253,7 +2622,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "link",
+                  "verb": "Fetch Content",
+                  "subject": "https://www.docs.factory.ai/llms.txt"
                 },
                 {
                   "id": "tool:toolu_7",
@@ -2265,7 +2637,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "web",
+                  "verb": "Searched the web for",
+                  "subject": "\"compose disclosure accessibility stateDescription\""
                 }
               ]
             },
@@ -2295,7 +2670,10 @@
                     "agent": "worker",
                     "role": "worker",
                     "summary": "audit the thread"
-                  }
+                  },
+                  "icon": "bot",
+                  "verb": "worker",
+                  "subject": "audit the thread"
                 }
               ]
             },
@@ -2317,7 +2695,11 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "memory",
+                  "verb": "Recall",
+                  "subject": "droid office thread",
+                  "failedLabel": "Tool call failed"
                 },
                 {
                   "id": "tool:toolu_10",
@@ -2329,7 +2711,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "ask",
+                  "verb": "Asked user a question",
+                  "failedLabel": "AskUser failed"
                 },
                 {
                   "id": "tool:toolu_11",
@@ -2341,28 +2726,107 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "tool",
+                  "verb": "Generate Image",
+                  "failedLabel": "Tool call failed"
                 }
               ]
             }
           ],
-          "groups": [
+          "segments": [
             {
-              "id": "group:tools:tool:toolu_3",
+              "kind": "explore",
+              "id": "explore:tool:toolu_1",
               "blockIds": [
-                "tools:tool:toolu_3",
-                "tools:tool:toolu_4",
-                "tools:tool:toolu_5",
-                "tools:tool:toolu_6",
-                "tools:tool:toolu_8"
+                "tools:tool:toolu_1"
               ],
-              "label": "Edited 3 files · Created a file · Read a web page · 2 more",
-              "state": "complete",
+              "actionIds": [
+                "tool:toolu_1",
+                "tool:toolu_2"
+              ],
+              "action": "Explored",
+              "details": "2 searches",
               "live": false,
-              "open": true,
-              "files": 4,
-              "additions": 2,
-              "deletions": 1
+              "open": false
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_3",
+              "actionId": "tool:toolu_3"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_4",
+              "actionId": "tool:toolu_4"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_5",
+              "actionId": "tool:toolu_5"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_6",
+              "actionId": "tool:toolu_6"
+            },
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_7",
+              "blockIds": [
+                "tools:tool:toolu_6"
+              ],
+              "actionIds": [
+                "tool:toolu_7"
+              ],
+              "action": "Explored",
+              "details": "1 search",
+              "live": false,
+              "open": false
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_8",
+              "actionId": "tool:toolu_8"
+            },
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_9",
+              "blockIds": [
+                "tools:tool:toolu_9"
+              ],
+              "actionIds": [
+                "tool:toolu_9"
+              ],
+              "action": "Performed 1 action in",
+              "details": "Memory",
+              "providers": [
+                "Memory"
+              ],
+              "live": false,
+              "open": false
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_9",
+              "actionId": "tool:toolu_10"
+            },
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_11",
+              "blockIds": [
+                "tools:tool:toolu_9"
+              ],
+              "actionIds": [
+                "tool:toolu_11"
+              ],
+              "action": "Performed 1 action in",
+              "details": "Gemini Aio",
+              "providers": [
+                "Gemini Aio"
+              ],
+              "live": false,
+              "open": false
             }
           ],
           "turnChanges": {
@@ -2509,7 +2973,10 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": ".../client/ui/worker-thread.ts"
                 }
               ],
               "plan": [
@@ -2524,6 +2991,22 @@
                   "text": "Report back"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:tool:toolu_6",
+              "blockIds": [
+                "tools:tool:toolu_6"
+              ],
+              "actionIds": [
+                "tool:toolu_6"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
             }
           ]
         },
@@ -2711,7 +3194,9 @@
                     "label": "Arguments"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "plan",
+                  "verb": "Couldn't read script results"
                 },
                 {
                   "id": "tool:toolu_6",
@@ -2723,7 +3208,9 @@
                     "label": "Arguments"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "plan",
+                  "verb": "Couldn't read task output"
                 },
                 {
                   "id": "tool:toolu_7",
@@ -2735,7 +3222,9 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "tool",
+                  "verb": "Stopped a background task"
                 },
                 {
                   "id": "tool:toolu_8",
@@ -2747,7 +3236,9 @@
                     "label": "Arguments"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "tool",
+                  "verb": "Couldn't stop the background task"
                 },
                 {
                   "id": "tool:toolu_9",
@@ -2759,7 +3250,9 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "tool",
+                  "verb": "Scheduled a loop"
                 },
                 {
                   "id": "tool:toolu_10",
@@ -2771,9 +3264,43 @@
                     "label": "Arguments"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "tool",
+                  "verb": "Couldn't schedule the loop"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_5",
+              "actionId": "tool:toolu_5"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_5",
+              "actionId": "tool:toolu_6"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_5",
+              "actionId": "tool:toolu_7"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_5",
+              "actionId": "tool:toolu_8"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_5",
+              "actionId": "tool:toolu_9"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:toolu_5",
+              "actionId": "tool:toolu_10"
             }
           ]
         },
@@ -2849,9 +3376,20 @@
                   "command": {
                     "command": "",
                     "summary": "Verify the live reading layout"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "Verify the live reading layout",
+                  "failedLabel": "Command failed"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "tool",
+              "blockId": "tools:cancel-exec",
+              "actionId": "cancel-exec"
             }
           ]
         },
@@ -2940,7 +3478,10 @@
                     "label": "Arguments"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": "README.md"
                 }
               ]
             },
@@ -2968,9 +3509,34 @@
                   "command": {
                     "command": "",
                     "summary": "Verify the live reading layout"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "Verify the live reading layout",
+                  "failedLabel": "Command failed"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "explore",
+              "id": "explore:read-error",
+              "blockIds": [
+                "tools:read-error"
+              ],
+              "actionIds": [
+                "read-error"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:cancel-exec",
+              "actionId": "cancel-exec"
             }
           ]
         },
@@ -3052,7 +3618,9 @@
                     "field": "script"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "terminal",
+                  "verb": "Ran a script"
                 },
                 {
                   "id": "tool:7d7fdb70-0682-46b9-8a9a-fc9e2ca18575-1",
@@ -3065,9 +3633,33 @@
                     "label": "Arguments"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "read",
+                  "verb": "Read",
+                  "subject": ".../droid-office/.droid-office/thread-cancelled-check-missing.txt"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:call_VQcFUTlfVZhozstnKccatcj3",
+              "actionId": "tool:call_VQcFUTlfVZhozstnKccatcj3"
+            },
+            {
+              "kind": "explore",
+              "id": "explore:tool:7d7fdb70-0682-46b9-8a9a-fc9e2ca18575-1",
+              "blockIds": [
+                "tools:tool:call_VQcFUTlfVZhozstnKccatcj3"
+              ],
+              "actionIds": [
+                "tool:7d7fdb70-0682-46b9-8a9a-fc9e2ca18575-1"
+              ],
+              "action": "Explored",
+              "details": "1 file",
+              "live": false,
+              "open": false
             }
           ]
         }
@@ -3127,9 +3719,18 @@
                     "label": "Arguments"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "tool",
+                  "verb": "Couldn't stop the background task"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:call_RjMKNJ5YECZzR8v7nL8qIF8b",
+              "actionId": "tool:call_RjMKNJ5YECZzR8v7nL8qIF8b"
             }
           ]
         }
@@ -3202,7 +3803,9 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "tool",
+                  "verb": "Scheduled a loop"
                 },
                 {
                   "id": "tool:5dab4e53-c5fb-4a7c-8572-e4a7e2adcb0d-1",
@@ -3214,7 +3817,9 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "tool",
+                  "verb": "Cancelled a loop"
                 },
                 {
                   "id": "tool:5dab4e53-c5fb-4a7c-8572-e4a7e2adcb0d-3",
@@ -3226,9 +3831,28 @@
                     "label": "Arguments"
                   },
                   "result": "Result",
-                  "open": false
+                  "open": false,
+                  "icon": "tool",
+                  "verb": "Checked scheduled loops"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:470475c1-285b-437b-ad46-4aff10045eac-1",
+              "actionId": "tool:470475c1-285b-437b-ad46-4aff10045eac-1"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:470475c1-285b-437b-ad46-4aff10045eac-1",
+              "actionId": "tool:5dab4e53-c5fb-4a7c-8572-e4a7e2adcb0d-1"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:470475c1-285b-437b-ad46-4aff10045eac-1",
+              "actionId": "tool:5dab4e53-c5fb-4a7c-8572-e4a7e2adcb0d-3"
             }
           ]
         }
@@ -3353,7 +3977,9 @@
                     "field": "script"
                   },
                   "result": "Error",
-                  "open": false
+                  "open": false,
+                  "icon": "terminal",
+                  "verb": "Ran a script"
                 }
               ]
             },
@@ -3382,9 +4008,25 @@
                   "command": {
                     "command": "python3 -c 'import time; time.sleep(120)'",
                     "summary": "Wait for crash check"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "Wait for crash check",
+                  "failedLabel": "Command failed"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:call_R5hLkXpPVQuUKNbqvGnjqA5V",
+              "actionId": "tool:call_R5hLkXpPVQuUKNbqvGnjqA5V"
+            },
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:17df3d74-4d35-4185-b98c-c6b1cf2d1154-1",
+              "actionId": "tool:17df3d74-4d35-4185-b98c-c6b1cf2d1154-1"
             }
           ]
         },
@@ -3445,9 +4087,20 @@
                   "command": {
                     "command": "sleep 90",
                     "summary": "Wait for native Stop"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "Wait for native Stop",
+                  "failedLabel": "Command failed"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:5c8a4c65-8f54-4a4d-a67f-bba5f34bc311-1",
+              "actionId": "tool:5c8a4c65-8f54-4a4d-a67f-bba5f34bc311-1"
             }
           ]
         },
@@ -3539,9 +4192,20 @@
                   "command": {
                     "command": "python3 -c 'import time; time.sleep(120)'",
                     "summary": "Wait for c965 crash"
-                  }
+                  },
+                  "icon": "terminal",
+                  "verb": "",
+                  "subject": "Wait for c965 crash",
+                  "failedLabel": "Command failed"
                 }
               ]
+            }
+          ],
+          "segments": [
+            {
+              "kind": "tool",
+              "blockId": "tools:tool:7fdacbd3-892b-458a-a5e0-940b7fcdbee3-1",
+              "actionId": "tool:7fdacbd3-892b-458a-a5e0-940b7fcdbee3-1"
             }
           ]
         },
@@ -3644,7 +4308,10 @@
                             "label": "Arguments"
                           },
                           "result": "Result",
-                          "open": false
+                          "open": false,
+                          "icon": "read",
+                          "verb": "Read",
+                          "subject": ".../.github/workflows/release.yml"
                         }
                       ],
                       "plan": [
@@ -3685,7 +4352,11 @@
                           "command": {
                             "command": "gh pr view 307 --repo nikships/droid-office --json state,mergeCommit",
                             "summary": "Check PR 307 merge state"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "Check PR 307 merge state",
+                          "failedLabel": "Command failed"
                         }
                       ]
                     },
@@ -3714,7 +4385,11 @@
                           "command": {
                             "command": "gh release view v0.1.611 --repo nikships/droid-office",
                             "summary": "View the published release"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "View the published release",
+                          "failedLabel": "Command failed"
                         }
                       ]
                     },
@@ -3743,26 +4418,44 @@
                           "card": "command",
                           "command": {
                             "command": "gh run view 40426951831 --repo nikships/droid-office --log > /Users/nik/repos/droid-office/.droid-office/worktrees/byte-090d/run.log"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "gh run view 40426951831 --repo nikships/droid-office --log > run.log",
+                          "failedLabel": "Command failed"
                         }
                       ]
                     }
                   ],
-                  "groups": [
+                  "segments": [
                     {
-                      "id": "group:tools:tool:toolu_5",
+                      "kind": "explore",
+                      "id": "explore:tool:toolu_4",
                       "blockIds": [
-                        "tools:tool:toolu_5",
-                        "tools:tool:toolu_8",
-                        "tools:tool:toolu_9"
+                        "tools:tool:toolu_4"
                       ],
-                      "label": "Ran 3 commands",
-                      "state": "complete",
+                      "actionIds": [
+                        "tool:toolu_4"
+                      ],
+                      "action": "Explored",
+                      "details": "1 file",
                       "live": false,
-                      "open": true,
-                      "files": 0,
-                      "additions": 0,
-                      "deletions": 0
+                      "open": false
+                    },
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:toolu_5",
+                      "actionId": "tool:toolu_5"
+                    },
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:toolu_8",
+                      "actionId": "tool:toolu_8"
+                    },
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:toolu_9",
+                      "actionId": "tool:toolu_9"
                     }
                   ]
                 },
@@ -3827,7 +4520,10 @@
                           "label": "Arguments"
                         },
                         "result": "Result",
-                        "open": false
+                        "open": false,
+                        "icon": "read",
+                        "verb": "Read",
+                        "subject": ".../.github/workflows/release.yml"
                       }
                     ],
                     "plan": [
@@ -3868,7 +4564,11 @@
                         "command": {
                           "command": "gh pr view 307 --repo nikships/droid-office --json state,mergeCommit",
                           "summary": "Check PR 307 merge state"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "Check PR 307 merge state",
+                        "failedLabel": "Command failed"
                       }
                     ]
                   },
@@ -3897,7 +4597,11 @@
                         "command": {
                           "command": "gh release view v0.1.611 --repo nikships/droid-office",
                           "summary": "View the published release"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "View the published release",
+                        "failedLabel": "Command failed"
                       }
                     ]
                   },
@@ -3926,26 +4630,44 @@
                         "card": "command",
                         "command": {
                           "command": "gh run view 40426951831 --repo nikships/droid-office --log > /Users/nik/repos/droid-office/.droid-office/worktrees/byte-090d/run.log"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "gh run view 40426951831 --repo nikships/droid-office --log > run.log",
+                        "failedLabel": "Command failed"
                       }
                     ]
                   }
                 ],
-                "groups": [
+                "segments": [
                   {
-                    "id": "group:tools:tool:toolu_5",
+                    "kind": "explore",
+                    "id": "explore:tool:toolu_4",
                     "blockIds": [
-                      "tools:tool:toolu_5",
-                      "tools:tool:toolu_8",
-                      "tools:tool:toolu_9"
+                      "tools:tool:toolu_4"
                     ],
-                    "label": "Ran 3 commands",
-                    "state": "complete",
+                    "actionIds": [
+                      "tool:toolu_4"
+                    ],
+                    "action": "Explored",
+                    "details": "1 file",
                     "live": false,
-                    "open": true,
-                    "files": 0,
-                    "additions": 0,
-                    "deletions": 0
+                    "open": false
+                  },
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:toolu_5",
+                    "actionId": "tool:toolu_5"
+                  },
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:toolu_8",
+                    "actionId": "tool:toolu_8"
+                  },
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:toolu_9",
+                    "actionId": "tool:toolu_9"
                   }
                 ]
               },
@@ -4046,7 +4768,10 @@
                             "label": "Arguments"
                           },
                           "result": "Result",
-                          "open": false
+                          "open": false,
+                          "icon": "read",
+                          "verb": "Read",
+                          "subject": ".../.github/workflows/release.yml"
                         }
                       ],
                       "plan": [
@@ -4087,7 +4812,11 @@
                           "command": {
                             "command": "gh pr view 307 --repo nikships/droid-office --json state,mergeCommit",
                             "summary": "Check PR 307 merge state"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "Check PR 307 merge state",
+                          "failedLabel": "Command failed"
                         }
                       ]
                     },
@@ -4116,7 +4845,11 @@
                           "command": {
                             "command": "gh release view v0.1.611 --repo nikships/droid-office",
                             "summary": "View the published release"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "View the published release",
+                          "failedLabel": "Command failed"
                         }
                       ]
                     },
@@ -4145,26 +4878,44 @@
                           "card": "command",
                           "command": {
                             "command": "gh run view 40426951831 --repo nikships/droid-office --log > /Users/nik/repos/droid-office/.droid-office/worktrees/byte-090d/run.log"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "gh run view 40426951831 --repo nikships/droid-office --log > run.log",
+                          "failedLabel": "Command failed"
                         }
                       ]
                     }
                   ],
-                  "groups": [
+                  "segments": [
                     {
-                      "id": "group:tools:tool:toolu_5",
+                      "kind": "explore",
+                      "id": "explore:tool:toolu_4",
                       "blockIds": [
-                        "tools:tool:toolu_5",
-                        "tools:tool:toolu_8",
-                        "tools:tool:toolu_9"
+                        "tools:tool:toolu_4"
                       ],
-                      "label": "Ran 3 commands",
-                      "state": "complete",
+                      "actionIds": [
+                        "tool:toolu_4"
+                      ],
+                      "action": "Explored",
+                      "details": "1 file",
                       "live": false,
-                      "open": true,
-                      "files": 0,
-                      "additions": 0,
-                      "deletions": 0
+                      "open": false
+                    },
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:toolu_5",
+                      "actionId": "tool:toolu_5"
+                    },
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:toolu_8",
+                      "actionId": "tool:toolu_8"
+                    },
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:toolu_9",
+                      "actionId": "tool:toolu_9"
                     }
                   ]
                 }
@@ -4225,7 +4976,10 @@
                           "label": "Arguments"
                         },
                         "result": "Result",
-                        "open": false
+                        "open": false,
+                        "icon": "read",
+                        "verb": "Read",
+                        "subject": ".../.github/workflows/release.yml"
                       }
                     ],
                     "plan": [
@@ -4266,7 +5020,11 @@
                         "command": {
                           "command": "gh pr view 307 --repo nikships/droid-office --json state,mergeCommit",
                           "summary": "Check PR 307 merge state"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "Check PR 307 merge state",
+                        "failedLabel": "Command failed"
                       }
                     ]
                   },
@@ -4295,7 +5053,11 @@
                         "command": {
                           "command": "gh release view v0.1.611 --repo nikships/droid-office",
                           "summary": "View the published release"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "View the published release",
+                        "failedLabel": "Command failed"
                       }
                     ]
                   },
@@ -4324,26 +5086,44 @@
                         "card": "command",
                         "command": {
                           "command": "gh run view 40426951831 --repo nikships/droid-office --log > /Users/nik/repos/droid-office/.droid-office/worktrees/byte-090d/run.log"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "gh run view 40426951831 --repo nikships/droid-office --log > run.log",
+                        "failedLabel": "Command failed"
                       }
                     ]
                   }
                 ],
-                "groups": [
+                "segments": [
                   {
-                    "id": "group:tools:tool:toolu_5",
+                    "kind": "explore",
+                    "id": "explore:tool:toolu_4",
                     "blockIds": [
-                      "tools:tool:toolu_5",
-                      "tools:tool:toolu_8",
-                      "tools:tool:toolu_9"
+                      "tools:tool:toolu_4"
                     ],
-                    "label": "Ran 3 commands",
-                    "state": "complete",
+                    "actionIds": [
+                      "tool:toolu_4"
+                    ],
+                    "action": "Explored",
+                    "details": "1 file",
                     "live": false,
-                    "open": true,
-                    "files": 0,
-                    "additions": 0,
-                    "deletions": 0
+                    "open": false
+                  },
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:toolu_5",
+                    "actionId": "tool:toolu_5"
+                  },
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:toolu_8",
+                    "actionId": "tool:toolu_8"
+                  },
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:toolu_9",
+                    "actionId": "tool:toolu_9"
                   }
                 ]
               },
@@ -4452,7 +5232,10 @@
                             "label": "Arguments"
                           },
                           "result": "Result",
-                          "open": false
+                          "open": false,
+                          "icon": "read",
+                          "verb": "Read",
+                          "subject": ".../.github/workflows/release.yml"
                         }
                       ],
                       "plan": [
@@ -4493,7 +5276,11 @@
                           "command": {
                             "command": "gh pr view 307 --repo nikships/droid-office --json state,mergeCommit",
                             "summary": "Check PR 307 merge state"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "Check PR 307 merge state",
+                          "failedLabel": "Command failed"
                         }
                       ]
                     },
@@ -4522,7 +5309,11 @@
                           "command": {
                             "command": "gh release view v0.1.611 --repo nikships/droid-office",
                             "summary": "View the published release"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "View the published release",
+                          "failedLabel": "Command failed"
                         }
                       ]
                     },
@@ -4551,26 +5342,44 @@
                           "card": "command",
                           "command": {
                             "command": "gh run view 40426951831 --repo nikships/droid-office --log > /Users/nik/repos/droid-office/.droid-office/worktrees/byte-090d/run.log"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "gh run view 40426951831 --repo nikships/droid-office --log > run.log",
+                          "failedLabel": "Command failed"
                         }
                       ]
                     }
                   ],
-                  "groups": [
+                  "segments": [
                     {
-                      "id": "group:tools:tool:toolu_5",
+                      "kind": "explore",
+                      "id": "explore:tool:toolu_4",
                       "blockIds": [
-                        "tools:tool:toolu_5",
-                        "tools:tool:toolu_8",
-                        "tools:tool:toolu_9"
+                        "tools:tool:toolu_4"
                       ],
-                      "label": "Ran 3 commands",
-                      "state": "complete",
+                      "actionIds": [
+                        "tool:toolu_4"
+                      ],
+                      "action": "Explored",
+                      "details": "1 file",
                       "live": false,
-                      "open": true,
-                      "files": 0,
-                      "additions": 0,
-                      "deletions": 0
+                      "open": false
+                    },
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:toolu_5",
+                      "actionId": "tool:toolu_5"
+                    },
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:toolu_8",
+                      "actionId": "tool:toolu_8"
+                    },
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:toolu_9",
+                      "actionId": "tool:toolu_9"
                     }
                   ]
                 }
@@ -4643,7 +5452,10 @@
                           "label": "Arguments"
                         },
                         "result": "Result",
-                        "open": false
+                        "open": false,
+                        "icon": "read",
+                        "verb": "Read",
+                        "subject": ".../.github/workflows/release.yml"
                       }
                     ],
                     "plan": [
@@ -4684,7 +5496,11 @@
                         "command": {
                           "command": "gh pr view 307 --repo nikships/droid-office --json state,mergeCommit",
                           "summary": "Check PR 307 merge state"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "Check PR 307 merge state",
+                        "failedLabel": "Command failed"
                       }
                     ]
                   },
@@ -4713,7 +5529,11 @@
                         "command": {
                           "command": "gh release view v0.1.611 --repo nikships/droid-office",
                           "summary": "View the published release"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "View the published release",
+                        "failedLabel": "Command failed"
                       }
                     ]
                   },
@@ -4742,26 +5562,44 @@
                         "card": "command",
                         "command": {
                           "command": "gh run view 40426951831 --repo nikships/droid-office --log > /Users/nik/repos/droid-office/.droid-office/worktrees/byte-090d/run.log"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "gh run view 40426951831 --repo nikships/droid-office --log > run.log",
+                        "failedLabel": "Command failed"
                       }
                     ]
                   }
                 ],
-                "groups": [
+                "segments": [
                   {
-                    "id": "group:tools:tool:toolu_5",
+                    "kind": "explore",
+                    "id": "explore:tool:toolu_4",
                     "blockIds": [
-                      "tools:tool:toolu_5",
-                      "tools:tool:toolu_8",
-                      "tools:tool:toolu_9"
+                      "tools:tool:toolu_4"
                     ],
-                    "label": "Ran 3 commands",
-                    "state": "complete",
+                    "actionIds": [
+                      "tool:toolu_4"
+                    ],
+                    "action": "Explored",
+                    "details": "1 file",
                     "live": false,
-                    "open": true,
-                    "files": 0,
-                    "additions": 0,
-                    "deletions": 0
+                    "open": false
+                  },
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:toolu_5",
+                    "actionId": "tool:toolu_5"
+                  },
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:toolu_8",
+                    "actionId": "tool:toolu_8"
+                  },
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:toolu_9",
+                    "actionId": "tool:toolu_9"
                   }
                 ]
               },
@@ -4918,7 +5756,10 @@
                             "label": "Arguments"
                           },
                           "result": "Result",
-                          "open": false
+                          "open": false,
+                          "icon": "read",
+                          "verb": "Read",
+                          "subject": ".../ui/worker/Thread.kt, limit: 300"
                         }
                       ]
                     },
@@ -4948,9 +5789,32 @@
                             "label": "Arguments"
                           },
                           "result": "Result",
-                          "open": false
+                          "open": false,
+                          "icon": "search",
+                          "verb": "Grepped for",
+                          "subject": "\"Promise.allSettled\" in .../worktrees/byte-090d/src"
                         }
                       ]
+                    }
+                  ],
+                  "segments": [
+                    {
+                      "kind": "explore",
+                      "id": "explore:msg-2:1",
+                      "blockIds": [
+                        "msg-2:1",
+                        "tools:tool:toolu_3",
+                        "msg-4:1",
+                        "tools:tool:toolu_5"
+                      ],
+                      "actionIds": [
+                        "tool:toolu_3",
+                        "tool:toolu_5"
+                      ],
+                      "action": "Explored",
+                      "details": "2 searches and thought 2 times",
+                      "live": false,
+                      "open": false
                     }
                   ]
                 }
@@ -5008,7 +5872,10 @@
                           "label": "Arguments"
                         },
                         "result": "Result",
-                        "open": false
+                        "open": false,
+                        "icon": "read",
+                        "verb": "Read",
+                        "subject": ".../ui/worker/Thread.kt, limit: 300"
                       }
                     ]
                   },
@@ -5038,9 +5905,32 @@
                           "label": "Arguments"
                         },
                         "result": "Result",
-                        "open": false
+                        "open": false,
+                        "icon": "search",
+                        "verb": "Grepped for",
+                        "subject": "\"Promise.allSettled\" in .../worktrees/byte-090d/src"
                       }
                     ]
+                  }
+                ],
+                "segments": [
+                  {
+                    "kind": "explore",
+                    "id": "explore:msg-2:1",
+                    "blockIds": [
+                      "msg-2:1",
+                      "tools:tool:toolu_3",
+                      "msg-4:1",
+                      "tools:tool:toolu_5"
+                    ],
+                    "actionIds": [
+                      "tool:toolu_3",
+                      "tool:toolu_5"
+                    ],
+                    "action": "Explored",
+                    "details": "2 searches and thought 2 times",
+                    "live": false,
+                    "open": false
                   }
                 ]
               },
@@ -5132,7 +6022,10 @@
                             "label": "Arguments"
                           },
                           "result": "Result",
-                          "open": false
+                          "open": false,
+                          "icon": "read",
+                          "verb": "Read",
+                          "subject": ".../ui/worker/Thread.kt, limit: 300"
                         }
                       ]
                     },
@@ -5162,9 +6055,32 @@
                             "label": "Arguments"
                           },
                           "result": "Result",
-                          "open": false
+                          "open": false,
+                          "icon": "search",
+                          "verb": "Grepped for",
+                          "subject": "\"Promise.allSettled\" in .../worktrees/byte-090d/src"
                         }
                       ]
+                    }
+                  ],
+                  "segments": [
+                    {
+                      "kind": "explore",
+                      "id": "explore:msg-2:1",
+                      "blockIds": [
+                        "msg-2:1",
+                        "tools:tool:toolu_3",
+                        "msg-4:1",
+                        "tools:tool:toolu_5"
+                      ],
+                      "actionIds": [
+                        "tool:toolu_3",
+                        "tool:toolu_5"
+                      ],
+                      "action": "Explored",
+                      "details": "2 searches and thought 2 times",
+                      "live": false,
+                      "open": false
                     }
                   ]
                 }
@@ -5224,7 +6140,10 @@
                           "label": "Arguments"
                         },
                         "result": "Result",
-                        "open": false
+                        "open": false,
+                        "icon": "read",
+                        "verb": "Read",
+                        "subject": ".../ui/worker/Thread.kt, limit: 300"
                       }
                     ]
                   },
@@ -5254,9 +6173,32 @@
                           "label": "Arguments"
                         },
                         "result": "Result",
-                        "open": false
+                        "open": false,
+                        "icon": "search",
+                        "verb": "Grepped for",
+                        "subject": "\"Promise.allSettled\" in .../worktrees/byte-090d/src"
                       }
                     ]
+                  }
+                ],
+                "segments": [
+                  {
+                    "kind": "explore",
+                    "id": "explore:msg-2:1",
+                    "blockIds": [
+                      "msg-2:1",
+                      "tools:tool:toolu_3",
+                      "msg-4:1",
+                      "tools:tool:toolu_5"
+                    ],
+                    "actionIds": [
+                      "tool:toolu_3",
+                      "tool:toolu_5"
+                    ],
+                    "action": "Explored",
+                    "details": "2 searches and thought 2 times",
+                    "live": false,
+                    "open": false
                   }
                 ]
               },
@@ -5369,7 +6311,10 @@
                           "label": "Arguments"
                         },
                         "result": "Result",
-                        "open": false
+                        "open": false,
+                        "icon": "read",
+                        "verb": "Read",
+                        "subject": ".../ui/worker/Thread.kt, limit: 300"
                       }
                     ]
                   },
@@ -5399,9 +6344,32 @@
                           "label": "Arguments"
                         },
                         "result": "Result",
-                        "open": false
+                        "open": false,
+                        "icon": "search",
+                        "verb": "Grepped for",
+                        "subject": "\"Promise.allSettled\" in .../worktrees/byte-090d/src"
                       }
                     ]
+                  }
+                ],
+                "segments": [
+                  {
+                    "kind": "explore",
+                    "id": "explore:msg-2:1",
+                    "blockIds": [
+                      "msg-2:1",
+                      "tools:tool:toolu_3",
+                      "msg-4:1",
+                      "tools:tool:toolu_5"
+                    ],
+                    "actionIds": [
+                      "tool:toolu_3",
+                      "tool:toolu_5"
+                    ],
+                    "action": "Explored",
+                    "details": "2 searches and thought 2 times",
+                    "live": false,
+                    "open": false
                   }
                 ]
               },
@@ -5509,9 +6477,20 @@
                           "command": {
                             "command": "sleep 90",
                             "summary": "Wait for native Stop"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "Wait for native Stop",
+                          "failedLabel": "Command failed"
                         }
                       ]
+                    }
+                  ],
+                  "segments": [
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:5c8a4c65-8f54-4a4d-a67f-bba5f34bc311-1",
+                      "actionId": "tool:5c8a4c65-8f54-4a4d-a67f-bba5f34bc311-1"
                     }
                   ]
                 },
@@ -5575,9 +6554,20 @@
                         "command": {
                           "command": "sleep 90",
                           "summary": "Wait for native Stop"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "Wait for native Stop",
+                        "failedLabel": "Command failed"
                       }
                     ]
+                  }
+                ],
+                "segments": [
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:5c8a4c65-8f54-4a4d-a67f-bba5f34bc311-1",
+                    "actionId": "tool:5c8a4c65-8f54-4a4d-a67f-bba5f34bc311-1"
                   }
                 ]
               },
@@ -5710,9 +6700,20 @@
                         "command": {
                           "command": "sleep 90",
                           "summary": "Wait for native Stop"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "Wait for native Stop",
+                        "failedLabel": "Command failed"
                       }
                     ]
+                  }
+                ],
+                "segments": [
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:5c8a4c65-8f54-4a4d-a67f-bba5f34bc311-1",
+                    "actionId": "tool:5c8a4c65-8f54-4a4d-a67f-bba5f34bc311-1"
                   }
                 ]
               },
@@ -5801,7 +6802,9 @@
                             "field": "script"
                           },
                           "result": "Error",
-                          "open": false
+                          "open": false,
+                          "icon": "terminal",
+                          "verb": "Ran a script"
                         }
                       ]
                     },
@@ -5830,9 +6833,25 @@
                           "command": {
                             "command": "python3 -c 'import time; time.sleep(120)'",
                             "summary": "Wait for crash check"
-                          }
+                          },
+                          "icon": "terminal",
+                          "verb": "",
+                          "subject": "Wait for crash check",
+                          "failedLabel": "Command failed"
                         }
                       ]
+                    }
+                  ],
+                  "segments": [
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:call_R5hLkXpPVQuUKNbqvGnjqA5V",
+                      "actionId": "tool:call_R5hLkXpPVQuUKNbqvGnjqA5V"
+                    },
+                    {
+                      "kind": "tool",
+                      "blockId": "tools:tool:17df3d74-4d35-4185-b98c-c6b1cf2d1154-1",
+                      "actionId": "tool:17df3d74-4d35-4185-b98c-c6b1cf2d1154-1"
                     }
                   ]
                 }
@@ -5892,7 +6911,9 @@
                           "field": "script"
                         },
                         "result": "Error",
-                        "open": false
+                        "open": false,
+                        "icon": "terminal",
+                        "verb": "Ran a script"
                       }
                     ]
                   },
@@ -5921,9 +6942,25 @@
                         "command": {
                           "command": "python3 -c 'import time; time.sleep(120)'",
                           "summary": "Wait for crash check"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "Wait for crash check",
+                        "failedLabel": "Command failed"
                       }
                     ]
+                  }
+                ],
+                "segments": [
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:call_R5hLkXpPVQuUKNbqvGnjqA5V",
+                    "actionId": "tool:call_R5hLkXpPVQuUKNbqvGnjqA5V"
+                  },
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:17df3d74-4d35-4185-b98c-c6b1cf2d1154-1",
+                    "actionId": "tool:17df3d74-4d35-4185-b98c-c6b1cf2d1154-1"
                   }
                 ]
               },
@@ -5984,9 +7021,20 @@
                         "command": {
                           "command": "sleep 90",
                           "summary": "Wait for native Stop"
-                        }
+                        },
+                        "icon": "terminal",
+                        "verb": "",
+                        "subject": "Wait for native Stop",
+                        "failedLabel": "Command failed"
                       }
                     ]
+                  }
+                ],
+                "segments": [
+                  {
+                    "kind": "tool",
+                    "blockId": "tools:tool:5c8a4c65-8f54-4a4d-a67f-bba5f34bc311-1",
+                    "actionId": "tool:5c8a4c65-8f54-4a4d-a67f-bba5f34bc311-1"
                   }
                 ]
               },

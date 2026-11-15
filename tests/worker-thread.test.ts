@@ -126,7 +126,7 @@ test('projects actual text, thinking, tool/error, attachment and nested todo rec
   assert.equal(page.hasMore, false);
   assert.deepEqual(
     page.entries.map((entry) => entry.kind),
-    ['text', 'notice', 'thinking', 'text', 'tool', 'todo', 'notice'],
+    ['text', 'notice', 'thinking', 'text', 'tool', 'todo', 'notice', 'notice'],
   );
   const tool = page.entries[4];
   assert.equal(tool.id, 'tool:call-1');
@@ -137,11 +137,12 @@ test('projects actual text, thinking, tool/error, attachment and nested todo rec
   assert.equal(tool.resultSeq, 5, 'the result came before the todo snapshot took seq 5');
   assert.equal(page.entries[5].text, '1. [completed] Inspect code\n2. [in progress] Fix bug\n3. [pending] Run tests');
   assert.equal(page.entries[6].text, 'Turn cancelled');
+  assert.deepEqual(page.entries[7], { id: 'compaction:compact', role: 'system', kind: 'notice', name: 'compaction', text: 'Compacted', seq: 7 });
   assert.deepEqual(
     page.entries.map((entry) => entry.seq),
-    [0, 1, 2, 3, 4, 5, 6],
+    [0, 1, 2, 3, 4, 5, 6, 7],
   );
-  assert.doesNotMatch(JSON.stringify(page), /PRIVATE_|base64|signature|userMessageSource|compaction/);
+  assert.doesNotMatch(JSON.stringify(page), /PRIVATE_|base64|signature|userMessageSource/);
 });
 
 test('pictures in tool results and messages are referenced by id and served from the session file', async (t) => {
@@ -808,4 +809,54 @@ test('an older page numbers an Edit from the file too, and a text-only reader ne
   await labels.read(source, 1);
   assert.match((await labels.readText(source)) ?? '', /Later 5$/);
   assert.deepEqual(reads, []);
+});
+
+test('entries carry when they were written, a tool when it finished, and a thought how long it took', async (t) => {
+  const at = (s: number) => `2026-11-15T03:58:${String(s).padStart(2, '0')}.000Z`;
+  const { reader, source } = await rig(t, [
+    { ...text('prompt', 'List five facts', 'user'), timestamp: at(10) },
+    { ...message('hook', 'user', [], { visibility: 'user_only', hookEventName: 'UserPromptSubmit' }), timestamp: at(11) },
+    {
+      ...message('answer', 'assistant', [
+        { type: 'thinking', thinking: 'Five facts.', durationMs: 20 },
+        { type: 'tool_use', id: 'call-1', name: 'Execute', input: { command: 'ls' } },
+      ]),
+      timestamp: at(14),
+    },
+    { ...message('result', 'user', [{ type: 'tool_result', tool_use_id: 'call-1', content: 'README.md' }]), timestamp: at(17) },
+    { type: 'compaction_state', id: 'switch', timestamp: at(18), summaryKind: 'provider_switch_serialization', summaryTokens: 900, removedCount: 0 },
+    { type: 'compaction_state', id: 'summary', timestamp: at(19), summaryKind: 'llm_summary', summaryText: 'PRIVATE_SUMMARY', summaryTokens: 4000, removedCount: 12 },
+  ]);
+  const page = await reader.read(source);
+  const [prompt, thought, tool, compacted] = page.entries;
+  assert.equal(prompt.at, Date.parse(at(10)));
+  assert.equal(thought.kind, 'thinking');
+  assert.equal(thought.tookMs, 3000, 'from the hook record before it, not durationMs');
+  assert.equal(tool.at, Date.parse(at(14)));
+  assert.equal(tool.doneAt, Date.parse(at(17)));
+  assert.equal(page.entries.length, 4, 'a provider switch is not a compaction');
+  assert.equal(compacted.name, 'compaction');
+  assert.equal(compacted.text, 'Compacted');
+  assert.doesNotMatch(JSON.stringify(page), /PRIVATE_/);
+});
+
+test("a Task call names its subagent's session, which reads like the worker's own", async (t) => {
+  const { reader, source, file, root } = await rig(t, [message('task', 'assistant', [{ type: 'tool_use', id: 'call-task', name: 'Task', input: { prompt: 'Look around' } }])]);
+  const child = '0b3a5f1e-7c1d-4d55-9a9e-2f8c7a6b5c4d';
+  const stranger = '1c4b6a2f-8d2e-4e66-8b0f-3a9d8b7c6d5e';
+  assert.equal((await reader.read(source)).entries[0].child, undefined);
+  await writeFile(path.join(path.dirname(file), `${stranger}.jsonl`), lines({ type: 'session_start', id: stranger, callingSessionId: 'someone-else', callingToolUseId: 'call-task' }, text('x', 'PRIVATE_OTHER')));
+  await writeFile(path.join(path.dirname(file), `${child}.jsonl`), lines({ type: 'session_start', id: child, callingSessionId: source.sessionId, callingToolUseId: 'call-task' }, text('found', 'Found three files')));
+  // The next look is at most once a second; a fresh reader looks straight away.
+  const fresh = new WorkerThreadReader(root);
+  assert.equal((await fresh.read(source)).entries[0].child, child);
+  assert.equal(await fresh.childSession(source, stranger), undefined);
+  assert.equal(await fresh.childSession(source, '../test-session'), undefined);
+  const session = await fresh.childSession(source, child);
+  assert.equal(session?.sessionId, child);
+  const page = await fresh.read(session!);
+  assert.deepEqual(
+    page.entries.map((e) => e.text),
+    ['Found three files'],
+  );
 });

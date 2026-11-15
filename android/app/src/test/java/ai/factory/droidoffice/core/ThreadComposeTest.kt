@@ -24,6 +24,23 @@ import org.junit.Test
 /** Mirrors tests/thread-compose.test.ts, so the phone's composer edits drafts as the web's does. */
 class ThreadComposeTest {
     @Test
+    fun settingsShowModelEffortAndSpecButNeverAutonomy() {
+        val worker = WorkerInfo(id = "w", model = "default", effort = "low", activeModel = "active", activeEffort = "medium")
+        assertEquals("active · Medium", ThreadCompose.settingsText(worker, null))
+        assertEquals("default · Low", ThreadCompose.settingsText(worker.copy(activeModel = null, activeEffort = null), null))
+        val settings = ThreadSessionSettings(model = "model-id", modelName = "Opus", reasoningEffort = "high")
+        for (level in listOf(null, "off", "low", "medium", "high")) {
+            val managed = settings.copy(autonomyLevel = level, autonomyMode = "yolo")
+            assertEquals("Opus · High", ThreadCompose.settingsText(worker, managed))
+            assertEquals("Spec · Opus · High", ThreadCompose.settingsText(worker, managed.copy(interactionMode = "spec")))
+        }
+        assertEquals("Opus High", ThreadCompose.settingsText(worker, settings.copy(modelName = "Opus High")))
+        assertEquals("model-id · High", ThreadCompose.settingsText(worker, settings.copy(modelName = null)))
+        assertEquals("Opus · Extra high", ThreadCompose.settingsText(worker, settings.copy(reasoningEffort = "xhigh")))
+        assertEquals("", ThreadCompose.settingsText(WorkerInfo(id = "empty"), ThreadSessionSettings(autonomyLevel = "high")))
+    }
+
+    @Test
     fun aPasteBecomesAChipOnlyPastTheCharacterOrLineThreshold() {
         assertFalse(isLargePaste("x".repeat(PASTE_CHIP_CHARS)))
         assertTrue(isLargePaste("x".repeat(PASTE_CHIP_CHARS + 1)))
@@ -110,5 +127,29 @@ class ThreadComposeTest {
             "This message is 20,001 characters, over the 20,000-character limit. Remove some pasted text.",
             tooLong("x".repeat(PROMPT_MAX + 1)),
         )
+    }
+
+    @Test
+    fun upAndDownWalkThePromptHistoryLikeDroid() {
+        val prompts = listOf("newest", "older\nprompt")
+        assertNull(ThreadCompose.recall(emptyList(), -1, up = true, text = "", caret = 0, draft = ""))
+        assertEquals(ThreadCompose.Recall(0, "newest"), ThreadCompose.recall(prompts, -1, up = true, text = "typing", caret = 3, draft = ""))
+        assertNull(ThreadCompose.recall(prompts, -1, up = true, text = "one\ntwo", caret = 5, draft = ""))
+        assertNull(ThreadCompose.recall(prompts, -1, up = false, text = "typing", caret = 6, draft = ""))
+        assertEquals(ThreadCompose.Recall(1, "older\nprompt"), ThreadCompose.recall(prompts, 0, up = true, text = "newest", caret = 6, draft = "typing"))
+        assertEquals(ThreadCompose.Recall(1, "older\nprompt"), ThreadCompose.recall(prompts, 1, up = true, text = "older\nprompt", caret = 12, draft = "typing"))
+        assertEquals(ThreadCompose.Recall(0, "newest"), ThreadCompose.recall(prompts, 1, up = false, text = "older\nprompt", caret = 12, draft = "typing"))
+        assertEquals(ThreadCompose.Recall(-1, "typing"), ThreadCompose.recall(prompts, 0, up = false, text = "newest", caret = 6, draft = "typing"))
+        assertNull(ThreadCompose.recall(prompts, 1, up = true, text = "older\nprompt", caret = 8, draft = "typing"))
+        // A rewind can shorten the history mid-walk.
+        assertEquals(ThreadCompose.Recall(0, "only"), ThreadCompose.recall(listOf("only"), 3, up = false, text = "gone", caret = 4, draft = "typing"))
+        assertEquals(ThreadCompose.Recall(0, "only"), ThreadCompose.recall(listOf("only"), 3, up = true, text = "gone", caret = 4, draft = "typing"))
+    }
+
+    @Test
+    fun effortLabelsReadAsDroidNamesThem() {
+        assertEquals("Extra high", ThreadCompose.effortLabel("xhigh"))
+        assertEquals("Off", ThreadCompose.effortLabel("none"))
+        assertEquals("turbo", ThreadCompose.effortLabel("turbo"))
     }
 }

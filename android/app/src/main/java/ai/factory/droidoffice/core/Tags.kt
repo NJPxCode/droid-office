@@ -488,7 +488,7 @@ object Tags {
         const val THREAD_TABLE = "worker.thread.table"
         /** Copies a fenced code block's source to the clipboard. */
         const val THREAD_CODE_COPY = "worker.thread.code.copy"
-        /** A structured `email` draft card in a message, and its copy/mail actions. */
+        /** Reserved: former `email` draft card identifiers (```email fences render as ordinary code blocks). */
         const val THREAD_EMAIL = "worker.thread.email"
         const val THREAD_EMAIL_COPY_BODY = "worker.thread.email.copy_body"
         const val THREAD_EMAIL_COPY_ALL = "worker.thread.email.copy_all"
@@ -581,6 +581,54 @@ object Tags {
         fun threadTurnChanges(id: String) = "worker.thread.turn.changes/$id"
         fun threadTurnFile(id: String, index: Int) = "worker.thread.turn.file/$id/$index"
 
+        // The Factory transcript shell: status line, search, message actions, composer toolbar and queue panel.
+        /** The status line under a live turn; its description is the phrase it shows. */
+        const val THREAD_STATUS = "worker.thread.status"
+        /** The Thread bar's search button, and the search row it opens over the conversation. */
+        const val THREAD_SEARCH = "worker.thread.search"
+        const val THREAD_SEARCH_FIELD = "worker.thread.search.field"
+        /** "2 of 5", or "No results". */
+        const val THREAD_SEARCH_COUNT = "worker.thread.search.count"
+        const val THREAD_SEARCH_PREV = "worker.thread.search.prev"
+        const val THREAD_SEARCH_NEXT = "worker.thread.search.next"
+        const val THREAD_SEARCH_CLOSE = "worker.thread.search.close"
+        /** The compaction divider ("Compacted 120k tokens"). */
+        const val THREAD_COMPACTION = "worker.thread.compaction"
+        /** The composer's session settings chip (model, effort and Spec). */
+        const val COMPOSER_SETTINGS = "composer.settings"
+        /** Factory's queued messages panel at the top of the composer, and its Clear all. */
+        const val COMPOSER_QUEUE = "composer.queue"
+        const val COMPOSER_QUEUE_CLEAR = "composer.queue.clear"
+        /** A message's actions row, opened by tapping the message, and its Copy and Quote. */
+        fun threadMessageActions(id: String) = "worker.thread.message.actions/$id"
+        fun threadMessageCopy(id: String) = "worker.thread.message.copy/$id"
+        fun threadMessageQuote(id: String) = "worker.thread.message.quote/$id"
+        /** A row of the queue panel by its place from 1, and its Send now, Remove and Edit. */
+        fun composerQueued(n: Int) = "composer.queue.item/$n"
+        fun composerQueuedSendNow(n: Int) = "composer.queue.send_now/$n"
+        fun composerQueuedRemove(n: Int) = "composer.queue.remove/$n"
+        fun composerQueuedEdit(n: Int) = "composer.queue.edit/$n"
+        /** A message's Rewind and the time it was sent, in its actions row. */
+        fun threadMessageRewind(id: String) = "worker.thread.message.rewind/$id"
+        fun threadMessageTime(id: String) = "worker.thread.message.time/$id"
+        /** The rewind dialog, its two choices (keep the files as they are, or restore them), Rewind and Cancel. */
+        const val THREAD_REWIND = "worker.thread.rewind"
+        const val THREAD_REWIND_KEEP = "worker.thread.rewind.keep"
+        const val THREAD_REWIND_RESTORE = "worker.thread.rewind.restore"
+        const val THREAD_REWIND_CONFIRM = "worker.thread.rewind.confirm"
+        const val THREAD_REWIND_CANCEL = "worker.thread.rewind.cancel"
+        const val THREAD_REWIND_CHOOSE = "worker.thread.rewind.choose"
+        const val THREAD_SIDE = "worker.thread.side"
+        const val THREAD_SIDE_CLOSE = "worker.thread.side.close"
+        const val THREAD_COPY = "worker.thread.copy"
+        const val COMPOSER_MODEL_MENU = "composer.model_menu"
+        const val THREAD_IMAGE_PREVIOUS = "worker.thread.image_viewer.previous"
+        const val THREAD_IMAGE_NEXT = "worker.thread.image_viewer.next"
+        const val THREAD_IMAGE_COUNT = "worker.thread.image_viewer.count"
+        const val THREAD_IMAGE_DOWNLOAD = "worker.thread.image_viewer.download"
+        const val THREAD_DIAGRAM_DOWNLOAD = "worker.thread.diagram.download"
+        const val THREAD_DIAGRAM_SHARE = "worker.thread.diagram.share"
+
         /** A quick key, by what TalkBack calls it: "Shift Tab" is `key.shift_tab`. */
         fun key(spoken: String) = "key." + spoken.lowercase().replace(' ', '_')
 
@@ -590,6 +638,10 @@ object Tags {
         fun arrangeDown(id: String) = "worker.keys_sheet.down/$id"
 
         fun removeImage(number: Int) = "composer.remove_image/$number"
+        fun rewindFile(path: String) = "worker.thread.rewind.file/$path"
+        fun copyChoice(choice: String) = "worker.thread.copy/$choice"
+        fun composerModel(id: String) = "composer.model/$id"
+        fun composerEffort(id: String) = "composer.effort/$id"
         /** A chip in [PASTES], by its paste's number: tapping it puts the text back in the draft. */
         fun paste(number: Int) = "composer.paste/$number"
         fun removePaste(number: Int) = "composer.remove_paste/$number"

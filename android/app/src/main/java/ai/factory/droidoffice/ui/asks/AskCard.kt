@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,6 +21,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -65,7 +67,8 @@ import ai.factory.droidoffice.ui.LocalGraph
 import ai.factory.droidoffice.ui.components.Eyebrow
 import ai.factory.droidoffice.ui.components.SecondaryButton
 import ai.factory.droidoffice.ui.components.tagged
-import ai.factory.droidoffice.ui.theme.Palette
+import ai.factory.droidoffice.ui.theme.ThreadPalette
+import ai.factory.droidoffice.ui.worker.ToolIcons
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -102,8 +105,8 @@ fun AskCard(
     var opened by rememberSaveable(identity) { mutableStateOf<String?>(null) }
     Column(
         modifier.fillMaxWidth().tagged(Tags.Asks.CARD)
-            .background(Palette.Surface, RoundedCornerShape(4.dp))
-            .border(1.dp, Palette.BorderStrong, RoundedCornerShape(4.dp)).padding(12.dp),
+            .background(ThreadPalette.Surface, RoundedCornerShape(4.dp))
+            .border(1.dp, ThreadPalette.BorderStrong, RoundedCornerShape(4.dp)).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (!inline) {
@@ -111,11 +114,17 @@ fun AskCard(
             where?.let { Eyebrow(it) }
             context?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.tagged(Tags.Asks.CONTEXT)) }
         }
-        Text(question, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.tagged(questionTag))
+        if (inline) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Icon(ToolIcons.HelpCircle, null, tint = ThreadPalette.TextSecondary, modifier = Modifier.size(14.dp))
+                Text("Asking user a question", style = MaterialTheme.typography.bodyMedium, color = ThreadPalette.TextSecondary)
+            }
+        }
+        Text(question, style = MaterialTheme.typography.bodyLarge, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.tagged(questionTag))
         if (menu != null) {
             SecondaryButton(
                 if (menu.review != null) "Review answers" else "Answer questions", { opened = OfficeJson.encodeToString(Menu.serializer(), menu) },
-                Modifier.tagged(Tags.Answer.OPEN), enabled = enabled && connected && !worker.isShell && !worker.isCloud, color = Palette.Accent,
+                Modifier.tagged(Tags.Answer.OPEN), enabled = enabled && connected && !worker.isShell && !worker.isCloud, color = ThreadPalette.Accent,
             )
         } else {
             Text("This question needs Raw TTY.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.tagged(Tags.Asks.WAITING))
@@ -214,7 +223,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, shown: Menu, entries: List<Threa
     }
     Dialog(onDismissRequest = { if (!delivering) dismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Column(
-            Modifier.fillMaxSize().background(Palette.Bg).windowInsetsPadding(WindowInsets.safeDrawing).imePadding().tagged(Tags.Answer.WORKSPACE),
+            Modifier.fillMaxSize().background(ThreadPalette.Bg).windowInsetsPadding(WindowInsets.safeDrawing).imePadding().tagged(Tags.Answer.WORKSPACE),
         ) {
             Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 SecondaryButton("Back", { dismiss() }, Modifier.tagged(Tags.Answer.CLOSE), enabled = !delivering)
@@ -230,7 +239,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, shown: Menu, entries: List<Threa
                     Text(display.question ?: "Choose your answer", style = MaterialTheme.typography.titleLarge, modifier = Modifier.tagged(Tags.Answer.QUESTION))
                 }
                 item {
-                    Text(if (shown.review != null) "Check your answers, then submit them to the worker. To edit them, open Raw TTY." else if (shown.multiSelect) "Select all that apply, then submit." else "Select one answer, then submit.", style = MaterialTheme.typography.bodyMedium, color = Palette.Accent, modifier = Modifier.tagged(Tags.Answer.INSTRUCTION))
+                    Text(if (shown.review != null) "Check your answers, then submit them to the worker. To edit them, open Raw TTY." else if (shown.multiSelect) "Select all that apply, then submit." else "Select one answer, then submit.", style = MaterialTheme.typography.bodyMedium, color = ThreadPalette.Accent, modifier = Modifier.tagged(Tags.Answer.INSTRUCTION))
                 }
                 shown.review?.let { summary ->
                     item { Text(summary.joinToString("\n"), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.tagged(Tags.Answer.REVIEW)) }
@@ -243,7 +252,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, shown: Menu, entries: List<Threa
                         keep()
                     }
                     Row(
-                        Modifier.fillMaxWidth().border(1.dp, if (checked) Palette.Accent else Palette.BorderStrong, RoundedCornerShape(4.dp))
+                        Modifier.fillMaxWidth().border(1.dp, if (checked) ThreadPalette.Accent else ThreadPalette.BorderStrong, RoundedCornerShape(4.dp))
                             .then(if (shown.multiSelect) Modifier.toggleable(checked, enabled = active && !pending, role = Role.Checkbox) { change() }
                             else Modifier.selectable(checked, enabled = active && !pending, role = Role.RadioButton, onClick = change))
                             .tagged(Tags.Answer.option(choice.number)).heightIn(min = 48.dp).padding(10.dp),
@@ -252,7 +261,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, shown: Menu, entries: List<Threa
                         if (shown.multiSelect) Checkbox(checked, onCheckedChange = null) else RadioButton(checked, onClick = null)
                         Column(Modifier.weight(1f).padding(start = 8.dp)) {
                             Text(choice.label, style = MaterialTheme.typography.bodyLarge)
-                            choice.description?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = Palette.TextSecondary) }
+                            choice.description?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = ThreadPalette.TextSecondary) }
                         }
                     }
                 }
@@ -287,7 +296,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, shown: Menu, entries: List<Threa
                     uncertain -> error
                     else -> error
                 }
-                status?.let { Text(it, color = Palette.Warning, style = MaterialTheme.typography.bodySmall, modifier = Modifier.tagged(Tags.Answer.STATUS).semantics { liveRegion = LiveRegionMode.Polite }) }
+                status?.let { Text(it, color = ThreadPalette.Warning, style = MaterialTheme.typography.bodySmall, modifier = Modifier.tagged(Tags.Answer.STATUS).semantics { liveRegion = LiveRegionMode.Polite }) }
                 if (pending && !delivering) SecondaryButton("Cancel", { job?.cancel(); pending = false }, Modifier.fillMaxWidth().tagged(Tags.Answer.CANCEL))
                 else SecondaryButton(
                     if (delivering) "Submitting…" else if (shown.review != null) "Submit answers" else "Submit answer",
@@ -341,7 +350,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, shown: Menu, entries: List<Threa
                     },
                     Modifier.fillMaxWidth().tagged(Tags.Answer.SUBMIT),
                     enabled = active && !pending && if (shown.review != null) true else if (typed) text.isNotBlank() else if (shown.multiSelect) selected.isNotEmpty() else selected.size == 1,
-                    color = Palette.Accent,
+                    color = ThreadPalette.Accent,
                 )
             }
         }

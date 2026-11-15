@@ -1,16 +1,21 @@
 import DOMPurify from 'dompurify';
 import katex from 'katex';
 import { Marked } from 'marked';
-import { attachCopyFeedback, renderCodeFrame, syncHorizontalScrollCue } from './code-highlight';
 import { renderThreadMermaid } from './diagram';
 import { localImagePath } from '../../shared/worker-thread';
-import { h } from './dom';
+import { h, openModal } from './dom';
 import { extractJsonRenderBlocks, renderJsonWidget } from './json-render';
+import { windowHeader } from './kit';
+import { renderMdCodeBlock } from './thread-md-code';
+import { type MdIconName, mdIcon, wireIconCopy } from './thread-md-icons';
+import { openImageLightbox } from './thread-md-lightbox';
+import { QUOTABLE_ATTR } from './thread-md-quote';
 
-// Rich Markdown renderer for Thread view: syntax-highlighted code frames, <json-render> widgets,
-// interactive Mermaid cards, offline KaTeX MathML, email draft cards, clickable workspace
-// path:line links, and sanitized user-message Markdown. Free of window/document calls at import
-// time so Node unit tests import pure tokenizers and parsers directly.
+// Rich Markdown renderer for Thread view: code blocks with copy and "Show more", tables with
+// Expand and Copy, colored alerts, Mermaid cards with a pan and zoom viewer, an image lightbox,
+// offline KaTeX MathML, <json-render> widgets, clickable inline-code file paths, and sanitized
+// user-message Markdown. Free of window/document calls at import time so Node unit tests import
+// pure tokenizers and parsers directly.
 
 const md = new Marked({ gfm: true, breaks: true });
 
@@ -339,131 +344,6 @@ export function renderMathToMathMl(tex: string, displayMode: boolean): string | 
 }
 
 // ------------------------------------------------------------------------------------------------
-// Email draft blocks (```email)
-
-export interface EmailDraft {
-  to: string;
-  cc?: string;
-  bcc?: string;
-  inReplyTo?: string;
-  subject?: string;
-  body: string;
-  raw: string;
-}
-
-const KNOWN_EMAIL_HEADERS = new Set(['to', 'cc', 'bcc', 'in-reply-to', 'subject', 'from', 'reply-to']);
-
-/** Parses an `email` fenced code block with RFC-style headers before the blank line + body. */
-export function parseEmailDraft(raw: string): EmailDraft | null {
-  const normalized = raw.replace(/\r\n/g, '\n');
-  const trimmedStart = normalized.replace(/^\n+/, '');
-  if (!trimmedStart.trim()) return null;
-
-  const blankIdx = trimmedStart.indexOf('\n\n');
-  const headerPart = blankIdx === -1 ? trimmedStart : trimmedStart.slice(0, blankIdx);
-  const bodyPart = blankIdx === -1 ? '' : trimmedStart.slice(blankIdx + 2);
-
-  const lines = headerPart.split('\n');
-  const headers = new Map<string, string>();
-  let lastHeaderKey = '';
-
-  for (const line of lines) {
-    if (/^[ \t]+\S/.test(line) && lastHeaderKey) {
-      headers.set(lastHeaderKey, `${headers.get(lastHeaderKey) ?? ''} ${line.trim()}`.trim());
-      continue;
-    }
-    const colon = line.indexOf(':');
-    if (colon <= 0) return null;
-    const key = line.slice(0, colon).trim().toLowerCase();
-    if (!KNOWN_EMAIL_HEADERS.has(key)) return null;
-    const val = line.slice(colon + 1).trim();
-    const prev = headers.get(key);
-    headers.set(key, prev ? `${prev}, ${val}` : val);
-    lastHeaderKey = key;
-  }
-
-  const to = headers.get('to') ?? '';
-  const subject = headers.get('subject');
-  if (!to && !subject) return null;
-
-  const draft: EmailDraft = {
-    to,
-    body: bodyPart.replace(/\n+$/, ''),
-    raw: trimmedStart.replace(/\n+$/, ''),
-  };
-  const cc = headers.get('cc');
-  const bcc = headers.get('bcc');
-  const inReplyTo = headers.get('in-reply-to');
-  if (cc) draft.cc = cc;
-  if (bcc) draft.bcc = bcc;
-  if (inReplyTo) draft.inReplyTo = inReplyTo;
-  if (subject !== undefined && subject !== '') draft.subject = subject;
-  return draft;
-}
-
-function extractRecipientAddresses(rawRecipients: string): string {
-  return rawRecipients
-    .split(',')
-    .map((part) => {
-      const trimmed = part.trim();
-      if (!trimmed) return '';
-      const angle = /<([^<>@\s]+@[^<>@\s]+)>/.exec(trimmed);
-      const addr = angle ? angle[1] : trimmed;
-      return encodeURIComponent(addr).replace(/%40/g, '@');
-    })
-    .filter(Boolean)
-    .join(',');
-}
-
-/** Builds a `mailto:` URL using `encodeURIComponent` (spaces encoded as `%20`, never `+`). */
-export function buildMailtoHref(draft: EmailDraft): string {
-  const toPath = draft.to ? extractRecipientAddresses(draft.to) : '';
-  const params: string[] = [];
-  if (draft.cc) params.push(`cc=${encodeURIComponent(draft.cc)}`);
-  if (draft.bcc) params.push(`bcc=${encodeURIComponent(draft.bcc)}`);
-  if (draft.inReplyTo) params.push(`in-reply-to=${encodeURIComponent(draft.inReplyTo)}`);
-  if (draft.subject) params.push(`subject=${encodeURIComponent(draft.subject)}`);
-  if (draft.body) params.push(`body=${encodeURIComponent(draft.body)}`);
-  return params.length ? `mailto:${toPath}?${params.join('&')}` : `mailto:${toPath}`;
-}
-
-function renderEmailCard(draft: EmailDraft): HTMLElement {
-  const copyBodyBtn = h('button.btn.sm.ghost.wt-code-copy.wt-email-copy-body', { type: 'button' }, 'Copy body');
-  attachCopyFeedback(copyBodyBtn, () => draft.body, 'Copy body');
-
-  const copyAllBtn = h('button.btn.sm.ghost.wt-code-copy.wt-email-copy-all', { type: 'button' }, 'Copy all');
-  attachCopyFeedback(copyAllBtn, () => draft.raw, 'Copy all');
-
-  const mailLink = h(
-    'a.btn.sm.wt-email-open',
-    {
-      href: buildMailtoHref(draft),
-      rel: 'noopener noreferrer',
-    },
-    'Open in Mail',
-  );
-
-  const metaRows: HTMLElement[] = [];
-  const addRow = (label: string, val: string | undefined) => {
-    if (!val) return;
-    metaRows.push(h('div.wt-email-field', {}, h('span.wt-email-label', {}, label), h('span.wt-email-value', {}, val)));
-  };
-  addRow('To', draft.to);
-  addRow('Cc', draft.cc);
-  addRow('Bcc', draft.bcc);
-  addRow('In-Reply-To', draft.inReplyTo);
-  addRow('Subject', draft.subject);
-
-  return h(
-    'div.wt-code-block.wt-email-card',
-    {},
-    h('div.wt-code-head.wt-email-head', {}, h('span.wt-code-lang', {}, 'EMAIL DRAFT'), h('div.wt-code-actions.wt-email-actions', {}, copyBodyBtn, copyAllBtn, mailLink)),
-    metaRows.length ? h('div.wt-email-meta', {}, ...metaRows) : null,
-    draft.body ? h('div.wt-email-body', {}, draft.body) : null,
-  );
-}
-
-// ------------------------------------------------------------------------------------------------
 // Workspace path:line link parser and DOM linkifier
 
 export interface WorkspacePathRef {
@@ -711,95 +591,223 @@ export function parseWorkspacePathRefs(text: string): WorkspacePathMatch[] {
   return matches;
 }
 
-function makeFileLinkButton(label: string, ref: WorkspacePathRef, onOpenPath: (ref: WorkspacePathRef) => void, codeStyled = false): HTMLButtonElement {
-  return h(
-    codeStyled ? 'button.wt-file-link.wt-file-link-code' : 'button.wt-file-link',
-    {
-      type: 'button',
-      'data-path': ref.path,
-      'data-line': ref.line,
-      'data-end-line': ref.endLine,
-      title: ref.line ? `${ref.path}:${ref.endLine ? `${ref.line}-${ref.endLine}` : ref.line}` : ref.path,
-      onclick: () => onOpenPath({ ...ref }),
-    },
-    label,
-  );
+const CODE_PATH_MAX = 512;
+const CODE_PATH_CHARS_RE = /^[A-Za-z0-9._@+~ /-]+$/;
+const CODE_PATH_LINE_RE = /:(\d+)(?::(\d+)|[-–](\d+))?$/;
+
+/**
+ * Factory's test for an inline code span that names a file (`src/a.ts`, `README.md:12`,
+ * `src/a.ts:4-9`, `src/a.ts:4:2`, `/abs/path/a.ts`), as the path and lines to open, or null.
+ * Bare names count only for known repository root files, since there is no file search to find them.
+ */
+export function codePathRef(text: string): WorkspacePathRef | null {
+  const t = text.trim().replace(/\\/g, '/');
+  if (!t || t.length > CODE_PATH_MAX || /[^\S ]/.test(t) || t.includes('  ') || /( \/)|(\/ )/.test(t) || t.includes('://')) return null;
+  const m = CODE_PATH_LINE_RE.exec(t);
+  let path = m ? t.slice(0, m.index) : t;
+  const line = m ? Number(m[1]) : undefined;
+  const endLine = m?.[3] !== undefined ? Number(m[3]) : undefined;
+  if (line !== undefined && line < 1) return null;
+  if (path.startsWith('./')) path = path.slice(2);
+  if (!path || !CODE_PATH_CHARS_RE.test(path) || path.startsWith('//') || path.endsWith('/') || path.startsWith('~') || path.startsWith('@')) return null;
+  const absolute = path.startsWith('/');
+  const parts = (absolute ? path.slice(1) : path).split('/');
+  if (parts.some((seg) => !seg || seg === '.' || seg === '..' || seg !== seg.trim())) return null;
+  const leaf = parts[parts.length - 1];
+  if (parts.length === 1) {
+    if (absolute || !KNOWN_ROOT_FILES.has(leaf)) return null;
+  } else {
+    if (!absolute && (HOST_PORT_OR_IP_RE.test(parts[0]) || DOMAIN_TLD_RE.test(parts[0]))) return null;
+    if (!hasValidFileLeaf(leaf)) return null;
+  }
+  const ref: WorkspacePathRef = { path };
+  if (line !== undefined) ref.line = line;
+  if (line !== undefined && endLine !== undefined && endLine >= line) ref.endLine = endLine;
+  return ref;
 }
 
-function linkifyWorkspacePaths(root: HTMLElement, onOpenPath: (ref: WorkspacePathRef) => void): void {
-  // 1. Inline <code> elements whose entire text is a single workspace path or path:line(-end).
-  for (const code of [...root.querySelectorAll('code')]) {
-    if (code.closest('pre, a, button, .wt-code-block, .jr-root')) continue;
-    if (code.childElementCount > 0) continue;
-    const raw = (code.textContent ?? '').trim();
-    if (!raw || /\s/.test(raw)) continue;
-    const validated = validateWorkspacePathCandidate(raw, true);
-    if (!validated) continue;
-    code.replaceWith(makeFileLinkButton(raw, validated, onOpenPath, true));
-  }
+function modifierKey(): { label: string; held: (e: MouseEvent) => boolean } {
+  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
+  return mac ? { label: '⌘', held: (e) => e.metaKey } : { label: 'Ctrl', held: (e) => e.ctrlKey };
+}
 
-  // 2. Plain text nodes outside links, code blocks, buttons, math, and widgets.
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode: (node) => (node.parentElement?.closest('a, code, pre, button, math, .wt-code-block, .jr-root') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+const OPEN_HINT = 'Click to open preview';
+
+function wireFileLink(el: HTMLElement, label: string, ref: WorkspacePathRef, onOpenPath: (ref: WorkspacePathRef) => void): void {
+  const link = el.closest('a');
+  const mod = modifierKey();
+  el.classList.add('wt-file-link');
+  el.setAttribute('role', 'link');
+  el.setAttribute('tabindex', '0');
+  el.setAttribute('aria-label', label);
+  el.setAttribute('title', link && el !== link ? `${OPEN_HINT}, ${mod.label}-click to open link` : OPEN_HINT);
+  el.dataset.path = ref.path;
+  if (ref.line !== undefined) el.dataset.line = String(ref.line);
+  if (ref.endLine !== undefined) el.dataset.endLine = String(ref.endLine);
+  const open = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onOpenPath({ ...ref });
+  };
+  el.addEventListener('click', (e) => {
+    // A path inside a Markdown link: the modifier click follows the link instead.
+    if (link && el !== link && mod.held(e)) return;
+    open(e);
   });
-  const textNodes: Text[] = [];
-  while (walker.nextNode()) textNodes.push(walker.currentNode as Text);
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') open(e);
+  });
+}
 
-  for (const textNode of textNodes) {
-    const content = textNode.data;
-    const refs = parseWorkspacePathRefs(content);
-    if (!refs.length) continue;
-    const frag = document.createDocumentFragment();
-    let cursor = 0;
-    for (const ref of refs) {
-      if (ref.start > cursor) frag.append(content.slice(cursor, ref.start));
-      const cleanRef: WorkspacePathRef = { path: ref.path };
-      if (ref.line !== undefined) cleanRef.line = ref.line;
-      if (ref.endLine !== undefined) cleanRef.endLine = ref.endLine;
-      frag.append(makeFileLinkButton(ref.raw, cleanRef, onOpenPath, false));
-      cursor = ref.end;
+/** Inline code that names a workspace file becomes Factory's file link chip. */
+function linkifyCodePaths(root: HTMLElement, onOpenPath: (ref: WorkspacePathRef) => void): void {
+  for (const code of [...root.querySelectorAll('code')]) {
+    if (code.closest('pre, .wt-md-code, .jr-root') || code.childElementCount > 0) continue;
+    const raw = code.textContent ?? '';
+    const ref = codePathRef(raw);
+    if (ref) wireFileLink(code, raw.trim(), ref, onOpenPath);
+  }
+}
+
+const FILE_HREF_PREFIX = '#wt-file=';
+
+/** A `file://` URL or a bare workspace path written as a link target, as the marker href the sanitizer keeps. */
+function fileLinkHref(href: string): string | null {
+  if (/^file:\/\//i.test(href)) {
+    try {
+      const url = new URL(href);
+      if (url.hostname && url.hostname !== 'localhost') return null;
+      return `${FILE_HREF_PREFIX}${encodeURIComponent(decodeURIComponent(url.pathname))}`;
+    } catch {
+      return null;
     }
-    if (cursor < content.length) frag.append(content.slice(cursor));
-    textNode.replaceWith(frag);
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#') || href.startsWith('//')) return null;
+  return codePathRef(href) ? `${FILE_HREF_PREFIX}${encodeURIComponent(href)}` : null;
+}
+
+/** Links to files open the preview (or read as plain text when files cannot open here). */
+function upgradeFileAnchors(root: HTMLElement, onOpenPath: ((ref: WorkspacePathRef) => void) | undefined): void {
+  for (const a of [...root.querySelectorAll<HTMLAnchorElement>('a[href]')]) {
+    const href = a.getAttribute('href') ?? '';
+    if (!href.startsWith(FILE_HREF_PREFIX)) continue;
+    const target = decodeURIComponent(href.slice(FILE_HREF_PREFIX.length));
+    const m = CODE_PATH_LINE_RE.exec(target);
+    const ref: WorkspacePathRef = { path: m ? target.slice(0, m.index) : target };
+    if (m) ref.line = Number(m[1]);
+    if (m?.[3] !== undefined && Number(m[3]) >= Number(m[1])) ref.endLine = Number(m[3]);
+    if (!onOpenPath) {
+      a.replaceWith(h('span', {}, ...a.childNodes));
+      continue;
+    }
+    a.removeAttribute('target');
+    a.setAttribute('href', '#');
+    wireFileLink(a, a.textContent?.trim() || ref.path, ref, onOpenPath);
+    a.classList.add('wt-file-anchor');
   }
 }
 
 // ------------------------------------------------------------------------------------------------
 // Shared post-processing: alerts, tables, fenced code blocks, math & <json-render> hydration
 
-const ALERTS: Record<string, string> = {
-  NOTE: 'ℹ️ Note',
-  TIP: '💡 Tip',
-  IMPORTANT: '❗ Important',
-  WARNING: '⚠️ Warning',
-  CAUTION: '🛑 Caution',
+const ALERTS: Record<string, { label: string; icon: MdIconName }> = {
+  NOTE: { label: 'Note', icon: 'info' },
+  TIP: { label: 'Tip', icon: 'sparkles' },
+  IMPORTANT: { label: 'Important', icon: 'messageSquare' },
+  WARNING: { label: 'Warning', icon: 'triangleAlert' },
+  CAUTION: { label: 'Caution', icon: 'circleAlert' },
 };
 
+/** `> [!NOTE]` (optionally `> [!NOTE] Custom title`) blockquotes become Factory's colored alerts. */
 function upgradeAlerts(root: HTMLElement): void {
   for (const q of root.querySelectorAll('blockquote')) {
     if (q.closest('.jr-root')) continue;
     const p = q.firstElementChild;
-    const m = p?.tagName === 'P' ? /^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i.exec(p.textContent ?? '') : null;
+    const m = p?.tagName === 'P' ? /^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i.exec(p.textContent ?? '') : null;
     if (!p || !m) continue;
     const kind = m[1].toUpperCase();
+    let title = '';
     const first = p.firstChild;
-    if (first?.nodeType === Node.TEXT_NODE) first.textContent = (first.textContent ?? '').replace(/^\s*\[![A-Za-z]+\]\s*/, '');
+    if (first?.nodeType === Node.TEXT_NODE) {
+      const rest = (first.textContent ?? '').replace(/^\s*\[![A-Za-z]+\][ \t]*/, '');
+      const next = first.nextSibling;
+      if (rest.trim() && (!next || next.nodeName === 'BR')) {
+        title = rest.trim();
+        first.remove();
+      } else first.textContent = rest;
+    }
     if (p.firstChild?.nodeName === 'BR') p.firstChild.remove();
     if (!p.textContent?.trim() && !p.querySelector('img')) p.remove();
-    q.classList.add('alert', kind.toLowerCase());
-    q.prepend(h('div.alert-title', {}, ALERTS[kind]));
+    const { label, icon } = ALERTS[kind];
+    q.classList.add('wt-md-alert', `wt-md-alert-${kind.toLowerCase()}`);
+    q.dataset.markdownAlert = kind.toLowerCase();
+    q.prepend(h('div.wt-md-alert-title', {}, mdIcon(icon, 16), h('span', {}, title || label)));
   }
 }
 
-function wrapTables(root: HTMLElement): void {
-  for (const table of [...root.querySelectorAll('table')]) {
-    if (table.closest('.jr-root, .wt-table-scroll, .wt-code-scroll')) continue;
-    const tableScroll = h('div.wt-table-scroll.wt-horizontal-content', { tabindex: 0, 'aria-label': 'Table, scroll horizontally' });
-    const cue = h('span.wt-code-cue', { hidden: true }, 'Scroll horizontally ↔');
-    const frame = h('div.wt-code-scroll', {}, tableScroll, cue);
-    table.replaceWith(frame);
-    tableScroll.append(table);
-    tableScroll.addEventListener('scroll', () => syncHorizontalScrollCue(frame));
+/** A rendered table back to GitHub Markdown, for tables whose source could not be matched. */
+export function tableToMarkdown(table: HTMLTableElement): string {
+  const rows = [...table.rows].map((r) => [...r.cells].map((c) => (c.textContent ?? '').replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim()));
+  if (!rows.length) return '';
+  const width = Math.max(...rows.map((r) => r.length));
+  const line = (cells: string[]) => `| ${Array.from({ length: width }, (_, i) => cells[i] ?? '').join(' | ')} |`;
+  return [line(rows[0]), `| ${Array.from({ length: width }, () => '---').join(' | ')} |`, ...rows.slice(1).map(line)].join('\n');
+}
+
+function openTableViewer(table: HTMLTableElement): void {
+  const copy = table.cloneNode(true) as HTMLTableElement;
+  const content = h('div.modal.wt-md-table-modal', { 'aria-label': 'Table' }, windowHeader('Table'), h('div.body.flush.wt-md-table-viewer', {}, h('div.md.wt-md', {}, copy)));
+  openModal(content, { size: 'full', backdropCloses: true, reading: true, doing: 'reading a table' });
+}
+
+/** Tables get Factory's frame plus hover Expand and Copy Markdown table actions. */
+function upgradeTables(root: HTMLElement, sources: readonly string[] | undefined): void {
+  const tables = [...root.querySelectorAll('table')].filter((t) => !t.closest('.jr-root, .wt-md-table'));
+  const matched = sources?.length === tables.length;
+  tables.forEach((table, i) => {
+    const source = matched && sources ? sources[i] : undefined;
+    const scroll = h('div.wt-md-table-scroll');
+    const expand = h('button.wt-md-table-btn', { type: 'button', 'aria-label': 'Expand Markdown table', title: 'Expand Markdown table' }, mdIcon('maximize', 14));
+    expand.addEventListener('click', () => openTableViewer(table));
+    const copy = h('button.wt-md-table-btn', { type: 'button' });
+    wireIconCopy(copy, () => source ?? tableToMarkdown(table), { idle: 'Copy Markdown table', done: 'Markdown table copied' }, { size: 14 });
+    const wrap = h('div.wt-md-table', { 'data-markdown-table-scroll': 'true' }, scroll, h('div.wt-md-table-actions', { 'data-copy-exclude': 'true', 'data-testid': 'markdown-table-actions' }, expand, copy));
+    table.replaceWith(wrap);
+    scroll.append(table);
+  });
+}
+
+function mediaFallback(img: HTMLImageElement): HTMLElement {
+  const src = img.getAttribute('src') ?? '';
+  const alt = img.getAttribute('alt') ?? '';
+  const parts = [mdIcon('image', 14), h('span', {}, 'Preview unavailable'), alt ? h('span.wt-md-media-alt', {}, alt) : null];
+  return /^https?:/i.test(src) ? h('a.wt-md-media-fallback', { href: src, target: '_blank', rel: 'noopener noreferrer', title: src }, ...parts) : h('span.wt-md-media-fallback', { title: alt }, ...parts);
+}
+
+/** Pictures open Factory's lightbox (stepping through this message's pictures) and fall back to a note when they fail to load. */
+function upgradeImages(root: HTMLElement): void {
+  for (const img of [...root.querySelectorAll('img')]) {
+    if (img.closest('.jr-root')) continue;
+    img.addEventListener('error', () => img.replaceWith(mediaFallback(img)), { once: true });
+    if (img.closest('a')) continue;
+    img.classList.add('wt-md-img');
+    img.setAttribute('tabindex', '0');
+    img.setAttribute('role', 'button');
+    img.setAttribute('title', 'Full size preview');
+    const open = () => {
+      const all = [...root.querySelectorAll<HTMLImageElement>('img.wt-md-img')];
+      openImageLightbox(
+        all.map((i) => ({ src: i.currentSrc || i.src, alt: i.alt })),
+        Math.max(all.indexOf(img), 0),
+      );
+    };
+    img.addEventListener('click', open);
+    img.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open();
+      }
+    });
   }
 }
 
@@ -811,27 +819,46 @@ function codeFenceLang(codeEl: HTMLElement | null): string {
   return '';
 }
 
-function upgradeFencedBlocks(root: HTMLElement, richBlocks: boolean): void {
-  for (const pre of [...root.querySelectorAll('pre')]) {
-    if (pre.closest('.wt-code-block, .jr-root')) continue;
+function displayMath(tex: string): HTMLElement | null {
+  const mathMl = renderMathToMathMl(tex, true);
+  if (!mathMl) return null;
+  const block = h('div.wt-math.wt-math-block');
+  block.append(sanitizeMathMl(mathMl));
+  return block.querySelector('math') ? block : null;
+}
+
+/** Whether a marked `code` token's source closed its fence (an indented block always has). */
+export function fenceClosed(raw: string): boolean {
+  const open = /^ {0,3}(`{3,}|~{3,})/.exec(raw);
+  if (!open) return true;
+  const lines = raw.replace(/\n+$/, '').split('\n');
+  if (lines.length < 2) return false;
+  const last = lines[lines.length - 1].trim();
+  return last.length >= open[1].length && [...last].every((c) => c === open[1][0]);
+}
+
+/**
+ * Replaces `pre` blocks with code blocks, and (for rich replies) ```mermaid and ```math fences
+ * with their rendered views. `closed` is each fence's {@link fenceClosed} in document order,
+ * matched to the `pre` elements only when the counts agree.
+ */
+function upgradeFencedBlocks(root: HTMLElement, richBlocks: boolean, closed: readonly boolean[] | undefined, streaming: boolean): void {
+  const pres = [...root.querySelectorAll('pre')].filter((pre) => !pre.closest('.wt-md-code, .jr-root, .wt-mermaid-host'));
+  const matched = closed?.length === pres.length;
+  pres.forEach((pre, i) => {
+    const complete = matched && closed ? closed[i] : true;
     const codeEl = pre.querySelector('code');
     const rawText = (codeEl?.textContent ?? pre.textContent ?? '').replace(/\n$/, '');
     const lang = codeFenceLang(codeEl).trim();
     const lower = lang.toLowerCase();
 
-    if (richBlocks && lower === 'mermaid') {
-      pre.replaceWith(renderThreadMermaid(rawText));
-      continue;
+    if (richBlocks && lower === 'mermaid') return pre.replaceWith(renderThreadMermaid(rawText, { complete: !streaming || complete }));
+    if (richBlocks && lower === 'math' && complete) {
+      const math = displayMath(rawText);
+      if (math) return pre.replaceWith(math);
     }
-    if (richBlocks && lower === 'email') {
-      const draft = parseEmailDraft(rawText);
-      if (draft) {
-        pre.replaceWith(renderEmailCard(draft));
-        continue;
-      }
-    }
-    pre.replaceWith(renderCodeFrame(rawText, { lang }));
-  }
+    pre.replaceWith(renderMdCodeBlock(rawText, lang));
+  });
 }
 
 function hydrateJsonRenderPlaceholders(root: HTMLElement, blocks: ReturnType<typeof extractJsonRenderBlocks>['blocks'], streaming: boolean): void {
@@ -963,37 +990,106 @@ export interface ThreadMarkdownOptions {
   streaming?: boolean;
   /** The URL that loads a picture on the office's machine an image names ({@link localImagePath}); without it such images keep their own src. */
   imageUrl?: (path: string) => string;
+  /**
+   * The message's stable id. While `streaming`, blocks that were not in this message's previous
+   * render get `data-entering` (Factory's 200ms fade-in); it also tags the reply for quote reply.
+   */
+  key?: string;
 }
 
-/** Marked's HTML for `src`, with images of files on the office's machine pointed at `imageUrl` before sanitizing (which drops `file:` URLs). */
-function parseWithImages(src: string, imageUrl: ((path: string) => string) | undefined): string {
-  if (!imageUrl) return md.parse(src, { async: false }) as string;
+interface Lexed {
+  html: string;
+  /** Each table's Markdown source, in document order. */
+  tables: string[];
+  /** Whether each code block's fence closed, in document order. */
+  fences: boolean[];
+}
+
+/** Marked's HTML for `src`, with images of files on the office's machine pointed at `imageUrl` before sanitizing (which drops `file:` URLs), and file links marked. */
+function lex(src: string, imageUrl: ((path: string) => string) | undefined): Lexed {
   const tokens = md.lexer(src);
+  const tables: string[] = [];
+  const fences: boolean[] = [];
   md.walkTokens(tokens, (token) => {
-    if (token.type !== 'image') return;
-    const local = localImagePath(token.href);
-    if (local) token.href = imageUrl(local);
+    if (token.type === 'image') {
+      const local = imageUrl ? localImagePath(token.href) : null;
+      if (local && imageUrl) token.href = imageUrl(local);
+    } else if (token.type === 'link') {
+      const marked = fileLinkHref(token.href);
+      if (marked) token.href = marked;
+    } else if (token.type === 'table') tables.push(token.raw.replace(/\n+$/, ''));
+    else if (token.type === 'code') fences.push(fenceClosed(token.raw));
   });
-  return md.parser(tokens);
+  return { html: md.parser(tokens), tables, fences };
+}
+
+const cellCount = (row: string) => row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').length;
+
+/** While streaming, a table's last row that is still arriving is held back until it is whole (Factory's provisional table). */
+export function trimProvisionalTable(src: string): string {
+  if (src.endsWith('\n')) return src;
+  const lines = src.split('\n');
+  const last = lines[lines.length - 1];
+  if (!/^\s*\|/.test(last)) return src;
+  let start = lines.length - 1;
+  while (start > 0 && /^\s*\|/.test(lines[start - 1])) start--;
+  if (lines.length - 1 - start < 2) return src;
+  if (/\|\s*$/.test(last) && cellCount(last) === cellCount(lines[start])) return src;
+  return lines.slice(0, -1).join('\n');
+}
+
+const MAX_ENTERING_KEYS = 64;
+const renderedBlocks = new Map<string, number>();
+
+function markEntering(root: HTMLElement, opts: ThreadMarkdownOptions | undefined): void {
+  const key = opts?.key;
+  if (!key) return;
+  if (!opts?.streaming) {
+    renderedBlocks.delete(key);
+    return;
+  }
+  const count = root.children.length;
+  const before = renderedBlocks.get(key);
+  // The first render of a streaming message is what it already showed: nothing fades.
+  if (before !== undefined) for (let i = before; i < count; i++) root.children[i].setAttribute('data-entering', '');
+  renderedBlocks.delete(key);
+  renderedBlocks.set(key, Math.max(before ?? 0, count));
+  if (renderedBlocks.size > MAX_ENTERING_KEYS) {
+    const oldest = renderedBlocks.keys().next().value;
+    if (oldest !== undefined) renderedBlocks.delete(oldest);
+  }
+}
+
+function restoreMath(text: string, segments: readonly MathSegment[]): string {
+  let out = text;
+  for (const seg of segments) if (out.includes(seg.placeholder)) out = out.split(seg.placeholder).join(seg.raw);
+  return out;
 }
 
 /** Renders rich assistant Markdown for Thread view. */
 export function threadMarkdown(src: string, opts?: ThreadMarkdownOptions): HTMLElement {
-  const root = h('div.md.wt-md');
+  const root = h('div.md.wt-md', opts?.key ? { [QUOTABLE_ATTR]: opts.key } : {});
   if (!src.trim()) return root;
+  const streaming = Boolean(opts?.streaming);
 
-  const { textWithPlaceholders: withoutWidgets, blocks: jsonBlocks } = extractJsonRenderBlocks(src);
+  const { textWithPlaceholders: withoutWidgets, blocks: jsonBlocks } = extractJsonRenderBlocks(streaming ? trimProvisionalTable(src) : src);
   const { textWithPlaceholders: prepared, segments: mathSegments } = extractMathSegments(withoutWidgets);
 
-  const html = parseWithImages(prepared, opts?.imageUrl);
-  root.append(sanitizeHtml(html));
+  const lexed = lex(prepared, opts?.imageUrl);
+  root.append(sanitizeHtml(lexed.html));
 
-  hydrateJsonRenderPlaceholders(root, jsonBlocks, !!opts?.streaming);
+  hydrateJsonRenderPlaceholders(root, jsonBlocks, streaming);
   hydrateMathPlaceholders(root, mathSegments);
-  upgradeFencedBlocks(root, true);
+  upgradeFencedBlocks(root, true, lexed.fences, streaming);
   upgradeAlerts(root);
-  wrapTables(root);
-  if (opts?.onOpenPath) linkifyWorkspacePaths(root, opts.onOpenPath);
+  upgradeTables(
+    root,
+    lexed.tables.map((t) => restoreMath(t, mathSegments)),
+  );
+  upgradeImages(root);
+  upgradeFileAnchors(root, opts?.onOpenPath);
+  if (opts?.onOpenPath) linkifyCodePaths(root, opts.onOpenPath);
+  markEntering(root, opts);
 
   return root;
 }
@@ -1003,12 +1099,17 @@ export function threadUserMarkdown(src: string): HTMLElement {
   const root = h('div.md.wt-md.wt-user-md');
   if (!src.trim()) return root;
 
-  const html = md.parse(src, { async: false }) as string;
-  root.append(sanitizeHtml(html));
+  const lexed = lex(src, undefined);
+  root.append(sanitizeHtml(lexed.html));
 
-  upgradeFencedBlocks(root, false);
+  upgradeFencedBlocks(root, false, lexed.fences, false);
   upgradeAlerts(root);
-  wrapTables(root);
+  upgradeTables(root, lexed.tables);
+  upgradeImages(root);
+  upgradeFileAnchors(root, undefined);
 
   return root;
 }
+
+export { attachQuoteReply, quoteAsMarkdown } from './thread-md-quote';
+export { type LightboxImage, openImageLightbox } from './thread-md-lightbox';

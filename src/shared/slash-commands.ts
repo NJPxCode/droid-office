@@ -5,7 +5,9 @@
  * The built-in ones are listed here: droid lists no built-ins over JSON-RPC, and each needs its own
  * handling. Most open one of Droid's own dialogs (a model picker, settings, a session list), which
  * only the terminal can show: those send and then switch to Raw TTY. The rest run without one and
- * the view stays. Ending the CLI is refused: Send home is how a worker leaves.
+ * the view stays. Ending the CLI is refused: Send home is how a worker leaves. The names and
+ * descriptions follow Droid 1.12.1's command registry; `midTurn` marks the ones it opens while a turn
+ * runs (others answer "can only be used when the agent is idle" or ask to stop the turn).
  *
  * The worker's skills and custom commands come from its own droid (`droid.list_skills` and
  * `droid.list_commands`, asked in its folder by src/server/droid-commands.ts and served at
@@ -25,6 +27,8 @@ export interface SlashCommand {
   source?: DroidSlashCommand['source'];
   /** What to type after the name, as the command describes it. */
   argumentHint?: string;
+  /** Droid runs it during a turn (a dialog or setting that leaves the turn running) instead of asking to stop the turn. */
+  midTurn?: boolean;
 }
 
 /** A skill or custom command a worker's droid offers, as GET /api/agents/droid/commands lists it. */
@@ -37,45 +41,51 @@ export interface DroidSlashCommand {
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'compress', aliases: ['compact'], description: 'Compress the session in place. Add instructions to shape the summary', kind: 'thread' },
-  { name: 'clear', description: 'Clear the conversation, keeping the model and autonomy', kind: 'thread' },
-  { name: 'new', description: 'Start a fresh session with the default model and autonomy', kind: 'thread' },
+  { name: 'clear', description: 'Clear the conversation, keeping the model', kind: 'thread' },
+  { name: 'new', description: 'Start a fresh session with the default model', kind: 'thread' },
   { name: 'handoff', description: 'Start a new session with a summary of this one', kind: 'thread' },
   { name: 'fast', description: 'Turn fast mode on for the current model (/fast off to turn it off)', kind: 'thread' },
-  { name: 'favorite', aliases: ['pin'], description: 'Pin this session for quick access', kind: 'thread' },
+  { name: 'favorite', aliases: ['pin'], description: 'Pin this session for quick access', kind: 'thread', midTurn: true },
+  { name: 'archive', description: 'Archive the session. Continuing it or restoring it from /sessions brings it back', kind: 'thread' },
   { name: 'vim', description: 'Turn vim keys on or off in the input box', kind: 'thread' },
-  { name: 'model', description: 'Choose the model', kind: 'tty' },
-  { name: 'settings', description: 'Change Droid’s settings', kind: 'tty' },
-  { name: 'context', description: 'See what fills the context window', kind: 'tty' },
-  { name: 'status', description: 'See the CLI’s status and configuration', kind: 'tty' },
-  { name: 'stats', description: 'See your Droid usage', kind: 'tty' },
-  { name: 'btw', description: 'Ask a side question without adding it to the conversation', kind: 'tty' },
-  { name: 'copy', description: 'Copy prompts, replies, turns or the session id', kind: 'tty' },
-  { name: 'rename', description: 'Rename the session', kind: 'tty' },
-  { name: 'fork', description: 'Fork the session', kind: 'tty' },
+  { name: 'btw', aliases: ['side'], description: 'Ask a side question without adding it to the conversation', kind: 'thread', midTurn: true },
+  { name: 'readiness-report', description: 'Generate a readiness report for this repository', kind: 'thread' },
+  { name: 'readiness-fix', description: 'Apply the readiness report’s fixes', kind: 'thread' },
+  { name: 'install-code-review', description: 'Set up Factory code review for this repository', kind: 'thread' },
+  { name: 'model', description: 'Choose the model', kind: 'tty', midTurn: true },
+  { name: 'settings', description: 'Change Droid’s settings', kind: 'tty', midTurn: true },
+  { name: 'copy', description: 'Copy a reply, a prompt, a range of turns, the transcript or the session id', kind: 'tty', midTurn: true },
   { name: 'tree', description: 'Move around the session’s fork tree', kind: 'tty' },
   { name: 'rewind-conversation', description: 'Rewind the conversation to an earlier message', kind: 'tty' },
-  { name: 'sessions', aliases: ['resume'], description: 'Resume an earlier session', kind: 'tty' },
+  { name: 'sessions', aliases: ['resume'], description: 'Resume an earlier session', kind: 'tty', midTurn: true },
   { name: 'share', description: 'Share the session with your organization', kind: 'tty' },
-  { name: 'mcp', description: 'Manage MCP servers', kind: 'tty' },
-  { name: 'connectors', description: 'Manage connectors and MCP servers', kind: 'tty' },
-  { name: 'skills', description: 'Manage skills', kind: 'tty' },
-  { name: 'droids', description: 'Manage custom droids', kind: 'tty' },
-  { name: 'commands', description: 'Manage custom slash commands', kind: 'tty' },
-  { name: 'hooks', description: 'Manage tool hooks', kind: 'tty' },
-  { name: 'plugins', description: 'Manage plugins and marketplaces', kind: 'tty' },
-  { name: 'limits', description: 'Manage credit limits and overage', kind: 'tty' },
+  { name: 'review', description: 'Run a code review on the current changes', kind: 'tty', midTurn: true },
+  { name: 'missions', aliases: ['workstreams'], description: 'Open the missions picker', kind: 'tty', midTurn: true },
+  { name: 'create-skill', description: 'Create a skill from this conversation', kind: 'tty' },
+  { name: 'mcp', description: 'Manage MCP servers', kind: 'tty', midTurn: true },
+  { name: 'connectors', description: 'Manage connectors and MCP servers', kind: 'tty', midTurn: true },
+  { name: 'skills', description: 'Manage skills', kind: 'tty', midTurn: true },
+  { name: 'droids', description: 'Manage custom droids', kind: 'tty', midTurn: true },
+  { name: 'commands', description: 'Manage custom slash commands', kind: 'tty', midTurn: true },
+  { name: 'hooks', description: 'Manage tool hooks', kind: 'tty', midTurn: true },
+  { name: 'plugins', description: 'Manage plugins and marketplaces', kind: 'tty', midTurn: true },
+  { name: 'limits', description: 'Manage credit limits and overage', kind: 'tty', midTurn: true },
+  { name: 'diagnostics', description: 'Open the diagnostics menu', kind: 'tty', midTurn: true },
+  { name: 'ide', description: 'Manage IDE integration', kind: 'tty' },
+  { name: 'bug', description: 'Report a bug to Factory', kind: 'tty' },
+  { name: 'install-slack-app', description: 'Install the Factory Slack app', kind: 'tty' },
+  { name: 'setup-incident-response', description: 'Set up incident response for a Slack channel', kind: 'tty' },
   { name: 'statusline', description: 'Set up a custom status line', kind: 'tty' },
-  { name: 'themes', description: 'Choose a color theme', kind: 'tty' },
-  { name: 'language', description: 'Change the display language', kind: 'tty' },
+  { name: 'themes', description: 'Choose a color theme', kind: 'tty', midTurn: true },
+  { name: 'language', description: 'Change the display language', kind: 'tty', midTurn: true },
   { name: 'terminal-setup', description: 'Set up keys for multi-line input', kind: 'tty' },
   { name: 'cd', aliases: ['cwd'], description: 'Change the session’s working directory', kind: 'tty' },
-  { name: 'account', description: 'Open your Factory account in the browser', kind: 'tty' },
-  { name: 'billing', description: 'Open Factory billing in the browser', kind: 'tty' },
+  { name: 'account', description: 'Open your Factory account in the browser', kind: 'tty', midTurn: true },
+  { name: 'billing', description: 'Open Factory billing in the browser', kind: 'tty', midTurn: true },
   { name: 'login', description: 'Log in to Factory', kind: 'tty' },
   { name: 'logout', description: 'Log out of Factory', kind: 'tty' },
   { name: 'quit', aliases: ['exit'], description: 'Ends this worker’s Droid. Use Send home instead', kind: 'blocked' },
 ];
-
 /**
  * Every slash command a worker offers: the built-in ones, then its droid's custom commands and
  * skills. One named like a built-in command (or its alias) is left out, since Droid runs the built-in.
@@ -111,15 +121,28 @@ export function nativeLimits(draft: string, factoryConnected: boolean): boolean 
   return factoryConnected && slashOf(draft)?.command?.name === 'limits';
 }
 
+/** A bare `/copy` opens the Thread's own copy choices (Droid's /copy menu) instead of the terminal's. */
+export function nativeCopy(draft: string): boolean {
+  return slashOf(draft)?.command?.name === 'copy' && !/\s\S/.test(draft.trim());
+}
+
+/** The question a `/btw` (or `/side`) draft asks, or undefined for any other draft. */
+export function sideQuestion(draft: string): string | undefined {
+  const slash = slashOf(draft);
+  if (slash?.command?.name !== 'btw') return undefined;
+  return draft.trim().replace(/^\/\S+\s*/, '');
+}
+
 /**
  * Why a slash draft can't be sent now, or undefined when it can: a command that would end the CLI
- * never, and none while a turn runs, when Droid would take it as steering.
+ * never, and while a turn runs only those Droid runs mid-turn; any other one Droid would refuse, or
+ * ask in the terminal to stop the turn.
  */
-export function slashRefusal(draft: string, name: string, busy: boolean): string | undefined {
-  const slash = slashOf(draft);
+export function slashRefusal(draft: string, name: string, busy: boolean, commands: readonly SlashCommand[] = SLASH_COMMANDS): string | undefined {
+  const slash = slashOf(draft, commands);
   if (!slash) return undefined;
   if (slash.command?.kind === 'blocked') return `/${slash.name} would end ${name}’s Droid. Send it home instead.`;
-  if (busy) return `Slash commands run once ${name} finishes this turn. Stop it to run one now.`;
+  if (busy && !slash.command?.midTurn) return `/${slash.name} runs once ${name} finishes this turn. Stop it to run it now.`;
   return undefined;
 }
 

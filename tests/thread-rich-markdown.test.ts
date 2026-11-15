@@ -6,7 +6,7 @@ import { buildSync } from 'esbuild';
 import { attachCopyFeedback, codeLanguageLabel, highlightCodeBlock, highlightLine, MAX_HIGHLIGHT_CHARS, preloadCodeLanguage, renderCodeFrame, resolveCodeLanguage, tokenizeCode } from '../src/client/ui/code-highlight.js';
 import { drawDiagram, renderMermaidSvg, renderThreadMermaid } from '../src/client/ui/diagram.js';
 import { formatFilePreviewBytes, normalizeFilePreviewResponse, openFilePreviewModal, threadFilePreviewUrl } from '../src/client/ui/file-preview.js';
-import { buildMailtoHref, extractMathSegments, parseEmailDraft, parseWorkspacePathRefs, renderMathToMathMl, threadMarkdown, threadUserMarkdown } from '../src/client/ui/thread-markdown.js';
+import { extractMathSegments, parseWorkspacePathRefs, renderMathToMathMl, threadMarkdown, threadUserMarkdown } from '../src/client/ui/thread-markdown.js';
 import { browserStatus, closeBrowser, launchBrowser, newIsolatedContext } from '../src/server/whiteboard-browser.js';
 import { localImagePath } from '../src/shared/worker-thread.js';
 
@@ -251,41 +251,6 @@ test('extractMathSegments and renderMathToMathMl render TeX math without trigger
 
   // Incomplete streaming TeX returns null rather than a styled error span.
   assert.equal(renderMathToMathMl('\\frac{1}{', false), null);
-});
-
-test('parseEmailDraft and buildMailtoHref parse RFC headers and encode mailto query parameters with %20', () => {
-  const raw = [
-    'To: Alice Smith <alice@example.com>, bob@example.com',
-    'Cc: lead@example.com',
-    'Bcc: archive@example.com',
-    'In-Reply-To: <msg-99@example.com>',
-    'Subject: Phase A Rich Markdown Ready',
-    '',
-    'Hi Alice,',
-    '',
-    'All 18 widgets and MathML checks are green.',
-  ].join('\n');
-
-  const draft = parseEmailDraft(raw);
-  assert.ok(draft);
-  assert.equal(draft.to, 'Alice Smith <alice@example.com>, bob@example.com');
-  assert.equal(draft.cc, 'lead@example.com');
-  assert.equal(draft.bcc, 'archive@example.com');
-  assert.equal(draft.inReplyTo, '<msg-99@example.com>');
-  assert.equal(draft.subject, 'Phase A Rich Markdown Ready');
-  assert.equal(draft.body, 'Hi Alice,\n\nAll 18 widgets and MathML checks are green.');
-
-  const href = buildMailtoHref(draft);
-  assert.ok(href.startsWith('mailto:alice@example.com,bob@example.com?'));
-  assert.match(href, /subject=Phase%20A%20Rich%20Markdown%20Ready/);
-  assert.match(href, /cc=lead%40example\.com/);
-  assert.match(href, /bcc=archive%40example\.com/);
-  assert.match(href, /in-reply-to=%3Cmsg-99%40example\.com%3E/);
-  assert.match(href, /body=Hi%20Alice%2C%0A%0AAll%2018%20widgets/);
-  assert.doesNotMatch(href, /\+/);
-
-  // Non-email content returns null so it stays a normal code block.
-  assert.equal(parseEmailDraft('just some arbitrary note without headers'), null);
 });
 
 test('parseWorkspacePathRefs matches workspace paths and line ranges while rejecting URLs, domains, mentions, and .. segments', () => {
@@ -534,6 +499,117 @@ test('openFilePreviewModal handles text, target line scrolling, binary files, an
 const status = browserStatus();
 const skipChromium = status.installed ? false : `Chromium is not installed in ${status.path}`;
 
+test('email fences render as plain code blocks without form inputs and keyless Markdown is not quotable', { skip: skipChromium }, async (t: TestContext) => {
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const context = await newIsolatedContext(browser);
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const bundle = buildSync({
+    stdin: {
+      contents: `export { threadMarkdown } from './src/client/ui/thread-markdown.ts';`,
+      resolveDir: fileURLToPath(new URL('../', import.meta.url)),
+      sourcefile: 'streamed-email-entry.ts',
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'iife',
+    globalName: 'EmailTest',
+    write: false,
+    target: 'es2022',
+  }).outputFiles[0].text;
+  await page.setContent('<!doctype html><div id="root"></div>');
+  await page.addScriptTag({ content: bundle });
+  await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
+  const result = await page.evaluate(() => {
+    const render = (window as any).EmailTest.threadMarkdown;
+    const fence = '```email\nTo: test@example.com\nSubject: Proof\n\nHello.\n```';
+    const closed = render(fence, { streaming: false, key: 'reply' }) as HTMLElement;
+    return {
+      codeLang: closed.querySelector('.wt-md-code-lang')?.textContent,
+      forms: closed.querySelectorAll('input, textarea, .wt-md-email').length,
+      keyed: closed.getAttribute('data-response-message-id'),
+      keyless: render('Not a reply').hasAttribute('data-response-message-id'),
+    };
+  });
+  assert.equal(result.codeLang, 'email');
+  assert.equal(result.forms, 0);
+  assert.equal(result.keyed, 'reply');
+  assert.equal(result.keyless, false);
+});
+
+test('cancelling a reveal into reduced motion clears animation styles', { skip: skipChromium }, async (t: TestContext) => {
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const context = await newIsolatedContext(browser);
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const bundle = buildSync({
+    stdin: {
+      contents: `export { revealContent } from './src/client/ui/thread-tool-row.ts';`,
+      resolveDir: fileURLToPath(new URL('../', import.meta.url)),
+      sourcefile: 'reveal-entry.ts',
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'iife',
+    globalName: 'RevealTest',
+    write: false,
+    target: 'es2022',
+  }).outputFiles[0].text;
+  await page.setContent('<!doctype html><div id="content">Content</div>');
+  await page.addScriptTag({ content: bundle });
+  await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
+  await page.evaluate(() => (window as any).RevealTest.revealContent(document.getElementById('content'), true));
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const result = await page.evaluate(() => {
+    const el = document.getElementById('content')!;
+    (window as any).RevealTest.revealContent(el, true);
+    return { overflow: el.style.overflow, hidden: el.hidden, revealing: el.classList.contains('is-revealing') };
+  });
+  assert.deepEqual(result, { overflow: '', hidden: false, revealing: false });
+});
+
+test('an exploration call awaiting permission displays its pending state', { skip: skipChromium }, async (t: TestContext) => {
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const context = await newIsolatedContext(browser);
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const bundle = buildSync({
+    stdin: {
+      contents: `export { renderThreadActivity } from './src/client/ui/thread-tool-activity.ts'; export { presentThread } from './src/shared/thread-presentation.ts';`,
+      resolveDir: fileURLToPath(new URL('../', import.meta.url)),
+      sourcefile: 'exploration-entry.ts',
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'iife',
+    globalName: 'ExploreTest',
+    write: false,
+    target: 'es2022',
+  }).outputFiles[0].text;
+  await page.setContent('<!doctype html><div id="root"></div>');
+  await page.addScriptTag({ content: bundle });
+  await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
+  const result = await page.evaluate(() => {
+    const api = (window as any).ExploreTest;
+    const entry = { id: 'read-1', seq: 1, role: 'assistant', kind: 'tool', name: 'Read', input: JSON.stringify({ file_path: '/repo/a.ts' }) };
+    const row = api.presentThread([entry], true).find((r: any) => r.kind === 'activity');
+    const node = document.createElement('article');
+    document.getElementById('root')!.append(node);
+    api.renderThreadActivity(node, row, new Map([[entry.id, entry]]), false, {
+      owner: { id: 'worker' },
+      userToggles: new Map(),
+      thought: () => document.createElement('div'),
+      live: () => ({ phase: 'waiting_permission' }),
+    });
+    return { state: node.querySelector('[data-testid="explore-row"]')?.className, label: node.querySelector('.wt-tr-state')?.textContent };
+  });
+  assert.match(result.state ?? '', /is-pending/);
+  assert.equal(result.label, 'Pending review');
+});
+
 test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom, email cards, path links, and File Preview modal', { skip: skipChromium }, async (t: TestContext) => {
   const browser = await launchBrowser();
   t.after(closeBrowser);
@@ -577,7 +653,7 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
       '',
       '$$\\frac{a_1 + b_1}{2}$$',
       '',
-      'Inspect `src/client/ui/dom.ts:12-14`, `package.json`, and prose ref src/server/server.ts:88 (not https://factory.ai/guild).',
+      'Inspect `src/client/ui/dom.ts:12-14` and `package.json`; prose ref src/server/server.ts:88 stays plain (not https://factory.ai/guild).',
       '',
       '<script>window.__xss = true;</script><button style="color:red">Injected</button>',
       '',
@@ -606,9 +682,14 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
     const waitUntil = (check: () => boolean) =>
       check()
         ? Promise.resolve()
-        : new Promise<void>((resolve) => {
+        : new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              obs.disconnect();
+              reject(new Error('Timed out waiting for rich Markdown rendering'));
+            }, 10_000);
             const obs = new MutationObserver(() => {
               if (check()) {
+                clearTimeout(timer);
                 obs.disconnect();
                 resolve();
               }
@@ -620,28 +701,30 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
     const validMermaid = 'flowchart LR\n  A[Parse] --> B[Render]';
     const card1 = w.RichMD.renderThreadMermaid(validMermaid) as HTMLElement;
     document.getElementById('root')!.append(card1);
-    await waitUntil(() => Boolean(card1.querySelector('.wt-diagram-stage svg')));
+    await waitUntil(() => Boolean(card1.querySelector('.wt-mermaid-stage svg')));
 
-    // Second render must hit synchronous LRU cache immediately!
+    // Second render must hit synchronous LRU cache immediately.
     const card2 = w.RichMD.renderThreadMermaid(validMermaid) as HTMLElement;
-    const cachedImmediateSvg = Boolean(card2.querySelector('.wt-diagram-stage svg'));
+    const cachedImmediateSvg = Boolean(card2.querySelector('.wt-mermaid-stage svg'));
 
-    // Toggle Source <-> Diagram and open Zoom modal
-    const toggleBtn = card1.querySelector<HTMLButtonElement>('.wt-diagram-toggle')!;
-    toggleBtn.click();
-    const showingSourceAfterToggle = !card1.querySelector<HTMLElement>('.wt-diagram-source')!.hidden;
-    toggleBtn.click();
-
-    card1.querySelector<HTMLButtonElement>('.wt-diagram-zoom')!.click();
-    const zoomModalOpen = Boolean(document.querySelector('.wt-diagram-modal svg'));
+    // The corner menu and clicking the picture open Factory's actions and pan/zoom viewer.
+    card1.querySelector<HTMLButtonElement>('.wt-mermaid-more')!.click();
+    const actionsOpen = !card1.querySelector<HTMLElement>('.wt-mermaid-menu')!.hidden;
+    card1.querySelector<HTMLButtonElement>('.wt-mermaid-more')!.click();
+    card1.querySelector<HTMLElement>('.wt-mermaid-stage')!.click();
+    const zoomModalOpen = Boolean(document.querySelector('.wt-diagram-lightbox svg'));
     w.RichMD.closeTopModal();
 
-    // Invalid streaming Mermaid stays as highlighted source without broken SVG
+    // Invalid Mermaid falls back to an ordinary code block without broken SVG.
     const brokenSource = 'flowchart LR\n  A -->';
     const brokenCard = w.RichMD.renderThreadMermaid(brokenSource) as HTMLElement;
     document.getElementById('root')!.append(brokenCard);
-    await w.RichMD.renderMermaidSvg(brokenSource).catch(() => {});
-    const brokenStaysSource = !brokenCard.querySelector<HTMLElement>('.wt-diagram-source')!.hidden && brokenCard.querySelector<HTMLElement>('.wt-diagram-stage')!.hidden;
+    const brokenRejected = await w.RichMD.renderMermaidSvg(brokenSource).then(
+      () => false,
+      () => true,
+    );
+    await waitUntil(() => Boolean(brokenCard.querySelector('.wt-md-code')));
+    const brokenStaysSource = brokenCard.querySelector('.wt-md-code-lang')?.textContent === 'mermaid' && !brokenCard.querySelector('.wt-mermaid-stage svg');
 
     // File Preview modal fetch, target line highlight & scrollIntoView
     let scrolledLine = -1;
@@ -685,12 +768,14 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
       inlineMathCount: el.querySelectorAll('.wt-math-inline math').length,
       blockMathCount: el.querySelectorAll('.wt-math-block math').length,
       currencyPreserved: (el.textContent ?? '').includes('Price is $100'),
-      emailMailto: el.querySelector<HTMLAnchorElement>('.wt-email-open')?.getAttribute('href') ?? '',
+      emailCodeLang: el.querySelector('.wt-md-code-lang')?.textContent ?? '',
+      emailFormCount: el.querySelectorAll('.wt-md-email').length,
       metricValue: el.querySelector('.jr-metric-value')?.textContent ?? '',
       openedRefs,
-      userHasCodeCopy: Boolean(userEl.querySelector('.wt-code-copy')),
+      userHasCodeCopy: Boolean(userEl.querySelector('.wt-md-code-copy')),
       cachedImmediateSvg,
-      showingSourceAfterToggle,
+      brokenRejected,
+      actionsOpen,
       zoomModalOpen,
       brokenStaysSource,
       targetRows,
@@ -707,12 +792,14 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
   assert.equal(result.inlineMathCount, 1);
   assert.equal(result.blockMathCount, 1);
   assert.equal(result.currencyPreserved, true);
-  assert.equal(result.emailMailto, 'mailto:nik@factory.ai?subject=Ship%20It&body=Ready%20for%20review.');
+  assert.equal(result.emailCodeLang, 'email');
+  assert.equal(result.emailFormCount, 0);
   assert.equal(result.metricValue, '100%');
-  assert.deepEqual(result.openedRefs, [{ path: 'src/client/ui/dom.ts', line: 12, endLine: 14 }, { path: 'package.json' }, { path: 'src/server/server.ts', line: 88 }]);
+  assert.deepEqual(result.openedRefs, [{ path: 'src/client/ui/dom.ts', line: 12, endLine: 14 }, { path: 'package.json' }]);
   assert.equal(result.userHasCodeCopy, true);
   assert.equal(result.cachedImmediateSvg, true);
-  assert.equal(result.showingSourceAfterToggle, true);
+  assert.equal(result.brokenRejected, true);
+  assert.equal(result.actionsOpen, true);
   assert.equal(result.zoomModalOpen, true);
   assert.equal(result.brokenStaysSource, true);
   assert.deepEqual(result.targetRows, [12, 13, 14]);
@@ -727,6 +814,8 @@ test('real Chromium points Thread Markdown images of files on the office machine
   const context = await newIsolatedContext(browser);
   t.after(() => context.close());
   const page = await context.newPage();
+  const pageErrors: string[] = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message));
   const bundle = buildSync({
     stdin: { contents: `export { threadMarkdown } from './src/client/ui/thread-markdown.ts';`, resolveDir: fileURLToPath(new URL('../', import.meta.url)), sourcefile: 'md-images-entry.ts', loader: 'ts' },
     bundle: true,
@@ -769,4 +858,5 @@ test('real Chromium points Thread Markdown images of files on the office machine
     ],
     'without imageUrl, images keep their own src (and the sanitizer drops file: URLs)',
   );
+  assert.deepEqual(pageErrors, []);
 });

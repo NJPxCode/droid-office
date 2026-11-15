@@ -48,6 +48,43 @@ object ThreadCompose {
     /** The pastes whose token is still in the draft: deleting a token drops its paste. */
     fun livePastes(value: String, pastes: List<PastedText>): List<PastedText> = pastes.filter { value.contains(it.token) }
 
+    /** Where Up or Down leaves the prompt history: [index] -1 is the draft being typed, 0 the newest prompt. */
+    data class Recall(val index: Int, val text: String)
+
+    /**
+     * What Up ([up] true) or Down does to the draft [text] with the caret at [caret], walking [prompts]
+     * (newest first) from [index] as Droid's prompt history does, or null when the key should move the
+     * caret instead: Up off the first line, Down off the last or outside a walk. Right after a recall the
+     * caret sits at the end and the keys keep walking. [draft] is what was typed before the walk began.
+     */
+    fun recall(prompts: List<String>, index: Int, up: Boolean, text: String, caret: Int, draft: String): Recall? {
+        if (prompts.isEmpty()) return null
+        val browsing = index >= 0 && caret == text.length
+        if (!browsing) {
+            if (up && text.take(caret).contains('\n')) return null
+            if (!up && (index < 0 || text.drop(caret).contains('\n'))) return null
+        }
+        // Down only gets here mid-walk, so leaving the walk always restores the saved draft.
+        if (!up && index <= 0) return Recall(-1, draft)
+        // The history can shrink mid-walk (a rewind), so the walk stays inside it.
+        val at = (if (up) index + 1 else index - 1).coerceIn(0, prompts.size - 1)
+        return Recall(at, prompts[at])
+    }
+
+    private val EFFORT = mapOf("off" to "Off", "none" to "Off", "minimal" to "Minimal", "low" to "Low", "medium" to "Medium", "high" to "High", "xhigh" to "Extra high", "max" to "Max")
+
+    /** Droid's label for a reasoning effort id: "Extra high" for `xhigh`. */
+    fun effortLabel(effort: String): String = EFFORT[effort.lowercase(Locale.ROOT)] ?: effort
+
+    /** The composer's model and effort, with Spec when active; autonomy stays office-managed. */
+    fun settingsText(worker: WorkerInfo, settings: ThreadSessionSettings?): String {
+        val mode = "Spec".takeIf { settings?.interactionMode == "spec" }
+        val model = settings?.modelName ?: settings?.model ?: worker.activeModel ?: worker.model
+        val effort = (settings?.reasoningEffort ?: worker.activeEffort ?: worker.effort)?.let(::effortLabel)
+            ?.takeIf { model?.contains(it, ignoreCase = true) != true }
+        return listOfNotNull(mode, model, effort).joinToString(" · ")
+    }
+
     /**
      * The draft as it is sent: each paste's first token replaced by its text, in one pass over [value]
      * so a paste whose text happens to contain another paste's token stays as pasted.

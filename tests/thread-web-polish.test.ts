@@ -190,7 +190,7 @@ test('long threads skip off-screen rows yet keep following, anchoring, clamps, f
 
   // Jump to latest lands at the real bottom even though the rows in between held estimates.
   await page.locator('.wt-latest').click();
-  await page.evaluate(() => (window as any).frames(6));
+  await page.evaluate(() => (window as any).frames(14));
   assert.ok((await page.evaluate(() => (window as any).gap())) <= 1, 'jump to latest reaches the bottom');
 
   // A new message while following stays in view, and so does the sticky plan bar above the composer.
@@ -266,19 +266,18 @@ test('selected reply or diff text is quoted into the draft at its cursor', { ski
   ];
   await push(page, entries);
   const input = page.locator('textarea.wt-input');
-  const quote = page.locator('.wt-quote');
+  const quote = page.locator('.wt-quote-btn');
   assert.equal(await quote.isHidden(), true);
 
   await input.fill('Thanks.');
   await selectText(page, '.wt-entry[data-entry="a1"] .md');
   assert.equal(await quote.isVisible(), true, 'a selection in a reply offers Quote');
   const placed = await page.evaluate(() => {
-    const q = document.querySelector('.wt-quote')!.getBoundingClientRect();
-    const s = document.querySelector('.wt-scroll')!.getBoundingClientRect();
+    const q = document.querySelector('.wt-quote-pill')!.getBoundingClientRect();
     const end = window.getSelection()!.getRangeAt(0).getBoundingClientRect();
-    return q.top >= s.top && q.bottom <= s.bottom && q.top >= end.bottom - 1;
+    return q.top >= 0 && q.bottom <= innerHeight && (q.bottom <= end.top || q.top >= end.bottom);
   });
-  assert.equal(placed, true, 'Quote sits below the selection, inside the conversation');
+  assert.equal(placed, true, 'Add to chat sits above or below the selection, inside the viewport');
   await quote.click();
   assert.equal(await input.inputValue(), 'Thanks.\n\n> I brightened the button text.\n>\n> It now matches the header color.\n\n');
   assert.equal(await page.evaluate(() => document.activeElement?.matches('textarea.wt-input')), true);
@@ -294,7 +293,12 @@ test('selected reply or diff text is quoted into the draft at its cursor', { ski
     el.setSelectionRange(6, 6);
     el.blur();
   });
-  await selectText(page, '.wt-change-file tr.wt-diff-row.is-add .wt-diff-code');
+  const change = page.locator('.wt-tr[data-disclosure*="style.css"]');
+  await change.locator('.wt-tr-trigger').click();
+  await change.evaluate(async (el) => {
+    await Promise.all(el.getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => undefined)));
+  });
+  await selectText(page, '.wt-tr[data-disclosure*="style.css"] tr.wt-diff-row.is-add .wt-diff-code');
   assert.equal(await quote.isVisible(), true, 'a selection in a diff offers Quote');
   await quote.click();
   assert.equal(await input.inputValue(), 'Before\n\n> color: #eee;\n\n after');

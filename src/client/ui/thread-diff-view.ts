@@ -338,7 +338,7 @@ function renderMergedSegments(segments: readonly MergedDiffSegment[], wordCls: '
   });
 }
 
-function renderDiffLineCode(line: ThreadDiffLine, filePath: string, intraline: readonly ThreadDiffSpan[] | undefined): DocumentFragment | HTMLElement | string {
+export function renderDiffLineCode(line: ThreadDiffLine, filePath: string, intraline: readonly ThreadDiffSpan[] | undefined): DocumentFragment | HTMLElement | string {
   if (!line.text) return '\u200b';
   if (!intraline || (line.kind !== 'add' && line.kind !== 'del')) {
     return highlightLine(line.text, filePath);

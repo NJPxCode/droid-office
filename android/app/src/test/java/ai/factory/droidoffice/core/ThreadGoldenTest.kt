@@ -177,7 +177,54 @@ class ThreadGoldenTest {
                             })
                         })
                     }
+                    if (r.segments.isNotEmpty()) put("segments", buildJsonArray { r.segments.forEach { add(encode(it)) } })
                     r.turnChanges?.let { put("turnChanges", encode(it)) }
+                }
+            }
+        }
+
+        private fun strings(list: List<String>) = buildJsonArray { list.forEach { add(JsonPrimitive(it)) } }
+
+        private fun encode(s: ThreadSegment): JsonObject = buildJsonObject {
+            when (s) {
+                is ThreadSegment.Explore -> {
+                    put("kind", "explore")
+                    put("id", s.id)
+                    put("blockIds", strings(s.blockIds))
+                    put("actionIds", strings(s.actionIds))
+                    put("action", s.action)
+                    put("details", s.details)
+                    if (s.providers.isNotEmpty()) put("providers", strings(s.providers))
+                    put("live", s.live)
+                    put("open", s.open)
+                }
+                is ThreadSegment.Thought -> {
+                    put("kind", "thought")
+                    put("blockId", s.blockId)
+                }
+                is ThreadSegment.Tool -> {
+                    put("kind", "tool")
+                    put("blockId", s.blockId)
+                    put("actionId", s.actionId)
+                }
+                is ThreadSegment.Repeat -> {
+                    put("kind", "repeat")
+                    put("id", s.id)
+                    put("actionIds", strings(s.actionIds))
+                    put("summaries", strings(s.summaries))
+                    put("times", s.times)
+                    put("live", s.live)
+                    put("open", s.open)
+                }
+                is ThreadSegment.Tasks -> {
+                    put("kind", "tasks")
+                    put("id", s.id)
+                    put("actionIds", strings(s.actionIds))
+                    put("label", s.label)
+                    put("settled", s.settled)
+                    put("failed", s.failed)
+                    put("live", s.live)
+                    put("open", s.open)
                 }
             }
         }
@@ -265,6 +312,10 @@ class ThreadGoldenTest {
                     del.branch?.let { put("branch", it) }
                 })
             }
+            a.icon?.let { put("icon", it) }
+            a.verb?.let { put("verb", it) }
+            a.subject?.let { put("subject", it) }
+            a.failedLabel?.let { put("failedLabel", it) }
         }
 
         private fun encode(c: ThreadFileChange): JsonObject = buildJsonObject {

@@ -71,6 +71,14 @@ data class ThreadEntry(
     val resultSeq: Long? = null,
     /** Pictures in a tool's result or a message; [output] and [text] still say `[Image attachment]` for each. */
     val images: List<ThreadImage> = emptyList(),
+    /** When the session wrote it (epoch ms); null from an office or session that doesn't say. */
+    val at: Long? = null,
+    /** A tool's: when its result was written. */
+    val doneAt: Long? = null,
+    /** A thought's: how long the model took on its message ("Thought for 4s"). */
+    val tookMs: Long? = null,
+    /** A Task call's: the subagent session running it. */
+    val child: String? = null,
 ) {
     companion object {
         /** An entry with no id, no seq, or a role or kind this app doesn't know is skipped rather than guessed at. */
@@ -92,6 +100,10 @@ data class ThreadEntry(
                 error = (o["error"] as? JsonPrimitive)?.booleanOrNull ?: false,
                 resultSeq = o.long("resultSeq"),
                 images = (o["images"] as? JsonArray)?.mapNotNull(ThreadImage::of)?.take(16).orEmpty(),
+                at = o.long("at")?.takeIf { it > 0 },
+                doneAt = o.long("doneAt")?.takeIf { it > 0 },
+                tookMs = o.long("tookMs")?.takeIf { it >= 0 },
+                child = o.str("child")?.takeIf { it.isNotEmpty() },
             )
         }
 
@@ -169,7 +181,12 @@ class ThreadFeed(val workerId: String, private val prefix: String = UUID.randomU
     private fun nextId() = "$prefix-${++count}"
 
     /** A new request for the latest page, or null while one is still out, or once the office has shown it can't answer. */
-    fun latest(now: Long): String? {
+    fun latest(now: Long, sessionId: String? = state.sessionId): String? {
+        if (sessionId != null && sessionId != state.sessionId) {
+            latest = null
+            askedSince = null
+            if (state.phase == ThreadPhase.Unavailable) state = state.copy(phase = ThreadPhase.Loading)
+        }
         if (state.phase == ThreadPhase.Unavailable) return null
         latest?.let { if (now - it.at < RESEND_MS) return null }
         val id = nextId()

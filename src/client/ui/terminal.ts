@@ -24,6 +24,7 @@ import { attachKittyTerminal, type ExpandedKittyImage } from '../term-kitty';
 import { wantsCsiEnter } from '../term-keys';
 import { viewPicture } from './picture-viewer';
 import { onTermFontSize, setTermFontSize, stepTermFont, termFontSize, TERM_FONT_MAX, TERM_FONT_MIN } from './term-font';
+import { mountWorkerThread, type WorkerThread } from './worker-thread';
 
 function openKittyPicture(img: ExpandedKittyImage, about: string, isAlive: () => boolean, focusTerm: () => void, state: { modal: Modal | null }) {
   if (state.modal || !isAlive()) return;
@@ -60,6 +61,8 @@ async function uploadDrop(workerId: string, f: File): Promise<string> {
 }
 
 let current: { workerId: string; modal: Modal; find(f: TerminalFind): void } | null = null;
+const threadDrafts = new Map<string, string>();
+const THREAD_VIEW_KEY = 'droid-office.desk-thread-view:';
 
 /**
  * The team strip's people for `w`: its lead and teammates on this floor, or its own subagents. A building
@@ -147,6 +150,13 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   const info = store.worker(workerId);
   // An external bot runs elsewhere and has no terminal here: its card in Mission Control stands in.
   if (!info || info.remote) return;
+  const canThread = !inline && info.kind === 'agent' && !info.cloud;
+  let thread: WorkerThread | undefined;
+  let threadView = false;
+  let setThreadView = (_next: 'thread' | 'raw', _focus = true) => {};
+  const threadButton = canThread ? h('button.btn.sm', { type: 'button', onclick: () => setThreadView('thread') }, 'Thread') : null;
+  const rawButton = canThread ? h('button.btn.sm', { type: 'button', onclick: () => setThreadView('raw') }, 'Raw TTY') : null;
+  const viewSwitch = canThread ? h('span.seg.term-view', { role: 'group', 'aria-label': 'Worker view' }, threadButton, rawButton) : null;
 
   const header = inline
     ? undefined
@@ -174,10 +184,11 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
         // A building agent has no desk for a fork to sit at.
         const fork = info.kind === 'agent' && info.deskId ? h('button.btn', { type: 'button', onclick: () => openForkWorker(net, workerId) }, 'Fork') : null;
         const close = h('button.btn.icon.close', { title: 'Leave terminal (Shift+Esc or Ctrl+]) · Esc goes to the terminal', 'aria-label': 'Close', onclick: () => modal.close() }, '✕');
-        const element = h('header', {}, colorDot(info.color), h('div.titles', {}, h('div.term-title', {}, title, pill), sub), h('div.actions', {}, zoom, changes, fork), close);
+        const element = h('header', {}, colorDot(info.color), h('div.titles', {}, h('div.term-title', {}, title, pill), sub), h('div.actions', {}, viewSwitch, zoom, changes, fork), close);
         const zoomBy = (dir: 1 | -1) => {
           setTermFontSize(stepTermFont(term.options.fontSize ?? termFontSize(), dir));
-          term.focus();
+          if (threadView) setThreadView('raw');
+          else term.focus();
         };
         return {
           element,
@@ -213,6 +224,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
       })();
   const disconnected = h('p.note.warn.hidden', { role: 'status' }, 'Disconnected. Terminal input is disabled until a fresh snapshot arrives.');
   const host = h('div.term-host', { 'data-drop': 'Drop screenshots or files to put them in the terminal' });
+  const threadHost = canThread ? h('div.term-thread-host', { hidden: true }) : null;
   // A lead's subagents, or a subagent's lead and teammates: one click to the next terminal.
   const team = h('div.term-team.chips.hidden', { role: 'group', 'aria-label': 'Team' });
   let teamKey = '';
@@ -222,6 +234,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     header?.element ?? null,
     team,
     disconnected,
+    threadHost,
     host,
   );
   const paintTeam = (w: WorkerInfo) => {
@@ -333,6 +346,25 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     }
     header?.refresh(w);
     paintTeam(w);
+    thread?.update(w, net.up);
+    if (thread) {
+      const asking = w.status === 'needs_input';
+      const question = thread.element.querySelector<HTMLElement>('.dash-question');
+      if (question) {
+        question.hidden = !asking;
+        if (asking && !question.childElementCount) {
+          question.replaceChildren(
+            h(
+              'div.dash-question-card.quiet',
+              { role: 'status' },
+              h('span.dash-question-icon', {}, '●'),
+              h('p', {}, `${w.name} is waiting for an answer. Answer its question in Raw TTY.`),
+              h('button.btn.sm', { type: 'button', onclick: () => setThreadView('raw') }, 'Open Raw TTY'),
+            ),
+          );
+        } else if (!asking) question.replaceChildren();
+      }
+    }
     // Status updates can still carry the old size while our resize is in flight. Only a new
     // PTY size not acknowledging one of our requests means another window claimed it.
     const ptySize = `${w.cols}x${w.rows}`;
@@ -421,6 +453,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   });
   const offStatus = net.onStatus((up) => {
     header?.refresh(store.worker(workerId) ?? info);
+    thread?.update(store.worker(workerId) ?? info, up);
     if (up) return; // The welcome handler reattaches only after the authoritative worker snapshot.
     mirror.disconnect();
     term.options.disableStdin = true;
@@ -428,6 +461,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   });
 
   const onClose = () => {
+    thread?.dispose();
     listeners.delete(onMsg);
     unsub();
     unsubCredits();
@@ -477,10 +511,70 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
       workerId,
       modal,
       find: (f) => {
+        setThreadView('raw', false);
         if (mirror.ready) jumpTo(f);
         else pendingFind = f;
       },
     };
+  if (canThread && threadHost) {
+    const question = h('section.dash-question', { 'aria-label': 'Question requiring input', hidden: true });
+    thread = mountWorkerThread(net, {
+      worker: info,
+      question,
+      queueKey: `droid-office.desk-queue:${workerId}`,
+      draft: threadDrafts.get(workerId) ?? '',
+      onDraft: (text) => (text ? threadDrafts.set(workerId, text) : threadDrafts.delete(workerId)),
+      send: async (msg) => {
+        const result = await net.request(msg);
+        return result.ok ? undefined : (result.error ?? 'The office refused that.');
+      },
+      screen: () => {
+        const s = store.screens.get(workerId);
+        return s && Array.from({ length: s.rows }, (_, i) => (s.lines[i] ?? []).map((run) => run[0]).join(''));
+      },
+      raw: () => setThreadView('raw'),
+      openChanges: onChanges
+        ? () => {
+            onChanges();
+            modal.close();
+          }
+        : undefined,
+      openWorker: (id) => openTeammate(id),
+      team: () => [...store.workers.values()],
+      floor: store.floor ?? undefined,
+    });
+    threadHost.append(thread.element);
+    thread.dropZone(threadHost);
+    let saved = 'thread';
+    try {
+      saved = localStorage.getItem(`${THREAD_VIEW_KEY}${workerId}`) ?? 'thread';
+    } catch {}
+    setThreadView = (next, focus = true) => {
+      if (!thread || !threadHost) return;
+      threadView = next === 'thread';
+      threadHost.hidden = !threadView;
+      host.hidden = threadView;
+      threadButton?.classList.toggle('on', threadView);
+      rawButton?.classList.toggle('on', !threadView);
+      threadButton?.setAttribute('aria-pressed', String(threadView));
+      rawButton?.setAttribute('aria-pressed', String(!threadView));
+      try {
+        localStorage.setItem(`${THREAD_VIEW_KEY}${workerId}`, next);
+      } catch {}
+      if (threadView) {
+        thread.activate(true);
+        term.options.disableStdin = true;
+      } else {
+        thread.activate(false);
+        net.send({ t: 'worker.attach', workerId });
+        term.options.disableStdin = !net.up;
+        sendSize();
+        if (focus) setTimeout(() => alive && term.focus(), 0);
+      }
+      refresh();
+    };
+    setThreadView(saved === 'raw' ? 'raw' : 'thread', false);
+  }
   header?.zoom(termFontSize());
   const offFont = onTermFontSize((px) => {
     term.options.fontSize = px;
@@ -515,7 +609,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   // where they are, as a terminal does with a file dragged into it: Droid attaches a picture.
   let uploading = 0;
   const insertFiles = async (files: File[]) => {
-    if (!files.length) return;
+    if (!files.length || threadView) return;
     if (!mirror.ready || !net.up) return toast('Disconnected. No files were sent.', 'warn');
     el.classList.toggle('uploading', ++uploading > 0);
     try {
@@ -582,7 +676,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     adoptSharedSize = store.worker(workerId)?.open === true;
     net.send({ t: 'worker.attach', workerId });
     setTimeout(() => {
-      if (alive && inline?.focus !== false) term.focus();
+      if (alive && inline?.focus !== false && !threadView) term.focus();
     }, 50);
   });
   if (!inline) return;

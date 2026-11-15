@@ -53,6 +53,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -99,7 +100,12 @@ import ai.factory.droidoffice.core.SlashCommands
 import ai.factory.droidoffice.core.Tags
 import ai.factory.droidoffice.core.TermSize
 import ai.factory.droidoffice.core.TermView
+import ai.factory.droidoffice.core.ThreadEntry
+import ai.factory.droidoffice.core.ThreadFeed
+import ai.factory.droidoffice.core.ThreadLive
+import ai.factory.droidoffice.core.ThreadLiveState
 import ai.factory.droidoffice.core.ThreadQueue
+import ai.factory.droidoffice.core.ThreadTurns
 import ai.factory.droidoffice.core.WorkerInfo
 import ai.factory.droidoffice.core.WorkerLinkView
 import ai.factory.droidoffice.core.WorkerStatus
@@ -137,6 +143,7 @@ import ai.factory.droidoffice.ui.home.rememberNow
 import ai.factory.droidoffice.ui.theme.LocalOfficeType
 import ai.factory.droidoffice.ui.theme.OfficeIcons
 import ai.factory.droidoffice.ui.theme.Palette
+import ai.factory.droidoffice.ui.theme.ThreadPalette
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -294,11 +301,46 @@ fun WorkerScreen(
             else -> null
         }
         var ttyChoice by rememberSaveable(workerId, initialView, openQuestion, launchId) { mutableStateOf<Boolean?>(initialTtyChoice) }
+        // Raw TTY takes the Thread out of composition: its saved state (place, follow, what's open) and
+        // its loaded feed wait here, so switching back shows the same conversation where it was left.
+        val threadStates = rememberSaveableStateHolder()
+        val threadFeeds = remember(workerId) { mutableMapOf<String, ThreadFeed>() }
         var directInput by rememberSaveable(workerId) { mutableStateOf(false) }
         var composerFocus by remember(workerId) { mutableIntStateOf(0) }
         var sent by remember(workerId) { mutableIntStateOf(0) }
         // A selection quoted from the Thread, until the composer has put it in the draft.
         var quote by remember(workerId) { mutableStateOf<String?>(null) }
+        var threadSearch by rememberSaveable(workerId) { mutableStateOf(false) }
+        var queuePanel by remember(workerId) { mutableStateOf(ThreadQueue.Panel.EMPTY) }
+        var composerFill by remember(workerId) { mutableStateOf<String?>(null) }
+        var rewinding by remember(workerId) { mutableStateOf(false) }
+        var rewindError by remember(workerId) { mutableStateOf<String?>(null) }
+        var threadEntries by remember(workerId) { mutableStateOf<List<ThreadEntry>>(emptyList()) }
+        var copying by remember(workerId) { mutableStateOf(false) }
+        val liveState = remember(workerId) { ThreadLiveState() }
+        var threadLive by remember(workerId) { mutableStateOf<ThreadLive?>(null) }
+        LaunchedEffect(workerId) {
+            liveState.clear()
+            connection.threadLives.collect { msg ->
+                val session = connection.data.value.worker(workerId)?.sessionId
+                if (msg.workerId == workerId && liveState.receive(msg.sessionId, msg.live, session)) threadLive = liveState.live
+            }
+        }
+        val currentThreadLive = threadLive?.takeIf { liveState.session == worker.sessionId }
+        LaunchedEffect(workerId) {
+            connection.workerRewounds.collect { msg ->
+                if (msg.workerId != workerId) return@collect
+                rewinding = false
+                if (msg.ok) {
+                    rewindError = null
+                    msg.text?.takeIf { it.isNotBlank() }?.let { composerFill = it }
+                    msg.note?.let { note -> scope.launch { snackbarHost.showSnackbar(note) } }
+                    sent++
+                } else {
+                    rewindError = msg.error ?: "Failed to rewind conversation"
+                }
+            }
+        }
         val questionScopeKey = "$workerId/${questionId.orEmpty()}/$launchId"
         var questionHandled by rememberSaveable(questionScopeKey) { mutableStateOf(false) }
         var openedQuestionMenu by remember(questionScopeKey) { mutableStateOf<Menu?>(null) }
@@ -351,7 +393,19 @@ fun WorkerScreen(
         }
         // The view switch shares the PR and branch row. Send home stays in the header.
         if (threadable && !cloud) Column(Modifier.fillMaxWidth().background(Palette.Bg)) {
-            Actions(worker, lead = { InlineViewToggle(tty, pickView) }, resumable = !mission)
+            Actions(worker, lead = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!tty) Box(
+                        Modifier.size(36.dp).clip(RoundedCornerShape(4.dp))
+                            .clickable(role = Role.Button, onClickLabel = "Search session") { threadSearch = !threadSearch }
+                            .semantics { selected = threadSearch }.tagged(Tags.Worker.THREAD_SEARCH),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(OfficeIcons.Search, "Search session", Modifier.size(16.dp), tint = if (threadSearch) Palette.Accent else Palette.TextSecondary)
+                    }
+                    InlineViewToggle(tty, pickView)
+                }
+            }, resumable = !mission)
             if (mission) TeamStrip(MissionControl.team(orchestrator), onOpen = { followTeamMember?.invoke(it) })
             Box(Modifier.fillMaxWidth().height(4.dp))
             Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
@@ -412,7 +466,7 @@ fun WorkerScreen(
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 // Text selected in the conversation can be quoted into the reply while the composer shows.
                 val quotable = composing && blocked == null && worker.state != WorkerStatus.NeedsInput
-                ProvideFilePreview(worker) { QuoteSelections(quotable, onQuote = { quote = it }) {
+                ProvideFilePreview(worker) { QuoteSelections(quotable, onQuote = { quote = it }) { threadStates.SaveableStateProvider("thread/$workerId") {
                     Thread(
                         worker, screen, live && link.phase == Phase.Connected, link.phase == Phase.Connected,
                         Modifier.fillMaxSize(),
@@ -422,8 +476,27 @@ fun WorkerScreen(
                         followRequest = sent,
                         rawTty = !cloud,
                         onOpenWorker = openSubagent,
+                        search = threadSearch,
+                        onSearch = { threadSearch = it },
+                        onQuote = { quote = it },
+                        onQueuePanel = { queuePanel = it },
+                        live = currentThreadLive,
+                        // An office from before these actions leaves them unanswered: "This action was not confirmed".
+                        onRewind = if (link.phase == Phase.Connected && !cloud && !worker.isShell && data.threadActions) { entryId, restore, files ->
+                            rewinding = true
+                            rewindError = null
+                            if (!connection.send(ClientMsg.rewind(workerId, entryId, restore, files))) {
+                                rewinding = false
+                                rewindError = "Couldn't reach the office. Nothing was rewound."
+                            }
+                        } else null,
+                        rewinding = rewinding,
+                        rewindError = rewindError,
+                        onRewindCancel = { rewindError = null },
+                        feeds = threadFeeds,
+                        onEntries = { threadEntries = it },
                     )
-                } }
+                } } }
             }
         } else Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 10.dp)) {
             Terminal(
@@ -444,7 +517,7 @@ fun WorkerScreen(
             val density = LocalDensity.current
             DisposableEffect(lift) { onDispose { lift.value = null } }
             // Snackbars rise above the quick keys and the composer instead of covering them.
-            Column(Modifier.onSizeChanged { lift.value = with(density) { it.height.toDp() } + 8.dp }) {
+            Column(Modifier.background(if (tty) Palette.Bg else ThreadPalette.Bg).onSizeChanged { lift.value = with(density) { it.height.toDp() } + 8.dp }) {
                 if (!worker.isCloud && tty) {
                     QuickKeyRow(
                         workerId, worker.isShell, phone, directInput, link.phase == Phase.Connected, kittyFlags,
@@ -462,10 +535,33 @@ fun WorkerScreen(
                 val connected = link.phase == Phase.Connected
                 if (cloud && cloudError != null) CloudError(worker, cloudError)
                 if (blocked != null && !waiting) OrchestratorBlocked(blocked)
+                val side = currentThreadLive?.side
+                if (!tty && side != null) ThreadSideChat(side, onClose = if (connected && data.threadActions) {
+                    { if (!connection.send(ClientMsg.closeSide(workerId))) scope.launch { snackbar.showSnackbar("Couldn't reach the office. The side chat is still open.") } }
+                } else null)
                 Composer(
                     worker, draft, visible = blocked == null && !waiting && (!directInput || !tty || worker.isCloud), focusRequest = composerFocus, thread = !tty,
                     quote = quote, onQuoted = { quote = null },
+                    fill = composerFill, onFilled = { composerFill = null },
+                    settings = currentThreadLive?.settings,
+                    prompts = remember(threadEntries) { ThreadTurns.prompts(threadEntries) },
+                    onSetting = if (connected && !cloud && !worker.isShell && data.threadActions) { setting, value ->
+                        if (!connection.send(ClientMsg.setting(workerId, setting, value))) scope.launch { snackbar.showSnackbar("Couldn't reach the office. Nothing was changed.") }
+                    } else null,
                     queueState = queueState, onQueued = { queueRevision++ },
+                    queuePanel = queuePanel,
+                    onQueueAction = if (connected && !cloud && !worker.isShell && data.threadActions) { action, item ->
+                        val kind = if (action == "edit") "delete" else action
+                        val sent = connection.send(ClientMsg.queueAction(
+                            workerId,
+                            kind,
+                            index = item.index + 1,
+                            group = item.group.name.lowercase(),
+                            text = item.text.takeUnless { item.preview },
+                        ))
+                        if (sent && action == "edit") composerFill = item.text
+                        if (!sent) scope.launch { snackbar.showSnackbar("Couldn't reach the office. The queue is unchanged.") }
+                    } else null,
                     onSent = { prompt ->
                         sent++
                         // A slash command that opens one of Droid's dialogs is answered there: show it.
@@ -491,12 +587,16 @@ fun WorkerScreen(
                         }
                     } else null,
                     // Slash commands go to Droid's input box like a message, except one that would end
-                    // the CLI, and none while a turn runs, when Droid would take it as steering.
+                    // the CLI, and while a turn runs one Droid would not run mid-turn.
                     intercept = if (tty) null else { prompt ->
                         val slash = SlashCommands.of(prompt)
                         when {
                             SlashCommands.nativeLimits(prompt, ai.factory.droidoffice.core.FactoryLimits.connected(factory)) -> {
                                 factoryLimits = true
+                                true
+                            }
+                            !cloud && SlashCommands.nativeCopy(prompt) -> {
+                                copying = true
                                 true
                             }
                             slash == null -> false
@@ -509,8 +609,8 @@ fun WorkerScreen(
                                 scope.launch { snackbar.showSnackbar("/${slash.first} opens one of Droid's dialogs, which a cloud worker can't show here.") }
                                 true
                             }
-                            worker.state.busy -> {
-                                scope.launch { snackbar.showSnackbar("Slash commands run once ${worker.name} finishes this turn. Stop it to run one now.") }
+                            worker.state.busy && slash.second?.midTurn != true -> {
+                                scope.launch { snackbar.showSnackbar(SlashCommands.refusal(prompt, worker.name, busy = true).orEmpty()) }
                                 true
                             }
                             else -> false
@@ -525,6 +625,7 @@ fun WorkerScreen(
         })
         if (orchestratorMenu && orchestrator != null) OrchestratorSheet(orchestrator, onDismiss = { orchestratorMenu = false })
         if (factoryLimits) ai.factory.droidoffice.ui.offices.SubscriptionsSheet { factoryLimits = false }
+        if (copying) ThreadCopyDialog(threadEntries, worker.sessionId, onDismiss = { copying = false })
         openedQuestionMenu?.let { menu ->
             QuestionWorkspaceDialog(
                 worker = worker,

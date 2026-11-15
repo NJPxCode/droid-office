@@ -5,6 +5,8 @@ import { withoutReminders } from '../../shared/prompts.js';
 import { clearDroidPendingAll, driveDroidQueueItem, resolveWorkerQueue, type QueuedMessageItem, type ResolvedQueueItem, type WorkerQueueState } from '../worker-queue.js';
 import type { DropStore } from '../drops.js';
 import { readDroidScreen, type DroidScreen } from '../droid-screen.js';
+import { readSideChat } from '../../shared/thread-live.js';
+import { sideQuestion } from '../../shared/slash-commands.js';
 import { screenRows, type Worker } from './state.js';
 import { HOOK_VERSION } from './hook-transport.js';
 import { truncate } from './activity.js';
@@ -48,10 +50,21 @@ export class WorkerDelivery {
     const typed = text.replace(/\r\n?/g, '\n').trim();
     const clean = images?.length ? withImages(typed, this.context.drops.adopt(id, images)) : typed;
     if (!clean) return 'Empty prompt';
-    const ctrlEnter = queue && wantsCsiEnter(w.info.kind);
-    const queuedTurn = ctrlEnter && w.info.status === 'working';
-    if (queuedTurn) w.queued++;
-    this.typeIn(w, clean, ctrlEnter ? CTRL_ENTER : '\r', queuedTurn);
+    // Droid's side chat (/btw) takes the keys while it is open: a follow-up /btw is asked in it, and
+    // anything else waits for Esc to close it so it reaches the main input box.
+    const side = w.term && w.info.kind === 'agent' ? readSideChat(screenRows(w.term)) : undefined;
+    const question = side ? sideQuestion(clean) : undefined;
+    if (question) this.typeIn(w, question);
+    else {
+      const ctrlEnter = queue && wantsCsiEnter(w.info.kind);
+      const queuedTurn = ctrlEnter && w.info.status === 'working';
+      if (queuedTurn) w.queued++;
+      const submit = ctrlEnter ? CTRL_ENTER : '\r';
+      if (side) {
+        w.pty.write('\x1b');
+        setTimeout(() => this.typeIn(w, clean, submit, queuedTurn), 150);
+      } else this.typeIn(w, clean, submit, queuedTurn);
+    }
     const shown = withoutReminders(typed) || 'See the attached images';
     w.info.activity = truncate(shown, 80);
     this.context.notePrompt(w, shown);

@@ -105,6 +105,8 @@ data class OfficeData(
     val synced: Boolean = false,
     /** Only a welcome that explicitly advertises the checkbox-answer contract enables it. */
     val workerAnswerMultiSelect: Boolean = false,
+    /** The office answers rewind, queue, model and side-chat actions in a worker's terminal; an older one leaves them unanswered. */
+    val threadActions: Boolean = false,
     /** The building's agents, the same on every floor; null from an office that predates Mission Control. */
     val mission: MissionControlState? = null,
 ) {
@@ -271,6 +273,12 @@ class OfficeConnection(
 
     /** Pages of workers' conversations, each answering one `thread.read`; a [ai.factory.droidoffice.core.ThreadFeed] keeps the ones it asked for. */
     val threads: SharedFlow<ServerMsg.ThreadSnapshot> = _threads.asSharedFlow()
+
+    private val _threadLives = MutableSharedFlow<ServerMsg.ThreadLiveUpdate>(extraBufferCapacity = 32)
+    val threadLives: SharedFlow<ServerMsg.ThreadLiveUpdate> = _threadLives.asSharedFlow()
+
+    private val _workerRewounds = MutableSharedFlow<ServerMsg.WorkerRewound>(extraBufferCapacity = 8)
+    val workerRewounds: SharedFlow<ServerMsg.WorkerRewound> = _workerRewounds.asSharedFlow()
 
     private val boardWatchers = HashSet<String>()
     private var whiteboard = newWhiteboard()
@@ -732,6 +740,7 @@ class OfficeConnection(
                 _data.update {
                     it.copy(
                         workerAnswerMultiSelect = msg.workerAnswerMultiSelect,
+                        threadActions = msg.threadActions,
                         buildingWorkers = bWorkers ?: emptyMap(),
                         buildingPulls = bPulls ?: emptyMap(),
                         hasBuildingRoster = msg.building != null,
@@ -863,6 +872,8 @@ class OfficeConnection(
             is ServerMsg.Whiteboard -> whiteboard.handle(msg.t, msg.obj)
             is ServerMsg.Pinged -> _pinged.tryEmit(msg.result)
             is ServerMsg.ThreadSnapshot -> _threads.tryEmit(msg)
+            is ServerMsg.ThreadLiveUpdate -> _threadLives.tryEmit(msg)
+            is ServerMsg.WorkerRewound -> _workerRewounds.tryEmit(msg)
             is ServerMsg.ActionResult -> actionRequests.remove(msg.requestId)?.complete(msg)
             is ServerMsg.Pong, is ServerMsg.Ignored -> Unit
         }

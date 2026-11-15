@@ -115,6 +115,33 @@ class ThreadQueue(saved: String? = null) {
         return out
     }
 
+    /**
+     * Factory's queued messages panel: what Droid's screen shows as sent mid-turn (steering, read at
+     * its next step) and, after it, what waits for the turn's end, each queued one with the whole
+     * text sent from here when this phone sent it.
+     */
+    data class Panel(val steering: List<Item>, val queued: List<Item>, val moreSteering: Int = 0, val moreQueued: Int = 0, val review: Boolean = false) {
+        /** [index] is its place in its [group], from 0, as Droid's queue review counts it. */
+        data class Item(val key: String, val group: DroidQueue.Group, val index: Int, val text: String, val hasImage: Boolean, val preview: Boolean, val more: Int)
+        val items get() = steering + queued
+        val total get() = steering.size + queued.size + moreSteering + moreQueued
+        val isEmpty get() = total == 0
+
+        companion object {
+            val EMPTY = Panel(emptyList(), emptyList())
+        }
+    }
+
+    /** [shown] split into Droid's groups: [droid] null when its screen doesn't say, so all that is known is what was queued from here. */
+    fun panel(droid: DroidQueue.PendingSnapshot?, now: Long = System.currentTimeMillis()): Panel {
+        val steering = droid?.steering.orEmpty().mapIndexed { i, p ->
+            Panel.Item("steer:$i:${p.row.text}", DroidQueue.Group.Steering, i, p.row.text, false, p.row.cut || p.row.more > 0, p.row.more)
+        }
+        val queued = shown(droid?.queued?.map { it.row }, now).mapIndexed { i, s ->
+            Panel.Item(s.key, DroidQueue.Group.Queued, i, s.text, s.hasImage, s.preview, s.more)
+        }
+        return Panel(steering, queued, droid?.moreSteering ?: 0, droid?.moreQueued ?: 0, droid?.reviewActive ?: false)
+    }
     companion object {
         /** How long a message sent to the queue shows without Droid's screen showing it: for Droid to draw it, or, once drained, for the conversation to pick it up. */
         const val GRACE_MS = 4_000L
