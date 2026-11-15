@@ -140,7 +140,48 @@ data class ThreadModelAction(
     val changes: List<ThreadFileChange>? = null,
     val command: ThreadCommandMeta? = null,
     val delegation: ThreadDelegationMeta? = null,
+    /** The app's per-tool icon name (`ThreadToolIcon`): read, search, glob, list, web, link, terminal, edit, create, delete, patch, ask, plan, bot, skill, spec, image, memory, tool. */
+    val icon: String? = null,
+    /** The row's action words in the tool-label colour ("Read", "Edit 12 lines"); empty for an Execute, whose title is its summary. */
+    val verb: String? = null,
+    /** What the row acted on, in the tertiary colour: a path, pattern, URL, basename or the Execute summary. */
+    val subject: String? = null,
+    /** What a failed row says at its end ("Command failed", "Error editing file", "Error"). */
+    val failedLabel: String? = null,
 )
+
+/** How an Activity reads in the app's grouping, in order, covering every block of the row. */
+sealed interface ThreadSegment {
+    val id: String
+
+    /** Exploration tools and the thoughts between them under one summary row: "Explored" + "4 files, 2 searches". */
+    data class Explore(
+        override val id: String,
+        val blockIds: List<String>,
+        val actionIds: List<String>,
+        val action: String,
+        val details: String,
+        val providers: List<String> = emptyList(),
+        val live: Boolean,
+        val open: Boolean,
+    ) : ThreadSegment
+
+    /** A thought with no exploration beside it. */
+    data class Thought(val blockId: String) : ThreadSegment {
+        override val id get() = blockId
+    }
+
+    /** One tool row: an Execute, file change, fetch, subagent, question, spec or anything else. */
+    data class Tool(val blockId: String, val actionId: String) : ThreadSegment {
+        override val id get() = actionId
+    }
+
+    /** Executes whose summaries repeat: "S1 → S2" run [times] times. */
+    data class Repeat(override val id: String, val actionIds: List<String>, val summaries: List<String>, val times: Int, val live: Boolean, val open: Boolean) : ThreadSegment
+
+    /** Five or more subagent calls in a row: "Running|Ran <summary>" with how many settled and failed. */
+    data class Tasks(override val id: String, val actionIds: List<String>, val label: String, val settled: Int, val failed: Int, val live: Boolean, val open: Boolean) : ThreadSegment
+}
 
 data class ThreadFailure(val id: String, val title: String, val preview: String)
 
@@ -243,6 +284,8 @@ sealed interface ThreadRow {
         val blocks: List<ThreadBlock> = emptyList(),
         val groups: List<ThreadToolGroup> = emptyList(),
         val turnChanges: ThreadTurnChanges? = null,
+        /** The app's grouping of [blocks]; empty from an office that sends only blocks and groups. */
+        val segments: List<ThreadSegment> = emptyList(),
     ) : ThreadRow
 }
 
@@ -291,6 +334,47 @@ data class ThreadPresentation(val version: Int, val rows: List<ThreadRow>) {
                     blocks = (o["blocks"] as? JsonArray)?.mapNotNull(::block).orEmpty(),
                     groups = (o["groups"] as? JsonArray)?.mapNotNull(::group).orEmpty(),
                     turnChanges = (o["turnChanges"] as? JsonObject)?.let(::turnChanges),
+                    segments = (o["segments"] as? JsonArray)?.mapNotNull(::segment).orEmpty(),
+                )
+                else -> null
+            }
+        }
+
+        private fun segment(e: JsonElement): ThreadSegment? {
+            val o = e as? JsonObject ?: return null
+            fun id() = o.str("id")?.takeIf { it.isNotEmpty() }
+            return when (o.str("kind")) {
+                "explore" -> ThreadSegment.Explore(
+                    id = id() ?: return null,
+                    blockIds = o.strings("blockIds"),
+                    actionIds = o.strings("actionIds"),
+                    action = o.str("action").orEmpty(),
+                    details = o.str("details").orEmpty(),
+                    providers = o.strings("providers"),
+                    live = o.bool("live") ?: false,
+                    open = o.bool("open") ?: false,
+                )
+                "thought" -> ThreadSegment.Thought(o.str("blockId")?.takeIf { it.isNotEmpty() } ?: return null)
+                "tool" -> ThreadSegment.Tool(
+                    o.str("blockId")?.takeIf { it.isNotEmpty() } ?: return null,
+                    o.str("actionId")?.takeIf { it.isNotEmpty() } ?: return null,
+                )
+                "repeat" -> ThreadSegment.Repeat(
+                    id = id() ?: return null,
+                    actionIds = o.strings("actionIds"),
+                    summaries = o.strings("summaries"),
+                    times = o.int("times") ?: 0,
+                    live = o.bool("live") ?: false,
+                    open = o.bool("open") ?: false,
+                )
+                "tasks" -> ThreadSegment.Tasks(
+                    id = id() ?: return null,
+                    actionIds = o.strings("actionIds"),
+                    label = o.str("label").orEmpty(),
+                    settled = o.int("settled") ?: 0,
+                    failed = o.int("failed") ?: 0,
+                    live = o.bool("live") ?: false,
+                    open = o.bool("open") ?: false,
                 )
                 else -> null
             }
@@ -358,6 +442,10 @@ data class ThreadPresentation(val version: Int, val rows: List<ThreadRow>) {
                 changes = (o["changes"] as? JsonArray)?.mapNotNull(::fileChange),
                 command = (o["command"] as? JsonObject)?.let(::commandMeta),
                 delegation = (o["delegation"] as? JsonObject)?.let(::delegationMeta),
+                icon = o.str("icon"),
+                verb = o.str("verb"),
+                subject = o.str("subject"),
+                failedLabel = o.str("failedLabel"),
             )
         }
 

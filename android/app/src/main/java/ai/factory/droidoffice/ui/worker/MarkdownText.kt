@@ -243,7 +243,7 @@ internal fun CopyActionChip(
             tint = if (copied) ThreadPalette.Success else ThreadPalette.TextSecondary,
             modifier = Modifier.size(12.dp),
         )
-        if (!iconOnly || copied) {
+        if (!iconOnly) {
             Text(
                 if (copied) "COPIED" else label.uppercase(),
                 style = LocalOfficeType.current.eyebrow.copy(color = if (copied) ThreadPalette.Success else ThreadPalette.TextSecondary),
