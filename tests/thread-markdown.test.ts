@@ -180,6 +180,16 @@ test('real Chromium exercises Factory Thread Markdown blocks, streaming, lightbo
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     document.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]')!.click();
     const zoomLabel = document.querySelector('.wt-lightbox-pct')!.textContent;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const stage = document.querySelector<HTMLElement>('.wt-lightbox-stage')!;
+    const image = stage.querySelector<HTMLImageElement>('img')!;
+    image.style.width = '3000px';
+    image.style.height = '3000px';
+    stage.scrollLeft = 500;
+    stage.scrollTop = 500;
+    const scrolled = stage.scrollLeft > 0 || stage.scrollTop > 0;
+    document.querySelector<HTMLButtonElement>('button[aria-label="Previous image"]')!.click();
+    const resetScroll = [stage.scrollLeft, stage.scrollTop];
     w.ThreadMD.closeTopModal();
 
     const quoteRoot = w.ThreadMD.threadMarkdown('Quote this reply', { key: 'quote-message' }) as HTMLElement;
@@ -220,6 +230,8 @@ test('real Chromium exercises Factory Thread Markdown blocks, streaming, lightbo
       lightboxCount,
       nextAlt,
       zoomLabel,
+      scrolled,
+      resetScroll,
       pillVisible,
       quoted,
       fontSize: styles.fontSize,
@@ -247,6 +259,8 @@ test('real Chromium exercises Factory Thread Markdown blocks, streaming, lightbo
   assert.equal(result.lightboxCount, '1 / 2');
   assert.equal(result.nextAlt, 'two');
   assert.equal(result.zoomLabel, '150%');
+  assert.equal(result.scrolled, true);
+  assert.deepEqual(result.resetScroll, [0, 0]);
   assert.equal(result.pillVisible, true);
   assert.equal(result.quoted, '> Quote this reply\n\n');
   assert.equal(result.fontSize, '13px');

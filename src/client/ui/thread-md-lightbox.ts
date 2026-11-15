@@ -130,6 +130,8 @@ export function openImageLightbox(images: readonly LightboxImage[], index = 0): 
     content.setAttribute('aria-label', images[at]?.alt || 'Image preview');
     content.setAttribute('aria-description', images[at]?.description ?? '');
     paint();
+    stage.scrollLeft = 0;
+    stage.scrollTop = 0;
   };
   const go = (d: number) => {
     const i = at + d;

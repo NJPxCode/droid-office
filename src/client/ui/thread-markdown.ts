@@ -861,7 +861,7 @@ function upgradeFencedBlocks(root: HTMLElement, richBlocks: boolean, closed: rea
     if (richBlocks && lower === 'mermaid') return pre.replaceWith(renderThreadMermaid(rawText, { complete: !streaming || complete }));
     if (richBlocks && lower === 'email') {
       const draft = parseEmailDraft(rawText);
-      if (draft) return pre.replaceWith(renderEmailDraft(draft, { streaming: streaming && !complete }));
+      if (draft) return pre.replaceWith(renderEmailDraft(draft, { streaming }));
     }
     if (richBlocks && lower === 'suggestion') return pre.replaceWith(renderSuggestionBlock(rawText));
     if (richBlocks && lower === 'math' && complete) {
@@ -1079,7 +1079,7 @@ function restoreMath(text: string, segments: readonly MathSegment[]): string {
 
 /** Renders rich assistant Markdown for Thread view. */
 export function threadMarkdown(src: string, opts?: ThreadMarkdownOptions): HTMLElement {
-  const root = h('div.md.wt-md', { [QUOTABLE_ATTR]: opts?.key ?? '' });
+  const root = h('div.md.wt-md', opts?.key ? { [QUOTABLE_ATTR]: opts.key } : {});
   if (!src.trim()) return root;
   const streaming = Boolean(opts?.streaming);
 

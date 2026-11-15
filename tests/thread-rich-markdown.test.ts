@@ -534,6 +534,124 @@ test('openFilePreviewModal handles text, target line scrolling, binary files, an
 const status = browserStatus();
 const skipChromium = status.installed ? false : `Chromium is not installed in ${status.path}`;
 
+test('streamed email stays read-only through a closed fence and keyless Markdown is not quotable', { skip: skipChromium }, async (t: TestContext) => {
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const context = await newIsolatedContext(browser);
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const bundle = buildSync({
+    stdin: {
+      contents: `export { threadMarkdown } from './src/client/ui/thread-markdown.ts';`,
+      resolveDir: fileURLToPath(new URL('../', import.meta.url)),
+      sourcefile: 'streamed-email-entry.ts',
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'iife',
+    globalName: 'EmailTest',
+    write: false,
+    target: 'es2022',
+  }).outputFiles[0].text;
+  await page.setContent('<!doctype html><div id="root"></div>');
+  await page.addScriptTag({ content: bundle });
+  await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
+  const result = await page.evaluate(() => {
+    const render = (window as any).EmailTest.threadMarkdown;
+    const fence = '```email\nTo: test@example.com\nSubject: Proof\n\nHello.\n```';
+    const open = render(fence.slice(0, -3), { streaming: true, key: 'reply' }) as HTMLElement;
+    const closed = render(fence, { streaming: true, key: 'reply' }) as HTMLElement;
+    const finished = render(fence, { streaming: false, key: 'reply' }) as HTMLElement;
+    const controls = (el: HTMLElement) => [...el.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('.wt-md-email-input, .wt-md-email-body')].map((input) => input.disabled);
+    return {
+      open: controls(open),
+      closed: controls(closed),
+      finished: controls(finished),
+      send: [open, closed, finished].map((el) => el.querySelector<HTMLButtonElement>('.wt-md-email-send')?.disabled),
+      keyed: closed.getAttribute('data-response-message-id'),
+      keyless: render('Not a reply').hasAttribute('data-response-message-id'),
+    };
+  });
+  assert.deepEqual(result.open, [true, true, true, true, true]);
+  assert.deepEqual(result.closed, [true, true, true, true, true]);
+  assert.deepEqual(result.finished, [false, false, false, false, false]);
+  assert.deepEqual(result.send, [true, true, false]);
+  assert.equal(result.keyed, 'reply');
+  assert.equal(result.keyless, false);
+});
+
+test('cancelling a reveal into reduced motion clears animation styles', { skip: skipChromium }, async (t: TestContext) => {
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const context = await newIsolatedContext(browser);
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const bundle = buildSync({
+    stdin: {
+      contents: `export { revealContent } from './src/client/ui/thread-tool-row.ts';`,
+      resolveDir: fileURLToPath(new URL('../', import.meta.url)),
+      sourcefile: 'reveal-entry.ts',
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'iife',
+    globalName: 'RevealTest',
+    write: false,
+    target: 'es2022',
+  }).outputFiles[0].text;
+  await page.setContent('<!doctype html><div id="content">Content</div>');
+  await page.addScriptTag({ content: bundle });
+  await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
+  await page.evaluate(() => (window as any).RevealTest.revealContent(document.getElementById('content'), true));
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const result = await page.evaluate(() => {
+    const el = document.getElementById('content')!;
+    (window as any).RevealTest.revealContent(el, true);
+    return { overflow: el.style.overflow, hidden: el.hidden, revealing: el.classList.contains('is-revealing') };
+  });
+  assert.deepEqual(result, { overflow: '', hidden: false, revealing: false });
+});
+
+test('an exploration call awaiting permission displays its pending state', { skip: skipChromium }, async (t: TestContext) => {
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const context = await newIsolatedContext(browser);
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const bundle = buildSync({
+    stdin: {
+      contents: `export { renderThreadActivity } from './src/client/ui/thread-tool-activity.ts'; export { presentThread } from './src/shared/thread-presentation.ts';`,
+      resolveDir: fileURLToPath(new URL('../', import.meta.url)),
+      sourcefile: 'exploration-entry.ts',
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'iife',
+    globalName: 'ExploreTest',
+    write: false,
+    target: 'es2022',
+  }).outputFiles[0].text;
+  await page.setContent('<!doctype html><div id="root"></div>');
+  await page.addScriptTag({ content: bundle });
+  await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
+  const result = await page.evaluate(() => {
+    const api = (window as any).ExploreTest;
+    const entry = { id: 'read-1', seq: 1, role: 'assistant', kind: 'tool', name: 'Read', input: JSON.stringify({ file_path: '/repo/a.ts' }) };
+    const row = api.presentThread([entry], true).find((r: any) => r.kind === 'activity');
+    const node = document.createElement('article');
+    document.getElementById('root')!.append(node);
+    api.renderThreadActivity(node, row, new Map([[entry.id, entry]]), false, {
+      owner: { id: 'worker' },
+      userToggles: new Map(),
+      thought: () => document.createElement('div'),
+      live: () => ({ phase: 'waiting_permission' }),
+    });
+    return { state: node.querySelector('[data-testid="explore-row"]')?.className, label: node.querySelector('.wt-tr-state')?.textContent };
+  });
+  assert.match(result.state ?? '', /is-pending/);
+  assert.equal(result.label, 'Pending review');
+});
+
 test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom, email cards, path links, and File Preview modal', { skip: skipChromium }, async (t: TestContext) => {
   const browser = await launchBrowser();
   t.after(closeBrowser);

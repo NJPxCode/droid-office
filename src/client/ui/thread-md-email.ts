@@ -142,7 +142,7 @@ export function renderEmailDraft(draft: EmailDraft, opts: { streaming?: boolean 
   const title = h('span.wt-md-email-title', {}, 'Email draft');
 
   const field = (label: string, value: string | undefined, placeholder: string) => {
-    const input = h('input.wt-md-email-input', { type: 'text', value: value ?? '', placeholder, 'aria-label': label, spellcheck: 'false' });
+    const input = h('input.wt-md-email-input', { type: 'text', value: value ?? '', placeholder, 'aria-label': label, spellcheck: 'false', disabled: opts.streaming });
     input.value = value ?? '';
     const row = h('label.wt-md-email-row', {}, h('span.wt-md-email-label', {}, label), input);
     return { input, row };
@@ -164,7 +164,7 @@ export function renderEmailDraft(draft: EmailDraft, opts: { streaming?: boolean 
   });
   to.row.append(ccToggle);
 
-  const body = h('textarea.wt-md-email-body', { 'aria-label': 'Message', placeholder: 'Write your message', rows: 3, spellcheck: 'true' });
+  const body = h('textarea.wt-md-email-body', { 'aria-label': 'Message', placeholder: 'Write your message', rows: 3, spellcheck: 'true', disabled: opts.streaming });
   body.value = draft.body;
 
   const current = (): EmailDraft => {

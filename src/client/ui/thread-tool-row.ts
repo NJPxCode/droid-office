@@ -26,6 +26,8 @@ function remember(key: string, open: boolean): void {
 export function revealContent(content: HTMLElement, open: boolean, auto = false, onDone?: () => void): void {
   const running = (content as HTMLElement & { _reveal?: Animation })._reveal;
   running?.cancel();
+  content.style.overflow = '';
+  content.classList.remove('is-revealing', 'is-concealing');
   if (reducedMotion() || typeof content.animate !== 'function') {
     content.hidden = !open;
     onDone?.();
@@ -151,8 +153,6 @@ export interface ToolRowOptions extends DisclosureState {
   /** Draws the subject in a chip (file rows), with `chipEnd` (their +N -M) inside it. */
   chip?: boolean;
   chipEnd?: Node | null;
-  /** A clickable subject (open the file). */
-  onSubject?: (event: MouseEvent) => void;
   subjectTitle?: string;
   state: ToolRowState;
   failedLabel?: string;
@@ -177,13 +177,7 @@ export interface ToolRowOptions extends DisclosureState {
 /** Factory's tool row (`toolContainer` / `t4`): icon, verb, subject, state, and a bordered body. */
 export function toolRow(opts: ToolRowOptions): HTMLElement {
   const label = [opts.verb, opts.subject].filter(Boolean).join(' ');
-  const subjectEl = opts.subject
-    ? h(
-        opts.onSubject ? 'button.wt-tr-subject.wt-tr-link' : 'span.wt-tr-subject',
-        { ...(opts.onSubject ? { type: 'button', 'data-row-action': 'true', onclick: opts.onSubject as EventListener } : {}), title: opts.subjectTitle ?? opts.subject },
-        opts.subject,
-      )
-    : null;
+  const subjectEl = opts.subject ? h('span.wt-tr-subject', { title: opts.subjectTitle ?? opts.subject }, opts.subject) : null;
   const titleEl = opts.chip && subjectEl ? h('span.wt-tr-chip', {}, subjectEl, opts.chipEnd ?? null) : subjectEl;
   const interactive = !!opts.body && opts.state !== 'pending';
   const trigger = h(
