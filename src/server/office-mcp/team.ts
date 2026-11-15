@@ -16,7 +16,7 @@ import { compactEvent, compactEventText, compactWorker, compactWorkerText, curso
 
 export const instructions = `Subagents are real workers with their own terminals and (by default) git worktrees reporting to you, their lead. Subagents cannot hire.
 Have task-authored prerequisites committed BEFORE hiring (worktrees see committed state only; leave unrelated changes untouched). Read team_models once per hiring batch, then hire one fresh subagent per task, only as many as independent scopes need. Independent scopes touch separate files: assign single-writer edit ownership in each brief, plus goal, dependency context, boundaries, checks and delivery; sibling files can be referenced as read-only context. Subagents share areas/findings via team_board and team_note. Continue a subagent's committed work via from / task.baseBranch set to worker:<name/id> or its absolute worktree path; floor leads omit from for their own current HEAD.
-Owner notes take priority when picking an exact model id from team_models. Weigh Factory Standard and Droid Core 5-hour, weekly and monthly remaining windows, reset times, active overage mode and Extra Usage balance alongside DroidProxy subscription quotas and credit multipliers. Droid Core fallback does not make an exhausted Standard model runnable; Extra Usage only does when allowed with a positive balance. Custom/subscription models use no Factory credits; prefer ample quota and keep nearly spent tiers off long tasks. Pick <=x0.5 for mechanical work, ~x1 for standard tasks, and top models for hard design, security, or concurrency; never give visual tasks to a no-images model.
+Owner notes take priority when picking an exact model id from team_models. Weigh Factory Standard and Droid Core 5-hour, weekly and monthly remaining windows, reset times, active overage mode and Extra Usage balance alongside DroidProxy subscription quotas and credit multipliers. Droid Core fallback does not make an exhausted Standard model runnable; Extra Usage only does when allowed with a positive balance. Custom/subscription models use no Factory credits; prefer ample quota and keep nearly spent tiers off long tasks. Pick <=x0.5 for mechanical work, ~x1 for standard tasks, and top models for hard design, security, or concurrency; never give visual tasks to a no-images model. To switch a subagent's model, call worker_model with what you would type after /model in its terminal: "Sol" picks GPT Sol on Factory credits, "droidproxy sol" DroidProxy's Sol, and the same pattern names any other model (or pass an exact team_models id); team_message cannot run slash commands.
 Hiring and waiting is not enough: run the team as its connective tissue. On wakes/check-ins read team_status and questions_list, inspect relevant worker_diff/worker_log and full reports with team_report_get. Steer drift and relay contract changes via team_message (default queue: false steers at the next step; queue: true queues behind the turn; urgent: true interrupts blocking commands; images attaches uploaded image ids; worker_queue lists/clears/promotes queued items; workers/all: true broadcasts; inspect per-recipient errors). Answer technical questions within the owner's intent; escalate unclear decisions and leave workers at permission prompts untouched for the owner. Record team_review approve before merging (a lead workflow gate, not a server-enforced lock; request_changes routes fixes back). Integrate via team_merge (building agents name target), land foundations first, then have dependent siblings rebase/align and re-verify. Resolve returned conflict hunks in the reported worktree and run combined target checks after review and integration, before team_dismiss. team_pr requires authorization and a pushed branch. With Wake the lead on, end your turn when nothing else remains; otherwise use team_wait. Subagents attach produced screenshots/images (or Whiteboard card ids) via images on team_report and lead_notify so leads receive downloadable image ids and Tailnet URLs. When your lead is a Grok Bot (office_whoami shows leadPush: true), team_report pushes straight to its webhook on turn end and lead_notify sends immediate mid-turn updates, questions, blockers, or test pings without ending your turn.`;
 
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -343,6 +343,35 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
           ? (body.results as Record<string, unknown>[]).map((r) => `${r.name ?? r.id}${r.floor ? ` (${r.floor})` : ''}: ${r.error ?? r.delivery}${r.warning ? ` — Warning: ${r.warning}` : ''}`).join('\n')
           : `${(body.worker as TeamMember).name}: ${body.delivery}${body.warning ? `\nWarning: ${body.warning}` : ''}`,
       );
+    },
+  );
+  server.tool(
+    {
+      name: 'worker_model',
+      description:
+        'Change Model: switch your subagent\'s Droid model (building agents: also floor workers they watch) the way the owner types /model in its terminal. team_message cannot run slash commands. Pass what you would type after /model: "Sol" is GPT Sol on Factory credits, "droidproxy sol" is DroidProxy\'s Sol on its subscription, and the same pattern picks any other model ("opus", "droidproxy terra"); an exact id from team_models works too. A running session switches now (mid-turn it applies from the next model call); an asleep one launches on the model next. The allowlist and quotas team_hire enforces apply.',
+      inputSchema: z.strictObject({
+        worker,
+        model: z.string().trim().min(1).max(200).describe('What you would type after /model in Droid ("Sol", "droidproxy sol", "opus 5"), or an exact model id or name from team_models.'),
+        effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe("Effort from team_models to pick with the model; omit to keep Droid's selection for it."),
+        floor: floorArg,
+      }),
+      annotations: { ...changesState, title: 'Change Model' },
+    },
+    officeAccess.team,
+    async (args, caller) => {
+      if (args.floor && !caller.building) return officeError('Floor workers manage only their own floor');
+      return replyFor(caller, await command(caller, { action: 'switch_model', ...args }), (body) => {
+        const model = body.model as { id: string; name: string };
+        const others = body.otherMatches as { id: string; name: string }[] | undefined;
+        const name = (body.worker as TeamMember).name;
+        return [
+          body.applied === 'now'
+            ? `${name} now runs ${model.name} (${model.id})${body.effort ? ` at ${body.effort} effort` : ''}.`
+            : `${name} is asleep: it launches on ${model.name} (${model.id})${body.effort ? ` at ${body.effort} effort` : ''} when it next wakes.`,
+          ...(others?.length ? [`Other matches: ${others.map((m) => `${m.name} (${m.id})`).join(', ')}. Pass one of those ids to pick it instead.`] : []),
+        ].join('\n');
+      });
     },
   );
   server.tool(

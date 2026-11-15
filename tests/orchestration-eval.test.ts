@@ -163,9 +163,9 @@ test('orchestration-eval rig serves live Office MCP roles, measures context, and
     }
   }
 
-  assert.equal(counts.orchestrator, 27);
-  assert.equal(counts['external-bot'], 29);
-  assert.equal(counts['floor-lead'], 28);
+  assert.equal(counts.orchestrator, 28);
+  assert.equal(counts['external-bot'], 30);
+  assert.equal(counts['floor-lead'], 29);
   assert.equal(counts.subagent, 10);
 });
 

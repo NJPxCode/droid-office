@@ -10,7 +10,7 @@ import { Team, settled, type TeamOptions, type TeamWorkers } from '../src/server
 import { pickUniqueSeat } from '../src/server/floor-watch.js';
 import type { DeskDef } from '../src/shared/layout.js';
 import { teamOf, teamSummary, workersByTeam } from '../src/shared/team.js';
-import { SUBAGENT_DEFAULTS, type AgentChoice, type SubagentSettings, type WorkerInfo, type WorkerStatus, type WorkerTask } from '../src/shared/protocol.js';
+import { SUBAGENT_DEFAULTS, type AgentChoice, type AgentEffort, type SubagentSettings, type WorkerInfo, type WorkerStatus, type WorkerTask } from '../src/shared/protocol.js';
 
 function worker(over: Partial<WorkerInfo> & { id: string; deskId: string }): WorkerInfo {
   return { kind: 'agent', name: over.id, color: '#fff', status: 'done', acked: true, createdBy: 'test', createdAt: Date.now(), cols: 100, rows: 30, open: false, ...over };
@@ -31,6 +31,7 @@ class Fake implements TeamWorkers {
   fetched = 0;
   starts: [string, string | undefined][] = [];
   refuse?: string;
+  switchModel?: TeamWorkers['switchModel'];
   pickSeat?: (choose: (taken: (id: string) => boolean) => DeskDef | undefined) => DeskDef | undefined;
   private n = 0;
   add(w: WorkerInfo) {
@@ -1401,4 +1402,86 @@ test('structured WorkerResult inference, explicit fields, persistence and team_r
   const restored = (await restarted.handle(r.fake.get('lead')!, { action: 'status' })).body.team[0];
   assert.equal(restored.report.result.summary, 'Conflict resolved and tests green');
   assert.deepEqual(restored.report.review, { verdict: 'approve', notes: 'Diff verified, ready to merge.', by: 'Nibble', at: 50_000 });
+});
+// Trimmed from this Mac's real `droid.list_models` catalogue.
+const SWITCH_CATALOGUE: DroidModelCatalogue = {
+  models: [
+    { id: 'custom:droidproxy:gpt-6.1-sol', displayName: 'DroidProxy: GPT 6.1 Sol', custom: true, supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'claude-opus-5-5', displayName: 'Opus 5.5', provider: 'anthropic', tokenMultiplier: 1.6, supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'gpt-6.1-sol', displayName: 'GPT-6.1 Sol', provider: 'openai', tokenMultiplier: 0.8, supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'gpt-6-sol', displayName: 'GPT-6 Sol', provider: 'openai', tokenMultiplier: 0.8 },
+    { id: 'mistral-large-4', displayName: 'Mistral Large 4', provider: 'factory', tokenMultiplier: 0.544, supportedReasoningEfforts: ['high'] },
+  ],
+  defaultModel: 'claude-sonnet-5-5',
+};
+
+function switchRig(t: { after(fn: () => void): void }, over: Partial<TeamOptions> = {}, settings: Partial<SubagentSettings> = {}) {
+  const r = rig(t, { models: async () => SWITCH_CATALOGUE, ...over }, settings);
+  const switched: { id: string; model: { id: string; name: string }; effort?: AgentEffort }[] = [];
+  let answer: { applied: 'now' | 'next_launch' } | { error: string } = { applied: 'now' };
+  r.fake.switchModel = async (id, model, effort) => {
+    switched.push({ id, model, ...(effort ? { effort } : {}) });
+    return answer;
+  };
+  return { ...r, switched, answer: (a: typeof answer) => (answer = a) };
+}
+
+test('a lead switches its subagent’s model with the words it would type after /model', async (t) => {
+  const r = switchRig(t);
+  await r.call('lead', { action: 'hire', task: 'One' });
+  r.set('sub1', 'working');
+  const sol = await r.call('lead', { action: 'switch_model', worker: 'Pixel', model: 'Sol' });
+  assert.equal(sol.status, 200, sol.body.error);
+  assert.deepEqual(r.switched.at(-1), { id: 'sub1', model: { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' } }, 'GPT Sol on Factory credits, by the name Droid’s picker lists');
+  assert.deepEqual(sol.body.model, { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' });
+  assert.equal(sol.body.applied, 'now');
+  assert.deepEqual(
+    sol.body.otherMatches.map((m: { id: string }) => m.id),
+    ['gpt-6-sol', 'custom:droidproxy:gpt-6.1-sol'],
+  );
+  const proxy = await r.call('lead', { action: 'switch_model', worker: 'sub1', model: 'droidproxy sol', effort: 'high' });
+  assert.equal(proxy.status, 200, proxy.body.error);
+  assert.deepEqual(r.switched.at(-1), { id: 'sub1', model: { id: 'custom:droidproxy:gpt-6.1-sol', name: 'DroidProxy: GPT 6.1 Sol' }, effort: 'high' });
+  assert.equal(proxy.body.effort, 'high');
+  r.answer({ applied: 'next_launch' });
+  assert.equal((await r.call('lead', { action: 'switch_model', worker: 'Pixel', model: 'opus' })).body.applied, 'next_launch');
+  r.answer({ error: 'Droid has a dialog open. Close it in Raw TTY first.' });
+  const refused = await r.call('lead', { action: 'switch_model', worker: 'Pixel', model: 'opus' });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, 'Pixel: Droid has a dialog open. Close it in Raw TTY first.');
+});
+
+test('switching a model checks the worker, the words, the effort and the office’s allowlist before touching the terminal', async (t) => {
+  const r = switchRig(t, {}, { models: [{ id: 'gpt-6.1-sol' }, { id: 'mistral-large-4' }] });
+  await r.call('lead', { action: 'hire', task: 'One', model: 'gpt-6.1-sol' });
+  r.set('sub1', 'done');
+  r.fake.add(worker({ id: 'indie', deskId: 'desk-9', name: 'Indie' }));
+  r.fake.add(worker({ id: 'sh', deskId: 'desk-8', name: 'Shelly', kind: 'shell', lead: 'lead' }));
+  const call = (body: Record<string, unknown>) => r.call('lead', { action: 'switch_model', ...body });
+  assert.equal((await call({ worker: 'Nobody', model: 'sol' })).status, 404);
+  assert.match((await call({ worker: 'Indie', model: 'sol' })).body.error, /isn't one of your subagents/);
+  assert.match((await call({ worker: 'Shelly', model: 'sol' })).body.error, /shell and runs no model/);
+  assert.match((await call({ worker: 'Pixel', model: ' ' })).body.error, /after \/model/);
+  assert.match((await call({ worker: 'Pixel', model: 'sol', effort: 'turbo' })).body.error, /Effort is one of/);
+  assert.match((await call({ worker: 'Pixel', model: 'mistral', effort: 'low' })).body.error, /Mistral Large 4 takes effort high/);
+  const outside = await call({ worker: 'Pixel', model: 'droidproxy sol' });
+  assert.equal(outside.status, 403);
+  assert.match(outside.body.error, /isn't one of the models this office lets subagents use.*gpt-6.1-sol, mistral-large-4/);
+  assert.equal((await call({ worker: 'Pixel', model: 'nothing like it' })).status, 404);
+  assert.deepEqual(r.switched, [], 'no refusal reached the terminal');
+  const allowed = await call({ worker: 'Pixel', model: 'sol' });
+  assert.equal(allowed.status, 200, allowed.body.error);
+  assert.equal(allowed.body.otherMatches, undefined, 'the allowlist leaves nothing else to pick');
+  assert.equal((await r.call('sub1', { action: 'switch_model', worker: 'Pixel', model: 'sol' })).status, 404, 'a subagent has no team to switch');
+});
+
+test('a model that cannot run now is refused with runnable alternatives, as team_hire refuses it', async (t) => {
+  const now = Date.now();
+  const r = switchRig(t, { availability: (id) => (id === 'custom:droidproxy:gpt-6.1-sol' ? { state: 'exhausted', until: now + 41 * 60_000, window: '5-hour' } : undefined) });
+  await r.call('lead', { action: 'hire', task: 'One' });
+  r.set('sub1', 'done');
+  const refused = await r.call('lead', { action: 'switch_model', worker: 'Pixel', model: 'droidproxy sol' });
+  assert.equal(refused.status, 409);
+  assert.match(refused.body.error, /Pick one that can: .*gpt-6.1-sol/);
+  assert.deepEqual(r.switched, []);
 });

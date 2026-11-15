@@ -153,6 +153,7 @@ export const BUILDING_TOOLS = new Set([
   'worker_diff',
   'worker_log',
   'worker_queue',
+  'worker_model',
   'team_dismiss',
   'team_merge',
   'team_pr',

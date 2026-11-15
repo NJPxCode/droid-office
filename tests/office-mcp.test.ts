@@ -352,6 +352,35 @@ test('split team tools have strict action-specific schemas and retain the deprec
   assert.deepEqual(dismissal, ['sub', false, true]);
 });
 
+test('worker_model is Change Model for leads: it passes the /model words to the team and says what it picked', async (t) => {
+  const r = await rig(t);
+  const lead = await r.connect('lead');
+  const tool = (await lead.listTools()).tools.find((x) => x.name === 'worker_model');
+  assert.ok(tool, 'a lead with a subagent lists worker_model');
+  assert.equal(tool.annotations?.title, 'Change Model');
+  assert.equal(tool.inputSchema.additionalProperties, false);
+  assert.match(tool.description ?? '', /"Sol" is GPT Sol on Factory credits, "droidproxy sol" is DroidProxy's Sol/);
+  assert.equal(
+    (await (await r.connect('sub')).listTools()).tools.some((x) => x.name === 'worker_model'),
+    false,
+    'a subagent has no team to switch',
+  );
+  const asked: unknown[] = [];
+  const sub = r.people.get('sub')!;
+  t.mock.method(r.team, 'handle', async (_caller: WorkerInfo, body: Record<string, unknown>) => {
+    asked.push(body);
+    return body.model === 'droidproxy sol'
+      ? { status: 200, body: { worker: { ...sub, desk: 'Desk 2', state: 'idle' }, model: { id: 'custom:droidproxy:gpt-6.1-sol', name: 'DroidProxy: GPT 6.1 Sol' }, applied: 'next_launch' } }
+      : { status: 200, body: { worker: { ...sub, desk: 'Desk 2', state: 'working' }, model: { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }, effort: 'high', applied: 'now', otherMatches: [{ id: 'gpt-6-sol', name: 'GPT-6 Sol' }] } };
+  });
+  const now = await lead.callTool({ name: 'worker_model', arguments: { worker: 'sub', model: 'Sol', effort: 'high' } });
+  assert.deepEqual(asked[0], { action: 'switch_model', worker: 'sub', model: 'Sol', effort: 'high' });
+  assert.equal((now.content as { text: string }[])[0].text, 'sub now runs GPT-6.1 Sol (gpt-6.1-sol) at high effort.\nOther matches: GPT-6 Sol (gpt-6-sol). Pass one of those ids to pick it instead.');
+  const later = await lead.callTool({ name: 'worker_model', arguments: { worker: 'sub', model: 'droidproxy sol' } });
+  assert.equal((later.content as { text: string }[])[0].text, 'sub is asleep: it launches on DroidProxy: GPT 6.1 Sol (custom:droidproxy:gpt-6.1-sol) when it next wakes.');
+  assert.equal((await lead.callTool({ name: 'worker_model', arguments: { worker: 'sub', model: 'sol', effort: 'turbo' } })).isError, true);
+  assert.equal((await lead.callTool({ name: 'worker_model', arguments: { worker: 'sub', model: 'sol', floor: 'elsewhere' } })).isError, true, 'floor workers stay on their floor');
+});
 test('Gone team errors identify an unknown worker rather than a bad argument', async (t) => {
   const r = await rig(t);
   const client = await r.connect('lead');

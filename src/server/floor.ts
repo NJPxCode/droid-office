@@ -420,6 +420,7 @@ export class Floor {
         queueState: (id, now) => workers.queueState(id, now),
         blockingTool: (id, now) => workers.blockingTool(id, now),
         resume: (id, text, images) => workers.resume(id, text, images),
+        switchModel: (id, model, effort) => workers.switchModel(id, model, effort),
         kill: (id) => workers.kill(id),
         dismiss: (id, pruneWorktree, keepBranch) => workers.dismissTeam(id, pruneWorktree, keepBranch),
         tail: (id, lines) => workers.tail(id, lines),
