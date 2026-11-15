@@ -28,6 +28,26 @@ test('Factory status copy falls back to worker state and formats times', () => {
   assert.equal(relativeTime(now - 30_000, now), 'now');
 });
 
+test('message times match Factory narrow formatting at past and future boundaries', () => {
+  const now = Date.UTC(2026, 0, 2, 12);
+  const cases = [
+    [0, 'now', 'now'],
+    [59_999, 'now', 'now'],
+    [60_000, '1m ago', 'in 1m'],
+    [60_001, '1m ago', 'in 1m'],
+    [3_599_999, '59m ago', 'in 59m'],
+    [3_600_000, '1h ago', 'in 1h'],
+    [3_600_001, '1h ago', 'in 1h'],
+    [86_399_999, '23h ago', 'in 23h'],
+    [86_400_000, '1d ago', 'in 1d'],
+    [86_400_001, '1d ago', 'in 1d'],
+  ] as const;
+  for (const [distance, past, future] of cases) {
+    assert.equal(relativeTime(now - distance, now), past);
+    assert.equal(relativeTime(now + distance, now), future);
+  }
+});
+
 test('thread.live parsing replaces only newer views and reads settings and timings', () => {
   const msg = {
     t: 'thread.live',

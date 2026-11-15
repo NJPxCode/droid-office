@@ -261,8 +261,8 @@ let narrow: Intl.RelativeTimeFormat | undefined;
 
 /** "22h ago", "5m ago", "now": Factory's narrow relative time under a message, at minute resolution. */
 export function relativeTime(at: number, now: number): string {
-  narrow ??= new Intl.RelativeTimeFormat('en', { style: 'narrow', numeric: 'auto' });
-  const ago = Math.max(0, now - at);
-  for (const [unit, size] of UNITS) if (ago >= size) return narrow.format(-Math.floor(ago / size), unit);
+  narrow ??= new Intl.RelativeTimeFormat('en', { style: 'narrow', numeric: 'always' });
+  const delta = at - now;
+  for (const [unit, size] of UNITS) if (Math.abs(delta) >= size) return narrow.format(Math.trunc(delta / size), unit);
   return 'now';
 }
