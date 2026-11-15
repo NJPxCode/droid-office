@@ -54,6 +54,8 @@ interface Projection {
   drops?: string;
   /** The reason the office last blocked a Stop with, until the user message carrying it (see officeHook). */
   blocked?: string;
+  /** The timestamp of the record read last, for how long the next message took. */
+  lastAt?: number;
 }
 
 interface CachedSession {
@@ -71,6 +73,8 @@ interface CachedSession {
   pages: Map<number, Promise<ThreadPage>>;
   /** The window's rows for one file state and busy flag: polls between changes reuse them. */
   rows?: { key: string; rows: ThreadRow[] };
+  /** When its Task calls were last matched to their subagents' sessions, and how many were. */
+  linked?: { at: number; count: number };
 }
 
 const object = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
@@ -128,6 +132,12 @@ function pictureStandIn(content: unknown): boolean {
   }
 }
 
+/** A record's own timestamp, when it has one. */
+function stamp(row: Record<string, unknown>): { at?: number } {
+  const at = typeof row.timestamp === 'string' ? Date.parse(row.timestamp) : NaN;
+  return Number.isFinite(at) ? { at } : {};
+}
+
 const leaf = (name = '') => name.split(/[.:/]/).at(-1)?.toLowerCase() ?? '';
 
 const projection = (before = Infinity, since = 0, drops?: string): Projection => ({ text: '', since, entries: [], tools: new Map(), bytes: 0, seq: 0, dropped: false, before, drops });
@@ -137,6 +147,8 @@ const entryBytes = (entry: ThreadEntry) => Buffer.byteLength(JSON.stringify(entr
 export class WorkerThreadReader {
   private sessions = new Map<string, CachedSession>();
   private files = new WorkspaceTexts();
+  /** Each session file's opening record, as far as subagents go: who started it, from which call. */
+  private heads = new Map<string, { calling?: string; tool?: string }>();
 
   constructor(
     private root = DROID_SESSIONS_DIR,
@@ -215,9 +227,10 @@ export class WorkerThreadReader {
       if (!state.file) return this.unavailable('The local conversation file is not available yet.');
       const oldest = state.projection.entries[0]?.seq ?? Infinity;
       if (before === undefined || !state.projection.dropped || before > oldest) {
+        if (!this.textOnly) await this.linkChildren(state, sessionId);
         // Edit diffs are numbered from the files as they are now, so the rows change when those do.
         const files = this.textOnly ? undefined : await this.files.read(cwd, editedFilePaths(state.projection.entries));
-        const key = `${state.stamp}:${busy}:${files?.key ?? ''}`;
+        const key = `${state.stamp}:${busy}:${files?.key ?? ''}:${state.linked?.count ?? 0}`;
         if (state.rows?.key !== key) state.rows = { key, rows: presentThread(state.projection.entries, busy, { fileText: files?.text }) };
         return { sessionId, ...this.page(state.projection, before, state.rows.rows) };
       }
@@ -233,6 +246,82 @@ export class WorkerThreadReader {
       Object.assign(state, this.empty(source.since, source.drops));
       return this.unavailable('The local conversation could not be read. Try again shortly.');
     }
+  }
+
+  /**
+   * Gives each Task call the session of the subagent it started. Droid opens a subagent's file, beside
+   * its caller's, with `session_start` naming the calling session and tool call; a call still
+   * unmatched is looked for again at most once a second.
+   */
+  private async linkChildren(state: CachedSession, sessionId: string, now = Date.now()): Promise<void> {
+    if (!state.file) return;
+    const open = state.projection.entries.filter((e) => e.kind === 'tool' && leaf(e.name) === 'task' && !e.child);
+    const count = state.projection.entries.length - open.length;
+    if (!open.length || (state.linked && now - state.linked.at < 1000 && state.linked.count === count)) return;
+    const found = await this.children(path.dirname(state.file), sessionId);
+    let linked = 0;
+    for (const entry of open) {
+      const child = found.get(entry.id.slice('tool:'.length));
+      if (!child) continue;
+      state.projection.bytes -= entryBytes(entry);
+      entry.child = child;
+      state.projection.bytes += entryBytes(entry);
+      linked++;
+    }
+    state.linked = { at: now, count: count + linked };
+  }
+
+  /** Subagent sessions in `dir` started by `sessionId`, by the id of the Task call that started each. */
+  private async children(dir: string, sessionId: string): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const names = await readdir(dir).catch(() => [] as string[]);
+    if (this.heads.size > 4096) this.heads.clear();
+    for (const name of names) {
+      if (!name.endsWith('.jsonl')) continue;
+      const child = name.slice(0, -'.jsonl'.length);
+      if (child === sessionId || !SESSION_ID.test(child)) continue;
+      const head = await this.head(path.join(dir, name));
+      if (head?.calling === sessionId && head.tool) out.set(head.tool, child);
+    }
+    return out;
+  }
+
+  /** A session file's opening record, read once: undefined until its first line is complete. */
+  private async head(file: string): Promise<{ calling?: string; tool?: string } | undefined> {
+    const known = this.heads.get(file);
+    if (known) return known;
+    const handle = await open(file, 'r').catch(() => undefined);
+    if (!handle) return undefined;
+    try {
+      const chunk = await this.bytes(handle, 0, CHUNK_BYTES);
+      const newline = chunk.indexOf(10);
+      if (newline < 0) return undefined;
+      let start: Record<string, unknown>;
+      try {
+        start = object(JSON.parse(chunk.subarray(0, newline).toString('utf8')));
+      } catch {
+        start = {};
+      }
+      const head = start.type === 'session_start' ? { calling: clean(start.callingSessionId, 160) || undefined, tool: clean(start.callingToolUseId, 160) || undefined } : {};
+      this.heads.set(file, head);
+      return head;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /**
+   * The conversation of a subagent `source`'s worker started, to read like its own: only a session whose
+   * file sits beside the worker's and names the worker's session as its caller.
+   */
+  async childSession(source: ThreadSession, child: string): Promise<ThreadSession | undefined> {
+    if (!SESSION_ID.test(child) || child === source.sessionId || !SESSION_ID.test(source.sessionId) || !path.isAbsolute(source.cwd)) return undefined;
+    const parent = this.sessions.get(JSON.stringify([source.cwd, source.sessionId, source.since ?? 0]))?.file ?? (await this.find(source));
+    if (!parent) return undefined;
+    const file = path.join(path.dirname(parent), `${child}.jsonl`);
+    const head = await this.head(file);
+    if (head?.calling !== source.sessionId) return undefined;
+    return { sessionId: child, cwd: source.cwd, transcript: file, ...(source.drops ? { drops: source.drops } : {}) };
   }
 
   private unavailable(error = 'Conversation is unavailable for this worker.'): ThreadPage {
@@ -387,6 +476,11 @@ export class WorkerThreadReader {
     }
     if (this.textOnly && row.type !== 'message') return;
     const id = clean(row.id, 160) || `record:${state.seq}`;
+    // Any record, hooks included, ends the wait before the next message: a thought took since then.
+    const before = state.lastAt;
+    const { at } = stamp(row);
+    if (at !== undefined) state.lastAt = at;
+    const when = at !== undefined ? { at } : {};
     if (row.type === 'agent_turn_outcome') {
       const reason = clean(row.reason, 80);
       this.add(state, { id: `turn:${clean(row.turnId, 160) || id}:${reason}`, role: 'system', kind: 'notice', text: reason === 'cancelled' ? 'Turn cancelled' : reason ? `Turn ended · ${reason}` : 'Turn ended' });
@@ -405,8 +499,13 @@ export class WorkerThreadReader {
             })
             .join('\n'),
         );
-        if (text) this.add(state, { id: `${id}:todo`, role: 'system', kind: 'todo', text });
+        if (text) this.add(state, { id: `${id}:todo`, role: 'system', kind: 'todo', text, ...when });
       }
+      return;
+    }
+    if (row.type === 'compaction_state') {
+      // A provider switch re-serializes the conversation without the model summarizing it: not a compaction to show.
+      if (row.summaryKind !== 'provider_switch_serialization') this.add(state, { id: `compaction:${id}`, role: 'system', kind: 'notice', name: 'compaction', text: 'Compacted', ...when });
       return;
     }
     if (row.type !== 'message') return;
@@ -421,7 +520,7 @@ export class WorkerThreadReader {
     // Slash skills append a separate CLI acknowledgement, not another owner prompt.
     if (message.role === 'user' && message.visibility === 'user_only' && /^Skill "[^"\r\n]+" activated$/.test(contentText(message.content))) return;
     const role = message.role;
-    const timestamp = typeof row.timestamp === 'string' ? Date.parse(row.timestamp) : NaN;
+    const timestamp = at ?? NaN;
     if (this.textOnly && (!state.since || (Number.isFinite(timestamp) && timestamp >= state.since))) {
       const parts =
         typeof message.content === 'string'
@@ -439,7 +538,7 @@ export class WorkerThreadReader {
     }
     if (this.textOnly) return;
     if (typeof message.content === 'string') {
-      await this.text(state, `${id}:text`, role, clean(message.content, FIELD_CHARS, role === 'user'));
+      await this.text(state, `${id}:text`, role, clean(message.content, FIELD_CHARS, role === 'user'), at);
       return;
     }
     if (!Array.isArray(message.content)) return;
@@ -463,21 +562,24 @@ export class WorkerThreadReader {
         if (images.length) tool.images = images;
         else delete tool.images;
         tool.resultSeq = state.seq;
+        if (at !== undefined) tool.doneAt = at;
         state.bytes += entryBytes(tool);
         if (images.length && leaf(tool.name) === 'script') this.givePictures(state, tool, images);
         this.trim(state);
       } else if (part.type === 'tool_use') {
         const toolId = clean(part.id, 160);
         if (!toolId) continue;
-        this.add(state, { id: `tool:${toolId}`, role: 'assistant', kind: 'tool', name: clean(part.name, 160), input: pretty(part.input) });
+        this.add(state, { id: `tool:${toolId}`, role: 'assistant', kind: 'tool', name: clean(part.name, 160), input: pretty(part.input), ...when });
       } else if (part.type === 'image') {
         const image = imageRef(part, `${offset}.${index}.x`);
-        this.add(state, { id: partId, role, kind: 'notice', text: IMAGE_PLACEHOLDER, ...(image ? { images: [image] } : {}) });
+        this.add(state, { id: partId, role, kind: 'notice', text: IMAGE_PLACEHOLDER, ...(image ? { images: [image] } : {}), ...when });
       } else if (part.type === 'text') {
-        await this.text(state, partId, role, clean(part.text, FIELD_CHARS, role === 'user'));
+        await this.text(state, partId, role, clean(part.text, FIELD_CHARS, role === 'user'), at);
       } else if (part.type === 'thinking') {
         const text = clean(part.thinking);
-        if (text) this.add(state, { id: partId, role, kind: 'thinking', text });
+        // The message is written when the model finishes it: since the record before, it was thinking.
+        const took = at !== undefined && before !== undefined && at >= before ? { tookMs: at - before } : {};
+        if (text) this.add(state, { id: partId, role, kind: 'thinking', text, ...when, ...took });
       }
     }
   }
@@ -526,16 +628,17 @@ export class WorkerThreadReader {
   }
 
   /** A message's text. The owner's prompt shows the pictures it was sent with instead of where the office kept them. */
-  private async text(state: Projection, id: string, role: 'user' | 'assistant', text: string): Promise<void> {
+  private async text(state: Projection, id: string, role: 'user' | 'assistant', text: string, at?: number): Promise<void> {
+    const when = at !== undefined ? { at } : {};
     // The reason the office blocked a Stop with comes back as a user message: it's the office's, not the owner's.
     if (role === 'user' && state.blocked !== undefined && text === state.blocked) {
       state.blocked = undefined;
-      this.add(state, { id, role: 'system', kind: 'notice', text: officeNotice(text) });
+      this.add(state, { id, role: 'system', kind: 'notice', text: officeNotice(text), ...when });
       return;
     }
     const sent = role === 'user' ? await promptPictures(text, state.drops) : undefined;
-    if (sent) this.add(state, { id, role, kind: 'text', text: sent.text, images: sent.images });
-    else if (text) this.add(state, { id, role, kind: 'text', text });
+    if (sent) this.add(state, { id, role, kind: 'text', text: sent.text, images: sent.images, ...when });
+    else if (text) this.add(state, { id, role, kind: 'text', text, ...when });
   }
 
   /**
