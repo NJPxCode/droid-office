@@ -376,8 +376,11 @@ internal fun Thread(
             if (lastItem < 0) return true
             if (quick) {
                 if (list.layoutInfo.visibleItemsInfo.none { it.index == lastItem }) list.scrollToItem((lastItem - 1).coerceAtLeast(0))
+                // A row taller than the viewport can still hide the last item, leaving fromBottom() at
+                // Float.MAX_VALUE: animating that infinite distance feeds NaN to the list and crashes.
+                if (list.layoutInfo.visibleItemsInfo.none { it.index == lastItem }) list.scrollToItem(lastItem)
                 val remaining = with(density) { fromBottom().dp.toPx() }
-                if (remaining > 0f) list.animateScrollBy(remaining, tween(ThreadScroll.QUICK_MS, easing = Easing(ThreadScroll::quick)))
+                if (remaining > 0f && remaining.isFinite()) list.animateScrollBy(remaining, tween(ThreadScroll.QUICK_MS, easing = Easing(ThreadScroll::quick)))
             } else {
                 if (list.layoutInfo.visibleItemsInfo.none { it.index == lastItem }) list.scrollToItem(lastItem)
                 list.scrollBy(100_000f)
