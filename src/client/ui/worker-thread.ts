@@ -1,10 +1,11 @@
-import { CLEAR_DROID_QUEUE, readDroidQueue } from '../../shared/droid-queue';
+import { readDroidPending } from '../../shared/droid-queue';
 import { ORCHESTRATOR_ID } from '../../shared/mission-control';
 import { PROMPT_MAX } from '../../shared/prompts';
 import type { ClientMsg, ServerMsg, WorkerInfo } from '../../shared/protocol';
 import { nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
 import { isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
 import { latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
+import { statusMode, thinkingSeconds, thoughtLabel } from '../../shared/thread-status';
 import { ThreadQueue } from '../../shared/thread-queue';
 import { todosFinished } from '../../shared/todos';
 import type { ThreadEntry } from '../../shared/worker-thread';
@@ -17,6 +18,12 @@ import { withToken } from '../token';
 import { syncHorizontalScrollCue } from './code-highlight';
 import { h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
+import { liveFrom, entryAt, entryTook, autonomyLabel, effortLabel, type LiveTool, type LiveView } from './thread-live-view';
+import { refreshMessageTimes, threadMessageActions } from './thread-message-actions';
+import { openThreadRewind } from './thread-rewind';
+import { ThreadScrollMotion } from './thread-scroll-motion';
+import { mountThreadSearch } from './thread-search';
+import { mountThreadStatusRow } from './thread-status-row';
 import { openFilePreviewModal, threadFileImageUrl } from './file-preview';
 import { icon } from './icons';
 import { promptImages } from './images';
@@ -135,6 +142,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let received = false;
   let watchedWorkerId = '';
   let hasPushed = false;
+  let liveView: LiveView | undefined;
+  const liveTools = new Map<string, LiveTool>();
+  let paintedOnce = false;
   const floorDirs = new Map<string, string>();
   // Start the grace clock on the first read, not during potentially long worktree setup.
   let startupReadUntil = threadStarting(worker) ? Infinity : 0;
@@ -169,7 +179,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         }
       : undefined;
 
-  const earlier = h('button.btn.sm.wt-earlier.hidden', { type: 'button', onclick: () => read(history.entries[0]?.seq, 0) }, 'Load earlier messages');
+  const earlier = h('button.btn.sm.wt-earlier.hidden', { type: 'button', onclick: () => read(history.entries[0]?.seq, 0) }, 'Load previous messages');
   const list = h('div.wt-list');
   const empty = h('div.wt-empty', { role: 'status' }, 'Reading the conversation…');
   const queuedBox = h('div.wt-queued', { hidden: true });
@@ -179,19 +189,49 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   const teamBody = h('div.wt-team-body');
   const teamLimit = h('p.wt-team-note', { hidden: true });
   const teamSection = h('details.wt-team', { hidden: true }, h('summary', {}, teamTitle, h('span.wt-chevron', { 'aria-hidden': true }, icon('chevron', 14))), teamBody, teamLimit);
-  const scroll = h('div.wt-scroll', { tabindex: 0, 'aria-label': 'Conversation history' }, earlier, list, empty, queuedBox, opts.question);
+  const streamNode = h('article.wt-stream', { 'data-entry': 'live:stream', hidden: true });
+  const scroll = h('div.wt-scroll', { tabindex: 0, 'aria-label': 'Conversation history' }, earlier, list, streamNode, empty, opts.question);
+  const motion = new ThreadScrollMotion(scroll, () => {
+    updateLatest();
+    updatePin();
+  });
+  const search = mountThreadSearch(
+    () => [list],
+    (range) => {
+      const el = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
+      el?.scrollIntoView({ block: 'center' });
+      updateLatest();
+    },
+  );
+  const pinText = h('span.wt-pin-text');
+  let pinnedRow: HTMLElement | undefined;
+  const pin = h(
+    'button.wt-pin.hidden',
+    {
+      type: 'button',
+      title: 'Scroll to pinned message',
+      'aria-label': 'Scroll to pinned message',
+      onclick: () => {
+        if (!pinnedRow) return;
+        const top = scroll.getBoundingClientRect().top;
+        scroll.scrollTop += pinnedRow.getBoundingClientRect().top - top - 8;
+        updatePin();
+      },
+    },
+    pinText,
+  );
   const latest = h(
     'button.btn.icon.wt-latest.hidden',
     {
       type: 'button',
-      'aria-label': 'Jump to latest',
-      title: 'Jump to latest',
+      'aria-label': 'Scroll to bottom',
+      title: 'Scroll to bottom',
       onclick: () => {
         if (history.historical) {
           history.clear(worker.sessionId);
           lastReadAt = 0;
           read(undefined, 0);
-        } else follow();
+        } else follow(true);
       },
     },
     icon('arrowDown', 16),
@@ -206,51 +246,88 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   // Keys go straight to the attached terminal, as Raw TTY types them: an office before term.input
   // confirmations would answer a confirmed send with a refusal after typing the keys anyway.
   const typeKeys = (data: string) => net.send({ t: 'term.input', workerId: worker.id, data });
-  const clearQueue = () => {
-    const rows = screen?.();
-    if (!rows || !readDroidQueue(rows)?.length) {
-      paintQueue();
-      return;
-    }
-    if (!typeKeys(CLEAR_DROID_QUEUE)) told = 'Disconnected. Nothing was sent.';
+  let queueActionBusy = false;
+  const queueAction = async (action: 'promote' | 'delete' | 'clear', item?: { index: number; group: 'steering' | 'queued'; text: string }) => {
+    if (queueActionBusy || !connected || cloud) return '';
+    queueActionBusy = true;
     updateControls();
+    const msg = {
+      t: 'worker.queue',
+      id: worker.id,
+      workerId: worker.id,
+      action,
+      ...(item ? { index: item.index, group: item.group, text: item.text } : {}),
+    } as unknown as ClientMsg;
+    const why = await opts.send(msg);
+    queueActionBusy = false;
+    if (!why && action === 'clear') queued.clear();
+    told = why ?? '';
+    queueKey = '';
+    updateControls();
+    return why;
   };
-  // Droid's own queue, read off its screen, is what waits: messages sent from here fill in the rows it cut short.
+  const clearQueue = () => void queueAction('clear');
+  // Droid's steering and queued lists are the truth; our receipts fill in text the narrow TUI cut short.
   const paintQueue = () => {
     queued.sync(worker.sessionId, history.entries);
     const rows = screen?.();
-    const droid = rows ? readDroidQueue(rows) : undefined;
-    const shown = queued.shown(droid);
+    const pending = rows ? readDroidPending(rows) : undefined;
+    const shown = queued.shown(pending?.items);
     if (queued.pending.length) localQueues.set(opts.queueKey, queued);
     else localQueues.delete(opts.queueKey);
     try {
       if (queued.pending.length) sessionStorage.setItem(opts.queueKey, JSON.stringify(queued));
       else sessionStorage.removeItem(opts.queueKey);
     } catch {}
-    const canClear = connected && !!droid?.length;
-    const key = JSON.stringify([shown, canClear]);
+    const groupCounts = { steering: 0, queued: 0 };
+    const items = shown.map((message, i) => {
+      const group = pending?.items[i]?.group ?? 'queued';
+      const index = ++groupCounts[group];
+      return { message, group, index };
+    });
+    const canClear = connected && !cloud && items.length > 0;
+    const key = JSON.stringify([items, canClear, queueActionBusy]);
     if (key === queueKey) return;
     queueKey = key;
-    const stick = received && !inspecting && atBottom();
-    queuedBox.hidden = !shown.length;
+    queuedBox.hidden = !items.length;
+    const section = (group: 'steering' | 'queued', title: string, clear: boolean) => {
+      const rowsInGroup = items.filter((item) => item.group === group);
+      if (!rowsInGroup.length) return null;
+      return h(
+        'section.wt-queue-group',
+        { 'aria-label': title },
+        h('div.wt-queue-heading', {}, h('span', {}, title), clear && canClear ? h('button.wt-queue-clear', { type: 'button', title: 'Clear all pending messages', disabled: queueActionBusy, onclick: clearQueue }, 'Clear all') : null),
+        ...rowsInGroup.map(({ message, index }) => {
+          const more = message.more > 0 ? `${message.more} more line${message.more === 1 ? '' : 's'}` : message.preview ? 'Shortened' : message.hasImage && message.text ? 'Image attached' : '';
+          const target = { index, group, text: message.text };
+          const action = (label: string, glyph: 'arrowUp' | 'x' | 'file', onclick: () => void) => h('button.wt-queue-action', { type: 'button', 'aria-label': label, title: label, disabled: queueActionBusy, onclick }, icon(glyph, 12));
+          const actions = cloud
+            ? null
+            : h(
+                'div.wt-queue-actions',
+                {},
+                group === 'queued' ? action('Send now', 'arrowUp', () => void queueAction('promote', target)) : null,
+                action('Edit message', 'file', () => {
+                  void queueAction('delete', target).then((why) => {
+                    if (why) return;
+                    input.value = message.text;
+                    edited();
+                    input.focus();
+                  });
+                }),
+                action('Remove from queue', 'x', () => void queueAction('delete', target)),
+              );
+          return h('div.wt-entry.user.wt-queued-message', { 'data-queued': message.key }, h('div.wt-queue-line', {}, h('div.wt-user-text', {}, message.text || 'Image attached'), actions), more ? h('div.wt-queued-more', {}, more) : null);
+        }),
+      );
+    };
     queuedBox.replaceChildren(
-      ...(shown.length
-        ? [
-            h('div.wt-queued-title', { 'aria-live': 'polite' }, h('span', {}, `Queued · ${shown.length}`)),
-            ...shown.map((message) => {
-              const more = message.more > 0 ? `${message.more} more line${message.more === 1 ? '' : 's'}` : message.preview ? 'Shortened' : message.hasImage && message.text ? 'Image attached' : '';
-              return h('div.wt-entry.user.wt-queued-message', { 'data-queued': message.key }, h('div.wt-user-text', {}, message.text || 'Image attached'), more ? h('div.wt-queued-more', {}, more) : null);
-            }),
-            h(
-              'div.wt-queued-foot',
-              {},
-              h('span', {}, shown.length === 1 ? 'Sent once this turn is over.' : 'Sent in order once this turn is over.'),
-              canClear ? h('button.btn.sm.ghost', { type: 'button', onclick: clearQueue }, 'Clear queue') : null,
-            ),
-          ]
-        : []),
+      ...[
+        section('steering', 'Steering messages', true),
+        section('queued', 'Queued messages', !items.some((item) => item.group === 'steering')),
+        h('div.wt-queued-foot', {}, h('span', {}, `${items.length} message${items.length === 1 ? '' : 's'} queued`)),
+      ].filter((node): node is HTMLElement => !!node),
     );
-    if (stick) follow();
   };
   const notice = h('p.wt-notice', { role: 'status' });
   const limitsBar = h('div.wt-limits.row', { hidden: true }, h('button.btn.sm.ghost', { type: 'button', onclick: () => openFactoryLimits() }, 'Factory limits'));
@@ -632,8 +709,50 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     edited();
   });
 
+  const recentMenu = h('div.wt-recent', { role: 'listbox', 'aria-label': 'Recent prompts', hidden: true });
+  let recentShown: string[] = [];
+  let recentCursor = 0;
+  const closeRecent = () => {
+    recentShown = [];
+    recentCursor = 0;
+    recentMenu.hidden = true;
+    recentMenu.replaceChildren();
+  };
+  const pickRecent = (text: string) => {
+    input.value = text;
+    closeRecent();
+    edited();
+    input.focus();
+    input.setSelectionRange(text.length, text.length);
+  };
+  const paintRecent = () => {
+    recentMenu.hidden = !recentShown.length;
+    recentCursor = Math.min(recentCursor, Math.max(0, recentShown.length - 1));
+    recentMenu.replaceChildren(
+      h('div.wt-recent-title', {}, 'Recent prompts'),
+      ...recentShown.map((text, i) =>
+        h('button.wt-recent-item', { type: 'button', role: 'option', 'aria-selected': String(i === recentCursor), onmousedown: (event: Event) => event.preventDefault(), onclick: () => pickRecent(text) }, text),
+      ),
+    );
+    recentMenu.children[recentCursor + 1]?.scrollIntoView({ block: 'nearest' });
+  };
+  const openRecent = () => {
+    const seen = new Set<string>();
+    recentShown = [];
+    for (const entry of [...history.entries].reverse()) {
+      const text = entry.role === 'user' && entry.kind === 'text' ? entry.text?.trim() : '';
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      recentShown.push(text);
+      if (recentShown.length === 12) break;
+    }
+    recentCursor = 0;
+    paintRecent();
+  };
+
   const edited = () => {
     paintPastes();
+    if (input.value) closeRecent();
     opts.onDraft(draftText());
     told = '';
     slashClosed = false;
@@ -661,36 +780,65 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     images.add([...(file.files ?? [])]);
     file.value = '';
   });
-  const attach = h('button.btn.icon.sm.ghost.wt-attach', { type: 'button', 'aria-label': 'Attach pictures', title: 'Attach pictures', onclick: () => file.click() }, icon('paperclip', 15));
+  const attach = h('button.btn.icon.sm.ghost.wt-attach', { type: 'button', 'aria-label': 'Add files and images', title: 'Add files and images', onclick: () => file.click() }, icon('plus', 15));
+  const autonomyChip = h('button.wt-setting.wt-autonomy', { type: 'button', hidden: true, onclick: () => opts.raw?.() });
+  const modelChip = h('button.wt-setting.wt-model', { type: 'button', hidden: true, onclick: () => opts.raw?.() });
+  const modeChip = h('span.wt-setting.wt-mode', { hidden: true }, 'Spec');
+  const paintSettings = () => {
+    const settings = liveView?.settings;
+    const autonomy = autonomyLabel(settings?.autonomyLevel);
+    autonomyChip.hidden = !autonomy;
+    if (autonomy) {
+      autonomyChip.replaceChildren(h('span.wt-autonomy-bars', { 'aria-hidden': 'true' }, ...[1, 2, 3].map((bar) => h('i', { class: bar <= autonomy.bars ? 'on' : '' }))), h('span', {}, autonomy.label));
+      autonomyChip.title = `${autonomy.hint}. Open Raw TTY to change autonomy.`;
+    }
+    const model = settings?.modelName ?? settings?.model;
+    const effort = effortLabel(settings?.reasoningEffort);
+    modelChip.hidden = !model;
+    if (model) {
+      modelChip.replaceChildren(h('span', {}, model), effort ? h('span.wt-model-effort', {}, effort) : '');
+      modelChip.title = 'Model and reasoning effort. Open Raw TTY to change them.';
+    }
+    modeChip.hidden = settings?.interactionMode !== 'spec';
+  };
   // While a turn runs, Send steers it (Droid reads the message now) and Queue holds it for after the turn.
   const queue = h('button.btn.sm.wt-queue', { type: 'button', title: 'Send once this turn is over', onclick: () => void submit(true) }, 'Queue');
   const sendLabel = h('span', {}, 'Send');
   const send = h('button.btn.sm.primary.wt-send', { type: 'submit' }, sendLabel, icon('arrowUp', 14));
-  const stop = h('button.btn.sm.wt-stop', { type: 'button', 'aria-label': 'Stop turn', title: 'Stop turn', onclick: () => stopTurn() }, h('span.wt-stop-symbol', { 'aria-hidden': true }), h('span.wt-stop-label', {}, 'Stop'));
+  const stop = h('button.btn.sm.wt-stop', { type: 'button', 'aria-label': 'Stop turn', title: 'Cancel  Esc', onclick: () => stopTurn() }, h('span.wt-stop-symbol', { 'aria-hidden': true }), h('span.wt-stop-label', {}, 'Stop'));
   const hint = h('span.wt-send-hint');
-  const box = h('div.wt-compose-box', {}, images.element, pasteChips, input, h('div.wt-compose-bar', {}, attach, hint, h('div.wt-send-buttons', {}, stop, queue, send)));
+  const box = h('div.wt-compose-box', {}, images.element, pasteChips, input, h('div.wt-compose-bar', {}, attach, autonomyChip, modeChip, modelChip, hint, h('div.wt-send-buttons', {}, stop, queue, send)));
   box.addEventListener('click', (event) => {
     if (!input.disabled && event.target instanceof Element && !event.target.closest('button, .pimgs, textarea')) input.focus();
   });
-  const form = h('form.wt-composer', {}, mentionMenu, slashMenu, file, box);
-  const progressLabel = h('span.wt-progress-label');
-  const progressDetail = h('span.wt-progress-detail', { hidden: true });
-  const progress = h(
-    'div.wt-progress',
-    { hidden: true },
-    h(
-      'div.wt-progress-line',
-      {},
-      h('span.wt-progress-glyph', { 'aria-hidden': 'true' }, h('span'), h('span'), h('span'), h('span')),
-      h('span.wt-progress-status', { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' }, progressLabel),
-      progressDetail,
-    ),
-  );
+  const form = h('form.wt-composer', {}, mentionMenu, slashMenu, recentMenu, file, queuedBox, box);
+  const progress = mountThreadStatusRow();
   const blockedText = h('p.wt-blocked-text');
   const blockedNote = h('div.wt-blocked.note.warn', { role: 'status', hidden: true }, icon('lock', 15), blockedText, opts.blockedAction ?? null);
   // Quote: text selected in the conversation goes into the draft at its cursor as Markdown quote lines.
   const quote = h('button.btn.sm.wt-quote', { type: 'button', hidden: true, onmousedown: (event: Event) => event.preventDefault(), onclick: () => quoteSelection() }, 'Quote');
-  const element = h('section.worker-thread', { 'aria-label': `${worker.name} thread` }, teamSection, scroll, latestAnchor, progress, h('div.wt-feedback', {}, notice, retry, raw, resume), limitsBar, blockedNote, planBar, form, quote);
+  const element = h(
+    'section.worker-thread',
+    { 'aria-label': `${worker.name} thread` },
+    teamSection,
+    pin,
+    search.element,
+    scroll,
+    latestAnchor,
+    progress.element,
+    h('div.wt-feedback', {}, notice, retry, raw, resume),
+    limitsBar,
+    blockedNote,
+    planBar,
+    form,
+    quote,
+  );
+  element.addEventListener('keydown', (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      search.open();
+    }
+  });
   images.dropZone(form);
   const quotable = () => {
     if (input.disabled || !form.checkVisibility()) return undefined;
@@ -827,15 +975,35 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     }
     return false;
   };
-  const follow = () => {
+  const follow = (quick = false) => {
     inspecting = false;
     followingLayout = true;
-    scroll.scrollTop = scroll.scrollHeight;
+    if (quick) motion.quick();
+    else motion.snap();
     latest.classList.add('hidden');
   };
   const updateLatest = () => {
-    latest.classList.toggle('hidden', !history.historical && !inspecting && atBottom());
-    labelLatest(inspecting && atBottom() ? 'Follow latest' : 'Jump to latest');
+    const distance = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
+    latest.classList.toggle('hidden', !history.historical && !inspecting && distance <= 120);
+    labelLatest(history.historical ? 'Back to the latest' : inspecting && atBottom() ? 'Follow latest' : 'Scroll to bottom');
+  };
+  const updatePin = () => {
+    pinnedRow = undefined;
+    pin.classList.add('hidden');
+    if (history.historical || !received || scroll.scrollTop < 4) return;
+    const top = scroll.getBoundingClientRect().top;
+    let candidate: HTMLElement | undefined;
+    for (const el of list.children) {
+      if (!(el instanceof HTMLElement) || !el.matches('.wt-entry.user.text')) continue;
+      if (el.getBoundingClientRect().top < top + 8) candidate = el;
+      else break;
+    }
+    if (!candidate?.nextElementSibling) return;
+    const text = candidate.querySelector('.wt-user-content')?.textContent?.trim() ?? '';
+    if (!text) return;
+    pinnedRow = candidate;
+    pinText.textContent = text;
+    pin.classList.remove('hidden');
   };
   let questionContent = '';
   const questionChanges = new MutationObserver(() => {
@@ -845,9 +1013,18 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     if (active && needsOwnerInput(worker) && !opts.question.hidden) requestAnimationFrame(() => opts.question.scrollIntoView({ block: 'nearest' }));
   });
   questionChanges.observe(opts.question, { childList: true, subtree: true });
+  let lastScrollTop = scroll.scrollTop;
   scroll.addEventListener('scroll', () => {
-    if (viewportWidth === scroll.clientWidth && viewportHeight === scroll.clientHeight) followingLayout = atBottom();
+    const top = scroll.scrollTop;
+    const delta = top - lastScrollTop;
+    lastScrollTop = top;
+    if (viewportWidth === scroll.clientWidth && viewportHeight === scroll.clientHeight) {
+      const distance = scroll.scrollHeight - top - scroll.clientHeight;
+      if (delta < -1 || distance > 80) followingLayout = false;
+      else if (distance <= 16 && !inspecting) followingLayout = true;
+    }
     updateLatest();
+    updatePin();
   });
   scroll.addEventListener('click', (event) => {
     const summary = event.target instanceof Element ? event.target.closest('summary') : null;
@@ -871,7 +1048,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         inspecting = true;
         followingLayout = false;
         latest.classList.remove('hidden');
-        labelLatest(atBottom() ? 'Follow latest' : 'Jump to latest');
+        labelLatest(atBottom() ? 'Follow latest' : 'Scroll to bottom');
       }
       updateClamps(details);
     },
@@ -879,16 +1056,13 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   );
 
   const chevron = () => h('span.wt-chevron', { 'aria-hidden': true }, icon('chevron', 14));
-  const thought = (block: Extract<ThreadBlock, { kind: 'thought' }>, entry: ThreadEntry | undefined, toggles: ReadonlyMap<string, boolean>) =>
-    setDisclosureOpen(
-      h(
-        'details.wt-thinking',
-        { 'data-disclosure': block.id },
-        h('summary', {}, h('span.wt-thought-label', {}, 'Thought'), h('span.wt-thought-preview', {}, block.preview), chevron()),
-        h('div.wt-thinking-text', {}, entry?.text ?? block.preview),
-      ),
-      toggles.get(block.id) ?? block.open,
-    );
+  const thought = (block: Extract<ThreadBlock, { kind: 'thought' }>, entry: ThreadEntry | undefined, toggles: ReadonlyMap<string, boolean>) => {
+    const label = thoughtLabel(entryTook(entry));
+    const summary = h('summary', { 'aria-label': `Expand ${label}` }, h('span.wt-thought-label', {}, label), chevron());
+    const details = h('details.wt-thinking', { 'data-disclosure': block.id }, summary, h('div.wt-thinking-text', {}, entry?.text ?? block.preview));
+    details.addEventListener('toggle', () => summary.setAttribute('aria-label', `${details.open ? 'Collapse' : 'Expand'} ${label}`));
+    return setDisclosureOpen(details, toggles.get(block.id) ?? block.open);
+  };
 
   /** An entry's pictures, each opening at full size, read from `owner`'s session. A cloud worker's session has none here. */
   const pictures = (entry: ThreadEntry | undefined, title: string, about?: string, owner: WorkerInfo = worker) => {
@@ -915,6 +1089,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     toggles?: Map<string, boolean>;
     diffs?: Set<string>;
     isLastRow?: boolean;
+    turnEnd?: boolean;
   }
 
   const changesOf = (author: WorkerInfo) => (opts.openChanges && !author.cloud ? () => opts.openChanges?.(author.id) : undefined);
@@ -957,6 +1132,12 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
 
     node.classList.add(row.role, row.kind === 'message' ? 'text' : 'notice');
     if (row.kind === 'notice') {
+      const compaction = (row as { name?: string; tone?: string }).name === 'compaction' || (row as { tone?: string }).tone === 'compaction';
+      if (compaction) {
+        const tokens = (row as { tokens?: number }).tokens;
+        node.append(h('div.wt-compact-divider', { role: 'separator' }, h('span', {}, `Compacted${tokens ? ` ${tokens.toLocaleString('en-US')} tokens` : ''}`)));
+        return node;
+      }
       const imgs = row.tone === 'attachment' ? pictures(loaded.get(row.id), row.role === 'user' ? 'Picture you sent' : `Picture from ${author.name}`, undefined, author) : null;
       node.append(imgs ?? h('p.wt-turn', { class: row.tone }, row.text));
       return node;
@@ -977,6 +1158,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         ...(canOpenFiles(author) ? { imageUrl: (path: string) => threadFileImageUrl({ floor: opts.floor ?? '', workerId: author.id, path }) } : {}),
       });
       node.append(body);
+      if (renderOpts.turnEnd) node.append(threadMessageActions({ text: () => text, at: entryAt(entry) }));
       return node;
     }
 
@@ -1008,7 +1190,14 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       expanded.has(row.id) ? 'Show less' : 'Show all',
     );
     node.append(h('div.wt-user-text', {}, content));
-    node.append(h('div.wt-message-actions', {}, more));
+    node.append(
+      threadMessageActions({
+        text: () => text,
+        at: entryAt(entry),
+        more,
+        ...(author.id === worker.id && !cloud ? { rewind: () => rewindConversation(row.id) } : {}),
+      }),
+    );
     return node;
   };
 
@@ -1246,7 +1435,50 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       );
     else if (cloudWaiting)
       empty.replaceChildren(h('span.spinner.wt-loading-spinner', { 'aria-hidden': true }), h('b', {}, `Starting on ${worker.cloud?.computerName}…`), h('p', {}, 'Its messages appear here as Factory lists them, a few seconds behind.'));
-    else empty.replaceChildren(h('span.wt-empty-mark', { 'aria-hidden': true }), h('b', {}, 'Start a conversation'), h('p', {}, 'Your messages and the worker’s replies will appear here.'));
+    else empty.replaceChildren(h('span.wt-empty-mark', { 'aria-hidden': true }), h('b', {}, 'No messages yet. Start a conversation!'));
+  };
+
+  const paintLive = () => {
+    const stream = liveView?.stream;
+    const current = !!liveView && liveView.after !== undefined && liveView.after === history.entries.at(-1)?.id && !history.historical;
+    const showStream = active && connected && current && liveView?.status !== 'idle' && !!stream;
+    const pendingTools = active && connected && current ? (liveView?.tools.filter((tool) => !tool.id) ?? []) : [];
+    streamNode.hidden = !showStream && !pendingTools.length;
+    streamNode.className = streamNode.hidden ? 'wt-stream' : 'wt-entry assistant text wt-stream';
+    if (streamNode.hidden) return;
+    const key = JSON.stringify([showStream ? stream : undefined, pendingTools.map((tool) => [tool.name, tool.output, tool.more])]);
+    if (streamNode.dataset.liveKey !== key) {
+      streamNode.dataset.liveKey = key;
+      const children: HTMLElement[] = [];
+      if (showStream && stream) {
+        if (stream.kind === 'thinking') {
+          const time = h('span.wt-live-time.wt-thought-duration', { 'data-since': stream.since }, `for ${thinkingSeconds(Date.now() - (liveView?.skew ?? 0) - stream.since)}`);
+          children.push(h('details.wt-thinking.wt-live-thinking', { open: true }, h('summary', {}, h('span.wt-thought-label.wt-shimmer', {}, 'Thinking'), time, chevron()), h('div.wt-thinking-text', {}, stream.text)));
+        } else {
+          children.push(h('div.wt-stream-copy', {}, ...stream.text.split(/\n{2,}/).map((paragraph) => h('p', {}, paragraph))));
+        }
+      }
+      for (const tool of pendingTools) {
+        children.push(
+          h(
+            'div.wt-live-tool',
+            {},
+            h('span.spinner', { 'aria-hidden': 'true' }),
+            h('span.wt-live-tool-name', {}, tool.name),
+            h('span.wt-live-time', { 'data-since': tool.startedAt }, thinkingSeconds(Date.now() - (liveView?.skew ?? 0) - tool.startedAt)),
+            tool.output ? h('pre.wt-live-tool-output', {}, tool.output) : null,
+            tool.more ? h('span.wt-live-tool-more', {}, `... ${tool.more} more`) : null,
+          ),
+        );
+      }
+      streamNode.replaceChildren(...children);
+    }
+    for (const el of streamNode.querySelectorAll<HTMLElement>('.wt-live-time[data-since]')) {
+      const since = Number(el.dataset.since);
+      const elapsed = thinkingSeconds(Date.now() - (liveView?.skew ?? 0) - since);
+      const text = el.classList.contains('wt-thought-duration') ? `for ${elapsed}` : elapsed;
+      if (el.textContent !== text) el.textContent = text;
+    }
   };
 
   const paintEntries = (older: boolean) => {
@@ -1263,14 +1495,21 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const asking = worker.status === 'needs_input';
     const rosterKey = (opts.team?.() ?? []).map((w) => `${w.id}:${w.name}:${w.lead ?? ''}`).join(',');
 
-    for (const row of rows) {
+    for (const [rowIndex, row] of rows.entries()) {
       const isLastRow = row === lastRow;
+      const nextRow = rows[rowIndex + 1];
+      const nextRole = nextRow && 'role' in nextRow ? nextRow.role : 'assistant';
+      const turnEnd = row.kind === 'message' && row.role === 'assistant' && nextRole !== 'assistant';
       const streamFlag = isLastRow && row.kind === 'message' && row.role === 'assistant' && isBusy(worker.status);
-      const key = JSON.stringify([row, asking, streamFlag, hasDelegateCard(row) ? rosterKey : '', rowContent(row, loaded)]);
+      const key = JSON.stringify([row, asking, streamFlag, turnEnd, hasDelegateCard(row) ? rosterKey : '', rowContent(row, loaded)]);
       let had = nodes.get(row.id);
       if (!had || had.key !== key) {
         const positions = [...(had?.node.querySelectorAll<HTMLElement>('pre, .wt-horizontal-content') ?? [])].map((content) => [content.scrollTop, content.scrollLeft]);
-        const node = render(row, loaded, asking, { isLastRow });
+        const node = render(row, loaded, asking, { isLastRow, turnEnd });
+        if (!had && paintedOnce && !older) {
+          node.classList.add('wt-enter');
+          node.addEventListener('animationend', () => node.classList.remove('wt-enter'), { once: true });
+        }
         [...node.querySelectorAll<HTMLElement>('pre, .wt-horizontal-content')].forEach((content, index) => {
           content.scrollTop = positions[index]?.[0] ?? 0;
           content.scrollLeft = positions[index]?.[1] ?? 0;
@@ -1301,14 +1540,21 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         ?.focus({ preventScroll: true });
     }
     earlier.classList.toggle('hidden', !history.hasMore);
-    labelLatest(history.historical ? 'Back to the latest' : 'Jump to latest');
+    labelLatest(history.historical ? 'Back to the latest' : 'Scroll to bottom');
     empty.hidden = rows.length > 0;
     paintEmpty();
     paintPlan();
-    if (stick) follow();
-    else if (older) scroll.scrollTop = top + scroll.scrollHeight - height;
+    if (stick) {
+      if (paintedOnce && !older && followingLayout) motion.follow();
+      else follow();
+    } else if (older) scroll.scrollTop = top + scroll.scrollHeight - height;
     else updateLatest();
     if (history.historical) latest.classList.remove('hidden');
+    paintedOnce = true;
+    paintLive();
+    updatePin();
+    search.refresh();
+    refreshMessageTimes(element);
   };
 
   let waitingShown = false;
@@ -1319,15 +1565,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const label = !show ? '' : worker.status === 'starting' ? 'Starting worker…' : worker.status === 'needs_input' ? 'Waiting for you' : 'Working…';
     const last = history.rows.at(-1);
     const detail = show && worker.status === 'working' && !history.historical && history.sessionId === worker.sessionId && last?.kind === 'activity' && last.live ? (last.running ?? '') : '';
-    progress.hidden = !show;
-    progress.classList.toggle('running', show && worker.status !== 'needs_input');
-    // Polls must neither restart the glyph nor repeatedly announce the same status.
-    if (progressLabel.textContent !== label) progressLabel.textContent = label;
-    if (progressDetail.textContent !== detail) {
-      progressDetail.textContent = detail;
-      progressDetail.title = detail ? `Latest activity: ${detail}` : '';
-    }
-    progressDetail.hidden = !detail;
+    progress.paint({ show, running: show && worker.status !== 'needs_input', label, mode: statusMode(liveView?.status, worker.status), detail: liveView?.label || detail });
   };
 
   const updateControls = () => {
@@ -1346,25 +1584,29 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     if (input.disabled) {
       if (slashShown.length) paintSlash();
       if (mentionShown.length) closeMention();
+      closeRecent();
     }
     attach.disabled = input.disabled;
     const busy = isBusy(worker.status);
     send.disabled = input.disabled;
+    send.hidden = (busy || waiting) && !input.value.trim() && !images.ids().length;
     // Factory holds a cloud worker's message until its turn is over: there's nothing to steer with.
     queue.hidden = !busy || cloud;
-    queue.disabled = input.disabled || !received || !!slashOf(input.value);
+    queue.disabled = input.disabled || !received || !!slashOf(input.value) || queueActionBusy;
     stop.hidden = !busy && !waiting;
     stop.disabled = !allowed || sending || stopping;
     const label = sending ? 'Sending…' : busy ? (cloud ? 'Queue' : 'Send now') : 'Send';
     sendLabel.textContent = label;
     send.classList.toggle('icon', !sending && !busy);
-    send.setAttribute('aria-label', label);
-    send.title = busy ? (cloud ? `Sent to ${worker.name} once this turn is over` : `Steer ${worker.name}: it reads this now, during the turn`) : '';
+    send.setAttribute('aria-label', busy || sending ? label : 'Send message');
+    send.title = busy ? (cloud ? `Sent to ${worker.name} once this turn is over` : `Steer ${worker.name}: it reads this now, during the turn`) : 'Send ⏎';
     const placeholder = () => {
       if (broken) return `${worker.name} can’t take messages`;
+      if (waiting) return 'Respond to the questionnaire above...';
+      if (!worker.sessionId && !opts.promptWakes) return 'Waiting for session...';
       if (introNow()) return `Tell ${worker.name} what you want done…`;
-      if (!busy) return `Reply to ${worker.name}…`;
-      return cloud ? `Queue a message for after this turn…` : `Steer ${worker.name}, or queue for after this turn…`;
+      if (busy) return 'Send follow-up  ·  Ctrl+Enter to queue for later';
+      return 'Type your message...';
     };
     input.placeholder = placeholder();
     if (cloud) hint.replaceChildren(shortcut('Enter', busy ? 'queue' : 'send'), shortcut('⇧ Enter', 'new line'));
@@ -1387,6 +1629,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     element.classList.toggle('has-feedback', !!notice.textContent);
     paintPlan();
     paintQueue();
+    paintSettings();
     paintProgress();
   };
 
@@ -1411,6 +1654,39 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       floorDirs.clear();
       for (const f of msg.floors) floorDirs.set(f.id, f.dir);
     }
+    const nextLive = liveFrom(msg, worker.id, worker.sessionId, liveView);
+    if (nextLive) {
+      const stick = received && !inspecting && atBottom();
+      liveView = nextLive;
+      liveTools.clear();
+      for (const tool of nextLive.tools) if (tool.id) liveTools.set(tool.id, tool);
+      paintLive();
+      paintSettings();
+      paintProgress();
+      if (stick) motion.follow();
+      return;
+    }
+    const rewound = msg as unknown as { t: string; workerId: string; ok: boolean; text?: string; error?: string };
+    if (rewound.t === 'worker.rewound' && rewound.workerId === worker.id) {
+      if (rewound.ok) {
+        history.clear(worker.sessionId);
+        nodes.clear();
+        list.replaceChildren();
+        received = false;
+        liveView = undefined;
+        liveTools.clear();
+        if (rewound.text) {
+          input.value = rewound.text;
+          edited();
+        }
+        read(undefined, 0);
+      } else {
+        told = rewound.error ?? 'Failed to rewind conversation';
+        updateControls();
+      }
+      return;
+    }
+    if (msg.t === 'thread.snapshot' && typeof (msg as { child?: unknown }).child === 'string') return;
     if (msg.t === 'floor.enter' || msg.t === 'welcome') {
       if (msg.t === 'welcome' || watchedWorkerId !== ORCHESTRATOR_ID) {
         watchedWorkerId = '';
@@ -1463,6 +1739,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
 
   const clearDraft = () => {
     input.value = '';
+    closeRecent();
     paintPastes();
     opts.onDraft('');
     told = '';
@@ -1515,6 +1792,18 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     updateControls();
     // Droid answers most of its slash commands with a dialog, which only its terminal shows.
     if (!result && !cloud && slashOf(text)?.command?.kind === 'tty') opts.raw?.();
+  };
+
+  const rewindConversation = (entryId: string) => {
+    openThreadRewind({
+      busy: isBusy(worker.status),
+      send: async (restore) => {
+        const msg = { t: 'worker.rewind', id: worker.id, workerId: worker.id, entryId, restore } as unknown as ClientMsg;
+        const why = await opts.send(msg);
+        if (why) return why || 'Failed to rewind conversation';
+        return undefined;
+      },
+    });
   };
 
   const stopTurn = () => {
@@ -1585,6 +1874,35 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         return;
       }
     }
+    if (recentShown.length) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        recentCursor = (recentCursor + (event.key === 'ArrowDown' ? 1 : recentShown.length - 1)) % recentShown.length;
+        paintRecent();
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeRecent();
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        pickRecent(recentShown[recentCursor]);
+        return;
+      }
+    } else if (event.key === 'ArrowUp' && !input.value) {
+      event.preventDefault();
+      openRecent();
+      return;
+    }
+    if (event.key === 'Escape' && !event.shiftKey && isBusy(worker.status)) {
+      event.preventDefault();
+      event.stopPropagation();
+      stopTurn();
+      return;
+    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void submit(!cloud && (event.ctrlKey || event.metaKey) && isBusy(worker.status));
@@ -1600,6 +1918,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     if (!active || !connected || document.hidden) return;
     readTeam();
     paintQueue();
+    paintLive();
+    refreshMessageTimes(element);
     // A cloud worker's conversation is a read of its Factory session, which can take a while.
     if (pending && Date.now() - pending.at > (cloud ? 20_000 : 8000)) {
       pending = undefined;
@@ -1634,6 +1954,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         lastReadAt = 0;
         error = '';
         nodes.clear();
+        liveView = undefined;
+        liveTools.clear();
+        streamNode.hidden = true;
+        paintedOnce = false;
         expandedMessages.clear();
         userToggles.clear();
         expandedDiffs.clear();
@@ -1695,6 +2019,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       filesAbort?.abort();
       filesAbort = undefined;
       paintProgress();
+      progress.dispose();
+      motion.dispose();
+      search.dispose();
       clearInterval(timer);
       document.removeEventListener('visibilitychange', visibility);
       teamSection.removeEventListener('toggle', teamDisclosure, true);

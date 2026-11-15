@@ -190,7 +190,7 @@ test('long threads skip off-screen rows yet keep following, anchoring, clamps, f
 
   // Jump to latest lands at the real bottom even though the rows in between held estimates.
   await page.locator('.wt-latest').click();
-  await page.evaluate(() => (window as any).frames(6));
+  await page.evaluate(() => (window as any).frames(14));
   assert.ok((await page.evaluate(() => (window as any).gap())) <= 1, 'jump to latest reaches the bottom');
 
   // A new message while following stays in view, and so does the sticky plan bar above the composer.
