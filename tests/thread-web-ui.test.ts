@@ -661,7 +661,10 @@ test('renders rich Markdown replies, sticky collapsible Plan Bar, @file workspac
   assert.equal(await planBar.isVisible(), true);
   assert.equal(await planBar.locator('.wt-plan-count').textContent(), '1/3 completed');
   assert.equal(await planBar.locator('.wt-plan-current').textContent(), 'Style inline diffs');
+  assert.equal(await planBar.locator('.wt-plan-head').getAttribute('aria-expanded'), 'false');
+  assert.equal(await planBar.locator('.wt-plan-steps').isVisible(), false);
   await planBar.locator('.wt-plan-head').click();
+  assert.equal(await planBar.locator('.wt-plan-head').getAttribute('aria-expanded'), 'true');
   assert.equal(await planBar.locator('.wt-plan-step').count(), 3);
   assert.equal(await planBar.locator('.wt-plan-step.is-done .wt-plan-glyph').textContent(), '✓');
   assert.equal(await planBar.locator('.wt-plan-step.is-active .wt-plan-glyph').textContent(), '●');
