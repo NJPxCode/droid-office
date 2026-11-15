@@ -1,6 +1,7 @@
-import { attachCopyFeedback, highlightCodeBlock, syncHorizontalScrollCue } from './code-highlight';
-import { h, openModal } from './dom';
-import { windowHeader } from './kit';
+import { claimEscape, h } from './dom';
+import { renderMdCodeBlock } from './thread-md-code';
+import { mdIcon } from './thread-md-icons';
+import { openDiagramLightbox } from './thread-md-lightbox';
 
 // Mermaid diagrams in wiki pages and Thread messages, drawn as strict-mode SVG. The library is
 // large, so it loads the first time a diagram renders, and sanitized SVG markup caches in an LRU
@@ -21,7 +22,33 @@ function mermaid(): Promise<Mermaid> {
       startOnLoad: false,
       // Pages and messages come from model output or repositories: 'strict' keeps scripts and click handlers out of the SVG.
       securityLevel: 'strict',
-      theme: 'dark',
+      // Factory's diagram palette (core-v2 dark): surface fill, hairline borders, orange accent.
+      theme: 'base',
+      themeVariables: {
+        darkMode: true,
+        background: '#0c0b0a',
+        primaryColor: '#100e0d',
+        primaryTextColor: '#fdfcfb',
+        primaryBorderColor: '#564e4a',
+        secondaryColor: '#151311',
+        tertiaryColor: '#151311',
+        lineColor: '#80756f',
+        textColor: '#fdfcfb',
+        mainBkg: '#100e0d',
+        nodeBorder: '#564e4a',
+        clusterBkg: '#151311',
+        clusterBorder: '#38322f',
+        edgeLabelBackground: '#0c0b0a',
+        noteBkgColor: '#210b00',
+        noteBorderColor: '#b34000',
+        noteTextColor: '#fdfcfb',
+        actorBkg: '#100e0d',
+        actorBorder: '#564e4a',
+        actorTextColor: '#fdfcfb',
+        signalColor: '#ff5a00',
+        signalTextColor: '#fdfcfb',
+        fontSize: '13px',
+      },
       fontFamily: 'inherit',
       // Labels as SVG text, so no foreignObject (HTML inside the SVG) is needed.
       htmlLabels: false,
@@ -132,94 +159,135 @@ export async function drawDiagram(pre: HTMLElement, source: string): Promise<voi
   }
 }
 
-function openMermaidZoomModal(source: string): void {
-  const modalCopyBtn = h('button.btn.sm.ghost.wt-code-copy', { type: 'button', 'aria-label': 'Copy Mermaid source' }, 'Copy source');
-  attachCopyFeedback(modalCopyBtn, () => source, 'Copy source');
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
-  const stage = h('div.wt-diagram-zoom-stage', { role: 'img', 'aria-label': 'Mermaid diagram' });
-  const cached = peekCachedMermaidSvg(source);
-  if (cached) stage.append(cached);
-  else {
-    stage.append(h('span.spinner'));
-    void renderMermaidSvg(source)
-      .then((svg) => {
-        if (stage.isConnected) stage.replaceChildren(svg);
-      })
-      .catch(() => {
-        if (stage.isConnected) stage.replaceChildren(h('pre.wt-diagram-fallback', {}, source));
-      });
+/** `svg` as a standalone file with the Thread's surface color painted behind it. */
+export function standaloneSvg(svg: SVGSVGElement, background = '#0c0b0a'): string {
+  const copy = svg.cloneNode(true) as SVGSVGElement;
+  copy.setAttribute('xmlns', SVG_NS);
+  const vb = copy
+    .getAttribute('viewBox')
+    ?.split(/[\s,]+/)
+    .map(Number);
+  const bg = document.createElementNS(SVG_NS, 'rect');
+  if (vb && vb.length === 4 && vb.every(Number.isFinite)) {
+    bg.setAttribute('x', String(vb[0]));
+    bg.setAttribute('y', String(vb[1]));
+    bg.setAttribute('width', String(vb[2]));
+    bg.setAttribute('height', String(vb[3]));
+  } else {
+    bg.setAttribute('width', '100%');
+    bg.setAttribute('height', '100%');
   }
+  bg.setAttribute('fill', background);
+  copy.insertBefore(bg, copy.firstChild);
+  return new XMLSerializer().serializeToString(copy);
+}
 
-  const content = h('div.modal.wt-diagram-modal', { 'aria-label': 'Mermaid diagram' }, windowHeader('Mermaid diagram', undefined, modalCopyBtn), h('div.body.wt-diagram-modal-body', {}, stage));
-  openModal(content, { size: 'xl', backdropCloses: true, reading: true, doing: 'reading a diagram' });
+function diagramPending(): HTMLElement {
+  return h('div.wt-mermaid-pending', { role: 'status', 'aria-label': 'Rendering diagram' }, h('span.spinner'));
+}
+
+function diagramActions(source: string, svg: SVGSVGElement): HTMLElement {
+  const trigger = h('button.wt-mermaid-more', { type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': 'Mermaid diagram actions', title: 'Mermaid diagram actions' }, mdIcon('more', 16));
+  const copyItem = h('button.wt-mermaid-item', { type: 'button', role: 'menuitem' });
+  const saveItem = h('button.wt-mermaid-item', { type: 'button', role: 'menuitem' }, mdIcon('download', 14), h('span', {}, 'Download as SVG'));
+  const menu = h('div.wt-mermaid-menu', { role: 'menu', hidden: true }, copyItem, saveItem);
+  const wrap = h('div.wt-mermaid-actions', {}, trigger, menu);
+
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  const paintCopy = (copied: boolean) => {
+    copyItem.replaceChildren(mdIcon(copied ? 'check' : 'copy', 14), h('span', {}, copied ? 'Mermaid code copied' : 'Copy Mermaid code'));
+    trigger.replaceChildren(mdIcon(copied ? 'check' : 'more', 16));
+    trigger.classList.toggle('copied', copied);
+    trigger.setAttribute('aria-label', copied ? 'Mermaid code copied' : 'Mermaid diagram actions');
+  };
+  paintCopy(false);
+
+  let releaseEsc: (() => void) | undefined;
+  const onOutside = (e: MouseEvent) => {
+    if (!wrap.contains(e.target as Node)) setOpen(false);
+  };
+  const setOpen = (open: boolean) => {
+    menu.hidden = !open;
+    trigger.setAttribute('aria-expanded', String(open));
+    wrap.classList.toggle('open', open);
+    if (open) {
+      document.addEventListener('mousedown', onOutside, true);
+      releaseEsc = claimEscape(wrap, () => {
+        if (menu.hidden) return false;
+        setOpen(false);
+        trigger.focus();
+        return true;
+      });
+    } else {
+      document.removeEventListener('mousedown', onOutside, true);
+      releaseEsc?.();
+      releaseEsc = undefined;
+    }
+  };
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(!wrap.classList.contains('open'));
+  });
+  copyItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(false);
+    void navigator.clipboard
+      ?.writeText(source)
+      .then(() => {
+        paintCopy(true);
+        if (copiedTimer !== undefined) clearTimeout(copiedTimer);
+        copiedTimer = setTimeout(() => paintCopy(false), 2000);
+      })
+      .catch(() => {});
+  });
+  saveItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(false);
+    const url = URL.createObjectURL(new Blob([standaloneSvg(svg)], { type: 'image/svg+xml' }));
+    const a = h('a', { href: url, download: 'diagram.svg' });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  return wrap;
+}
+
+function diagramCard(source: string, svg: SVGSVGElement): HTMLElement {
+  const stage = h('div.wt-mermaid-stage', { role: 'img', 'aria-label': 'Rendered Mermaid diagram preview' }, svg);
+  const card = h('div.wt-mermaid', { 'data-testid': 'mermaid-diagram', tabindex: 0, title: 'Expand diagram' }, diagramActions(source, svg), stage);
+  const open = () => openDiagramLightbox(svg);
+  stage.addEventListener('click', open);
+  card.addEventListener('keydown', (e) => {
+    if (e.target === card && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      open();
+    }
+  });
+  return card;
 }
 
 /**
- * Builds an interactive `.wt-diagram-card` for Thread view with Diagram/Source toggle, Zoom modal,
- * and Copy button. Incomplete or invalid Mermaid stays cleanly as its highlighted source block.
+ * A Thread Markdown Mermaid diagram as Factory draws it: a spinner while the fence is still
+ * streaming (`complete` false), then a clickable card that opens the pan and zoom viewer, with a
+ * Copy Mermaid code / Download as SVG menu. Source that will not draw falls back to a code block.
  */
-export function renderThreadMermaid(source: string): HTMLElement {
-  let showingSource = false;
-
-  const codeEl = highlightCodeBlock(source, 'mermaid');
-  const pre = h('pre.wt-horizontal-content', { tabindex: 0, 'aria-label': 'Mermaid source, scroll horizontally' }, codeEl);
-  const cue = h('span.wt-code-cue', { hidden: true }, 'Scroll horizontally ↔');
-  const sourceWrap = h('div.wt-code-scroll.wt-diagram-source', {}, pre, cue);
-  pre.addEventListener('scroll', () => syncHorizontalScrollCue(sourceWrap));
-
-  const stage = h('div.wt-diagram-stage', { role: 'img', 'aria-label': 'Mermaid diagram', hidden: true });
-
-  const toggleBtn = h(
-    'button.btn.sm.ghost.wt-diagram-toggle',
-    {
-      type: 'button',
-      hidden: true,
-      'aria-pressed': 'false',
-      onclick: () => {
-        showingSource = !showingSource;
-        toggleBtn.textContent = showingSource ? 'Diagram' : 'Source';
-        toggleBtn.setAttribute('aria-pressed', showingSource ? 'true' : 'false');
-        sourceWrap.hidden = !showingSource;
-        stage.hidden = showingSource;
-        if (showingSource) syncHorizontalScrollCue(sourceWrap);
-      },
-    },
-    'Source',
-  );
-
-  const zoomBtn = h(
-    'button.btn.sm.ghost.wt-diagram-zoom',
-    {
-      type: 'button',
-      hidden: true,
-      'aria-label': 'Zoom Mermaid diagram',
-      onclick: () => openMermaidZoomModal(source),
-    },
-    'Zoom',
-  );
-
-  const copyBtn = h('button.btn.sm.ghost.wt-code-copy', { type: 'button', 'aria-label': 'Copy Mermaid source' }, 'Copy');
-  attachCopyFeedback(copyBtn, () => source, 'Copy');
-
-  const activateDiagram = (svg: SVGSVGElement) => {
-    stage.replaceChildren(svg);
-    toggleBtn.hidden = false;
-    zoomBtn.hidden = false;
-    stage.hidden = showingSource;
-    sourceWrap.hidden = !showingSource;
-  };
-
+export function renderThreadMermaid(source: string, opts: { complete?: boolean } = {}): HTMLElement {
+  const host = h('div.wt-mermaid-host');
+  if (opts.complete === false || !source.trim()) {
+    host.append(diagramPending());
+    return host;
+  }
   const cached = peekCachedMermaidSvg(source);
   if (cached) {
-    activateDiagram(cached);
-  } else {
-    void renderMermaidSvg(source)
-      .then(activateDiagram)
-      .catch(() => {
-        // Incomplete or invalid Mermaid (e.g. mid-stream): keep highlighted source without noisy broken-SVG boxes.
-      });
+    host.append(diagramCard(source, cached));
+    return host;
   }
-
-  const card = h('div.wt-code-block.wt-diagram-card', {}, h('div.wt-code-head', {}, h('span.wt-code-lang', {}, 'MERMAID'), h('div.wt-code-actions', {}, toggleBtn, zoomBtn, copyBtn)), stage, sourceWrap);
-  return card;
+  host.append(diagramPending());
+  void renderMermaidSvg(source)
+    .then((svg) => host.replaceChildren(diagramCard(source, svg)))
+    .catch(() => host.replaceChildren(renderMdCodeBlock(source, 'mermaid')));
+  return host;
 }

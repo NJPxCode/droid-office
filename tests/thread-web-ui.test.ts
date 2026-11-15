@@ -511,7 +511,7 @@ test('renders rich Markdown replies, sticky collapsible Plan Bar, @file workspac
   // Rich Markdown checks: <json-render>, MathML, code block, clickable workspace path:line
   assert.equal(await page.locator('.jr-metric-value').textContent(), '92%');
   assert.equal(await page.locator('.wt-math-inline math').count(), 1);
-  assert.equal(await page.locator('.wt-code-block .wt-code-lang').textContent(), 'TypeScript');
+  assert.equal(await page.locator('.wt-md-code .wt-md-code-lang').textContent(), 'ts');
   await page.locator('.wt-md .wt-file-link').first().click();
   await page.locator('.modal.wt-file-modal .wt-file-lines').waitFor();
   assert.equal(await page.locator('.modal.wt-file-modal .wt-file-line.is-target').getAttribute('data-line'), '15');
@@ -796,12 +796,12 @@ test('a Thread to raw terminal round trip keeps the reader’s scroll position a
   await page.evaluate(() => {
     const s = document.querySelector<HTMLElement>('.wt-scroll')!;
     const row = s.querySelectorAll<HTMLElement>('.wt-list > .wt-entry')[12];
-    s.scrollTop += row.getBoundingClientRect().top - s.getBoundingClientRect().top + 240;
+    s.scrollTop += row.getBoundingClientRect().top - s.getBoundingClientRect().top + 180;
     s.dispatchEvent(new Event('scroll'));
   });
   await frames();
   const middle = await reading();
-  assert.ok(middle.top > 200 && middle.offset < -200, `reading part way into a long row: ${JSON.stringify(middle)}`);
+  assert.ok(middle.top > 200 && middle.offset < -160, `reading part way into a long row: ${JSON.stringify(middle)}`);
   await page.locator('textarea.wt-input').fill('half-typed draft');
   const parked = await roundTrip();
   assert.equal(parked.row, middle.row, 'same row at the top');

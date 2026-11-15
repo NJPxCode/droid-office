@@ -577,7 +577,7 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
       '',
       '$$\\frac{a_1 + b_1}{2}$$',
       '',
-      'Inspect `src/client/ui/dom.ts:12-14`, `package.json`, and prose ref src/server/server.ts:88 (not https://factory.ai/guild).',
+      'Inspect `src/client/ui/dom.ts:12-14` and `package.json`; prose ref src/server/server.ts:88 stays plain (not https://factory.ai/guild).',
       '',
       '<script>window.__xss = true;</script><button style="color:red">Injected</button>',
       '',
@@ -620,28 +620,27 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
     const validMermaid = 'flowchart LR\n  A[Parse] --> B[Render]';
     const card1 = w.RichMD.renderThreadMermaid(validMermaid) as HTMLElement;
     document.getElementById('root')!.append(card1);
-    await waitUntil(() => Boolean(card1.querySelector('.wt-diagram-stage svg')));
+    await waitUntil(() => Boolean(card1.querySelector('.wt-mermaid-stage svg')));
 
-    // Second render must hit synchronous LRU cache immediately!
+    // Second render must hit synchronous LRU cache immediately.
     const card2 = w.RichMD.renderThreadMermaid(validMermaid) as HTMLElement;
-    const cachedImmediateSvg = Boolean(card2.querySelector('.wt-diagram-stage svg'));
+    const cachedImmediateSvg = Boolean(card2.querySelector('.wt-mermaid-stage svg'));
 
-    // Toggle Source <-> Diagram and open Zoom modal
-    const toggleBtn = card1.querySelector<HTMLButtonElement>('.wt-diagram-toggle')!;
-    toggleBtn.click();
-    const showingSourceAfterToggle = !card1.querySelector<HTMLElement>('.wt-diagram-source')!.hidden;
-    toggleBtn.click();
-
-    card1.querySelector<HTMLButtonElement>('.wt-diagram-zoom')!.click();
-    const zoomModalOpen = Boolean(document.querySelector('.wt-diagram-modal svg'));
+    // The corner menu and clicking the picture open Factory's actions and pan/zoom viewer.
+    card1.querySelector<HTMLButtonElement>('.wt-mermaid-more')!.click();
+    const actionsOpen = !card1.querySelector<HTMLElement>('.wt-mermaid-menu')!.hidden;
+    card1.querySelector<HTMLButtonElement>('.wt-mermaid-more')!.click();
+    card1.querySelector<HTMLElement>('.wt-mermaid-stage')!.click();
+    const zoomModalOpen = Boolean(document.querySelector('.wt-diagram-lightbox svg'));
     w.RichMD.closeTopModal();
 
-    // Invalid streaming Mermaid stays as highlighted source without broken SVG
+    // Invalid Mermaid falls back to an ordinary code block without broken SVG.
     const brokenSource = 'flowchart LR\n  A -->';
     const brokenCard = w.RichMD.renderThreadMermaid(brokenSource) as HTMLElement;
     document.getElementById('root')!.append(brokenCard);
     await w.RichMD.renderMermaidSvg(brokenSource).catch(() => {});
-    const brokenStaysSource = !brokenCard.querySelector<HTMLElement>('.wt-diagram-source')!.hidden && brokenCard.querySelector<HTMLElement>('.wt-diagram-stage')!.hidden;
+    await waitUntil(() => Boolean(brokenCard.querySelector('.wt-md-code')));
+    const brokenStaysSource = brokenCard.querySelector('.wt-md-code-lang')?.textContent === 'mermaid' && !brokenCard.querySelector('.wt-mermaid-stage svg');
 
     // File Preview modal fetch, target line highlight & scrollIntoView
     let scrolledLine = -1;
@@ -685,12 +684,13 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
       inlineMathCount: el.querySelectorAll('.wt-math-inline math').length,
       blockMathCount: el.querySelectorAll('.wt-math-block math').length,
       currencyPreserved: (el.textContent ?? '').includes('Price is $100'),
-      emailMailto: el.querySelector<HTMLAnchorElement>('.wt-email-open')?.getAttribute('href') ?? '',
+      emailTo: el.querySelector<HTMLInputElement>('.wt-md-email-input')?.value ?? '',
+      emailSendLabel: el.querySelector('.wt-md-email-send')?.textContent ?? '',
       metricValue: el.querySelector('.jr-metric-value')?.textContent ?? '',
       openedRefs,
-      userHasCodeCopy: Boolean(userEl.querySelector('.wt-code-copy')),
+      userHasCodeCopy: Boolean(userEl.querySelector('.wt-md-code-copy')),
       cachedImmediateSvg,
-      showingSourceAfterToggle,
+      actionsOpen,
       zoomModalOpen,
       brokenStaysSource,
       targetRows,
@@ -707,12 +707,13 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
   assert.equal(result.inlineMathCount, 1);
   assert.equal(result.blockMathCount, 1);
   assert.equal(result.currencyPreserved, true);
-  assert.equal(result.emailMailto, 'mailto:nik@factory.ai?subject=Ship%20It&body=Ready%20for%20review.');
+  assert.equal(result.emailTo, 'nik@factory.ai');
+  assert.equal(result.emailSendLabel, 'Send');
   assert.equal(result.metricValue, '100%');
-  assert.deepEqual(result.openedRefs, [{ path: 'src/client/ui/dom.ts', line: 12, endLine: 14 }, { path: 'package.json' }, { path: 'src/server/server.ts', line: 88 }]);
+  assert.deepEqual(result.openedRefs, [{ path: 'src/client/ui/dom.ts', line: 12, endLine: 14 }, { path: 'package.json' }]);
   assert.equal(result.userHasCodeCopy, true);
   assert.equal(result.cachedImmediateSvg, true);
-  assert.equal(result.showingSourceAfterToggle, true);
+  assert.equal(result.actionsOpen, true);
   assert.equal(result.zoomModalOpen, true);
   assert.equal(result.brokenStaysSource, true);
   assert.deepEqual(result.targetRows, [12, 13, 14]);
