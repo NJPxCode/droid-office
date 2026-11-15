@@ -23,7 +23,9 @@ export class ThreadScrollMotion {
   }
 
   follow() {
-    if (reduced()) return this.snap();
+    // Large appends also change content-visibility estimates; gliding through those estimates can
+    // leave the reader above the new bottom. Reserve the glide for incremental streaming.
+    if (reduced() || this.scroll.scrollHeight - this.scroll.clientHeight - this.scroll.scrollTop > 240) return this.snap();
     this.cancel();
     const generation = this.generation;
     let previous = performance.now();
