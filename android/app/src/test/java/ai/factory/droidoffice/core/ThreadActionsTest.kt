@@ -19,6 +19,39 @@ class ThreadActionsTest {
         assertEquals("1y ago", ThreadActions.ago(now - 400 * 86_400_000L, now))
     }
 
+    @Test fun agoUsesWholeUnitsAtExactMinuteHourAndDayBoundaries() {
+        // Factory's narrow formatter uses absolute thresholds and truncates signed whole units.
+        val cases = listOf(
+            0L to "now",
+            59_999L to "now",
+            60_000L to "1m ago",
+            60_001L to "1m ago",
+            3_599_999L to "59m ago",
+            3_600_000L to "1h ago",
+            3_600_001L to "1h ago",
+            86_399_999L to "23h ago",
+            86_400_000L to "1d ago",
+            86_400_001L to "1d ago",
+        )
+        for ((age, expected) in cases) assertEquals("age $age ms", expected, ThreadActions.ago(now - age, now))
+    }
+
+    @Test fun futureTimestampsUseTheSameBoundariesWithoutBeingClamped() {
+        val cases = listOf(
+            1L to "now",
+            59_999L to "now",
+            60_000L to "in 1m",
+            60_001L to "in 1m",
+            3_599_999L to "in 59m",
+            3_600_000L to "in 1h",
+            3_600_001L to "in 1h",
+            86_399_999L to "in 23h",
+            86_400_000L to "in 1d",
+            86_400_001L to "in 1d",
+        )
+        for ((ahead, expected) in cases) assertEquals("ahead $ahead ms", expected, ThreadActions.ago(now + ahead, now))
+    }
+
     @Test fun previewKeepsOneLineAndCutsAt160() {
         assertEquals("fix the bug now", ThreadActions.preview("  fix the\n\nbug   now "))
         val long = "a".repeat(200)
