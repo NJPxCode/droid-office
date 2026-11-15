@@ -1,8 +1,12 @@
 package ai.factory.droidoffice.ui.worker
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Easing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -55,6 +59,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -83,12 +88,17 @@ import ai.factory.droidoffice.core.ORCHESTRATOR_ID
 import ai.factory.droidoffice.core.PendingAsk
 import ai.factory.droidoffice.core.ScreenState
 import ai.factory.droidoffice.core.Tags
+import ai.factory.droidoffice.core.ThreadActions
 import ai.factory.droidoffice.core.ThreadEntry
 import ai.factory.droidoffice.core.ThreadFeed
 import ai.factory.droidoffice.core.ThreadImage
+import ai.factory.droidoffice.core.ThreadLive
 import ai.factory.droidoffice.core.ThreadPhase
 import ai.factory.droidoffice.core.ThreadQueue
 import ai.factory.droidoffice.core.ThreadRole
+import ai.factory.droidoffice.core.ThreadScroll
+import ai.factory.droidoffice.core.ThreadSearch
+import ai.factory.droidoffice.core.ThreadStatus
 import ai.factory.droidoffice.core.ThreadRow
 import ai.factory.droidoffice.core.ThreadState
 import ai.factory.droidoffice.core.ThreadSupport
@@ -142,6 +152,7 @@ private const val RECONCILE_POLL_MS = 15_000L
 private const val HEAD = "thread.head"
 private const val NEWER = "thread.newer"
 private const val ASK = "thread.ask"
+private const val STATUS = "thread.status"
 /** The receipts' item in the list, and its open state in the open map. */
 private const val QUEUED = "thread.queued"
 /** Sticky TodoWrite plan bar open state in the saved open map. */
@@ -178,6 +189,15 @@ internal fun Thread(
     /** It has a terminal to fall back on; a cloud worker doesn't. */
     rawTty: Boolean = true,
     onOpenWorker: ((String) -> Unit)? = null,
+    live: ThreadLive? = null,
+    search: Boolean = false,
+    onSearch: (Boolean) -> Unit = {},
+    onQuote: (String) -> Unit = {},
+    onRewind: ((entryId: String, restore: Boolean) -> Unit)? = null,
+    rewinding: Boolean = false,
+    rewindError: String? = null,
+    onRewindCancel: () -> Unit = {},
+    onQueuePanel: (ThreadQueue.Panel) -> Unit = {},
     /** This screen's feeds by office, floor and worker, so the Thread comes back from Raw TTY with what it loaded. */
     feeds: MutableMap<String, ThreadFeed> = remember { mutableMapOf() },
 ) {
@@ -240,14 +260,15 @@ internal fun Thread(
     val rows = if (state.support == ThreadSupport.Supported) state.rows else emptyList()
     val loaded = remember(state.entries) { state.entries.associateBy { it.id } }
     // Droid's queue as its screen shows it, with the whole text of what this phone sent to it.
-    val droidQueue = remember(screen) { screen?.let(DroidQueue::read) }
+    val droidQueue = remember(screen) { screen?.let(DroidQueue::readPending) }
     var clock by remember(feed) { mutableLongStateOf(0L) }
-    var pendingQueue by remember(queued) { mutableStateOf(emptyList<ThreadQueue.Shown>()) }
+    var pendingQueue by remember(queued) { mutableStateOf(ThreadQueue.Panel.EMPTY) }
     var holding by remember(queued) { mutableStateOf(false) }
     LaunchedEffect(queued, queueRevision, queueReady, state.sessionId, state.entries, droidQueue, clock) {
         val before = queued.snapshot()
         if (queueReady) queued.sync(state.sessionId, state.entries)
-        pendingQueue = queued.shown(droidQueue, System.currentTimeMillis())
+        pendingQueue = queued.panel(droidQueue, System.currentTimeMillis())
+        onQueuePanel(pendingQueue)
         holding = queued.pending.isNotEmpty()
         if (queueReady && before != queued.snapshot()) onQueueChanged()
     }
@@ -275,16 +296,45 @@ internal fun Thread(
     var inspecting by rememberSaveable(kept) { mutableStateOf(false) }
     val place = rememberSaveable(kept, saver = PlaceSaver) { Place() }
     var anchor by remember(feed) { mutableStateOf<Pair<String, Int>?>(null) }
-    var seen by remember(feed) { mutableStateOf<String?>(null) }
     // Set while the thread scrolls itself to the bottom, so its own scroll never reads as the owner's.
     var autoScrolling by remember(feed) { mutableStateOf(false) }
     // Following, yet the bottom stayed below the fold: the strip shows rather than hide where the latest is.
     var stuck by remember(feed) { mutableStateOf(false) }
+    var searchQuery by rememberSaveable(kept) { mutableStateOf("") }
+    var searchActive by rememberSaveable(kept) { mutableIntStateOf(0) }
+    val matches = remember(rows, loaded, searchQuery) {
+        ThreadSearch.find(rows, { row -> loaded[row.id]?.text ?: (row as? ThreadRow.Notice)?.text }, searchQuery)
+    }
+    LaunchedEffect(matches.size) {
+        if (matches.isEmpty()) searchActive = 0 else searchActive = searchActive.coerceIn(0, matches.lastIndex)
+    }
+    LaunchedEffect(search, matches.getOrNull(searchActive)?.rowId) {
+        if (!search) return@LaunchedEffect
+        val row = matches.getOrNull(searchActive)?.rowId ?: return@LaunchedEffect
+        val at = rows.indexOfFirst { it.id == row }
+        if (at >= 0) list.animateScrollToItem(at + 1)
+    }
+    var rewindTarget by remember(feed) { mutableStateOf<ThreadRow.Message?>(null) }
+    var rewindSent by remember(feed) { mutableStateOf(false) }
+    LaunchedEffect(rewinding, rewindError) {
+        if (rewindSent && !rewinding) {
+            if (rewindError == null) rewindTarget = null
+            rewindSent = false
+        }
+    }
 
+    val density = LocalDensity.current
+    /** Factory's distance from the transcript's bottom, in dp; far when the last item isn't laid out. */
+    fun fromBottom(): Float {
+        val info = list.layoutInfo
+        val last = info.visibleItemsInfo.lastOrNull() ?: return Float.MAX_VALUE
+        if (info.totalItemsCount == 0 || last.index != info.totalItemsCount - 1) return Float.MAX_VALUE
+        return with(density) { (last.offset + last.size - info.viewportEndOffset).toDp().value }
+    }
     LaunchedEffect(list) {
-        snapshotFlow { Triple(list.isScrollInProgress, list.canScrollForward, list.lastScrolledBackward) }.collect { (scrolling, more, back) ->
+        snapshotFlow { Triple(list.isScrollInProgress, list.canScrollForward, list.lastScrolledBackward) }.collect { (scrolling, _, back) ->
             if (scrolling && !autoScrolling) {
-                if (back) follow = false else if (!more && !inspecting) follow = true
+                follow = ThreadScroll.follows(follow, back, fromBottom()) && !inspecting
             }
         }
     }
@@ -311,16 +361,41 @@ internal fun Thread(
             autoScrolling = false
         }
     }
-    LaunchedEffect(follow, rows.lastOrNull()?.id) {
-        if (follow) seen = rows.lastOrNull()?.id
-    }
     /** False when the owner's touch took the list over part way: their scroll wins. */
-    suspend fun toBottom(): Boolean {
+    suspend fun toBottom(quick: Boolean = false): Boolean {
         autoScrolling = true
         return try {
             val lastItem = list.layoutInfo.totalItemsCount - 1
-            if (lastItem >= 0 && list.layoutInfo.visibleItemsInfo.none { it.index == lastItem }) list.scrollToItem(lastItem)
-            list.scrollBy(100_000f)
+            if (lastItem < 0) return true
+            if (quick) {
+                if (list.layoutInfo.visibleItemsInfo.none { it.index == lastItem }) list.scrollToItem((lastItem - 1).coerceAtLeast(0))
+                val remaining = with(density) { fromBottom().dp.toPx() }
+                if (remaining > 0f) list.animateScrollBy(remaining, tween(ThreadScroll.QUICK_MS, easing = Easing(ThreadScroll::quick)))
+            } else {
+                if (list.layoutInfo.visibleItemsInfo.none { it.index == lastItem }) list.scrollToItem(lastItem)
+                list.scrollBy(100_000f)
+            }
+            true
+        } catch (e: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            false
+        } finally {
+            autoScrolling = false
+        }
+    }
+    /** Factory's exponential glide for growth no taller than the viewport. */
+    suspend fun glideBottom(): Boolean {
+        autoScrolling = true
+        return try {
+            var previous = withFrameNanos { it }
+            while (list.canScrollForward) {
+                val remaining = with(density) { fromBottom().dp.toPx() }
+                if (remaining <= with(density) { ThreadScroll.SETTLED.dp.toPx() }) break
+                val frame = withFrameNanos { it }
+                val step = ThreadScroll.glideStep(remaining, (frame - previous) / 1_000_000.0)
+                previous = frame
+                list.scrollBy(step)
+            }
             true
         } catch (e: CancellationException) {
             currentCoroutineContext().ensureActive()
@@ -340,7 +415,10 @@ internal fun Thread(
                 if (!behind || ownerScrolling || autoScrolling) return@collect
                 // A layout can lag the first scroll by a frame: try again, then say so with the strip.
                 repeat(3) {
-                    if (!toBottom()) return@collect
+                    val distance = with(density) { fromBottom().dp.toPx() }
+                    val viewport = list.layoutInfo.viewportSize.height.toFloat()
+                    val done = if (ThreadScroll.glides(distance, viewport)) glideBottom() else toBottom()
+                    if (!done) return@collect
                     withFrameNanos { }
                     if (!list.canScrollForward) {
                         stuck = false
@@ -349,6 +427,14 @@ internal fun Thread(
                 }
                 stuck = true
             }
+    }
+    LaunchedEffect(list, feed) {
+        var before: Int? = null
+        snapshotFlow { list.layoutInfo.viewportSize.height }.collect { after ->
+            val old = before
+            before = after
+            if (old != null && old != after && !follow && !autoScrolling) list.scrollBy(ThreadScroll.keepBottom(old, after).toFloat())
+        }
     }
     LaunchedEffect(state.entries.firstOrNull()?.id, state.loadingEarlier) {
         val (id, offset) = anchor ?: return@LaunchedEffect
@@ -373,6 +459,13 @@ internal fun Thread(
         state = feed.state
     }
 
+    LaunchedEffect(list, state.hasMore, state.loadingEarlier, connected) {
+        if (!state.hasMore || state.loadingEarlier || !connected || rows.isEmpty()) return@LaunchedEffect
+        snapshotFlow { list.layoutInfo.visibleItemsInfo.any { it.key == HEAD } }.collect { atTop ->
+            if (atTop && state.hasMore && !state.loadingEarlier) earlier()
+        }
+    }
+
     /** Opening something to read it: the next entry mustn't scroll it away, even at the bottom. */
     fun inspect() {
         follow = false
@@ -383,7 +476,7 @@ internal fun Thread(
     fun resume() {
         inspecting = false
         follow = true
-        scope.launch { toBottom() }
+        scope.launch { toBottom(quick = true) }
     }
 
     fun newer() {
@@ -429,6 +522,16 @@ internal fun Thread(
     val pictures = remember(effectiveFloor, w.id) { effectiveFloor?.let { PictureSource(it, w.id) } }
     val floorDir = remember(data.floors, effectiveFloor) { data.floors.firstOrNull { it.id == effectiveFloor }?.dir }
     Column(modifier.background(ThreadPalette.Bg).tagged(Tags.Worker.THREAD)) {
+        if (search) {
+            ThreadSearchBar(
+                query = searchQuery,
+                active = searchActive,
+                count = matches.size,
+                onQuery = { searchQuery = it; searchActive = 0 },
+                onStep = { searchActive = ThreadSearch.step(searchActive, matches.size, it) },
+                onClose = { onSearch(false) },
+            )
+        }
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
             // On a wide screen the conversation keeps a reading width, centred, rather than lines across the whole window.
             val side = maxOf(18.dp, (maxWidth - READING_WIDTH) / 2)
@@ -439,13 +542,28 @@ internal fun Thread(
             ) {
                 item(key = HEAD) { Head(w, state, connected, rawTty, onEarlier = ::earlier, onRetry = ::retry, onTty = onTty) }
                 itemsIndexed(rows, key = { _, r -> r.id }, contentType = { _, r -> r::class }) { i, r ->
-                    Box(Modifier.padding(top = gap(if (i > 0) rows[i - 1] else null, r))) {
+                    Box(
+                        Modifier.padding(top = gap(if (i > 0) rows[i - 1] else null, r))
+                            .animateItem(fadeInSpec = tween(150), fadeOutSpec = tween(100))
+                            .then(if (search && matches.getOrNull(searchActive)?.rowId == r.id) Modifier.border(1.dp, ThreadPalette.Accent, RoundedCornerShape(4.dp)) else Modifier),
+                    ) {
                         ProvidePictures(pictures) {
                             when (r) {
                                 is ThreadRow.Message -> {
                                     val all = open[MORE + r.id] == true
                                     val isStreaming = w.state.busy && i == rows.lastIndex && r.role == ThreadRole.Assistant
-                                    Message(w, r, loaded[r.id]?.text.orEmpty(), loaded[r.id]?.images.orEmpty(), all, isStreaming, floorDir) { flip(MORE + r.id, all) }
+                                    val entry = loaded[r.id]
+                                    val actions = open["msg.actions:" + r.id] == true
+                                    Message(
+                                        w, r, entry?.text.orEmpty(), entry?.images.orEmpty(), all, isStreaming, floorDir,
+                                        at = entry?.at,
+                                        actions = actions,
+                                        offerActions = r.role == ThreadRole.User || ThreadActions.endsReply(rows, i),
+                                        onActions = { flip("msg.actions:" + r.id, actions) },
+                                        onMore = { flip(MORE + r.id, all) },
+                                        onQuote = onQuote,
+                                        onRewind = onRewind?.let { { rewindTarget = r } },
+                                    )
                                 }
                                 is ThreadRow.Notice -> Notice(w, r, loaded[r.id])
                                 is ThreadRow.Activity -> Activity(
@@ -493,26 +611,15 @@ internal fun Thread(
                         }
                     }
                 }
-                // The messages Droid sends next, after the conversation, as the owner's own words waiting their turn.
-                if (pendingQueue.isNotEmpty()) item(key = QUEUED) {
-                    QueuedMessages(
-                        pendingQueue,
-                        canClear = connected && !droidQueue.isNullOrEmpty(),
-                        onClear = {
-                            if (screen?.let(DroidQueue::read).isNullOrEmpty()) return@QueuedMessages
-                            if (!connection.send(ClientMsg.termInput(w.id, DroidQueue.CLEAR))) {
-                                scope.launch { snackbar.showSnackbar("Couldn't reach the office. The queue is unchanged.") }
-                            }
-                        },
-                    )
+                val status = ThreadStatus.mode(w, live, w.state.busy && rows.lastOrNull()?.let { it is ThreadRow.Message && it.role == ThreadRole.Assistant } == true)
+                if (status != ThreadStatus.Mode.Idle) item(key = STATUS) {
+                    StatusIndicator(status, Modifier.padding(top = 14.dp))
                 }
             }
             Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().height(8.dp).background(Brush.verticalGradient(listOf(ThreadPalette.Bg, Color.Transparent))))
             // Floats over the conversation's bottom corner rather than taking a row of its own above the composer.
-            if (ThreadView.showJump(follow, stuck, list.canScrollForward) && rows.isNotEmpty() && !state.newerTrimmed) {
-                val from = rows.indexOfFirst { it.id == seen }
-                val fresh = if (from < 0) 0 else rows.drop(from + 1).count { it is ThreadRow.Message && it.role != ThreadRole.User }
-                Jump(fresh, Modifier.align(Alignment.BottomEnd).padding(end = side, bottom = 8.dp), ::resume)
+            if ((ThreadScroll.showJump(follow, fromBottom()) || stuck) && rows.isNotEmpty() && !state.newerTrimmed) {
+                Jump(Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp), ::resume)
             }
         }
         if (activePlan != null && state.support == ThreadSupport.Supported) {
@@ -525,6 +632,21 @@ internal fun Thread(
                     modifier = Modifier.widthIn(max = READING_WIDTH + 20.dp).fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 6.dp),
                 )
             }
+        }
+        rewindTarget?.let { target ->
+            ThreadRewindDialog(
+                text = loaded[target.id]?.text.orEmpty(),
+                busy = rewinding,
+                error = rewindError,
+                onChoose = { restore ->
+                    rewindSent = true
+                    onRewind?.invoke(target.id, restore)
+                },
+                onCancel = {
+                    rewindTarget = null
+                    onRewindCancel()
+                },
+            )
         }
     }
 }
@@ -642,31 +764,15 @@ private fun gap(prev: ThreadRow?, row: ThreadRow): Dp {
  * when following is paused.
  */
 @Composable
-private fun Jump(fresh: Int, modifier: Modifier, onClick: () -> Unit) {
+private fun Jump(modifier: Modifier, onClick: () -> Unit) {
     val shape = RoundedCornerShape(4.dp)
-    val label = if (fresh > 0) "$fresh new message${if (fresh == 1) "" else "s"}" else "Jump to latest"
-    Box(modifier) {
-        Box(
-            Modifier.size(40.dp).clip(shape).background(ThreadPalette.SurfaceHigh).border(1.dp, ThreadPalette.BorderStrong, shape)
-                .clickable(onClickLabel = "Jump to the latest message", role = Role.Button, onClick = onClick)
-                .tagged(Tags.Worker.THREAD_JUMP),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                OfficeIcons.ArrowDown, null,
-                Modifier.size(18.dp).semantics { contentDescription = label; liveRegion = LiveRegionMode.Polite }.tagged(Tags.Worker.THREAD_JUMP_LABEL),
-                tint = ThreadPalette.Text,
-            )
-        }
-        if (fresh > 0) {
-            Box(
-                Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-6).dp).heightIn(min = 16.dp).widthIn(min = 16.dp)
-                    .background(ThreadPalette.Accent, RoundedCornerShape(2.dp)).padding(horizontal = 4.dp).clearAndSetSemantics { },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(if (fresh > 99) "99+" else "$fresh", style = LocalOfficeType.current.eyebrow.copy(color = Color.White))
-            }
-        }
+    Box(
+        modifier.size(28.dp).clip(shape).background(ThreadPalette.Surface).border(1.dp, ThreadPalette.BorderStrong, shape)
+            .clickable(onClickLabel = "Scroll to bottom", role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = "Scroll to bottom" }.tagged(Tags.Worker.THREAD_JUMP),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(OfficeIcons.Chevron, null, Modifier.size(14.dp).rotate(90f).tagged(Tags.Worker.THREAD_JUMP_LABEL), tint = ThreadPalette.Text)
     }
 }
 
@@ -694,13 +800,18 @@ private fun Head(w: WorkerInfo, state: ThreadState, connected: Boolean, rawTty: 
             return@Column
         }
         when {
-            state.loadingEarlier -> Row(Modifier.heightIn(min = 36.dp).padding(top = 4.dp).tagged(Tags.Worker.THREAD_EARLIER), verticalAlignment = Alignment.CenterVertically) {
-                Spinner(Modifier.size(12.dp), ThreadPalette.TextSecondary)
-                Spacer(Modifier.width(8.dp))
-                Text("Loading earlier messages…", style = MaterialTheme.typography.bodySmall)
-            }
-            state.hasMore -> Column(Modifier.padding(top = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                QuietButton("Load earlier", OfficeIcons.ArrowUp, Tags.Worker.THREAD_EARLIER, connected, onEarlier)
+            state.loadingEarlier || state.hasMore -> Column(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
+                    Text(
+                        if (state.loadingEarlier) "Loading previous messages…" else "Load previous messages",
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = if (connected && !state.loadingEarlier) ThreadPalette.TextSecondary else ThreadPalette.TextTertiary),
+                        modifier = Modifier.clip(RoundedCornerShape(4.dp))
+                            .clickable(enabled = connected && !state.loadingEarlier, role = Role.Button, onClick = onEarlier)
+                            .tagged(Tags.Worker.THREAD_EARLIER).padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
+                    Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
+                }
                 state.earlierError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = ThreadPalette.Danger, modifier = Modifier.padding(top = 6.dp)) }
             }
             else -> Eyebrow("Start of the session", Modifier.padding(vertical = 10.dp).tagged(Tags.Worker.THREAD_START), color = ThreadPalette.TextSecondary)
@@ -797,13 +908,32 @@ private fun Modifier.clampLines(lines: Int, onClipped: (Boolean) -> Unit) = this
 private fun Modifier.userBlock() = this.background(ThreadPalette.UserSlab, RoundedCornerShape(4.dp)).padding(horizontal = 12.dp, vertical = 9.dp)
 
 @Composable
-private fun Message(w: WorkerInfo, m: ThreadRow.Message, text: String, images: List<ThreadImage>, all: Boolean, streaming: Boolean, floorDir: String?, onMore: () -> Unit) {
+private fun Message(
+    w: WorkerInfo,
+    m: ThreadRow.Message,
+    text: String,
+    images: List<ThreadImage>,
+    all: Boolean,
+    streaming: Boolean,
+    floorDir: String?,
+    at: Long?,
+    actions: Boolean,
+    offerActions: Boolean,
+    onActions: () -> Unit,
+    onMore: () -> Unit,
+    onQuote: (String) -> Unit,
+    onRewind: (() -> Unit)?,
+) {
     val tag = Modifier.fillMaxWidth().tagged(Tags.Worker.threadEntry(m.id))
     if (m.role == ThreadRole.User) {
         val reveal = rememberReveal()
         // The pictures sent with the prompt, above its text, in place of where the office kept them.
         val pictures = images.isNotEmpty() && LocalPictureSource.current != null
-        Column(tag.then(reveal.modifier), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.End) {
+        Column(
+            tag.then(reveal.modifier).then(if (offerActions) Modifier.clickable(onClick = onActions) else Modifier),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalAlignment = Alignment.End,
+        ) {
             if (pictures) ThreadPictures(images, "Picture you sent", null, end = true)
             if (!pictures || text.isNotBlank()) Column(Modifier.fillMaxWidth().userBlock()) {
                 var clipped by remember(m.id) { mutableStateOf(false) }
@@ -825,12 +955,18 @@ private fun Message(w: WorkerInfo, m: ThreadRow.Message, text: String, images: L
                     }
                 }
             }
+            AnimatedVisibility(actions && offerActions) {
+                ThreadMessageActions(m.id, text, at, user = true, onQuote = null, onRewind = onRewind, modifier = Modifier.tagged(Tags.Worker.threadMessageActions(m.id)))
+            }
         }
     } else {
-        Column(tag) {
+        Column(tag.then(if (offerActions) Modifier.clickable(onClick = onActions) else Modifier)) {
             val files = LocalFilePreview.current
             SelectionContainer { MarkdownText(text, streaming = streaming, onOpenPath = files?.let { it::open }, rich = true) }
             m.turnChanges?.let { TurnChanges(m.id, it, floorDir, Modifier.padding(top = 10.dp)) }
+            AnimatedVisibility(actions && offerActions) {
+                ThreadMessageActions(m.id, text, at, user = false, onQuote = onQuote, onRewind = null, modifier = Modifier.tagged(Tags.Worker.threadMessageActions(m.id)))
+            }
         }
     }
 }
@@ -856,11 +992,14 @@ private fun Notice(w: WorkerInfo, n: ThreadRow.Notice, entry: ThreadEntry?) {
             Spacer(Modifier.width(10.dp))
             Text(n.text, style = MaterialTheme.typography.bodySmall, color = ThreadPalette.Danger)
         }
-        NoticeTone.Quiet -> Row(tag, verticalAlignment = Alignment.CenterVertically) {
+        NoticeTone.Quiet -> Row(
+            tag.padding(vertical = 16.dp).then(if (n.text.startsWith("Compacted")) Modifier.tagged(Tags.Worker.THREAD_COMPACTION) else Modifier),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
             Text(
-                n.text.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary), textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 10.dp).weight(4f, fill = false),
+                n.text, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ThreadPalette.TextTertiary), textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp).weight(4f, fill = false),
             )
             Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
         }

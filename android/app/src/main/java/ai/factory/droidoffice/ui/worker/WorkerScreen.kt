@@ -306,6 +306,8 @@ fun WorkerScreen(
         var sent by remember(workerId) { mutableIntStateOf(0) }
         // A selection quoted from the Thread, until the composer has put it in the draft.
         var quote by remember(workerId) { mutableStateOf<String?>(null) }
+        var threadSearch by rememberSaveable(workerId) { mutableStateOf(false) }
+        var queuePanel by remember(workerId) { mutableStateOf(ThreadQueue.Panel.EMPTY) }
         val questionScopeKey = "$workerId/${questionId.orEmpty()}/$launchId"
         var questionHandled by rememberSaveable(questionScopeKey) { mutableStateOf(false) }
         var openedQuestionMenu by remember(questionScopeKey) { mutableStateOf<Menu?>(null) }
@@ -358,7 +360,19 @@ fun WorkerScreen(
         }
         // The view switch shares the PR and branch row. Send home stays in the header.
         if (threadable && !cloud) Column(Modifier.fillMaxWidth().background(Palette.Bg)) {
-            Actions(worker, lead = { InlineViewToggle(tty, pickView) }, resumable = !mission)
+            Actions(worker, lead = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!tty) Box(
+                        Modifier.size(36.dp).clip(RoundedCornerShape(4.dp))
+                            .clickable(role = Role.Button, onClickLabel = "Search session") { threadSearch = !threadSearch }
+                            .semantics { selected = threadSearch }.tagged(Tags.Worker.THREAD_SEARCH),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(OfficeIcons.Search, "Search session", Modifier.size(16.dp), tint = if (threadSearch) Palette.Accent else Palette.TextSecondary)
+                    }
+                    InlineViewToggle(tty, pickView)
+                }
+            }, resumable = !mission)
             if (mission) TeamStrip(MissionControl.team(orchestrator), onOpen = { followTeamMember?.invoke(it) })
             Box(Modifier.fillMaxWidth().height(4.dp))
             Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
@@ -429,6 +443,10 @@ fun WorkerScreen(
                         followRequest = sent,
                         rawTty = !cloud,
                         onOpenWorker = openSubagent,
+                        search = threadSearch,
+                        onSearch = { threadSearch = it },
+                        onQuote = { quote = it },
+                        onQueuePanel = { queuePanel = it },
                         feeds = threadFeeds,
                     )
                 } } }
@@ -474,6 +492,7 @@ fun WorkerScreen(
                     worker, draft, visible = blocked == null && !waiting && (!directInput || !tty || worker.isCloud), focusRequest = composerFocus, thread = !tty,
                     quote = quote, onQuoted = { quote = null },
                     queueState = queueState, onQueued = { queueRevision++ },
+                    queuePanel = queuePanel,
                     onSent = { prompt ->
                         sent++
                         // A slash command that opens one of Droid's dialogs is answered there: show it.

@@ -609,6 +609,15 @@ object Tags {
         fun composerQueuedSendNow(n: Int) = "composer.queue.send_now/$n"
         fun composerQueuedRemove(n: Int) = "composer.queue.remove/$n"
         fun composerQueuedEdit(n: Int) = "composer.queue.edit/$n"
+        /** A message's Rewind and the time it was sent, in its actions row. */
+        fun threadMessageRewind(id: String) = "worker.thread.message.rewind/$id"
+        fun threadMessageTime(id: String) = "worker.thread.message.time/$id"
+        /** The rewind dialog, its two choices (keep the files as they are, or restore them), Rewind and Cancel. */
+        const val THREAD_REWIND = "worker.thread.rewind"
+        const val THREAD_REWIND_KEEP = "worker.thread.rewind.keep"
+        const val THREAD_REWIND_RESTORE = "worker.thread.rewind.restore"
+        const val THREAD_REWIND_CONFIRM = "worker.thread.rewind.confirm"
+        const val THREAD_REWIND_CANCEL = "worker.thread.rewind.cancel"
 
         /** A quick key, by what TalkBack calls it: "Shift Tab" is `key.shift_tab`. */
         fun key(spoken: String) = "key." + spoken.lowercase().replace(' ', '_')

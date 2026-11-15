@@ -137,6 +137,8 @@ object OfficeIcons {
     val Lock = icon("Lock", "M6.5 11h11a1 1 0 0 1 1 1v7.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V12a1 1 0 0 1 1-1z", "M8.5 11V8a3.5 3.5 0 0 1 7 0v3")
     val SquarePen = icon("SquarePen", "M12 4.5H6A1.5 1.5 0 0 0 4.5 6v12A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5v-6", "M17.6 3.9a1.8 1.8 0 0 1 2.5 2.5L12.5 14l-3.2.8.8-3.2z")
     val Quote = icon("Quote", "M5 6.5h5v5H7.5c0 2.5-1 4-2.5 5", "M14 6.5h5v5h-2.5c0 2.5-1 4-2.5 5")
+    /** Lucide undo-2, Factory's rewind. */
+    val Rewind = icon("Rewind", "M9 14L4 9l5-5", "M4 9h10.5a5.5 5.5 0 0 1 0 11H11")
     val Repo = icon("Repo", "M5 4.5A2 2 0 0 1 7 2.5h12v17H7a2 2 0 0 0-2 2V4.5z", "M5 19.5h14", "M9 6.5h6", "M9 10h4")
     val Check = icon("Check", "M5 12.5l4.5 4.5L19 7.5")
     val Mail = icon("Mail", "M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h14a1.5 1.5 0 0 1 1.5 1.5v11a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z", "M4 7l8 5.5L20 7")

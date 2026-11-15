@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -41,6 +42,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -64,6 +66,13 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -90,11 +99,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.factory.droidoffice.core.ClientMsg
+import ai.factory.droidoffice.core.DroidQueue
 import ai.factory.droidoffice.core.ORCHESTRATOR_ID
 import ai.factory.droidoffice.core.SlashCommands
 import ai.factory.droidoffice.core.Tags
 import ai.factory.droidoffice.core.ThreadCompose
 import ai.factory.droidoffice.core.ThreadQueue
+import ai.factory.droidoffice.core.ThreadSessionSettings
 import ai.factory.droidoffice.core.WorkerInfo
 import ai.factory.droidoffice.core.WorkspaceMention
 import ai.factory.droidoffice.net.ThreadFiles
@@ -145,6 +156,9 @@ fun Composer(
     /** Text selected in the Thread to quote at the cursor, then [onQuoted] once it is in the draft. */
     quote: String? = null,
     onQuoted: () -> Unit = {},
+    settings: ThreadSessionSettings? = null,
+    queuePanel: ThreadQueue.Panel = ThreadQueue.Panel.EMPTY,
+    onQueueAction: ((action: String, item: ThreadQueue.Panel.Item) -> Unit)? = null,
 ) {
     val graph = LocalGraph.current
     val snackbar = LocalSnackbar.current
@@ -298,8 +312,8 @@ fun Composer(
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
     Column(Modifier.then(if (thread) Modifier.widthIn(max = READING_WIDTH + 20.dp) else Modifier).fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 10.dp)) {
         val mentions = if (mention != null) mentionItems else emptyList()
-        AnimatedVisibility(mentions.isNotEmpty()) {
-            MentionMenu(mentions) { item ->
+        AnimatedVisibility(mention != null) {
+            MentionMenu(mentions, searching = files.base == null) { item ->
                 val q = WorkspaceMention.find(value.text, value.selection.end) ?: mention ?: return@MentionMenu
                 val next = WorkspaceMention.apply(value.text, q.start, q.end, item.path)
                 edit(TextFieldValue(next.value, selection = TextRange(next.cursor)))
@@ -350,9 +364,150 @@ fun Composer(
             )
         }
         // Offline, the screen's one notice under the header says Send is off (Tags.Worker.COMPOSER_OFFLINE).
-        Row(
-            Modifier.fillMaxWidth().clip(field).background(if (thread) ThreadPalette.Surface else Palette.Surface)
-                .border(1.dp, if (thread) ThreadPalette.InputBorder else Palette.BorderStrong, field)
+        val hint = when {
+            w.isShell -> "Run a command…"
+            w.id == ORCHESTRATOR_ID && w.sessionId == null -> "Tell the Orchestrator what you want done…"
+            queueable -> "Send follow-up · or queue for later"
+            // Factory holds a message sent mid-turn until the turn is over.
+            w.isCloud && w.state.busy -> "Message ${w.name} for after this turn…"
+            thread -> "Type your message..."
+            else -> "Reply to ${w.name}…"
+        }
+        val ready = (text.isNotBlank() || images.isNotEmpty()) && !uploading && connected && !blocked
+        val canQueue = ready && SlashCommands.of(text) == null
+        val keys = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when {
+                event.key == Key.Escape && onStop != null -> {
+                    haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                    onStop()
+                    true
+                }
+                event.key == Key.Enter && !event.isShiftPressed -> {
+                    if (event.isCtrlPressed && queueable) {
+                        if (canQueue) send(true)
+                    } else send(false)
+                    true
+                }
+                else -> false
+            }
+        }
+        if (thread) {
+            Column(
+                Modifier.fillMaxWidth().clip(field).background(ThreadPalette.Surface).border(1.dp, ThreadPalette.InputBorder, field),
+            ) {
+                if (!queuePanel.isEmpty) {
+                    ComposerQueue(
+                        panel = queuePanel,
+                        connected = connected,
+                        onClear = {
+                            val cleared = graph.connection.send(ClientMsg.termInput(w.id, DroidQueue.CLEAR_INPUT)) &&
+                                graph.connection.send(ClientMsg.termInput(w.id, DroidQueue.CLEAR))
+                            if (!cleared) scope.launch { snackbar.showSnackbar("Couldn't reach the office. The queue is unchanged.") }
+                        },
+                        onAction = onQueueAction?.let { action ->
+                            { kind, item ->
+                                if (kind == "edit") edit(TextFieldValue(item.text, TextRange(item.text.length)))
+                                action(kind, item)
+                            }
+                        },
+                    )
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(ThreadPalette.Border))
+                }
+                Box(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 12.dp, vertical = 10.dp), contentAlignment = Alignment.CenterStart) {
+                    if (text.isEmpty()) Text(
+                        hint, style = MaterialTheme.typography.bodyLarge, color = ThreadPalette.TextTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.clearAndSetSemantics {},
+                    )
+                    BasicTextField(
+                        value = value,
+                        onValueChange = ::typed,
+                        textStyle = if (w.isShell) LocalOfficeType.current.monoBody.copy(fontSize = 15.sp) else MaterialTheme.typography.bodyLarge.copy(color = ThreadPalette.Text),
+                        cursorBrush = SolidColor(ThreadPalette.Accent),
+                        singleLine = w.isShell,
+                        maxLines = if (w.isShell) 1 else if (ime) 3 else 6,
+                        keyboardOptions = if (w.isShell) {
+                            KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Send)
+                        } else {
+                            KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
+                        },
+                        keyboardActions = KeyboardActions(onSend = { send(false) }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(focus).then(keys).semantics { contentDescription = hint.removeSuffix("…") }.tagged(Tags.Worker.INPUT),
+                    )
+                }
+                Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (!w.isShell) {
+                        Box(
+                            Modifier.size(32.dp).clip(control).clickable { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }.tagged(Tags.Worker.ATTACH),
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(Icons.Default.Add, "Attach pictures", tint = ThreadPalette.TextSecondary) }
+                    }
+                    val mode = when {
+                        settings?.interactionMode == "spec" -> "Spec"
+                        settings?.autonomyLevel != null -> settings.autonomyLevel.replaceFirstChar { it.uppercase() } + " Autonomy"
+                        else -> null
+                    }
+                    val model = settings?.modelName ?: settings?.model ?: w.activeModel ?: w.model
+                    val effort = settings?.reasoningEffort ?: w.activeEffort ?: w.effort
+                    val settingsText = listOfNotNull(mode, model, effort?.replaceFirstChar { it.uppercase() }).joinToString(" · ")
+                    Text(
+                        settingsText,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ThreadPalette.TextSecondary),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp).tagged(Tags.Worker.COMPOSER_SETTINGS),
+                    )
+                    settings?.context?.let { context ->
+                        val percent = context.percent ?: context.limit?.let { context.used * 100.0 / it }
+                        Row(Modifier.padding(horizontal = 4.dp).tagged(Tags.Worker.COMPOSER_CONTEXT), verticalAlignment = Alignment.CenterVertically) {
+                            if (percent != null) CircularProgressIndicator(
+                                progress = { (percent / 100).toFloat().coerceIn(0f, 1f) },
+                                modifier = Modifier.size(13.dp),
+                                color = ThreadPalette.Accent,
+                                trackColor = ThreadPalette.Border,
+                                strokeWidth = 1.5.dp,
+                            )
+                            Text(
+                                context.limit?.let { "${ThreadCompose.compactCount(context.used)}/${ThreadCompose.compactCount(it)}" } ?: ThreadCompose.compactCount(context.used),
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, color = ThreadPalette.TextTertiary),
+                                modifier = Modifier.padding(start = 4.dp),
+                            )
+                        }
+                    }
+                    if (queueable) {
+                        Text(
+                            "Queue",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = if (canQueue) ThreadPalette.Text else ThreadPalette.TextTertiary),
+                            modifier = Modifier.clip(control).clickable(enabled = canQueue, role = Role.Button, onClickLabel = "Queue for after this turn") { send(true) }
+                                .semantics { contentDescription = "Queue for after this turn" }.tagged(Tags.Worker.QUEUE_SEND).padding(horizontal = 8.dp, vertical = 8.dp),
+                        )
+                    }
+                    if (onStop != null) {
+                        Box(
+                            Modifier.size(32.dp).clip(control).clickable(enabled = connected, role = Role.Button, onClickLabel = "Stop agent") {
+                                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                                onStop()
+                            }.semantics { contentDescription = "Stop agent" }.tagged(Tags.Worker.STOP),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(Modifier.size(24.dp).background(if (connected) ThreadPalette.StopFill else ThreadPalette.SurfaceHigh, RoundedCornerShape(2.dp)), contentAlignment = Alignment.Center) {
+                                Box(Modifier.size(8.dp).background(if (connected) ThreadPalette.StopMark else ThreadPalette.TextTertiary, RoundedCornerShape(1.dp)))
+                            }
+                        }
+                    }
+                    Box(
+                        Modifier.size(32.dp).clip(control).clickable(enabled = ready) { send(false) }.tagged(Tags.Worker.SEND),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(Modifier.size(24.dp).background(if (ready) ThreadPalette.Text else ThreadPalette.SurfaceHigh, control), contentAlignment = Alignment.Center) {
+                            Icon(OfficeIcons.ArrowUp, if (queueable) "Send now" else "Send", Modifier.size(16.dp), tint = if (ready) ThreadPalette.Bg else ThreadPalette.TextTertiary)
+                        }
+                    }
+                }
+            }
+        } else Row(
+            Modifier.fillMaxWidth().clip(field).background(Palette.Surface)
+                .border(1.dp, Palette.BorderStrong, field)
                 .padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
@@ -361,14 +516,6 @@ fun Composer(
                     Modifier.size(38.dp).clip(control).clickable { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }.tagged(Tags.Worker.ATTACH),
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.Default.Add, "Attach pictures", tint = Palette.TextSecondary) }
-            }
-            val hint = when {
-                w.isShell -> "Run a command…"
-                w.id == ORCHESTRATOR_ID && w.sessionId == null -> "Tell the Orchestrator what you want done…"
-                queueable -> "Steer ${w.name}, or queue for after this turn…"
-                // Factory holds a message sent mid-turn until the turn is over.
-                w.isCloud && w.state.busy -> "Message ${w.name} for after this turn…"
-                else -> "Reply to ${w.name}…"
             }
             Box(Modifier.weight(1f).heightIn(min = 38.dp).padding(horizontal = 8.dp, vertical = 9.dp), contentAlignment = Alignment.CenterStart) {
                 if (text.isEmpty()) Text(
@@ -380,7 +527,6 @@ fun Composer(
                     onValueChange = ::typed,
                     textStyle = if (w.isShell) LocalOfficeType.current.monoBody.copy(fontSize = 15.sp) else MaterialTheme.typography.bodyLarge,
                     cursorBrush = SolidColor(Palette.Accent),
-                    // A shell takes one command line, sent with the keyboard's action key; a prompt can run to paragraphs.
                     singleLine = w.isShell,
                     maxLines = if (w.isShell) 1 else if (ime) 3 else 6,
                     keyboardOptions = if (w.isShell) {
@@ -389,11 +535,9 @@ fun Composer(
                         KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
                     },
                     keyboardActions = KeyboardActions(onSend = { send(false) }),
-                    modifier = Modifier.fillMaxWidth().focusRequester(focus).semantics { contentDescription = hint.removeSuffix("…") }.tagged(Tags.Worker.INPUT),
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus).then(keys).semantics { contentDescription = hint.removeSuffix("…") }.tagged(Tags.Worker.INPUT),
                 )
             }
-            val ready = (text.isNotBlank() || images.isNotEmpty()) && !uploading && connected && !blocked
-            // Esc in Droid's terminal: stops the turn it's on.
             if (onStop != null) {
                 Box(
                     Modifier.padding(end = 6.dp).size(38.dp).clip(control)
@@ -409,11 +553,8 @@ fun Composer(
                     Box(Modifier.size(11.dp).background(if (connected) Palette.Text else Palette.TextTertiary, RoundedCornerShape(1.dp)))
                 }
             }
-            // Ctrl+Enter in a desktop terminal: Droid sends the message once this turn is over. Its
-            // own button beside Send, which steers the turn now, so neither needs a mode switched first.
             if (queueable) {
                 val square = RoundedCornerShape(3.dp)
-                val canQueue = ready && SlashCommands.of(text) == null
                 Box(
                     Modifier.padding(end = 6.dp).height(38.dp).clip(square)
                         .border(1.dp, if (canQueue) Palette.BorderStrong else Palette.Border, square)
@@ -426,10 +567,8 @@ fun Composer(
                     Text("QUEUE", style = LocalOfficeType.current.eyebrow.copy(color = if (canQueue) Palette.Text else Palette.TextTertiary))
                 }
             }
-            // In the thread, Send inverts against the surface (light on dark), so orange stays for what's live.
-            val sendFill = if (!ready) Palette.SurfaceHigh else if (thread) ThreadPalette.Text else Palette.Accent
             Box(
-                Modifier.size(38.dp).clip(control).background(sendFill).clickable(enabled = ready) { send(false) }.tagged(Tags.Worker.SEND),
+                Modifier.size(38.dp).clip(control).background(if (ready) Palette.Accent else Palette.SurfaceHigh).clickable(enabled = ready) { send(false) }.tagged(Tags.Worker.SEND),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(OfficeIcons.ArrowUp, if (queueable) "Send now" else "Send", Modifier.size(20.dp), tint = if (ready) Palette.Bg else Palette.TextTertiary)
@@ -459,7 +598,18 @@ private fun SlashMenu(commands: List<SlashCommands.Command>, thread: Boolean, bu
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
         )
         LazyColumn(Modifier.heightIn(max = 220.dp), state = listState) {
-            items(commands, key = { it.name }) { c ->
+            itemsIndexed(commands, key = { _, c -> c.name }) { i, c ->
+                if (i == 0 || commands[i - 1].source != c.source) {
+                    Text(
+                        when (c.source) {
+                            SlashCommands.Source.Skill -> "Skills"
+                            SlashCommands.Source.Command -> "Custom commands"
+                            null -> "Built-in commands"
+                        },
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = Palette.TextTertiary),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
                 Row(
                     Modifier.fillMaxWidth().clickable(role = Role.Button, onClickLabel = "Use /${c.name}") { onPick(c) }
                         .tagged(Tags.Worker.slash(c.name)).heightIn(min = 44.dp).padding(horizontal = 12.dp, vertical = 6.dp),
@@ -553,7 +703,7 @@ private const val FILES_TTL_MS = 10_000L
  * puts `@path ` in the draft, and tapping a folder puts `@folder/` there to keep narrowing.
  */
 @Composable
-private fun MentionMenu(items: List<WorkspaceMention.Item>, onPick: (WorkspaceMention.Item) -> Unit) {
+private fun MentionMenu(items: List<WorkspaceMention.Item>, searching: Boolean, onPick: (WorkspaceMention.Item) -> Unit) {
     val shape = RoundedCornerShape(4.dp)
     val listState = rememberLazyListState()
     LaunchedEffect(items) { listState.scrollToItem(0) }
@@ -561,6 +711,15 @@ private fun MentionMenu(items: List<WorkspaceMention.Item>, onPick: (WorkspaceMe
         Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(shape).background(Palette.Surface).border(1.dp, Palette.BorderStrong, shape)
             .tagged(Tags.Worker.MENTION_MENU).padding(vertical = 4.dp),
     ) {
+        Text("Files", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = Palette.TextTertiary), modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+        if (items.isEmpty()) {
+            Text(
+                if (searching) "Searching files" else "No files or integrations found",
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp, color = Palette.TextSecondary),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            )
+            return@Column
+        }
         LazyColumn(Modifier.heightIn(max = 220.dp), state = listState) {
             items(items, key = { it.path }) { item ->
                 val dir = item.kind == WorkspaceMention.Kind.Dir

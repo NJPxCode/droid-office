@@ -48,6 +48,19 @@ object ThreadCompose {
     /** The pastes whose token is still in the draft: deleting a token drops its paste. */
     fun livePastes(value: String, pastes: List<PastedText>): List<PastedText> = pastes.filter { value.contains(it.token) }
 
+    /** Context-window counts in the terminal footer's compact form: 900, 12.4k, 1.2M. */
+    fun compactCount(n: Long): String = when {
+        n < 1_000 -> n.toString()
+        n < 1_000_000 -> {
+            val v = n / 1_000.0
+            if (v < 10 && n % 1_000 != 0L) "%.1fk".format(java.util.Locale.US, v) else "%,dk".format(java.util.Locale.US, Math.round(v))
+        }
+        else -> {
+            val v = n / 1_000_000.0
+            if (v < 10 && n % 1_000_000 != 0L) "%.1fM".format(java.util.Locale.US, v) else "%,dM".format(java.util.Locale.US, Math.round(v))
+        }
+    }
+
     /**
      * The draft as it is sent: each paste's first token replaced by its text, in one pass over [value]
      * so a paste whose text happens to contain another paste's token stays as pasted.
