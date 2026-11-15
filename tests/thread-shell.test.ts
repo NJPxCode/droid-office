@@ -21,6 +21,13 @@ test('Factory status copy falls back to worker state and formats times', () => {
     1,
   );
   assert.equal(pickPhrase(1, 0), 0);
+  for (let previous = 0; previous < 3; previous++) {
+    for (const random of [0, 0.5, 0.999999]) {
+      const next = pickPhrase(3, previous, () => random);
+      assert.notEqual(next, previous, 'even a repeated random value must terminate without repeating');
+      assert.ok(next >= 0 && next < 3);
+    }
+  }
   assert.equal(thoughtLabel(25_000), 'Thought for 25s');
   assert.equal(thoughtLabel(undefined), 'Thought');
   const now = Date.UTC(2026, 0, 2, 12);
@@ -72,6 +79,7 @@ test('thread.live parsing replaces only newer views and reads settings and timin
   assert.equal('autonomyLevel' in view!.settings!, false, 'companion settings ignore autonomy metadata');
   assert.equal(liveFrom(msg, 'w1', 's1', view, 11_000), undefined);
   assert.equal(liveFrom({ ...msg, workerId: 'other' }, 'w1', 's1', undefined), undefined);
+  assert.equal(liveFrom({ ...msg, sessionId: undefined }, 'w1', 's1', undefined), undefined, 'unbound live state cannot replace a known session');
   const entry = { id: 'a1', seq: 1, role: 'assistant', kind: 'text', text: 'done', at: 8000, tookMs: 2500 } as ThreadEntry;
   assert.equal(entryAt(entry), 8000);
   assert.equal(entryTook(entry), 2500);
@@ -132,6 +140,11 @@ async function mountShell(t: TestContext) {
       onDraft() {},
       send: async (msg: any) => {
         w.actions.push(msg);
+        if (w.holdSend)
+          return new Promise((resolve, reject) => {
+            w.finishSend = resolve;
+            w.failSend = reject;
+          });
         return undefined;
       },
       raw() {},
@@ -229,6 +242,38 @@ test('Thread shell wires live output, search, rewind, recent prompts and queue a
     }),
     { action: 'promote', index: 1, group: 'queued', text: 'queue this follow-up' },
   );
+  assert.deepEqual(errors, []);
+  await page.evaluate(() => (window as any).thread.dispose());
+});
+
+test('rewind confirmation locks its exact choices until completion and recovers from a rejected send', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountShell(t);
+  const entries = [{ id: 'u1', seq: 1, role: 'user', kind: 'text', text: 'Exact rewind target preview' }] as ThreadEntry[];
+  await page.evaluate(
+    ({ entries, rows }) => {
+      const w = window as any;
+      w.holdSend = true;
+      w.thread.update({ ...w.worker, status: 'idle' }, true);
+      w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+    },
+    { entries, rows: presentThread(entries, false) },
+  );
+  await page.locator('[data-entry="u1"]').hover();
+  await page.getByRole('button', { name: 'Rewind conversation to this message' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Rewind Conversation' });
+  assert.match(await dialog.innerText(), /Exact rewind target preview/);
+  assert.doesNotMatch(await dialog.innerText(), /Changed files will not be reverted/);
+  await page.getByRole('button', { name: 'Rewind', exact: true }).click();
+  assert.equal(await dialog.locator('input:not(:disabled), button:not(:disabled)').count(), 0);
+  await page.keyboard.press('Escape');
+  await page.locator('.backdrop').dispatchEvent('mousedown');
+  assert.equal(await dialog.isVisible(), true);
+  await page.evaluate(() => (window as any).failSend(new Error('Network disconnected')));
+  await page.waitForFunction(() => document.querySelector('.wt-rewind-error')?.textContent === 'Network disconnected');
+  assert.equal(await dialog.locator('input:disabled, button:disabled').count(), 0);
+  await page.getByRole('button', { name: 'Rewind', exact: true }).click();
+  await page.evaluate(() => (window as any).finishSend(undefined));
+  await dialog.waitFor({ state: 'detached' });
   assert.deepEqual(errors, []);
   await page.evaluate(() => (window as any).thread.dispose());
 });

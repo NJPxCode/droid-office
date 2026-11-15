@@ -58,6 +58,73 @@ test('golden rewind menu and file restoration screens', () => {
   assert.equal(rewindProcessing(['Auto (High) (Please wait)']), true);
   assert.equal(rewindWithoutFiles([' │ No file changes found for this rewind point │', ' Press Esc to continue without restoration']), true);
 });
+test('old completion text cannot bypass restoration or submit its choice more than once', async () => {
+  let phase = 'input';
+  let restorationPolls = 0;
+  let submitted = 0;
+  const result = await driveDroidRewind(
+    {
+      write(data) {
+        if (data !== '\r') return;
+        if (phase === 'input') phase = 'menu';
+        else if (phase === 'menu') phase = 'restore';
+        else if (phase === 'restore') submitted++;
+      },
+      rows: () => {
+        if (phase === 'menu') return [...REWOUND, ...MENU_OLDER];
+        if (phase === 'restore') {
+          if (submitted && ++restorationPolls >= 4) phase = 'done';
+          else return [...REWOUND, ...RESTORE_NONE];
+        }
+        return phase === 'done' ? REWOUND : [];
+      },
+    },
+    { number: 4, preview: 'Use the Create tool to create notes.txt' },
+    'conversation',
+  );
+  assert.deepEqual(result, { ok: true });
+  assert.equal(submitted, 1);
+});
+
+test('no-files continuation sends one Escape even when its screen persists across polls', async () => {
+  let phase = 'input';
+  let polls = 0;
+  let escapes = 0;
+  const result = await driveDroidRewind(
+    {
+      write(data) {
+        if (data === '\r') phase = phase === 'input' ? 'menu' : 'no-files';
+        if (data === '\x1b') escapes++;
+      },
+      rows: () => (phase === 'menu' ? MENU_OLDER : phase === 'no-files' && ++polls < 5 ? [' │ No file changes found for this rewind point │', ' Press Esc to continue without restoration'] : phase === 'no-files' ? REWOUND : []),
+    },
+    { number: 4, preview: 'Use the Create tool to create notes.txt' },
+    'conversation',
+  );
+  assert.deepEqual(result, { ok: true });
+  assert.equal(escapes, 1);
+});
+
+test('a preview sharing only its first sixty characters is not the same rewind point', async () => {
+  const prefix = 'This deliberately long common prefix belongs to two different conversation forks ';
+  const changed = MENU.map((line) => line.replace('Reply with just the word: two', prefix + 'wrong ending'));
+  let opened = false;
+  let enters = 0;
+  const result = await driveDroidRewind(
+    {
+      write(data) {
+        if (data === '/rewind-conversation') opened = true;
+        if (data === '\r') enters++;
+      },
+      rows: () => (opened ? changed : []),
+    },
+    { number: 12, preview: prefix + 'correct ending' },
+    'conversation',
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? '', /conversation changed/);
+  assert.equal(enters, 1);
+});
 
 test('the driver selects the older message, conversation-only, and clears the prefilled prompt', async () => {
   let screen: string[] = [];
@@ -203,4 +270,27 @@ test('a rewind point beyond 120 prompts remains reachable in the descending pick
   assert.deepEqual(result, { ok: true });
   assert.equal(selected, 1, 'select the exact oldest duplicate prompt');
   assert.ok(down > 120);
+});
+
+test('a slow fork keeps waiting past five seconds without mistaking a previous completion for success', async () => {
+  let phase = 'input';
+  let processingSince = 0;
+  const started = Date.now();
+  const result = await driveDroidRewind(
+    {
+      write(data) {
+        if (data !== '\r') return;
+        if (phase === 'input') phase = 'menu';
+        else if (phase === 'menu') {
+          phase = 'processing';
+          processingSince = Date.now();
+        }
+      },
+      rows: () => (phase === 'menu' ? MENU_OLDER : phase === 'processing' && Date.now() - processingSince < 6_000 ? [...REWOUND, 'Auto (High) (Please wait)'] : phase === 'processing' ? REWOUND : []),
+    },
+    { number: 4, preview: 'Use the Create tool to create notes.txt' },
+    'conversation',
+  );
+  assert.deepEqual(result, { ok: true });
+  assert.ok(Date.now() - started >= 6_000);
 });

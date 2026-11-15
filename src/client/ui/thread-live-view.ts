@@ -63,7 +63,7 @@ function settingsOf(raw: unknown): LiveSettings | undefined {
 export function liveFrom(msg: unknown, workerId: string, sessionId: string | undefined, previous: LiveView | undefined, now = Date.now()): LiveView | undefined {
   const m = obj(msg);
   if (m?.t !== 'thread.live' || m.workerId !== workerId) return undefined;
-  if (sessionId && typeof m.sessionId === 'string' && m.sessionId !== sessionId) return undefined;
+  if (m.sessionId !== sessionId) return undefined;
   const live = obj(m.live);
   const rev = num(live?.rev);
   const at = num(live?.at);

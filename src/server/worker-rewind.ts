@@ -1,4 +1,4 @@
-import { readRewindMenu, readRewindRestore, rewindWithoutFiles, rewound, type RewindMenu } from '../shared/thread-rewind.js';
+import { readRewindMenu, readRewindRestore, rewindProcessing, rewindWithoutFiles, rewound, type RewindMenu } from '../shared/thread-rewind.js';
 import { textSignature } from '../shared/thread-live.js';
 
 export interface RewindDriveTarget {
@@ -20,7 +20,7 @@ const ESC = '\x1b';
 function samePreview(shown: string, text: string): boolean {
   const a = textSignature(shown);
   const b = textSignature(text);
-  return !!a && !!b && (b.startsWith(a) || a.startsWith(b.slice(0, 60)));
+  return !!a && !!b && (b.startsWith(a) || a.startsWith(b));
 }
 
 /**
@@ -80,20 +80,28 @@ export async function driveDroidRewind(io: { write(data: string): void; rows(): 
   io.write('\r');
 
   let restored = restore === 'conversation';
-  for (let attempt = 0; attempt < 100; attempt++) {
+  let submitted = false;
+  let dismissed = false;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
     await pause(50);
     const current = rows();
-    if (rewound(current)) {
-      // Droid puts the rewound prompt back in its input; the client prefills its own composer.
-      io.write('\x15');
-      return { ok: true };
-    }
+    if (readRewindMenu(current) || rewindProcessing(current)) continue;
     if (rewindWithoutFiles(current)) {
-      io.write(ESC);
+      if (!dismissed) io.write(ESC);
+      dismissed = true;
       continue;
     }
     const options = readRewindRestore(current);
-    if (!options) continue;
+    if (!options) {
+      if (rewound(current)) {
+        // Droid puts the rewound prompt back in its input; the client prefills its own composer.
+        io.write('\x15');
+        return { ok: true };
+      }
+      continue;
+    }
+    if (submitted) continue;
     const label = restore === 'files' ? 'Restore all files' : "Don't restore files";
     const wanted = options.findIndex((option) => option.label === label);
     const selected = options.findIndex((option) => option.selected);
@@ -101,6 +109,7 @@ export async function driveDroidRewind(io: { write(data: string): void; rows(): 
     if (wanted === selected) {
       io.write('\r');
       restored = true;
+      submitted = true;
     } else io.write(wanted > selected ? DOWN : UP);
   }
   return fail(restored ? 'Droid did not finish rewinding its conversation.' : 'Droid did not finish restoring the rewind point.');

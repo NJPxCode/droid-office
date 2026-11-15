@@ -51,8 +51,8 @@ const leaf = (name = '') => name.split(/[.:/]/).at(-1)?.toLowerCase() ?? '';
 
 function tokens(value: unknown): ThreadTokens | undefined {
   const t = object(value);
-  if (!Object.keys(t).length) return undefined;
-  const credits = typeof t.factoryCredits === 'number' ? { credits: t.factoryCredits } : {};
+  if (!['inputTokens', 'outputTokens', 'cacheCreationTokens', 'cacheReadTokens', 'thinkingTokens', 'factoryCredits'].some((key) => typeof t[key] === 'number' && Number.isFinite(t[key]))) return undefined;
+  const credits = typeof t.factoryCredits === 'number' && Number.isFinite(t.factoryCredits) ? { credits: t.factoryCredits } : {};
   return { input: num(t.inputTokens), output: num(t.outputTokens), cacheCreation: num(t.cacheCreationTokens), cacheRead: num(t.cacheReadTokens), thinking: num(t.thinkingTokens), ...credits };
 }
 
@@ -74,7 +74,7 @@ export function readSessionSettings(raw: unknown): ThreadSessionSettings {
     const used = last.input + last.cacheRead + last.cacheCreation + last.output;
     if (used > 0) out.context = { used };
   }
-  if (typeof s.assistantActiveTimeMs === 'number') out.activeMs = s.assistantActiveTimeMs;
+  if (typeof s.assistantActiveTimeMs === 'number' && Number.isFinite(s.assistantActiveTimeMs) && s.assistantActiveTimeMs >= 0) out.activeMs = s.assistantActiveTimeMs;
   return out;
 }
 
@@ -164,7 +164,7 @@ export class ThreadLiveTracker {
       const name = merged.model ? inputs.modelName?.(merged.model) : undefined;
       if (name ?? screen?.model) merged.modelName = name ?? screen?.model;
       if (screen?.contextPercent !== undefined && merged.context) {
-        merged.context = { ...merged.context, percent: screen.contextPercent, ...(screen.contextPercent > 0 ? { limit: Math.round((merged.context.used * 100) / screen.contextPercent) } : {}) };
+        merged.context = { ...merged.context, percent: screen.contextPercent };
       }
     }
 
@@ -261,12 +261,12 @@ function safeJson(text: string | undefined): unknown {
 
 /** Whether a message read off the screen is already in the conversation file. */
 function landed(text: string, entries: readonly ThreadEntry[]): boolean {
-  const shown = textSignature(text).slice(0, 80);
+  const shown = textSignature(text);
   if (!shown) return true;
-  for (let i = entries.length - 1, seen = 0; i >= 0 && seen < 6; i--) {
+  for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
+    if (entry.role === 'user' && entry.kind === 'text') break;
     if (entry.role !== 'assistant' || (entry.kind !== 'text' && entry.kind !== 'thinking') || !entry.text) continue;
-    seen++;
     if (textSignature(entry.text).includes(shown)) return true;
   }
   return false;

@@ -234,9 +234,9 @@ export function statusPhrases(mode: ThreadStatusMode): readonly string[] {
 /** A random index into a pool of [size], other than [previous] when there is a choice. */
 export function pickPhrase(size: number, previous: number, random: () => number = Math.random): number {
   if (size <= 1) return 0;
-  let next = previous;
-  while (next === previous) next = Math.floor(random() * size);
-  return next;
+  const excluding = previous >= 0 && previous < size;
+  const next = Math.floor(random() * (excluding ? size - 1 : size));
+  return excluding && next >= previous ? next + 1 : next;
 }
 
 /** "12s": whole seconds, at least 1, as Factory's thinking block counts them. */

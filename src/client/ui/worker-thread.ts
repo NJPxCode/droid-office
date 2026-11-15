@@ -1779,6 +1779,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   const rewindConversation = (entryId: string) => {
     openThreadRewind({
       busy: isBusy(worker.status),
+      text: history.entries.find((entry) => entry.id === entryId)?.text,
       send: async (restore) => {
         const msg = { t: 'worker.rewind', id: worker.id, workerId: worker.id, entryId, restore } as unknown as ClientMsg;
         const why = await opts.send(msg);

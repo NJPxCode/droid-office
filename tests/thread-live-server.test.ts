@@ -36,6 +36,22 @@ test('session settings use Droid’s token fields and the next call’s context'
     },
   );
 });
+test('unknown token fields and invalid active times do not fabricate usage', () => {
+  assert.deepEqual(readSessionSettings({ tokenUsage: { unknown: 99 }, inclusiveTokenUsage: {}, lastCallTokenUsage: { futureField: 1 }, assistantActiveTimeMs: Infinity }), {});
+  assert.equal(readSessionSettings({ assistantActiveTimeMs: -1 }).activeMs, undefined);
+  assert.deepEqual(readSessionSettings({ tokenUsage: { inputTokens: 0 } }).tokens, { input: 0, output: 0, cacheCreation: 0, cacheRead: 0, thinking: 0 });
+});
+
+test('an earlier turn saying the same words cannot suppress the current live response', async () => {
+  const tracker = new ThreadLiveTracker(() => 5000);
+  const inputs = { ...base(), status: 'working' as const, screen: ['⛬  OK', '', ' ⠰ Streaming...  (Press ESC to stop)', '', '╭────╮', '│ > │', '╰────╯'] };
+  const oldReply = entry('old', { text: 'OK' });
+  const prompt = entry('new', { role: 'user', text: 'Reply with OK' });
+  const current = await tracker.compute('w', inputs, [oldReply, prompt]);
+  assert.equal(current.live.stream?.text, 'OK');
+  const canonical = await tracker.compute('w', inputs, [oldReply, prompt, entry('landed', { text: 'OK' })]);
+  assert.equal(canonical.live.stream, undefined);
+});
 
 test('idle live state still carries settings, and an unchanged computation keeps its rev', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'office-live-settings-'));
@@ -50,7 +66,7 @@ test('idle live state still carries settings, and an unchanged computation keeps
   assert.equal(first.live.status, 'idle');
   assert.equal(first.live.settings?.model, 'claude-haiku-5-5');
   assert.equal(first.live.settings?.modelName, 'Haiku 5.5 (Low)');
-  assert.deepEqual(first.live.settings?.context, { used: 1000, percent: 5, limit: 20000 });
+  assert.deepEqual(first.live.settings?.context, { used: 1000, percent: 5 }, 'a rounded footer percent does not establish a context-window limit');
   assert.equal(first.live.after, 'last');
   now += 1000;
   const second = await tracker.compute('w', inputs, [entry('last')], file);
