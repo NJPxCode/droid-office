@@ -46,7 +46,7 @@ type Fixture = {
 
 /** Keep the Droid CLI in this test fixture from seeing a user's config or credentials. */
 function isolateAgentEnvironment(f: Fixture, t: { after(fn: () => void): void }) {
-  const previous = {
+  const previous: Record<string, string | undefined> = {
     PATH: process.env.PATH,
     HOME: process.env.HOME,
     USERPROFILE: process.env.USERPROFILE,
@@ -64,12 +64,15 @@ function isolateAgentEnvironment(f: Fixture, t: { after(fn: () => void): void })
   process.env.XDG_DATA_HOME = path.join(f.root, 'xdg-data');
   process.env.XDG_STATE_HOME = path.join(f.root, 'xdg-state');
   process.env.XDG_CACHE_HOME = path.join(f.root, 'xdg-cache');
-  // Delete by variable name only. Do not read or log any credential value.
+  // Keep credential values only in memory to restore the parent environment; never log them.
   for (const key of Object.keys(process.env)) {
     // These are the office hook variables used by the in-process tests;
     // they are synthetic protocol values, not credentials.
     if (key.startsWith('DROID_OFFICE_')) continue;
-    if (/(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|SECRET|PASSWORD|CREDENTIAL|TOKEN)/i.test(key)) delete process.env[key];
+    if (/(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|SECRET|PASSWORD|CREDENTIAL|TOKEN)/i.test(key)) {
+      previous[key] = process.env[key];
+      delete process.env[key];
+    }
   }
   t.after(() => {
     for (const [key, value] of Object.entries(previous)) {

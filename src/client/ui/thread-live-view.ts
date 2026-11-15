@@ -18,7 +18,6 @@ export interface LiveSettings {
   modelName?: string;
   reasoningEffort?: string;
   interactionMode?: string;
-  autonomyLevel?: string;
   context?: { used: number; percent?: number; limit?: number };
 }
 
@@ -53,7 +52,6 @@ function settingsOf(raw: unknown): LiveSettings | undefined {
     modelName: str(s.modelName),
     reasoningEffort: str(s.reasoningEffort),
     interactionMode: str(s.interactionMode),
-    autonomyLevel: str(s.autonomyLevel),
     ...(used !== undefined ? { context: { used, percent: num(context?.percent), limit: num(context?.limit) } } : {}),
   };
 }
@@ -109,20 +107,6 @@ export const entryAt = (entry: ThreadEntry | undefined): number | undefined => n
 export const entryTook = (entry: ThreadEntry | undefined): number | undefined => num((entry as { tookMs?: unknown } | undefined)?.tookMs);
 
 const EFFORT: Record<string, string> = { off: 'Off', none: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
-const AUTONOMY: Record<string, string> = { off: 'Autonomy off', low: 'Low Autonomy', medium: 'Medium Autonomy', high: 'High Autonomy' };
-const AUTONOMY_HINT: Record<string, string> = {
-  off: 'Always ask before editing files or running commands',
-  low: 'Edit files freely, ask before running commands',
-  medium: "Only ask for commands that can't be undone",
-  high: 'Run most commands without asking',
-};
 
 /** "High" for a `reasoningEffort` id. */
 export const effortLabel = (effort: string | undefined) => (effort ? (EFFORT[effort.toLowerCase()] ?? effort) : undefined);
-
-/** "High Autonomy" and its Factory description for an `autonomyLevel`. */
-export function autonomyLabel(level: string | undefined): { label: string; hint: string; bars: number } | undefined {
-  const key = level?.toLowerCase();
-  if (!key || !AUTONOMY[key]) return undefined;
-  return { label: AUTONOMY[key], hint: AUTONOMY_HINT[key], bars: key === 'off' ? 0 : key === 'low' ? 1 : key === 'medium' ? 2 : 3 };
-}

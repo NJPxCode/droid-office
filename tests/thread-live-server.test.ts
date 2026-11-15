@@ -83,8 +83,12 @@ test('an ExitSpecMode wait attaches to its tool row, and rewind is explicit', as
   assert.equal(live.status, 'waiting');
   assert.deepEqual(live.waiting, { kind: 'spec', toolId: 'tool:spec' });
   assert.equal(live.tools[0].phase, 'waiting_permission');
-  const rewinding = await tracker.compute('w', { ...base(), rewind: { entryId: 'abc:text', since: 4000 } }, [waiting]);
+  const rewinding = await tracker.compute('w', { ...inputs, rewind: { entryId: 'abc:text', since: 4000 } }, [waiting]);
   assert.equal(rewinding.live.status, 'idle');
   assert.equal(rewinding.live.label, 'Rewinding conversation...');
   assert.deepEqual(rewinding.live.rewind, { entryId: 'abc:text', since: 4000 });
+  assert.equal(rewinding.changed, true);
+  assert.equal(rewinding.live.working, 'idle');
+  assert.deepEqual(rewinding.live.tools, []);
+  assert.equal(rewinding.live.waiting, undefined);
 });

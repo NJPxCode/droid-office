@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test, type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
-import { autonomyLabel, entryAt, entryTook, liveFrom } from '../src/client/ui/thread-live-view.js';
+import { entryAt, entryTook, liveFrom } from '../src/client/ui/thread-live-view.js';
 import { browserStatus, closeBrowser, launchBrowser, newIsolatedContext } from '../src/server/whiteboard-browser.js';
 import type { WorkerInfo } from '../src/shared/protocol.js';
 import { presentThread } from '../src/shared/thread-presentation.js';
@@ -49,16 +49,12 @@ test('thread.live parsing replaces only newer views and reads settings and timin
   assert.equal(view?.stream?.text, 'draft');
   assert.equal(view?.tools[0]?.id, 'tool:1');
   assert.equal(view?.settings?.modelName, 'Opus 5.5');
+  assert.equal('autonomyLevel' in view!.settings!, false, 'companion settings ignore autonomy metadata');
   assert.equal(liveFrom(msg, 'w1', 's1', view, 11_000), undefined);
   assert.equal(liveFrom({ ...msg, workerId: 'other' }, 'w1', 's1', undefined), undefined);
   const entry = { id: 'a1', seq: 1, role: 'assistant', kind: 'text', text: 'done', at: 8000, tookMs: 2500 } as ThreadEntry;
   assert.equal(entryAt(entry), 8000);
   assert.equal(entryTook(entry), 2500);
-  assert.deepEqual(autonomyLabel('medium'), {
-    label: 'Medium Autonomy',
-    hint: "Only ask for commands that can't be undone",
-    bars: 2,
-  });
 });
 
 const status = browserStatus();
@@ -161,7 +157,7 @@ test('Thread shell wires live output, search, rewind, recent prompts and queue a
   assert.match(await page.locator('.wt-live-tool').innerText(), /partial output/);
   assert.match(await page.locator('.wt-model').innerText(), /Opus 5.5/);
   assert.equal(await page.locator('.wt-mode').isVisible(), true);
-  assert.match(await page.locator('.wt-autonomy').innerText(), /High Autonomy/);
+  assert.equal(await page.locator('.wt-autonomy, [aria-label*="autonomy" i], [title*="change autonomy" i]').count(), 0, 'Thread exposes no autonomy display or control');
 
   await page.locator('.wt-scroll').press('Control+f');
   await page.locator('.wt-search-input').fill('uniqueNeedle');

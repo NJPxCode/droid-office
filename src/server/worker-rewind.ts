@@ -54,24 +54,20 @@ export async function driveDroidRewind(io: { write(data: string): void; rows(): 
   // Selection starts on the newest message. Rows scroll as the selection moves, so match again
   // after every key rather than trusting the first two visible rows.
   let previous = '';
-  let chosen = false;
   const visited = new Set<number>();
   for (;;) {
     const current = rows();
     menu = readRewindMenu(current);
     if (!menu) return fail('Droid closed its rewind menu before a message was selected.');
-    const numbered = menu.rows.find((row) => row.number === target.number);
+    const index = menu.rows.findIndex((row) => row.number === target.number);
+    const numbered = menu.rows[index];
     if (numbered && !samePreview(numbered.preview, target.preview)) return fail('The active conversation changed. Read the Thread again before rewinding.');
-    const index = numbered ? menu.rows.indexOf(numbered) : -1;
     const selected = menu.rows.findIndex((row) => row.selected);
     const currentNumber = menu.rows[selected]?.number;
     if (currentNumber === undefined || visited.has(currentNumber)) return fail('The requested message is not in Droid’s rewind menu.');
     visited.add(currentNumber);
     if (index >= 0) {
-      if (selected === index) {
-        chosen = true;
-        break;
-      }
+      if (selected === index) break;
       io.write(index > selected ? DOWN : UP);
     } else {
       io.write(target.number < currentNumber ? DOWN : UP);
@@ -81,7 +77,6 @@ export async function driveDroidRewind(io: { write(data: string): void; rows(): 
     if (signature === previous) return fail('The requested message is not in Droid’s rewind menu.');
     previous = signature;
   }
-  if (!chosen) return fail('The requested message is not in Droid’s rewind menu.');
   io.write('\r');
 
   let restored = restore === 'conversation';

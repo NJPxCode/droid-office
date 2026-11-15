@@ -339,9 +339,10 @@ function genericRow(action: ThreadModelAction, entry: ThreadEntry | undefined, c
 /** An exploration call inside a summary group: one dense line; a Read opens its file. */
 function exploreRow(action: ThreadModelAction, entry: ThreadEntry | undefined, ctx: ThreadActivityContext, rowLive: boolean): HTMLElement {
   const state = rowState(action, rowLive, undefined);
-  const path = action.icon === 'read' ? argumentsOf(entry).file_path : undefined;
+  const args = argumentsOf(entry);
+  const path = action.icon === 'read' ? args.file_path : undefined;
   const rel = typeof path === 'string' && ctx.onOpenPath && state === 'complete' ? toWorkspaceRelPath(path, ctx.floorDir) : null;
-  const offset = argumentsOf(entry).offset;
+  const offset = args.offset;
   const withImages = !!entry?.images?.length;
   return toolRow({
     id: action.id,

@@ -125,7 +125,7 @@ export class ThreadLiveTracker {
       this.workers.set(workerId, state);
     }
     const screen = inputs.screen ? readLiveScreen(inputs.screen) : undefined;
-    const busy = inputs.status === 'working' || inputs.status === 'starting' || inputs.status === 'needs_input';
+    const busy = !inputs.rewind && (inputs.status === 'working' || inputs.status === 'starting' || inputs.status === 'needs_input');
     const waitingFor = busy ? this.waiting(inputs) : undefined;
     let working: ThreadLiveWorking = 'idle';
     if (inputs.rewind) working = 'idle';

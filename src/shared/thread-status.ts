@@ -213,19 +213,13 @@ export const STATUS_STATIC: Readonly<Record<Exclude<ThreadStatusMode, 'idle'>, s
   compacting: STATUS_COMPACTING,
 };
 
-const MODES = new Set<string>(['idle', 'pondering', 'responding', 'waiting', 'compacting']);
-
 /**
  * The status row's mode: the live layer's when the office sends one, else what the worker's status says
  * (a turn running is pondering, a question or permission is waiting).
  */
 export function statusMode(live: string | undefined, status: WorkerStatus | undefined): ThreadStatusMode {
   if (status === 'needs_input') return 'waiting';
-  if (live && MODES.has(live)) {
-    // A live layer that went idle while the worker still reports a turn keeps the row up until the status follows.
-    if (live === 'idle' && (status === 'working' || status === 'starting')) return 'pondering';
-    return live as ThreadStatusMode;
-  }
+  if (live === 'pondering' || live === 'responding' || live === 'waiting' || live === 'compacting') return live;
   return status === 'working' || status === 'starting' ? 'pondering' : 'idle';
 }
 

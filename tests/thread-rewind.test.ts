@@ -152,7 +152,8 @@ test('reader-generated ids resolve duplicate prompts to their own seq, including
 });
 
 test('a session fork during the async entry lookup refuses before touching the terminal', async () => {
-  const worker = { info: { kind: 'agent', name: 'Ada', sessionId: 'forked-session', status: 'idle' } };
+  const writes: string[] = [];
+  const worker = { info: { kind: 'agent', name: 'Ada', sessionId: 'forked-session', status: 'idle' }, pty: { write: (data: string) => writes.push(data) } };
   const manager = Object.create(WorkerManager.prototype) as WorkerManager;
   Reflect.set(manager, 'workers', new Map([['worker', worker]]));
   const result = await manager.rewind('worker', 'first:0', 'original-session', { number: 3, preview: 'Repeat this exact prompt' }, 'conversation');
@@ -160,19 +161,21 @@ test('a session fork during the async entry lookup refuses before touching the t
   assert.match(result.error ?? '', /conversation changed/);
   assert.equal(worker.info.sessionId, 'forked-session');
   assert.equal(Reflect.get(worker, 'rewind'), undefined);
+  assert.deepEqual(writes, []);
 });
 
 test('a rewind point beyond 120 prompts remains reachable in the descending picker', async () => {
   let number = 132;
   let phase = 'input';
   let down = 0;
+  let selected: number | undefined;
   const result = await driveDroidRewind(
     {
       write(data) {
         if (data === '\r') {
           if (phase === 'input') phase = 'menu';
           else if (phase === 'menu') {
-            assert.equal(number, 1, 'select the exact oldest duplicate prompt');
+            selected = number;
             phase = 'restore';
           } else if (phase === 'restore') phase = 'done';
         } else if (data === '\x1b[B' && phase === 'menu') {
@@ -198,5 +201,6 @@ test('a rewind point beyond 120 prompts remains reachable in the descending pick
     'conversation',
   );
   assert.deepEqual(result, { ok: true });
+  assert.equal(selected, 1, 'select the exact oldest duplicate prompt');
   assert.ok(down > 120);
 });

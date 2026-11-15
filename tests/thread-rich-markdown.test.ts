@@ -606,9 +606,14 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
     const waitUntil = (check: () => boolean) =>
       check()
         ? Promise.resolve()
-        : new Promise<void>((resolve) => {
+        : new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              obs.disconnect();
+              reject(new Error('Timed out waiting for rich Markdown rendering'));
+            }, 10_000);
             const obs = new MutationObserver(() => {
               if (check()) {
+                clearTimeout(timer);
                 obs.disconnect();
                 resolve();
               }
@@ -638,7 +643,10 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
     const brokenSource = 'flowchart LR\n  A -->';
     const brokenCard = w.RichMD.renderThreadMermaid(brokenSource) as HTMLElement;
     document.getElementById('root')!.append(brokenCard);
-    await w.RichMD.renderMermaidSvg(brokenSource).catch(() => {});
+    const brokenRejected = await w.RichMD.renderMermaidSvg(brokenSource).then(
+      () => false,
+      () => true,
+    );
     await waitUntil(() => Boolean(brokenCard.querySelector('.wt-md-code')));
     const brokenStaysSource = brokenCard.querySelector('.wt-md-code-lang')?.textContent === 'mermaid' && !brokenCard.querySelector('.wt-mermaid-stage svg');
 
@@ -690,6 +698,7 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
       openedRefs,
       userHasCodeCopy: Boolean(userEl.querySelector('.wt-md-code-copy')),
       cachedImmediateSvg,
+      brokenRejected,
       actionsOpen,
       zoomModalOpen,
       brokenStaysSource,
@@ -713,6 +722,7 @@ test('real Chromium DOM renders rich Thread Markdown, MathML, Mermaid LRU & Zoom
   assert.deepEqual(result.openedRefs, [{ path: 'src/client/ui/dom.ts', line: 12, endLine: 14 }, { path: 'package.json' }]);
   assert.equal(result.userHasCodeCopy, true);
   assert.equal(result.cachedImmediateSvg, true);
+  assert.equal(result.brokenRejected, true);
   assert.equal(result.actionsOpen, true);
   assert.equal(result.zoomModalOpen, true);
   assert.equal(result.brokenStaysSource, true);
@@ -728,6 +738,8 @@ test('real Chromium points Thread Markdown images of files on the office machine
   const context = await newIsolatedContext(browser);
   t.after(() => context.close());
   const page = await context.newPage();
+  const pageErrors: string[] = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message));
   const bundle = buildSync({
     stdin: { contents: `export { threadMarkdown } from './src/client/ui/thread-markdown.ts';`, resolveDir: fileURLToPath(new URL('../', import.meta.url)), sourcefile: 'md-images-entry.ts', loader: 'ts' },
     bundle: true,
@@ -770,4 +782,5 @@ test('real Chromium points Thread Markdown images of files on the office machine
     ],
     'without imageUrl, images keep their own src (and the sanitizer drops file: URLs)',
   );
+  assert.deepEqual(pageErrors, []);
 });

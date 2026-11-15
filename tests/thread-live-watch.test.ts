@@ -19,6 +19,8 @@ const liveState = (rev: number, label?: string): ThreadLive => ({ rev, at: 1000 
 test('snapshot digests notice entry times and a Task child discovered after the call', () => {
   const base = { sessionId: 's1', entries: [{ id: 'tool:c1', role: 'assistant' as const, kind: 'tool' as const, name: 'Task', seq: 0 }], hasMore: false };
   const initial = threadPageDigest(base, false);
+  assert.equal(threadPageDigest(base, false), initial);
+  assert.notEqual(threadPageDigest(base, true), initial);
   assert.notEqual(threadPageDigest({ ...base, entries: [{ ...base.entries[0], at: 100 }] }, false), initial);
   assert.notEqual(threadPageDigest({ ...base, entries: [{ ...base.entries[0], doneAt: 200 }] }, false), initial);
   assert.notEqual(threadPageDigest({ ...base, entries: [{ ...base.entries[0], tookMs: 20 }] }, false), initial);

@@ -37,8 +37,8 @@ export interface DroidSlashCommand {
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'compress', aliases: ['compact'], description: 'Compress the session in place. Add instructions to shape the summary', kind: 'thread' },
-  { name: 'clear', description: 'Clear the conversation, keeping the model and autonomy', kind: 'thread' },
-  { name: 'new', description: 'Start a fresh session with the default model and autonomy', kind: 'thread' },
+  { name: 'clear', description: 'Clear the conversation, keeping the model', kind: 'thread' },
+  { name: 'new', description: 'Start a fresh session with the default model', kind: 'thread' },
   { name: 'handoff', description: 'Start a new session with a summary of this one', kind: 'thread' },
   { name: 'fast', description: 'Turn fast mode on for the current model (/fast off to turn it off)', kind: 'thread' },
   { name: 'favorite', aliases: ['pin'], description: 'Pin this session for quick access', kind: 'thread' },

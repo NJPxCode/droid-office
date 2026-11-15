@@ -215,7 +215,7 @@ export function renderEmailDraft(draft: EmailDraft, opts: { streaming?: boolean 
 
   const sync = () => {
     const now = current();
-    const edited = now.to !== original.to || (now.cc ?? '') !== (original.cc ?? '') || (now.bcc ?? '') !== (original.bcc ?? '') || (now.subject ?? '') !== (original.subject ?? '') || now.body !== original.body;
+    const edited = (['to', 'cc', 'bcc', 'subject', 'body'] as const).some((key) => (now[key] ?? '') !== (original[key] ?? ''));
     title.textContent = edited ? 'Email draft · Edited' : 'Email draft';
     revert.hidden = !edited;
   };

@@ -18,7 +18,7 @@ import { withToken } from '../token';
 import { syncHorizontalScrollCue } from './code-highlight';
 import { h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
-import { liveFrom, entryAt, entryTook, autonomyLabel, effortLabel, type LiveTool, type LiveView } from './thread-live-view';
+import { liveFrom, entryAt, entryTook, effortLabel, type LiveTool, type LiveView } from './thread-live-view';
 import { refreshMessageTimes, threadMessageActions } from './thread-message-actions';
 import { openThreadRewind } from './thread-rewind';
 import { ThreadScrollMotion } from './thread-scroll-motion';
@@ -782,17 +782,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     file.value = '';
   });
   const attach = h('button.btn.icon.sm.ghost.wt-attach', { type: 'button', 'aria-label': 'Add files and images', title: 'Add files and images', onclick: () => file.click() }, icon('plus', 15));
-  const autonomyChip = h('button.wt-setting.wt-autonomy', { type: 'button', hidden: true, onclick: () => opts.raw?.() });
   const modelChip = h('button.wt-setting.wt-model', { type: 'button', hidden: true, onclick: () => opts.raw?.() });
   const modeChip = h('span.wt-setting.wt-mode', { hidden: true }, 'Spec');
   const paintSettings = () => {
     const settings = liveView?.settings;
-    const autonomy = autonomyLabel(settings?.autonomyLevel);
-    autonomyChip.hidden = !autonomy;
-    if (autonomy) {
-      autonomyChip.replaceChildren(h('span.wt-autonomy-bars', { 'aria-hidden': 'true' }, ...[1, 2, 3].map((bar) => h('i', { class: bar <= autonomy.bars ? 'on' : '' }))), h('span', {}, autonomy.label));
-      autonomyChip.title = `${autonomy.hint}. Open Raw TTY to change autonomy.`;
-    }
     const model = settings?.modelName ?? settings?.model;
     const effort = effortLabel(settings?.reasoningEffort);
     modelChip.hidden = !model;
@@ -808,7 +801,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   const send = h('button.btn.sm.primary.wt-send', { type: 'submit' }, sendLabel, icon('arrowUp', 14));
   const stop = h('button.btn.sm.wt-stop', { type: 'button', 'aria-label': 'Stop turn', title: 'Cancel  Esc', onclick: () => stopTurn() }, h('span.wt-stop-symbol', { 'aria-hidden': true }), h('span.wt-stop-label', {}, 'Stop'));
   const hint = h('span.wt-send-hint');
-  const box = h('div.wt-compose-box', {}, images.element, pasteChips, input, h('div.wt-compose-bar', {}, attach, autonomyChip, modeChip, modelChip, hint, h('div.wt-send-buttons', {}, stop, queue, send)));
+  const box = h('div.wt-compose-box', {}, images.element, pasteChips, input, h('div.wt-compose-bar', {}, attach, modeChip, modelChip, hint, h('div.wt-send-buttons', {}, stop, queue, send)));
   box.addEventListener('click', (event) => {
     if (!input.disabled && event.target instanceof Element && !event.target.closest('button, .pimgs, textarea')) input.focus();
   });

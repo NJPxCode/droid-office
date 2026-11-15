@@ -297,6 +297,8 @@ test('live tool output and nested reading positions survive canonical updates, a
   });
   assert.match(await page.locator('.wt-cmd-out').innerText(), /Live output before JSONL result/);
   await push([...entries, { ...command, output: 'Canonical final result' }, { id: 'compaction:done', seq: 72, role: 'system', kind: 'notice', name: 'compaction', text: 'Conversation compacted' }], false);
+  assert.equal(await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').getAttribute('aria-expanded'), 'true');
+  await page.locator('.wt-cmd-out').scrollIntoViewIfNeeded();
   assert.match(await page.locator('.wt-cmd-out').innerText(), /Canonical final result/);
   assert.doesNotMatch(await page.locator('.wt-cmd-out').innerText(), /Live output/);
   assert.equal(await page.locator('.wt-compact-divider').innerText(), 'Compacted');
@@ -923,10 +925,12 @@ test('a Thread to raw terminal round trip keeps the reader’s scroll position a
     });
   await frames();
 
-  // Part way into a long row, deeper than the 160px rows are estimated at before they lay out.
+  // Lay out an unclamped assistant row before moving past its intrinsic-size estimate.
+  await page.locator('[data-entry="m13"]').scrollIntoViewIfNeeded();
+  await frames();
   await page.evaluate(() => {
     const s = document.querySelector<HTMLElement>('.wt-scroll')!;
-    const row = s.querySelectorAll<HTMLElement>('.wt-list > .wt-entry')[12];
+    const row = s.querySelector<HTMLElement>('[data-entry="m13"]')!;
     s.scrollTop += row.getBoundingClientRect().top - s.getBoundingClientRect().top + 180;
     s.dispatchEvent(new Event('scroll'));
   });
