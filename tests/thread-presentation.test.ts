@@ -667,20 +667,19 @@ const edits = (prefix: string, from: number, n: number, lines = 1): ThreadEntry[
   });
 const changesOf = (rows: ThreadRow[]) => rows.flatMap((row) => actionsOf(row).flatMap((action) => action.changes ?? []));
 
-test('only the latest turn opens diffs, and only a few small ones', () => {
+test('every file diff starts collapsed, including small diffs in the latest turn', () => {
   const rows = presentThread([message('u1', 1, 'user'), ...edits('a', 2, 2), message('m1', 10, 'assistant'), message('u2', 11, 'user'), ...edits('b', 12, 3), ...edits('c', 15, 1, 30), ...edits('d', 16, 2)], false);
   const [older, latest] = [rows.slice(0, 3), rows.slice(3)];
   assert.deepEqual(
     changesOf(older).map((change) => change.open),
     [false, false],
   );
-  // The 60-line diff stays closed and doesn't use up one of the three.
   assert.deepEqual(
     changesOf(latest).map((change) => [change.additions + change.deletions, change.open]),
     [
-      [2, true],
-      [2, true],
-      [2, true],
+      [2, false],
+      [2, false],
+      [2, false],
       [60, false],
       [2, false],
       [2, false],
@@ -688,17 +687,20 @@ test('only the latest turn opens diffs, and only a few small ones', () => {
   );
 });
 
-test("a turn's card groups open only while it is the latest", () => {
+test('file changes stay individual tool segments instead of folding into card groups', () => {
   const rows = presentThread([message('u1', 1, 'user'), ...edits('a', 2, 3), message('u2', 10, 'user'), ...edits('b', 11, 4)], false);
-  const groups = rows.flatMap((row) => (row.kind === 'activity' ? (row.groups ?? []) : []));
+  const activities = rows.filter((row) => row.kind === 'activity');
   assert.deepEqual(
-    groups.map((group) => [group.id, group.blockIds.length, group.open, group.files, group.additions, group.deletions]),
+    activities.map((row) => row.kind === 'activity' && row.segments?.map((segment) => segment.kind === 'tool' && segment.actionId)),
     [
-      ['group:tools:a2', 3, false, 3, 3, 3],
-      ['group:tools:b11', 4, true, 4, 4, 4],
+      ['a2', 'a3', 'a4'],
+      ['b11', 'b12', 'b13', 'b14'],
     ],
   );
-  assert.equal(groups[0].label, 'Edited 3 files');
+  assert.equal(
+    activities.every((row) => row.kind === 'activity' && row.groups === undefined),
+    true,
+  );
 });
 
 test('two cards stay ungrouped', () => {

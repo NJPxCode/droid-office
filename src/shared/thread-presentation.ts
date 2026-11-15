@@ -31,6 +31,9 @@ export type ActionKind =
 
 export type ThreadCardKind = 'change' | 'command' | 'delegate';
 
+/** Factory's per-tool row icon (a Lucide name on each client). */
+export type ThreadToolIcon = 'read' | 'search' | 'glob' | 'list' | 'web' | 'link' | 'terminal' | 'edit' | 'create' | 'delete' | 'patch' | 'ask' | 'plan' | 'bot' | 'skill' | 'spec' | 'image' | 'memory' | 'tool';
+
 export interface ThreadCommandMeta {
   command: string;
   summary?: string;
@@ -105,7 +108,26 @@ export interface ThreadModelAction {
   changes?: ThreadFileChange[];
   command?: ThreadCommandMeta;
   delegation?: ThreadDelegationMeta;
+  /** The row's icon. */
+  icon?: ThreadToolIcon;
+  /** The row's action words in the tool-label color ("Read", "Grepped for", "Edit 12 lines"); empty for Execute. */
+  verb?: string;
+  /** The row's detail after the verb: a short path, pattern, URL, file name or the command's summary. */
+  subject?: string;
+  /** What a failed row says at its end ("Command failed", "Error editing file"). */
+  failedLabel?: string;
 }
+/**
+ * How an Activity's blocks read as Factory rows, in order. Exploration tools and the thoughts between
+ * them fold into one summary row; every other call is its own row, except repeating commands and long
+ * runs of subagents, which fold too. A live summary at the tail starts open and closes once it stops.
+ */
+export type ThreadSegment =
+  | { kind: 'explore'; id: string; blockIds: string[]; actionIds: string[]; action: string; details: string; providers?: string[]; live: boolean; open: boolean }
+  | { kind: 'thought'; blockId: string }
+  | { kind: 'tool'; blockId: string; actionId: string }
+  | { kind: 'repeat'; id: string; actionIds: string[]; summaries: string[]; times: number; live: boolean; open: boolean }
+  | { kind: 'tasks'; id: string; actionIds: string[]; label: string; settled: number; failed: number; live: boolean; open: boolean };
 export interface ThreadFailure {
   id: string;
   title: string;
@@ -168,7 +190,9 @@ export type ThreadRow =
       running?: string;
       failed: ThreadFailure[];
       blocks: ThreadBlock[];
+      /** No longer produced: segments say how blocks group. Kept for older offices' snapshots. */
       groups?: ThreadToolGroup[];
+      segments?: ThreadSegment[];
       turnChanges?: ThreadTurnChanges;
     };
 
@@ -592,6 +616,7 @@ function modelAction(action: ThreadAction, fileText?: ThreadFileText): ThreadMod
     command = { command: cmd, ...(summary ? { summary } : {}) };
   }
   const delegation = card === 'delegate' ? extractDelegationMeta(action.entry) : undefined;
+  const face = toolFace(action, changes);
 
   return {
     id: action.entry.id,
@@ -608,15 +633,281 @@ function modelAction(action: ThreadAction, fileText?: ThreadFileText): ThreadMod
     ...(changes?.length ? { changes } : {}),
     ...(command ? { command } : {}),
     ...(delegation ? { delegation } : {}),
+    ...(face.icon ? { icon: face.icon } : {}),
+    verb: face.verb ?? '',
+    ...(face.subject ? { subject: face.subject } : {}),
+    ...(face.failedLabel ? { failedLabel: face.failedLabel } : {}),
   };
 }
 
-/** An Activity with at least this many tool cards folds them under one group. */
-export const GROUP_MIN_CARDS = 3;
-/** In the latest turn, a diff of at most this many changed lines starts open, */
-export const SMALL_DIFF_LINES = 40;
-/** and at most this many of them do. Diffs in earlier turns start closed. */
-export const OPEN_DIFFS_PER_TURN = 3;
+const plural = (count: number, one: string, other = `${one}s`) => `${count} ${count === 1 ? one : other}`;
+/** English conjunction list, as Intl.ListFormat writes it: "a", "a and b", "a, b, and c". */
+export function threadList(items: readonly string[]): string {
+  if (items.length < 3) return items.join(' and ');
+  return `${items.slice(0, -1).join(', ')}, and ${items.at(-1)}`;
+}
+/** A path as Factory's tool rows print it: its last three segments. */
+export function threadToolPath(path: string): string {
+  const parts = path.replace(/\\/g, '/').split('/');
+  return parts.length > 3 ? `.../${parts.slice(-3).join('/')}` : path;
+}
+const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && !!item.trim()) : str(value) ? [str(value)] : []);
+const more = (items: string[], keep: number) => (items.length > keep ? `${items.slice(0, keep).join(', ')}... (+${items.length - keep} more)` : items.join(', '));
+const mcpParts = (rawName = '') => {
+  const at = rawName.indexOf('___');
+  if (at > 0) return { server: rawName.slice(0, at), tool: rawName.slice(at + 3) };
+  const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(rawName);
+  return mcp ? { server: mcp[1], tool: mcp[2] } : undefined;
+};
+/** A tool or server name as words: "TaskStop" → "Task Stop", "droid-office" → "Droid Office". */
+export function threadToolName(name: string): string {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean);
+  return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') || name;
+}
+const lines = (count: number, verb: string) => (count > 0 ? `${verb} ${plural(count, 'line')}` : `${verb} file`);
+
+type ToolFace = Pick<ThreadModelAction, 'icon' | 'verb' | 'subject' | 'failedLabel'>;
+
+/** How Factory's transcript row for this call reads: its icon, action words and detail. */
+function toolFace(action: ThreadAction, changes: readonly ThreadFileChange[] | undefined): ToolFace {
+  const entry = action.entry;
+  const name = leaf(entry.name);
+  const args = argumentsOf(entry);
+  const path = str(args.file_path ?? args.path ?? args.directory_path ?? args.folder);
+  const fallback: ToolFace = { icon: 'tool', verb: action.title, ...(action.detail ? { subject: action.detail } : {}) };
+  const changed = (changes ?? []).reduce((total, change) => total + change.additions + change.deletions, 0);
+  const files = [...new Set((changes ?? []).map((change) => baseName(change.path)))].join(', ') || (path ? baseName(path) : action.paths.map(baseName).join(', '));
+  const fileFace = (kind: 'added' | 'deleted' | 'modified' | 'mixed'): ToolFace => {
+    const [icon, verb, failed]: [ThreadToolIcon, string, string] =
+      kind === 'added'
+        ? ['create', 'Write', 'Error writing file']
+        : kind === 'deleted'
+          ? ['delete', 'Delete', 'Error deleting file']
+          : kind === 'modified'
+            ? ['edit', 'Edit', 'Error editing file']
+            : ['patch', 'Change', 'Error changing file'];
+    return { icon, verb: lines(changed, verb), ...(files ? { subject: files } : {}), failedLabel: failed };
+  };
+  switch (name) {
+    case 'read': {
+      const range = [typeof args.offset === 'number' ? `offset: ${args.offset}` : '', typeof args.limit === 'number' ? `limit: ${args.limit}` : ''].filter(Boolean).join(', ');
+      return { icon: 'read', verb: 'Read', subject: [path ? threadToolPath(path) : '', range].filter(Boolean).join(', ') };
+    }
+    case 'glob': {
+      const patterns = strings(args.patterns);
+      const excluded = strings(args.excludePatterns ?? args.exclude_patterns);
+      const head = [patterns.length ? more(patterns, 3) : '', path ? `in ${threadToolPath(path)}` : ''].filter(Boolean).join(' ');
+      const subject = [head, excluded.length ? `excluding ${more(excluded, 2)}` : ''].filter(Boolean).join(', ');
+      return { icon: 'glob', verb: 'Searched files for', subject };
+    }
+    case 'grep': {
+      const pattern = str(args.pattern);
+      const subject = [pattern ? `"${pattern.length > 30 ? `${pattern.slice(0, 30)}...` : pattern}"` : '', path ? `in ${threadToolPath(path)}` : ''].filter(Boolean).join(' ');
+      return { icon: 'search', verb: 'Grepped for', subject };
+    }
+    case 'ls': {
+      const ignored = strings(args.ignorePatterns ?? args.ignore_patterns);
+      return { icon: 'list', verb: 'Listed content of', subject: [path ? threadToolPath(path) : 'current directory', ignored.length ? `ignoring ${more(ignored, 2)}` : ''].filter(Boolean).join(', ') };
+    }
+    case 'websearch':
+      return { icon: 'web', verb: 'Searched the web for', subject: str(args.query) ? `"${str(args.query)}"` : '' };
+    case 'fetchurl':
+      return { icon: 'link', verb: 'Fetch Content', subject: str(args.url) };
+    case 'execute': {
+      const summary = str(args.summary);
+      return { icon: 'terminal', verb: '', subject: summary ? sentence(summary) : (action.detail ?? 'Ran a command'), failedLabel: 'Command failed' };
+    }
+    case 'edit':
+      return fileFace('modified');
+    case 'multiedit':
+      return { ...fileFace('modified'), icon: 'patch' };
+    case 'create':
+    case 'write':
+      return fileFace('added');
+    case 'delete':
+      return fileFace('deleted');
+    case 'applypatch':
+    case 'apply_patch': {
+      const kinds = new Set((changes ?? []).map((change) => change.kind));
+      return fileFace(kinds.size === 1 ? ([...kinds][0] as 'added' | 'deleted' | 'modified') : kinds.size ? 'mixed' : 'modified');
+    }
+    case 'task':
+      return { icon: 'bot', verb: str(args.subagent_type) || 'Task', subject: str(args.description) || clip(str(args.prompt).split('\n')[0] ?? '', 80) };
+    case 'team_hire':
+    case 'office_worker_spawn': {
+      const meta = extractDelegationMeta(entry);
+      return { icon: 'bot', verb: meta.workerName ? `Hired ${meta.workerName}` : (meta.role ?? 'Subagent'), subject: meta.summary };
+    }
+    case 'askuser': {
+      const count = Array.isArray(args.questions) ? Math.max(1, args.questions.length) : 1;
+      const asking = action.state === 'working' || action.state === 'incomplete';
+      return { icon: 'ask', verb: `${asking ? 'Asking' : 'Asked'} user ${count === 1 ? 'a question' : `${count} questions`}`, failedLabel: 'AskUser failed' };
+    }
+    case 'exitspecmode':
+      return { icon: 'spec', verb: 'Propose Specification', subject: str(args.title) || 'Untitled specification' };
+    case 'generateimage':
+      return { icon: 'image', verb: 'Generate Image', subject: clip(str(args.prompt), 80), failedLabel: 'Image generation failed' };
+    case 'skill':
+      return { icon: 'skill', verb: 'Skill', subject: str(args.skill) };
+    case 'script':
+      return { icon: 'terminal', verb: action.title };
+    default: {
+      const mcp = mcpParts(entry.name);
+      if (mcp) return { icon: isMemoryTool(entry.name) ? 'memory' : 'tool', verb: threadToolName(mcp.tool), subject: str(args.description ?? args.query ?? args.title ?? args.text), failedLabel: 'Tool call failed' };
+      if (bookkeeping.has(name)) return { ...fallback, icon: 'plan' };
+      return fallback;
+    }
+  }
+}
+
+const EXPLORE = new Set(['read', 'grep', 'glob', 'ls', 'websearch']);
+const EXECUTE_PERIOD = 8;
+const TASK_GROUP_MIN = 5;
+
+/** Factory's exploration summary words (`toolSummary` in its catalog) for one run of calls and thoughts. */
+function exploreLabel(actions: readonly ThreadAction[], thoughts: number, live: boolean): { action: string; details: string; providers?: string[] } {
+  const searches = actions.filter((a) => EXPLORE.has(leaf(a.entry.name)));
+  const skills = actions.filter((a) => leaf(a.entry.name) === 'skill').length;
+  const apps = actions.filter((a) => mcpParts(a.entry.name));
+  const thought = live ? 'thinking' : `thought ${plural(thoughts, 'time')}`;
+  if (apps.length) {
+    const providers = [...new Set(apps.map((a) => threadToolName(mcpParts(a.entry.name)?.server ?? '')))];
+    const extras = [searches.length ? plural(searches.length, 'search', 'searches') : '', skills ? `${live ? 'loading' : 'loaded'} ${plural(skills, 'skill')}` : '', thoughts ? thought : ''].filter(Boolean);
+    const lead = providers.length > 2 ? plural(providers.length, 'app') : threadList(providers);
+    return { action: `${live ? 'Performing' : 'Performed'} ${plural(apps.length, 'action')} in`, details: threadList([lead, ...extras]), providers };
+  }
+  const extras = [searches.length && skills ? `${live ? 'loading' : 'loaded'} ${plural(skills, 'skill')}` : '', thoughts ? thought : ''].filter(Boolean);
+  if (!searches.length) {
+    const lead = plural(skills, 'skill');
+    return { action: live ? 'Loading' : 'Loaded', details: threadList([lead, ...extras]) };
+  }
+  const files = !thoughts && searches.every((a) => leaf(a.entry.name) === 'read');
+  return { action: live ? 'Exploring' : 'Explored', details: threadList([files ? plural(searches.length, 'file') : plural(searches.length, 'search', 'searches'), ...extras]) };
+}
+
+function repeatPeriod(summaries: readonly string[], at: number): number {
+  for (let period = 1; period <= EXECUTE_PERIOD && at + period * 2 <= summaries.length; period++) {
+    let same = true;
+    for (let i = at + period; i < at + period * 2; i++) if (summaries[i] !== summaries[i - period]) same = false;
+    if (same) return period;
+  }
+  return 0;
+}
+
+/** The Factory rows an Activity's blocks make, in order (`ThreadSegment`). */
+function activitySegments(blocks: readonly ThreadBlock[], actionsOf: ReadonlyMap<string, ThreadAction[]>, live: boolean): ThreadSegment[] {
+  type Item = { block: ThreadBlock; action?: ThreadAction; model?: ThreadModelAction };
+  const segments: ThreadSegment[] = [];
+  let run: Item[] = [];
+  const flushRun = () => {
+    const items = run;
+    run = [];
+    const calls = items.filter((item) => item.action);
+    if (!calls.length) {
+      for (const item of items) segments.push({ kind: 'thought', blockId: item.block.id });
+      return;
+    }
+    const thoughts = items.length - calls.length;
+    const first = items[0];
+    segments.push({
+      kind: 'explore',
+      id: `explore:${first.model?.id ?? first.block.id}`,
+      blockIds: [...new Set(items.map((item) => item.block.id))],
+      actionIds: calls.map((item) => item.model?.id ?? ''),
+      ...exploreLabel(
+        calls.map((item) => item.action as ThreadAction),
+        thoughts,
+        false,
+      ),
+      live: false,
+      open: false,
+    });
+  };
+  for (const block of blocks) {
+    if (block.kind === 'thought') {
+      run.push({ block });
+      continue;
+    }
+    const raw = actionsOf.get(block.id) ?? [];
+    for (const [index, model] of block.actions.entries()) {
+      const action = raw[index];
+      const name = leaf(action?.entry.name);
+      if (action && (EXPLORE.has(name) || name === 'skill' || (mcpParts(action.entry.name) && !model.card))) {
+        run.push({ block, action, model });
+        continue;
+      }
+      flushRun();
+      segments.push({ kind: 'tool', blockId: block.id, actionId: model.id });
+    }
+  }
+  flushRun();
+  const models = new Map(blocks.flatMap((block) => (block.kind === 'tools' ? block.actions.map((model) => [model.id, model] as const) : [])));
+  const raws = new Map([...actionsOf.values()].flat().map((action) => [action.entry.id, action] as const));
+  const folded = foldTools(segments, models, raws, live);
+  const tail = folded.at(-1);
+  if (live && tail && (tail.kind === 'explore' || tail.kind === 'repeat' || tail.kind === 'tasks')) {
+    tail.live = true;
+    tail.open = true;
+    if (tail.kind === 'explore') {
+      const calls = tail.actionIds.map((id) => raws.get(id)).filter((action): action is ThreadAction => !!action);
+      const thoughts = tail.blockIds.filter((id) => blocks.find((block) => block.id === id)?.kind === 'thought').length;
+      Object.assign(tail, exploreLabel(calls, thoughts, true));
+    }
+  }
+  return folded;
+}
+
+/** Repeating Execute summaries and long runs of Task calls fold into one row each. */
+function foldTools(segments: ThreadSegment[], models: ReadonlyMap<string, ThreadModelAction>, raws: ReadonlyMap<string, ThreadAction>, live: boolean): ThreadSegment[] {
+  const out: ThreadSegment[] = [];
+  const nameOf = (segment: ThreadSegment) => (segment.kind === 'tool' ? leaf(raws.get(segment.actionId)?.entry.name) : '');
+  const summaryOf = (segment: ThreadSegment) => (segment.kind === 'tool' ? str(argumentsOf(raws.get(segment.actionId)?.entry ?? ({} as ThreadEntry)).summary) : '');
+  for (let at = 0; at < segments.length; ) {
+    const segment = segments[at];
+    if (nameOf(segment) === 'execute' && summaryOf(segment)) {
+      let end = at;
+      while (end < segments.length && nameOf(segments[end]) === 'execute' && summaryOf(segments[end])) end++;
+      const run = segments.slice(at, end);
+      const summaries = run.map(summaryOf);
+      for (let i = 0; i < run.length; ) {
+        const period = repeatPeriod(summaries, i);
+        if (!period) {
+          out.push(run[i]);
+          i++;
+          continue;
+        }
+        let stop = i + period * 2;
+        while (stop < summaries.length && summaries[stop] === summaries[stop - period]) stop++;
+        const ids = run.slice(i, stop).map((item) => (item.kind === 'tool' ? item.actionId : ''));
+        out.push({ kind: 'repeat', id: `repeat:${ids[0]}`, actionIds: ids, summaries: summaries.slice(i, i + period).map(sentence), times: Math.ceil(ids.length / period), live: false, open: false });
+        i = stop;
+      }
+      at = end;
+      continue;
+    }
+    if (nameOf(segment) === 'task') {
+      let end = at;
+      while (end < segments.length && nameOf(segments[end]) === 'task') end++;
+      if (end - at >= TASK_GROUP_MIN) {
+        const ids = segments.slice(at, end).map((item) => (item.kind === 'tool' ? item.actionId : ''));
+        const tasks = ids.map((id) => models.get(id));
+        const types = [...new Set(ids.map((id) => str(argumentsOf(raws.get(id)?.entry ?? ({} as ThreadEntry)).subagent_type)).filter(Boolean))];
+        const settled = tasks.filter((task) => task && task.state !== 'working' && task.state !== 'incomplete').length;
+        const running = live && settled < ids.length;
+        const label = `${running ? 'Running' : 'Ran'} ${types.length === 1 ? `${plural(ids.length, `${types[0]} subagent`)}` : plural(ids.length, 'subagent')}`;
+        out.push({ kind: 'tasks', id: `tasks:${ids[0]}`, actionIds: ids, label, settled, failed: tasks.filter((task) => task?.state === 'failed').length, live: running, open: true });
+        at = end;
+        continue;
+      }
+    }
+    out.push(segment);
+    at++;
+  }
+  return out;
+}
 const TURN_FILES = 20;
 
 /** What finished change cards changed, by file in first-changed order. A failed or unfinished edit changed nothing known. */
@@ -638,33 +929,9 @@ function changeTotals(actions: readonly ThreadModelAction[]): { files: ThreadTur
   return { files: [...byPath.values()], additions, deletions };
 }
 
-function toolGroups(blocks: readonly ThreadBlock[], actionsOf: ReadonlyMap<string, ThreadAction[]>): ThreadToolGroup[] {
-  const cards = blocks.flatMap((block, index) => (block.kind === 'tools' && block.card ? [index] : []));
-  if (cards.length < GROUP_MIN_CARDS) return [];
-  const folded = blocks.slice(cards[0], cards[cards.length - 1] + 1);
-  const tools = folded.filter((block): block is Extract<ThreadBlock, { kind: 'tools' }> => block.kind === 'tools');
-  const wired = tools.flatMap((block) => block.actions);
-  const live = folded.some((block) => block.live);
-  const totals = changeTotals(wired);
-  return [
-    {
-      id: `group:${folded[0].id}`,
-      blockIds: folded.map((block) => block.id),
-      label: activityLabel(tools.flatMap((block) => actionsOf.get(block.id) ?? [])),
-      state: activityState(wired, live),
-      live,
-      open: false,
-      files: totals.files.length,
-      additions: totals.additions,
-      deletions: totals.deletions,
-    },
-  ];
-}
-
 /**
- * Turns run from one owner message to the next. Diffs and card groups open by default only in the
- * latest turn, and only small diffs, a few of them; a finished turn's last message or Activity says
- * what it changed.
+ * Turns run from one owner message to the next. Every diff starts closed, as Factory's file rows do; a
+ * finished turn's last message or Activity says what it changed.
  */
 function finishTurns(rows: ThreadRow[], busy: boolean): void {
   const turns: ThreadRow[][] = [[]];
@@ -674,14 +941,8 @@ function finishTurns(rows: ThreadRow[], busy: boolean): void {
   }
   for (const [index, turn] of turns.entries()) {
     const latest = index === turns.length - 1;
-    for (const row of turn) if (row.kind === 'activity') for (const group of row.groups ?? []) group.open = latest;
     const actions = turn.flatMap((row) => (row.kind === 'activity' ? row.blocks.flatMap((block) => (block.kind === 'tools' && block.card === 'change' ? block.actions : [])) : []));
-    let opened = 0;
-    for (const change of actions.flatMap((action) => action.changes ?? [])) {
-      const open = latest && !change.generated && change.lines.length > 0 && change.additions + change.deletions <= SMALL_DIFF_LINES && opened < OPEN_DIFFS_PER_TURN;
-      if (open) opened++;
-      change.open = open;
-    }
+    for (const change of actions.flatMap((action) => action.changes ?? [])) change.open = false;
     if (latest && busy) continue;
     const totals = changeTotals(actions);
     let last: ThreadRow | undefined;
@@ -789,7 +1050,7 @@ export function presentThread(entries: readonly ThreadEntry[], busy: boolean, op
     const source = section;
     const shown = blocks;
     const all = actions;
-    const groups = toolGroups(shown, blockActions);
+    const segments = activitySegments(shown, blockActions, live);
     section = [];
     blocks = [];
     blockActions = new Map();
@@ -827,7 +1088,7 @@ export function presentThread(entries: readonly ThreadEntry[], busy: boolean, op
         ),
       })),
       blocks: shown,
-      ...(groups.length ? { groups } : {}),
+      segments,
     });
   };
   const last = entries.at(-1);

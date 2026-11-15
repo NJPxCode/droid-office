@@ -738,3 +738,80 @@ export function intralineDiffSpans(oldText: string, newText: string): { del: Thr
 
   return { del, add };
 }
+
+/** A diff row as Factory's file rows draw it: a line, or a run of context it hides. */
+export type ThreadDiffRow = { kind: 'line'; line: ThreadDiffLine; index: number } | { kind: 'hidden'; count: number };
+
+/**
+ * Factory's compact diff (`edc`/`ndc` in its bundle): each hunk keeps `context` lines around its
+ * changes, trims blank context at the diff's ends, and stands the rest in for "N hidden lines" rows,
+ * counting the gap between hunks from their line numbers when they have them.
+ */
+export function compactDiffRows(lines: readonly ThreadDiffLine[], context = 1): ThreadDiffRow[] {
+  const hunks: { index: number; line: ThreadDiffLine }[][] = [[]];
+  for (const [index, line] of lines.entries()) {
+    if (line.kind === 'hunk') {
+      if (hunks[hunks.length - 1].length) hunks.push([]);
+      continue;
+    }
+    hunks[hunks.length - 1].push({ index, line });
+  }
+  const rows: ThreadDiffRow[] = [];
+  const hide = (count: number) => {
+    if (count <= 0) return;
+    const last = rows.at(-1);
+    if (last?.kind === 'hidden') last.count += count;
+    else rows.push({ kind: 'hidden', count });
+  };
+  const blank = (item: { line: ThreadDiffLine }) => item.line.kind === 'ctx' && !item.line.text.trim();
+  let lastNew: number | undefined;
+  for (const [h, hunk] of hunks.entries()) {
+    let items = hunk;
+    if (h === 0) {
+      let start = 0;
+      while (start < items.length && blank(items[start])) start++;
+      items = items.slice(start);
+    }
+    if (h === hunks.length - 1) {
+      let end = items.length;
+      while (end > 0 && blank(items[end - 1])) end--;
+      items = items.slice(0, end);
+    }
+    if (!items.length) continue;
+    const firstNew = items.find((item) => item.line.newLine !== undefined)?.line.newLine;
+    if (lastNew !== undefined && firstNew !== undefined) hide(firstNew - lastNew - 1);
+    const changed = items.some((item) => item.line.kind === 'add' || item.line.kind === 'del' || item.line.kind === 'note');
+    let run: typeof items = [];
+    let seenChange = false;
+    const flush = (atEnd: boolean) => {
+      if (!run.length) return;
+      if (!changed) for (const item of run) rows.push({ kind: 'line', ...item });
+      else if (!seenChange) {
+        hide(run.length - context);
+        for (const item of run.slice(-context)) rows.push({ kind: 'line', ...item });
+      } else if (atEnd) {
+        for (const item of run.slice(0, context)) rows.push({ kind: 'line', ...item });
+        hide(run.length - context);
+      } else if (run.length <= context * 2) {
+        for (const item of run) rows.push({ kind: 'line', ...item });
+      } else {
+        for (const item of run.slice(0, context)) rows.push({ kind: 'line', ...item });
+        hide(run.length - context * 2);
+        for (const item of run.slice(-context)) rows.push({ kind: 'line', ...item });
+      }
+      run = [];
+    };
+    for (const item of items) {
+      if (item.line.kind === 'ctx') {
+        run.push(item);
+        continue;
+      }
+      flush(false);
+      seenChange = true;
+      rows.push({ kind: 'line', ...item });
+    }
+    flush(true);
+    for (const item of items) if (item.line.newLine !== undefined) lastNew = item.line.newLine;
+  }
+  return rows;
+}
