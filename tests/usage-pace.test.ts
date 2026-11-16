@@ -158,3 +158,41 @@ test('several accounts add up what is left, and history older than a week drops 
   const later = at + 8 * 24 * 60 * MIN;
   assert.equal(tracker.estimate(moved, OPUS, later)?.state, 'learning');
 });
+
+test('without sample times, a reset that leaves the percentage where it was still starts a new stretch', (t) => {
+  const tracker = new UsagePaceTracker(tmp(t));
+  const opus = [{ provider: 'claude' as const, model: OPUS }];
+  const unstamped = (p: SubscriptionProvider) => {
+    for (const a of p.accounts) delete a.usageUpdatedAt;
+    return p;
+  };
+  let at = T0;
+  tracker.sample([unstamped(claude({ five: 10, week: 60 }, at))], at);
+  at = busyFor(tracker, opus, at, 30);
+  tracker.sample([unstamped(claude({ five: 20, week: 62 }, at))], at);
+  at = busyFor(tracker, [], at, 280);
+  // The 5-hour window reset at T0 + 5 h and has climbed back to exactly 20%.
+  const fiveReset = T0 + 10 * 60 * MIN;
+  tracker.sample([unstamped(claude({ five: 20, week: 62, fiveReset }, at))], at);
+  at = busyFor(tracker, opus, at, 30);
+  const now = unstamped(claude({ five: 25, week: 63, fiveReset }, at));
+  tracker.sample([now], at);
+  const pace = measured(tracker.estimate(now, OPUS, at));
+  const five = pace.windows.find((w) => w.name === '5-hour')!;
+  assert.ok(Math.abs(five.perHour - 15) < 1e-9, '(10 + 5) points over 1 worker-hour: the stretch after the reset counts');
+});
+
+test("a family's window counts only that family's busy time, and the provider's pace lists it", (t) => {
+  const tracker = new UsagePaceTracker(tmp(t));
+  let at = T0;
+  tracker.sample([claude({ five: 0, week: 10, opus: 20 }, at)], at);
+  at = busyFor(tracker, [{ provider: 'claude', model: OPUS }], at, 30);
+  tracker.sample([claude({ five: 6, week: 12, opus: 25 }, at)], at);
+  at = busyFor(tracker, [{ provider: 'claude', model: SONNET }], at, 60);
+  const now = claude({ five: 12, week: 15, opus: 25 }, at);
+  tracker.sample([now], at);
+  const all = measured(tracker.estimate(now, undefined, at));
+  const rate = Object.fromEntries(all.windows.map((w) => [w.name, w.perHour]));
+  assert.ok(Math.abs(rate['Weekly (Opus)'] - 10) < 1e-9, '5 points over the 0.5 Opus worker-hours, not over all 1.5');
+  assert.ok(Math.abs(rate.Weekly - 5 / 1.5) < 1e-9);
+});

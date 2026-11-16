@@ -91,6 +91,8 @@ const STALE_MS = 5 * 60_000;
 const START_WAIT_MS = 30_000;
 /** The office puts DroidProxy's models into Droid by itself at most this often, while Droid has none of them. */
 const AUTO_MODELS_EVERY_MS = 10 * 60_000;
+/** How often busy workers are counted for pace, between looks at DroidProxy. */
+const OBSERVE_MS = 10_000;
 
 const message = (err: unknown) => (err instanceof ControlError || err instanceof InstallError ? err.message : String((err as Error)?.message ?? err));
 
@@ -131,6 +133,9 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
     });
     pace.observe(busy, now());
   };
+  // Looks at DroidProxy are a minute or more apart: a turn that starts and ends between two would add no busy time.
+  const observeTimer = opts.busyModels ? setInterval(observeBusy, OBSERVE_MS) : undefined;
+  observeTimer?.unref();
   if (supported) state.proxy = { phase: 'missing', version: null, latest: null, path: null, error: null };
   /** When `state.availability` was last judged; older than STALE_MS counts as unknown. */
   let judgedAt = 0;
@@ -600,6 +605,7 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       stopped = true;
       timers.clearTimeout(pollTimer);
       timers.clearTimeout(releaseTimer);
+      clearInterval(observeTimer);
     },
   };
 }

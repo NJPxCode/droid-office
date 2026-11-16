@@ -1,5 +1,5 @@
 // Public model benchmarks from Artificial Analysis (artificialanalysis.ai), so leads picking a model see
-// how capable each one is and how many tokens it spends at each reasoning effort (docs/subscriptions.md#benchmarks).
+// how capable each one is and what a task costs at each reasoning effort (docs/subscriptions.md#benchmarks).
 
 import { AGENT_EFFORTS, type AgentEffort } from './protocol.js';
 
@@ -17,7 +17,7 @@ export interface BenchmarkVariant {
   intelligence: number | null;
   /** Artificial Analysis Engineering capability index (0–100). */
   engineering: number | null;
-  /** US dollars per Intelligence Index task at the creator's API prices: token spend, not plan cost. */
+  /** US dollars per Intelligence Index task at the creator's API prices (tokens spent times price), not plan quota. */
   costPerTask: number | null;
   /** Mean output tokens per second on the creator's API. */
   tokensPerSecond: number | null;
@@ -71,11 +71,10 @@ export function benchmarkName(name: string): { base: string; effort?: BenchmarkE
 /** Brand words a name may or may not lead with: "Claude Opus 5.5" is Droid's "Opus 5.5". */
 const BRANDS = new Set(['claude', 'anthropic', 'openai', 'google', 'xai', 'meta']);
 
-/** "DroidProxy: GPT 6.1 Sol" and "GPT-6.1 Sol" both read gpt 6.1 sol. */
+/** "DroidProxy: GPT 6.1 Sol", "GPT-6.1 Sol" and "DroidProxy: Antigravity: GPT 6.1 Sol (High)" all read gpt 6.1 sol. */
 export function nameKey(name: string): string {
-  const words = name
-    .replace(/^[^:]*:\s*/, '')
-    .toLowerCase()
+  const words = benchmarkName(name.replace(/^(?:[^:]*:\s*)+/, ''))
+    .base.toLowerCase()
     .split(/[\s_-]+/)
     .filter(Boolean);
   if (words.length > 2 && BRANDS.has(words[0])) words.shift();
@@ -94,10 +93,10 @@ const variantWords = (v: BenchmarkVariant) => `intelligence ${score(v.intelligen
 
 /**
  * "medium (default): intelligence 48.2, engineering 53.7, $2.45/task; low: …; high: …". Efforts the
- * model takes, in order, default first; a model measured once prints that one.
+ * model takes, in order, default first; a model measured at one unnamed setting prints just its numbers.
  */
 export function benchmarkWords(m: BenchmarkModel, efforts?: readonly string[], defaultEffort?: string): string {
-  if (m.variants.length === 1) return variantWords(m.variants[0]);
+  if (m.variants.length === 1 && !m.variants[0].effort) return variantWords(m.variants[0]);
   const order: string[] = [...AGENT_EFFORTS, 'reasoning', 'non-reasoning'];
   const rank = (v: BenchmarkVariant) => (v.effort ? order.indexOf(v.effort) : -1);
   const taken = m.variants.filter((v) => v.effort && (!efforts?.length || efforts.includes(v.effort)));

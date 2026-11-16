@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -98,6 +98,7 @@ test('Artificial Analysis names group by family and effort, and match Droid mode
   assert.equal(matchBenchmark('DroidProxy: Opus 5.5', models)?.name, 'Claude Opus 5.5');
   assert.equal(matchBenchmark('Opus 5.5', models)?.name, 'Claude Opus 5.5');
   assert.equal(matchBenchmark('DroidProxy: GPT 6.1 Sol', models)?.name, 'GPT-6.1 Sol');
+  assert.equal(matchBenchmark('DroidProxy: Antigravity: Claude Opus 5.5 (High)', models)?.name, 'Claude Opus 5.5');
   assert.equal(matchBenchmark('Opus 5', models), undefined, 'a version prefix is a different model');
   assert.equal(matchBenchmark('GPT 6.1 Sol Mini', models), undefined);
   assert.equal(matchBenchmark('Gemini 1.5 Pro', models), undefined, 'a dated name is its own model');
@@ -108,11 +109,11 @@ test('benchmark lines put the default effort first and keep to the efforts the m
   const opus = matchBenchmark('DroidProxy: Opus 5.5', models)!;
   assert.equal(benchmarkWords(opus, EFFORTS, 'medium'), 'medium (default): intelligence 48.2, engineering 53.7, $2.45/task; low: intelligence 34.8, engineering 43.2, $0.98/task; max: intelligence 59.1, engineering 65.3, $10.0/task');
   assert.equal(benchmarkWords(opus, ['low', 'medium'], 'medium'), 'medium (default): intelligence 48.2, engineering 53.7, $2.45/task; low: intelligence 34.8, engineering 43.2, $0.98/task');
-  assert.equal(benchmarkWords(matchBenchmark('Haiku 5.5', models)!, EFFORTS, 'medium'), 'intelligence 29.9, engineering 36.5, $0.16/task');
+  assert.equal(benchmarkWords(matchBenchmark('Haiku 5.5', models)!, EFFORTS, 'medium'), 'high: intelligence 29.9, engineering 36.5, $0.16/task');
   assert.equal(benchmarkWords(models[3]), 'intelligence 30, engineering ?, $?/task');
 });
 
-function rig(t: { after(fn: () => void): void }, opts: { paused?: boolean; respond?: (url: string, key: string | null) => Response } = {}) {
+function rig(t: { after(fn: () => void): void }, opts: { paused?: () => boolean; respond?: (url: string, key: string | null) => Response | undefined | Promise<Response | undefined> } = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'benchmarks-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   let now = Date.UTC(2026, 10, 16, 4);
@@ -127,13 +128,13 @@ function rig(t: { after(fn: () => void): void }, opts: { paused?: boolean; respo
     const url = String(input);
     calls.push(url);
     const key = new Headers(init?.headers).get('x-api-key');
-    return opts.respond?.(url, key) ?? pages(url);
+    return (await opts.respond?.(url, key)) ?? pages(url);
   }) as typeof fetch;
   const make = () =>
     new Benchmarks({
       dataDir: dir,
       broadcast: (s) => states.push(s),
-      paused: () => opts.paused ?? false,
+      paused: () => opts.paused?.() ?? false,
       fetchImpl,
       now: () => now,
       timers: { setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout: () => {} },
@@ -200,7 +201,7 @@ test('benchmarks are read again once a day, never while airgapped', async (t) =>
   assert.equal(r.calls.length, 2);
   assert.equal(b.state().fetchedAt, r.at());
 
-  const paused = rig(t, { paused: true });
+  const paused = rig(t, { paused: () => true });
   writeFileSync(paused.file, readFileSync(r.file));
   const off = paused.make();
   assert.match((await off.refresh()) ?? '', /airgapped/i);
@@ -208,4 +209,52 @@ test('benchmarks are read again once a day, never while airgapped', async (t) =>
   paused.timers.shift()!.fn();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(paused.calls.length, 0);
+});
+
+test('a read under way never saves over a later disconnect, and airgapped mode stops it before the next page', async (t) => {
+  let hold: Promise<void> | undefined;
+  let open = () => {};
+  const block = () => {
+    hold = new Promise((resolve) => (open = resolve));
+  };
+  let airgapped = false;
+  const r = rig(t, {
+    paused: () => airgapped,
+    respond: async () => {
+      await hold;
+      return undefined;
+    },
+  });
+  const b = r.make();
+  block();
+  const pending = b.connect(KEY, 'owner');
+  assert.equal(b.disconnect(), undefined);
+  open();
+  assert.match((await pending) ?? '', /changed while the key was being checked/);
+  assert.equal(b.state().connected, false);
+  assert.deepEqual(JSON.parse(readFileSync(r.file, 'utf8')), {});
+
+  hold = undefined;
+  assert.equal(await b.connect(KEY, 'owner'), undefined);
+  r.calls.length = 0;
+  block();
+  const reading = b.refresh();
+  airgapped = true;
+  open();
+  assert.match((await reading) ?? '', /airgapped/i);
+  assert.deepEqual(r.calls, [`${BENCHMARKS_URL}?page=1`], 'no page is asked for once the office is airgapped');
+  assert.equal(b.state().models, 4);
+});
+
+test('a refresh that cannot save says so', async (t) => {
+  const r = rig(t);
+  const b = r.make();
+  assert.equal(await b.connect(KEY, 'owner'), undefined);
+  chmodSync(r.dir, 0o500);
+  try {
+    assert.equal(await b.refresh(), 'Could not save the Artificial Analysis settings to disk.');
+    assert.equal(b.state().error, 'Could not save the Artificial Analysis settings to disk.');
+  } finally {
+    chmodSync(r.dir, 0o700);
+  }
 });

@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { isSubscriptionProvider, windowCovers, type SubscriptionAccount, type SubscriptionProvider, type SubscriptionProviderKey, type UsagePace, type UsagePaceWindow } from '../../shared/subscriptions.js';
+import { isSubscriptionProvider, windowCovers, type SubscriptionAccount, type SubscriptionProvider, type SubscriptionProviderKey, type UsagePace, type UsagePaceWindow, type UsageWindow } from '../../shared/subscriptions.js';
 
 /** How far back the rates look. */
 export const PACE_HISTORY_MS = 7 * 24 * 60 * 60_000;
@@ -54,7 +54,7 @@ function snapshot(accounts: readonly SubscriptionAccount[], at: number): Provide
   };
 }
 
-/** A new sample: an account's sample time moved, or (with no sample times) a value moved. */
+/** A new sample: an account's sample time moved, or (with no sample times) a percentage or reset time moved. */
 function moved(prev: ProviderSnap, next: ProviderSnap): boolean {
   for (const [id, a] of next.accounts) {
     const b = prev.accounts.get(id);
@@ -63,7 +63,10 @@ function moved(prev: ProviderSnap, next: ProviderSnap): boolean {
       if (a.stamp !== b.stamp) return true;
       continue;
     }
-    for (const [name, w] of a.windows) if (b.windows.get(name)?.used !== w.used) return true;
+    for (const [name, w] of a.windows) {
+      const was = b.windows.get(name);
+      if (!was || was.used !== w.used || was.resetsAt !== w.resetsAt) return true;
+    }
   }
   return false;
 }
@@ -185,12 +188,14 @@ export class UsagePaceTracker {
     const pool = basis === 'model' ? own : recent;
     const poolHours = hours(pool);
     if (poolHours < PACE_MIN_HOURS) return { state: 'learning', workerHours: poolHours, needHours: PACE_MIN_HOURS };
-    const names: string[] = [];
-    for (const a of accounts) for (const w of a.windows) if (windowCovers(w, model ?? '') && !names.includes(w.name)) names.push(w.name);
+    const metered = new Map<string, UsageWindow>();
+    for (const a of accounts) for (const w of a.windows) if ((!model || windowCovers(w, model)) && !metered.has(w.name)) metered.set(w.name, w);
     const windows: UsagePaceWindow[] = [];
-    for (const name of names) {
-      const counted = pool.filter((i) => name in i.used);
-      const h = hours(counted);
+    for (const [name, window] of metered) {
+      // Only time on models this window meters counts: Sonnet hours spend nothing of `Weekly (Opus)`.
+      const exposed = (i: PaceInterval) => Object.entries(i.busy).reduce((s, [m, ms]) => s + (windowCovers(window, m) ? ms : 0), 0);
+      const counted = pool.filter((i) => name in i.used && exposed(i) > 0);
+      const h = counted.reduce((s, i) => s + exposed(i), 0) / HOUR;
       if (h < PACE_MIN_HOURS) continue;
       const perHour = counted.reduce((s, i) => s + i.used[name], 0) / h;
       const leftPercent = accounts.reduce((s, a) => {

@@ -95,6 +95,8 @@ export class Benchmarks {
   private triedAt = Number.NEGATIVE_INFINITY;
   private timer: unknown;
   private stopped = false;
+  /** Moves on every connect and disconnect, so a read that started before one never saves over it. */
+  private gen = 0;
 
   constructor(private readonly opts: BenchmarksOptions) {
     this.file = path.join(opts.dataDir, 'artificial-analysis.json');
@@ -145,7 +147,9 @@ export class Benchmarks {
     if (!isValidBenchmarksKey(key)) return 'Enter a valid Artificial Analysis API key.';
     if (this.opts.paused()) return AIRGAPPED_REASON;
     const trimmed = key.trim();
+    const gen = ++this.gen;
     const read = await this.read(trimmed);
+    if (gen !== this.gen || this.stopped) return 'The Artificial Analysis connection changed while the key was being checked; nothing was saved.';
     if (typeof read === 'string') return read;
     const prev = this.snapshot();
     this.key = trimmed;
@@ -161,6 +165,7 @@ export class Benchmarks {
   }
 
   disconnect(): string | undefined {
+    this.gen++;
     const prev = this.snapshot();
     this.restore({});
     const err = this.persist();
@@ -175,18 +180,20 @@ export class Benchmarks {
     if (this.opts.paused()) return AIRGAPPED_REASON;
     if (this.reading) return this.reading;
     const key = this.key;
+    const gen = this.gen;
     this.reading = (async () => {
       this.triedAt = this.now();
       const read = await this.read(key);
-      if (this.key !== key) return undefined;
-      if (typeof read === 'string') this.error = read;
-      else {
-        this.list = read;
-        this.fetchedAt = this.now();
-        this.error = undefined;
+      if (this.key !== key || gen !== this.gen) return undefined;
+      if (typeof read === 'string') {
+        this.error = read;
+        this.persist();
+        return read;
       }
-      this.persist();
-      return typeof read === 'string' ? read : undefined;
+      this.list = read;
+      this.fetchedAt = this.now();
+      this.error = this.persist();
+      return this.error;
     })();
     this.publish();
     try {
@@ -215,6 +222,7 @@ export class Benchmarks {
   private async read(key: string): Promise<BenchmarkModel[] | string> {
     const models: BenchmarkModel[] = [];
     for (let page = 1; page <= PAGE_MAX; page++) {
+      if (this.opts.paused()) return AIRGAPPED_REASON;
       let res: Response;
       try {
         res = await this.fetchImpl(`${BENCHMARKS_URL}?page=${page}`, { headers: { 'x-api-key': key, accept: 'application/json' }, signal: AbortSignal.timeout(TIMEOUT_MS) });

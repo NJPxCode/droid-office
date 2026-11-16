@@ -4,6 +4,8 @@ import type { Net } from '../net';
 import { store } from '../state';
 import { h, timeAgo } from './dom';
 
+const OFFLINE = 'The office is not connected right now. Try again once it reconnects.';
+
 /**
  * ⚙️ Settings → Connections → "Artificial Analysis": connects a Data API key (kept in mode 0600
  * `.droid-office/artificial-analysis.json`) so team_models shows each model's public benchmarks.
@@ -23,7 +25,7 @@ export function benchmarksSettings(net: Net): { card: { desc: Node; below: Node[
   const intro = h(
     'small.factory-intro',
     {},
-    'Shows leads and the Orchestrator each model’s intelligence, engineering score and token spend at every reasoning effort in team_models, from ',
+    'Shows leads and the Orchestrator each model’s intelligence, engineering score and API cost per task at every reasoning effort in team_models, from ',
     h('a', { href: ARTIFICIAL_ANALYSIS_URL, target: '_blank', rel: 'noopener noreferrer' }, 'Artificial Analysis'),
     '. A free key is enough; the office reads the list once a day. Get one at ',
     h('a', { href: ARTIFICIAL_ANALYSIS_KEYS_URL, target: '_blank', rel: 'noopener noreferrer' }, 'artificialanalysis.ai'),
@@ -75,9 +77,8 @@ export function benchmarksSettings(net: Net): { card: { desc: Node; below: Node[
   const send = () => {
     const key = keyInput.value.trim();
     if (!key) return keyInput.focus();
-    busy = true;
-    failure = '';
-    net.send({ t: 'benchmarks.connect', key });
+    failure = net.send({ t: 'benchmarks.connect', key }) ? '' : OFFLINE;
+    busy = !failure;
     paint();
   };
   connect.addEventListener('click', send);
@@ -97,11 +98,13 @@ export function benchmarksSettings(net: Net): { card: { desc: Node; below: Node[
     keyInput.focus();
   });
   refresh.addEventListener('click', () => {
-    failure = '';
-    net.send({ t: 'benchmarks.refresh' });
+    failure = net.send({ t: 'benchmarks.refresh' }) ? '' : OFFLINE;
+    paint();
   });
   remove.addEventListener('click', () => {
-    if (confirm('Disconnect Artificial Analysis? The office forgets the key and team_models stops showing benchmarks.')) net.send({ t: 'benchmarks.disconnect' });
+    if (!confirm('Disconnect Artificial Analysis? The office forgets the key and team_models stops showing benchmarks.')) return;
+    failure = net.send({ t: 'benchmarks.disconnect' }) ? '' : OFFLINE;
+    paint();
   });
 
   const offSetup = net.onMessage((msg) => {
