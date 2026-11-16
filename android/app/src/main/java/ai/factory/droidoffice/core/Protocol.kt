@@ -99,6 +99,8 @@ data class CloudRef(
     val environmentName: String? = null,
     /** The office started its computer for it, and deletes that computer when it goes home. */
     val instance: Boolean = false,
+    /** Its waiting AskUser's next question, while the office holds that AskUser for it: answered with worker.answer. */
+    val menu: Menu? = null,
 ) {
     /** What it wears on its card and header (cloudBadge): its Environment, else its computer. */
     val where: String? get() = environmentName?.ifBlank { null } ?: computerName.ifBlank { null }

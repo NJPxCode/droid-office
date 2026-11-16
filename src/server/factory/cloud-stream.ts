@@ -1,5 +1,6 @@
 import { createWebSocketDaemonClient, MachineType, SDK_VERSION } from '@factory/droid-sdk';
 import type { FactoryApi } from './api.js';
+import { cloudAsk, type CloudAsk } from './cloud-ask.js';
 import { record } from './cloud-stream-messages.js';
 
 export interface CloudStreamSource {
@@ -19,7 +20,7 @@ export interface CloudStreamComputer {
   computerIdentity?: Identity;
 }
 
-/** Only notifications are observed. A passive watcher never answers permission or AskUser requests. */
+/** Notifications are observed. The one request answered is an AskUser, and only with the owner's answers. */
 export interface CloudStreamClient {
   connect(url: string): Promise<void>;
   authenticate(params: { apiKey: string; caller: 'sdk'; metadata: { sdk: { language: 'typescript'; version: string } } }): Promise<unknown>;
@@ -28,6 +29,7 @@ export interface CloudStreamClient {
   onConnectionClose(handler: (code: number, reason: string) => void): unknown;
   onConnectionError(handler: (error: Error) => void): void;
   disconnect(): void;
+  sendAskUserResponse(requestId: string, result: { sessionId: string; answers: { index: number; question: string; answer: string }[] }): void;
 }
 
 export interface CloudStreamOptions {
@@ -37,6 +39,8 @@ export interface CloudStreamOptions {
   /** `superseded`: notifications while it loaded changed its settings, its title, or anything else (its state). */
   snapshot(sessionId: string, snapshot: Record<string, unknown>, superseded: Superseded): void;
   notification(sessionId: string, notification: Record<string, unknown>): void;
+  /** The AskUser a session waits on, from a `daemon.ask_user` request or its snapshot; undefined when its snapshot has none. */
+  ask?(sessionId: string, ask: CloudAsk | undefined): void;
   reset(): void;
   now?: () => number;
   warn?: (message: string) => void;
@@ -79,7 +83,8 @@ function daemon(computer: CloudStreamComputer, key: string, refresh: () => Promi
 
 /**
  * One server-only relay connection per computer hosting an office worker. It never wakes machines,
- * starts turns, sends prompts, answers asks or closes daemon sessions. REST remains the fallback.
+ * starts turns, sends prompts, answers permissions or closes daemon sessions; it answers an AskUser
+ * only with the owner's answers (`answer`). REST remains the fallback.
  */
 export class CloudStream {
   private connections = new Map<string, Connection>();
@@ -100,8 +105,20 @@ export class CloudStream {
   }
 
   healthy(sessionId: string): boolean {
-    for (const c of this.connections.values()) if (c.ready && c.sessions.has(sessionId) && c.loaded.has(sessionId)) return true;
-    return false;
+    return !!this.ready(sessionId);
+  }
+
+  private ready(sessionId: string): CloudStreamClient | undefined {
+    for (const c of this.connections.values()) if (c.ready && c.client && c.sessions.has(sessionId) && c.loaded.has(sessionId)) return c.client;
+    return undefined;
+  }
+
+  /** Answers the AskUser `requestId` a session waits on; false when its relay isn't connected. Fire and forget, as the daemon takes it. */
+  answer(sessionId: string, requestId: string, answers: { index: number; question: string; answer: string }[]): boolean {
+    const client = this.ready(sessionId);
+    if (!client) return false;
+    client.sendAskUserResponse(requestId, { sessionId, answers });
+    return true;
   }
 
   /** Called immediately on office credential changes, and periodically for workers and retries. */
@@ -205,6 +222,11 @@ export class CloudStream {
           if (!this.current(c, key, client)) return;
           const message = record(raw);
           const params = record(message.params);
+          if (message.type === 'request' && message.method === 'daemon.ask_user' && typeof params.sessionId === 'string' && c.sessions.has(params.sessionId)) {
+            const ask = cloudAsk(message.id, params);
+            if (ask) this.opts.ask?.(params.sessionId, ask);
+            return;
+          }
           if (message.type !== 'notification' || message.method !== 'daemon.session_notification' || typeof params.sessionId !== 'string' || !c.sessions.has(params.sessionId)) return;
           const n = record(params.notification);
           if (c.loading?.sessionId === params.sessionId) c.loading[supersedes(n.type)] = true;
@@ -227,8 +249,11 @@ export class CloudStream {
         if (!this.current(c, key, client)) return;
         c.loading = undefined;
         if (!c.sessions.has(sessionId)) continue;
-        this.opts.snapshot(sessionId, record(snapshot), { settings: loading.settings, title: loading.title, state: loading.state });
+        const loaded = record(snapshot);
+        this.opts.snapshot(sessionId, loaded, { settings: loading.settings, title: loading.title, state: loading.state });
         c.loaded.add(sessionId);
+        const pending = Array.isArray(loaded.pendingAskUserRequests) ? record(loaded.pendingAskUserRequests.at(-1)) : undefined;
+        this.opts.ask?.(sessionId, pending ? cloudAsk(pending.requestId, pending) : undefined);
       }
       c.failures = 0;
       c.warned = false;

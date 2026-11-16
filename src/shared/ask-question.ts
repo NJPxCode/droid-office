@@ -113,7 +113,8 @@ export function questionPresentation(menu: Menu, entries: readonly ThreadEntry[]
   const full = matches.length === 1 ? matches[0] : byQuestion.length === 1 ? byQuestion[0] : undefined;
   return {
     question: full?.question || menu.question || 'Choose an answer',
-    choices: menu.choices.map((choice, index) => ({ ...choice, ...(full ? { label: full.options[index], description: undefined } : {}) })),
+    // A description stays only beside its option's exact label: a screen's wrapped one might belong to a cut-off label.
+    choices: menu.choices.map((choice, index) => ({ ...choice, ...(full ? { label: full.options[index], description: choice.label === full.options[index] ? choice.description : undefined } : {}) })),
     ...(full ? { position: all.indexOf(full) + 1, total: all.length } : {}),
     complete: !!full,
   };
@@ -157,11 +158,11 @@ function stepLabel(question: AskedQuestion): string {
 }
 
 /**
- * Where the menu on screen sits in its questionnaire, for a step bar: one step per question and a
- * final review. Empty for a lone question, or when the menu matches no single question.
- * `answers` holds what this client sent, by 1-based position.
+ * Where the menu on screen sits in its questionnaire, for a step bar: one step per question, plus
+ * Droid's final terminal review when `hasReview` is true. Empty for a lone question, or when the
+ * menu matches no single question. `answers` holds what this client sent, by 1-based position.
  */
-export function questionSteps(menu: Menu, display: QuestionDisplay, all: readonly AskedQuestion[], answers: Readonly<Record<number, string>> = {}): QuestionStep[] {
+export function questionSteps(menu: Menu, display: QuestionDisplay, all: readonly AskedQuestion[], answers: Readonly<Record<number, string>> = {}, hasReview = true): QuestionStep[] {
   if (!all.length || (all.length < 2 && !menu.review) || (!menu.review && !display.position)) return [];
   const reviewed = menu.review ? reviewAnswers(menu.review) : [];
   const at = menu.review ? all.length + 1 : display.position!;
@@ -170,7 +171,7 @@ export function questionSteps(menu: Menu, display: QuestionDisplay, all: readonl
     const answer = state === 'done' ? (reviewed.length === all.length ? reviewed[index]!.answer : '') || answers[index + 1] : undefined;
     return { label: stepLabel(question), state, ...(answer ? { answer } : {}) };
   });
-  steps.push({ label: 'Review', state: menu.review ? 'current' : 'upcoming', review: true });
+  if (hasReview || menu.review) steps.push({ label: 'Review', state: menu.review ? 'current' : 'upcoming', review: true });
   return steps;
 }
 

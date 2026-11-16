@@ -67,6 +67,27 @@ class AsksTest {
     }
 
     @Test
+    fun aCloudWorkersHeldAskUserIsAnsweredFromItsMenuWithoutAScreen() {
+        // A cloud worker as the office sends it while it holds Pixel's AskUser (src/server/factory/cloud.ts).
+        val w = OfficeJson.decodeFromString(
+            WorkerInfo.serializer(),
+            """{"id":"133e8da1eaa0","kind":"cloud","name":"Pixel","status":"needs_input",
+              "ask":{"kind":"question","questions":[{"question":"How should a multi-question series flow inside the single overlay?","topic":"Series flow","options":["Guided stepper (Recommended)","Fill all, then send"],"multiSelect":false}]},
+              "cloud":{"computerId":"d284b509","computerName":"mac-mini","autonomy":"high","menu":{"question":"How should a multi-question series flow inside the single overlay?",
+                "choices":[{"number":1,"label":"Guided stepper (Recommended)","description":"One overlay for the whole AskUser call."},{"number":2,"label":"Fill all, then send"}],"freeText":true}}}""",
+        )
+        val menu = Asks.menu(w, null)!!
+        assertEquals(listOf("Guided stepper (Recommended)", "Fill all, then send"), menu.choices.map { it.label })
+        assertNull(menu.pointer)
+        assertTrue(Asks.canAnswer(w, null))
+        assertTrue(Asks.canAnswer(w, box))
+        assertEquals("How should a multi-question series flow inside the single overlay?", Asks.question(PendingAsk(w, menu)))
+        assertEquals("One overlay for the whole AskUser call.", Asks.display(menu, emptyList(), w.ask).choices[0].description)
+        assertFalse(Asks.canAnswer(w.copy(status = "working"), null))
+        assertFalse(Asks.canAnswer(w.copy(cloud = w.cloud!!.copy(menu = null)), null))
+    }
+
+    @Test
     fun theQuestionFallsBackToWhatTheOfficeSays() {
         val w = WorkerInfo(id = "a", name = "Ada", status = "needs_input", activity = "Waiting on the deploy approval")
         assertEquals("Waiting on the deploy approval", Asks.question(PendingAsk(w, null)))
@@ -236,6 +257,15 @@ class AsksTest {
         )
         assertEquals(listOf("Pick tools?" to "Git, Docker", "Unanswered?" to ""), Asks.reviewAnswers(listOf("Pick tools?", "→ Git", "→ Docker", "Unanswered?")))
 
+        // A cloud worker sends all answers on the last question, without Droid's terminal review step.
+        assertEquals(
+            listOf(
+                Asks.Step("Hypervisor", Asks.StepState.Done, "Parallels"),
+                Asks.Step("Which Windows licence…", Asks.StepState.Current),
+                Asks.Step("Agent-access", Asks.StepState.Upcoming),
+            ),
+            Asks.steps(second, emptyList(), ask, mapOf(1 to "Parallels"), hasReview = false),
+        )
         // A lone question, a menu matching no single question, or a permission prompt gets no step bar.
         assertEquals(emptyList<Asks.Step>(), Asks.steps(first, emptyList(), ask.copy(questions = ask.questions.take(1))))
         assertEquals(emptyList<Asks.Step>(), Asks.steps(Choices.read(noMark)!!, emptyList(), ask))

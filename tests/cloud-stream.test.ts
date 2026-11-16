@@ -8,6 +8,8 @@ import { FactoryApi } from '../src/server/factory/api.js';
 import { CloudFeature, type CloudOptions } from '../src/server/factory/cloud.js';
 import { CloudStream, type CloudStreamClient, type CloudStreamSource } from '../src/server/factory/cloud-stream.js';
 import { CloudStreamMessages } from '../src/server/factory/cloud-stream-messages.js';
+import { askAnswer, askMenu, cloudAsk } from '../src/server/factory/cloud-ask.js';
+import { canAnswer, workerMenu } from '../src/shared/asks.js';
 import { CloudThreadReader } from '../src/server/factory/cloud-thread.js';
 import { cloudEntries } from '../src/shared/cloud-thread.js';
 import { messageOf, TEXT_MAX, type FactoryMessage } from '../src/shared/factory-sessions.js';
@@ -87,6 +89,10 @@ class Client implements CloudStreamClient {
   }
   disconnect() {
     this.disconnected++;
+  }
+  responses: { requestId: string; result: unknown }[] = [];
+  sendAskUserResponse(requestId: string, result: unknown) {
+    this.responses.push({ requestId, result });
   }
   notify(notification: unknown, sessionId = 'session') {
     this.message({ type: 'notification', method: 'daemon.session_notification', params: { sessionId, notification } });
@@ -299,6 +305,7 @@ test('relay: one pinned connection serves multiple sessions; no permission or As
   r.clients[0].message({ type: 'request', method: 'daemon.ask_user', params: { sessionId: 'session' } });
   r.clients[0].notify(DELTA, 'unrelated');
   assert.equal(r.notifications.length, before);
+  assert.deepEqual(r.clients[0].responses, []);
   await r.stream.sync();
   assert.equal(r.clients[0].loads.length, 2);
   r.clients[0].notify({ type: 'session_unsubscribed' });
@@ -781,4 +788,152 @@ test('reader: a streamed snapshot with older history obtains a REST cursor and p
   assert.equal(page.hasMore, false);
   assert.equal(requests.length, 2);
   assert.ok(requests[1].includes('cursor=older'));
+});
+
+// Pixel's AskUser on the Mac Mini relay (2026-11-15), from daemon.ask_user and its loadSession
+// snapshot: option descriptions trimmed. The snapshot copy carries no descriptions.
+const ASK_REQUEST = {
+  type: 'request',
+  id: 'f84fdf41-17a4-4f4c-adb3-4fa3a7e1a457',
+  method: 'daemon.ask_user',
+  params: {
+    sessionId: 'session',
+    toolCallId: 'call_fd66a876f0330f3c_2',
+    questions: [
+      {
+        index: 1,
+        topic: 'Series flow',
+        question: 'How should a multi-question series flow inside the single overlay?',
+        options: ['Guided stepper (Recommended)', 'Fill all, then send'],
+        optionDescriptions: ['One overlay for the whole AskUser call.', 'Answer every question in the overlay first.'],
+      },
+      { index: 2, topic: 'Single pick', question: 'For single-choice questions, should picking an option send it right away?', options: ['Keep explicit submit', 'Pick sends immediately'] },
+    ],
+  },
+};
+const PENDING = {
+  requestId: ASK_REQUEST.id,
+  toolCallId: ASK_REQUEST.params.toolCallId,
+  questions: ASK_REQUEST.params.questions.map(({ optionDescriptions: _, ...q }) => q),
+};
+
+test('cloud feature: an AskUser held from the relay is answered one question at a time and sent together', async (t) => {
+  const r = featureRig(t, async () => json({}));
+  r.client.snapshot = { session: { messages: [USER] }, workingState: 'waiting_for_tool_confirmation', pendingAskUserRequests: [PENDING] };
+  // The daemon hands its waiting request to a client as it subscribes, before the snapshot returns.
+  r.client.duringLoad = () => r.client.message(ASK_REQUEST);
+  await r.feature.stream!.sync();
+  const asked = () => r.cloud.get(r.worker.id)!;
+  assert.equal(asked().status, 'needs_input');
+  const ask = asked().ask;
+  assert.equal(ask?.kind, 'question');
+  assert.deepEqual(
+    ask?.kind === 'question' ? ask.questions.map((q) => q.question) : [],
+    PENDING.questions.map((q) => q.question),
+  );
+  const first = asked().cloud!.menu!;
+  // The snapshot's copy came after the live request, without its descriptions: they stay.
+  assert.deepEqual(first, {
+    question: PENDING.questions[0].question,
+    choices: [
+      { number: 1, label: 'Guided stepper (Recommended)', description: 'One overlay for the whole AskUser call.' },
+      { number: 2, label: 'Fill all, then send', description: 'Answer every question in the overlay first.' },
+    ],
+    freeText: true,
+  });
+  assert.equal(workerMenu(asked(), undefined), first);
+  assert.equal(canAnswer(asked(), undefined), true);
+  // A live request repeats the same AskUser: its descriptions show, and nothing goes back unasked.
+  r.client.message(ASK_REQUEST);
+  assert.equal(asked().cloud!.menu!.choices[0].description, 'One overlay for the whole AskUser call.');
+  assert.deepEqual(r.client.responses, []);
+
+  assert.match(r.feature.answer(r.worker.id, { ...first, question: 'Another question' }, { choice: 1 })!, /changed or was already answered/);
+  assert.match(r.feature.answer(r.worker.id, asked().cloud!.menu!, { choice: 3 })!, /no longer available/);
+  assert.equal(r.feature.answer(r.worker.id, asked().cloud!.menu!, { choice: 1 }), undefined);
+  assert.equal(asked().status, 'needs_input');
+  assert.equal(asked().cloud!.menu!.question, PENDING.questions[1].question);
+  assert.deepEqual(r.client.responses, [], 'the session sees only the finished questionnaire');
+
+  // A reload of the same AskUser keeps the answers given so far.
+  r.client.message(ASK_REQUEST);
+  assert.equal(asked().cloud!.menu!.question, PENDING.questions[1].question);
+
+  assert.equal(r.feature.answer(r.worker.id, asked().cloud!.menu!, { text: '  Keep it, but show a summary  ' }), undefined);
+  assert.deepEqual(r.client.responses, [
+    {
+      requestId: ASK_REQUEST.id,
+      result: {
+        sessionId: 'session',
+        answers: [
+          { index: 1, question: PENDING.questions[0].question, answer: 'Guided stepper (Recommended)' },
+          { index: 2, question: PENDING.questions[1].question, answer: 'Keep it, but show a summary' },
+        ],
+      },
+    },
+  ]);
+  assert.equal(asked().status, 'working');
+  assert.equal(asked().ask, undefined);
+  assert.equal(asked().cloud!.menu, undefined);
+  assert.match(r.feature.answer(r.worker.id, first, { choice: 1 })!, /changed or was already answered/);
+});
+
+test('cloud feature: an AskUser answered elsewhere, or with the relay down, is never sent from the office', async (t) => {
+  const r = featureRig(t, async () => json({}));
+  r.client.snapshot = { session: { messages: [USER] }, workingState: 'waiting_for_tool_confirmation', pendingAskUserRequests: [PENDING] };
+  await r.feature.stream!.sync();
+  const asked = () => r.cloud.get(r.worker.id)!;
+  assert.ok(asked().cloud!.menu);
+  // Answered in Factory's app: the session moves on, and the office lets the question go.
+  r.client.notify({ type: 'droid_working_state_changed', newState: 'executing_tool' });
+  assert.equal(asked().status, 'working');
+  assert.equal(asked().ask, undefined);
+  assert.equal(asked().cloud!.menu, undefined);
+
+  r.client.message(ASK_REQUEST);
+  assert.equal(asked().status, 'needs_input');
+  assert.equal(r.feature.answer(r.worker.id, asked().cloud!.menu!, { choice: 2 }), undefined);
+  r.client.closed();
+  const last = asked().cloud!.menu!;
+  assert.match(r.feature.answer(r.worker.id, last, { choice: 1 })!, /lost its link to mac-mini/);
+  assert.deepEqual(r.client.responses, []);
+  assert.deepEqual(asked().cloud!.menu, last, 'the last question stays answerable');
+
+  // A snapshot without the AskUser means it's gone.
+  r.client.snapshot = { session: { messages: [USER] }, workingState: 'idle' };
+  r.clock(300_000);
+  await r.feature.stream!.sync();
+  assert.equal(asked().ask, undefined);
+  assert.equal(asked().cloud!.menu, undefined);
+});
+
+test('cloud ask: checkbox answers join their labels and a typed one; malformed requests are not shown', () => {
+  const ask = cloudAsk('request', { toolCallId: 'call', questions: [{ index: 1, header: 'Areas', question: 'Which flows?', options: ['Single', 'Multiple'], multiSelect: true }] })!;
+  assert.equal(ask.questions[0].topic, 'Areas');
+  const menu = askMenu(ask.questions[0]);
+  assert.equal(menu.multiSelect, true);
+  assert.deepEqual(askAnswer(menu, menu, { choices: [2, 1], text: 'Review' }), { answer: 'Single, Multiple, Review' });
+  assert.deepEqual(askAnswer(menu, menu, { choices: [] }), { error: 'Select at least one answer.' });
+  assert.deepEqual(askAnswer(menu, menu, { choice: 1 }), { error: 'Select the answers, then submit them together.' });
+  assert.deepEqual(askAnswer(menu, menu, { choices: [1, 1] }), { error: 'Those choices are no longer available.' });
+  const single = askMenu({ ...ask.questions[0], multiSelect: false });
+  assert.deepEqual(askAnswer(single, single, { choices: [1] }), { error: 'Pick one answer.' });
+  assert.deepEqual(askAnswer(single, single, { text: '   ' }), { error: 'Write an answer, or pick one.' });
+  assert.equal(cloudAsk('request', { questions: [] }), undefined);
+  assert.equal(cloudAsk('request', { questions: [{ question: 'No options?', options: [''] }] }), undefined);
+  assert.equal(cloudAsk(undefined, ASK_REQUEST.params), undefined);
+});
+
+test('cloud feature: a REST poll that only says running keeps a held AskUser waiting on the owner', async (t) => {
+  const r = featureRig(t, async (url) => (url.includes('/messages') ? json({ messages: [USER] }) : json({ status: 'running', messageCount: 40, updatedAt: 2 })));
+  // Restored with a turn whose prompt the snapshot no longer holds: the stream can't vouch for it, so REST polls.
+  r.cloud.update(r.worker.id, (_, w) => {
+    w.turn = { sentAt: 1_000_000 - 120_000, countAtSend: 0, seenBusy: true };
+  });
+  r.client.snapshot = { session: { messages: [] }, workingState: 'waiting_for_tool_confirmation', pendingAskUserRequests: [PENDING] };
+  await r.feature.stream!.sync();
+  assert.equal(r.cloud.get(r.worker.id)!.status, 'needs_input');
+  await r.feature.poll(r.api);
+  assert.equal(r.cloud.get(r.worker.id)!.status, 'needs_input');
+  assert.ok(r.cloud.get(r.worker.id)!.cloud!.menu);
 });

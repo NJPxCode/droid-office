@@ -433,5 +433,73 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
     w.paint();
   });
   await workspace.waitFor({ state: 'detached', timeout: 6000 });
+
+  // A cloud worker's AskUser has no terminal Review step and no Raw TTY button.
+  await page.evaluate(() => {
+    const w = window as any;
+    w.actions.length = 0;
+    w.worker = {
+      ...w.worker,
+      status: 'needs_input',
+      ask: {
+        kind: 'question',
+        questions: [
+          { question: 'How should a multi-question series flow inside the single overlay?', topic: 'Series flow', options: ['Guided stepper (Recommended)', 'Fill all, then send'], multiSelect: false },
+          { question: 'For single-choice questions, should picking an option send it right away?', topic: 'Single pick', options: ['Keep explicit submit', 'Pick sends immediately'], multiSelect: false },
+        ],
+      },
+      cloud: {
+        computerId: 'computer',
+        computerName: 'mac-mini',
+        menu: {
+          question: 'How should a multi-question series flow inside the single overlay?',
+          choices: [
+            { number: 1, label: 'Guided stepper (Recommended)' },
+            { number: 2, label: 'Fill all, then send' },
+          ],
+          freeText: true,
+        },
+      },
+    };
+    w.PaneUI.store.workers.set('pixel', w.worker);
+    w.paint();
+  });
+  await page.getByRole('button', { name: 'Answer questions' }).click();
+  assert.deepEqual(await states(), ['current', 'upcoming']);
+  assert.equal(await workspace.getByRole('button', { name: 'Raw TTY' }).count(), 0);
+  await workspace.locator('input[value="1"]').check();
+  await workspace.getByRole('button', { name: 'Submit and continue' }).click();
+  await page.waitForFunction(() => document.querySelector('.qw-feedback')?.textContent === 'Answer sent. Opening question 2 of 2…');
+  await page.evaluate(() => {
+    const w = window as any;
+    w.worker = {
+      ...w.worker,
+      cloud: {
+        ...w.worker.cloud,
+        menu: {
+          question: 'For single-choice questions, should picking an option send it right away?',
+          choices: [
+            { number: 1, label: 'Keep explicit submit' },
+            { number: 2, label: 'Pick sends immediately' },
+          ],
+          freeText: true,
+        },
+      },
+    };
+    w.PaneUI.store.workers.set('pixel', w.worker);
+    w.pane.paintQuestion();
+  });
+  assert.deepEqual(await states(), ['done', 'current']);
+  assert.equal(await workspace.locator('.qw-step').first().locator('.qw-step-answer').textContent(), 'Guided stepper (Recommended)');
+  await workspace.locator('input[value="1"]').check();
+  await workspace.getByRole('button', { name: 'Submit answer', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.qw-feedback')?.textContent === 'Sent. Pixel is continuing.');
+  await page.evaluate(() => {
+    const w = window as any;
+    w.worker = { ...w.worker, status: 'working', ask: undefined, cloud: { ...w.worker.cloud, menu: undefined } };
+    w.PaneUI.store.workers.set('pixel', w.worker);
+    w.paint();
+  });
+  await workspace.waitFor({ state: 'detached', timeout: 6000 });
   assert.deepEqual(errors, []);
 });

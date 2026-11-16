@@ -15,7 +15,7 @@ enum class Answered { Sent, Changed, Unreachable, NeedsThread, Unconfirmed, Refu
 class Answers(private val connection: OfficeConnection) {
     fun current(workerId: String): Menu? {
         val w = connection.data.value.worker(workerId)?.takeIf {
-            it.state == WorkerStatus.NeedsInput && !it.isShell && !it.isCloud
+            it.state == WorkerStatus.NeedsInput && !it.isShell
         } ?: return null
         return Asks.menu(w, connection.screens.value[workerId])
     }

@@ -216,6 +216,12 @@ test('a questionnaire becomes steps: each question by topic, then the review wit
     { question: 'Unanswered?', answer: '' },
   ]);
 
+  // A cloud worker sends all answers on the last question, without Droid's terminal review step.
+  assert.deepEqual(questionSteps(second, display, pendingQuestions([], ask), { 1: 'Parallels' }, false), [
+    { label: 'Hypervisor', state: 'done', answer: 'Parallels' },
+    { label: 'Which Windows licence…', state: 'current' },
+    { label: 'Agent-access', state: 'upcoming' },
+  ]);
   // A lone question, or a menu that matches no single question, gets no step bar.
   assert.deepEqual(questionSteps(first, firstDisplay, [ask.questions[0]]), []);
   assert.deepEqual(questionSteps(screen, questionPresentation(screen, [], ask), ask.questions), []);

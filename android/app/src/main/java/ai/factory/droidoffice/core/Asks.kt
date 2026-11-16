@@ -16,12 +16,19 @@ object Asks {
             .sortedWith(compareBy<WorkerInfo> { it.waitingSince ?: Long.MAX_VALUE }.thenBy { it.createdAt }.thenBy { it.id })
             .map { w -> PendingAsk(w, menu(w, screens[w.id])) }
 
-    /** The numbered menu on its screen: a shell's numbered output is never an ask. */
-    fun menu(w: WorkerInfo, screen: ScreenState?): Menu? = if (w.isShell || screen == null) null else Choices.read(screen)
+    /**
+     * The numbered menu on its screen: a shell's numbered output is never an ask. A cloud worker has
+     * no screen here: its menu is the waiting AskUser question the office holds for it.
+     */
+    fun menu(w: WorkerInfo, screen: ScreenState?): Menu? = when {
+        w.isCloud -> w.cloud?.menu
+        w.isShell || screen == null -> null
+        else -> Choices.read(screen)
+    }
 
-    /** The thread can answer only a live local worker's waiting question with a readable menu. */
+    /** The thread can answer only a waiting question with a readable menu (or a cloud worker's held AskUser). */
     fun canAnswer(w: WorkerInfo, screen: ScreenState?): Boolean =
-        w.state == WorkerStatus.NeedsInput && !w.isShell && !w.isCloud && menu(w, screen) != null
+        w.state == WorkerStatus.NeedsInput && !w.isShell && menu(w, screen) != null
 
     /** One line of what it's on, above the question: its task or title, else the start of its prompt. */
     fun context(w: WorkerInfo): String? =
@@ -173,16 +180,17 @@ object Asks {
     private val REVIEW_ANSWER = Regex("""^→\s*(.*)$""")
 
     /**
-     * Where [menu] sits in its questionnaire: one step per question, then the review. Empty for a
-     * lone question or a menu matching no single question. [answers] is what this app sent, by position.
+     * Where [menu] sits in its questionnaire: one step per question, plus the terminal review when
+     * [hasReview] is true. Empty for a lone question or a menu matching no single question.
+     * [answers] is what this app sent, by position.
      */
-    fun steps(menu: Menu, entries: List<ThreadEntry>, ask: WorkerAsk?, answers: Map<Int, String> = emptyMap()): List<Step> {
+    fun steps(menu: Menu, entries: List<ThreadEntry>, ask: WorkerAsk?, answers: Map<Int, String> = emptyMap(), hasReview: Boolean = true): List<Step> {
         if (ask?.isPermission == true) return emptyList()
         val all = known(ask, entries)
         if (all.isEmpty() || (all.size < 2 && menu.review == null)) return emptyList()
         val at = if (menu.review != null) all.size + 1 else matching(all, menu)?.let { all.indexOf(it) + 1 } ?: return emptyList()
         val reviewed = menu.review?.let(::reviewAnswers).orEmpty()
-        return all.mapIndexed { index, asked ->
+        val questionSteps = all.mapIndexed { index, asked ->
             val state = when {
                 index + 1 < at -> StepState.Done
                 index + 1 == at -> StepState.Current
@@ -191,7 +199,8 @@ object Asks {
             val answer = if (state != StepState.Done) null
             else (if (reviewed.size == all.size) reviewed[index].second else "").ifEmpty { answers[index + 1].orEmpty() }.ifEmpty { null }
             Step(stepLabel(asked), state, answer)
-        } + Step("Review", if (menu.review != null) StepState.Current else StepState.Upcoming, review = true)
+        }
+        return if (hasReview || menu.review != null) questionSteps + Step("Review", if (menu.review != null) StepState.Current else StepState.Upcoming, review = true) else questionSteps
     }
 
     /** One line for what a reply answered, in the question's own words (src/shared/ask-question.ts replySummary). */
@@ -241,7 +250,11 @@ object Asks {
         val asked = matching(known(ask, entries), menu) ?: return menu
         return menu.copy(
             question = asked.question,
-            choices = menu.choices.map { c -> c.copy(label = asked.options[c.number - 1].trim(), description = null) },
+            // A description stays only beside its option's exact label: a screen's wrapped one might belong to a cut-off label.
+            choices = menu.choices.map { c ->
+                val full = asked.options[c.number - 1].trim()
+                c.copy(label = full, description = c.description.takeIf { c.label == full })
+            },
         )
     }
     /** The bottom line of its terminal with the box drawing taken off: the live line under a thread. */
