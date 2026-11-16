@@ -127,6 +127,11 @@ export const SETTINGS_CARDS = [
   { pane: 'connections', title: 'Models in Droid', keywords: 'subscription models droidproxy droid list update' },
   {
     pane: 'connections',
+    title: 'Artificial Analysis',
+    keywords: 'artificial analysis benchmarks benchmark intelligence engineering index cost per task api key team_models',
+  },
+  {
+    pane: 'connections',
     title: 'Gemini Decisions API',
     keywords: 'gemini decision decisions api key google aistudio living 3d reactions postures mood lighting vibes noise gate wakeup wake filter inter-agent chatter batch hold lead nudge',
   },

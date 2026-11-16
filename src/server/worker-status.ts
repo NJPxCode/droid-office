@@ -1,6 +1,19 @@
 import type { GhPull, TodoProgress, WorkerInfo, WorkerStatus } from '../shared/protocol.js';
 import type { PipelinesState, PipelineRun, RunState } from '../shared/pipelines.js';
-import { USAGE_STALE_MS, availabilityWords, cannotRun, durationWords, isSubscriptionModel, isSubscriptionProvider, providerName, type ModelAvailability, type ModelUsage, type SubscriptionProviderKey } from '../shared/subscriptions.js';
+import {
+  USAGE_STALE_MS,
+  availabilityWords,
+  cannotRun,
+  durationWords,
+  isSubscriptionModel,
+  isSubscriptionProvider,
+  paceWords,
+  providerName,
+  type ModelAvailability,
+  type ModelUsage,
+  type SubscriptionProviderKey,
+  type UsagePace,
+} from '../shared/subscriptions.js';
 import { todoCount, type TodoItem } from '../shared/todos.js';
 import type { TeamModel, WorkerResult, WorkerReview } from './team.js';
 import type { FactoryState } from '../shared/factory.js';
@@ -158,6 +171,8 @@ export interface ProviderQuotaSummary {
   extraUsageBalanceCents?: number;
   extraUsageAllowed?: boolean;
   overageHint?: string;
+  /** How far the remaining quota goes at the pace the office's workers spend it (any of the provider's models). */
+  pace?: UsagePace;
 }
 
 export interface FactoryModelUsage {
@@ -773,10 +788,12 @@ export function summarizeProviderQuotas(models: readonly TeamModel[], now = Date
     let accounts: number | undefined;
     let unreadable: string | undefined;
     let staleAge: string | undefined;
+    let pace: UsagePace | undefined;
 
     for (const m of list) {
       const u = m.usage;
       if (!u) continue;
+      pace ??= u.providerPace;
       if (accounts === undefined || u.accounts > accounts) accounts = u.accounts;
       if (!u.windows.length && u.unreadable && !unreadable) unreadable = u.unreadable;
       if (u.updatedAt !== undefined && u.at - u.updatedAt > USAGE_STALE_MS && !staleAge) staleAge = durationWords(u.at - u.updatedAt);
@@ -818,6 +835,7 @@ export function summarizeProviderQuotas(models: readonly TeamModel[], now = Date
       ...(blockedReason && runnableModels === 0 ? { reason: blockedReason } : {}),
       ...(unreadable && !windowMap.size ? { unreadable } : {}),
       ...(staleAge ? { staleAge } : {}),
+      ...(pace ? { pace } : {}),
       runnableModels,
       totalModels,
     });
@@ -851,6 +869,7 @@ export function formatProviderQuotas(quotas: readonly ProviderQuotaSummary[]): s
       parts.push(`usage couldn't be read (${q.unreadable})`);
     }
     if (q.overageHint) parts.push(q.overageHint);
+    if (q.pace && isSubscriptionProvider(q.provider)) parts.push(`pace: ${paceWords(q.pace, q.provider)}`);
     const stale = q.staleAge ? `; read ${q.staleAge} ago` : '';
     return `- ${q.name} (${badge}${acct}${counts}): ${parts.join(' · ') || 'quota not reported'}${stale}`;
   });

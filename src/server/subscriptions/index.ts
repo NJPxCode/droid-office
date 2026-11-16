@@ -18,6 +18,7 @@ import {
 } from '../../shared/subscriptions.js';
 import { ControlError, controlClient, type RawProvider, type RawStatus, type RawUsage } from './control.js';
 import { fallbackName, hireRefusal, mapAvailability, mapProviders, modelNames, modelProviders, providersFromUsage, stripPrefix } from './map.js';
+import { UsagePaceTracker } from './pace.js';
 import { APP_NAME, DROIDPROXY_BUNDLE_ID, InstallError, installProxy, latestRelease, readBundle, runCommand, type AppDirs, type Runner } from './proxy-install.js';
 
 /** The subscriptions.* messages a client sends (see protocol.ts). */
@@ -39,6 +40,8 @@ export interface SubscriptionsOptions {
   toast(text: string, level?: 'info' | 'warn' | 'error'): void;
   /** DroidProxy rewrote its models in Droid's settings: the office reads Droid's model list again. */
   modelsChanged(): void;
+  /** The model of every office worker busy on a turn right now, for the pace each plan's quota is spent at. */
+  busyModels?(): string[];
   /** For tests: the network (GitHub and DroidProxy). */
   fetchImpl?: typeof fetch;
   /** For tests: the home folder with .droidproxy/control.json and .factory/settings.json. */
@@ -120,6 +123,14 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
   const supported = (opts.platform ?? process.platform) === 'darwin' && (opts.arch ?? process.arch) === 'arm64';
 
   const state: SubscriptionsState = emptySubscriptionsState();
+  const pace = new UsagePaceTracker(path.join(opts.dataDir, 'usage-pace.json'));
+  const observeBusy = () => {
+    const busy = (opts.busyModels?.() ?? []).flatMap((model) => {
+      const provider = state.modelProviders?.[model];
+      return provider ? [{ provider, model }] : [];
+    });
+    pace.observe(busy, now());
+  };
   if (supported) state.proxy = { phase: 'missing', version: null, latest: null, path: null, error: null };
   /** When `state.availability` was last judged; older than STALE_MS counts as unknown. */
   let judgedAt = 0;
@@ -190,6 +201,7 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
   const down = (ids: Iterable<string>, installed: boolean) => Object.fromEntries([...new Set(ids)].map((id) => [id, { state: 'proxy-down', installed } as ModelAvailability]));
 
   const lookOnce = async () => {
+    observeBusy();
     const inSettings = await settingsModels(home);
     droidHasModels = inSettings.size > 0;
     names = { ...Object.fromEntries(inSettings), ...names };
@@ -224,6 +236,9 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
         names = { ...names, ...modelNames(models.value) };
         served = (models.value.models ?? []).map((m) => m?.id).filter((id): id is string => typeof id === 'string');
       }
+      // Again now that the providers of the models are known: the first look learns them.
+      observeBusy();
+      pace.sample(state.providers, now());
       state.checkedAt = now();
       maybeApplyModels(prev, status.value);
       return;
@@ -255,6 +270,8 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       setProxy({ phase: keep('outdated'), ...(errorFromLook ? { error: null } : {}) });
       errorFromLook = false;
       state.providers = providersFromUsage(lastUsage);
+      observeBusy();
+      pace.sample(state.providers, now());
       state.models = null;
       setAvailability({});
       state.checkedAt = now();
@@ -557,7 +574,14 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       void handle(msg).catch((err) => fail(message(err)));
     },
     availability,
-    usage: (model, at) => modelUsage(state, model, at),
+    usage: (model, at) => {
+      const u = modelUsage(state, model, at);
+      const provider = u?.windows.length ? state.providers.find((p) => p.key === u.provider) : undefined;
+      if (!u || !provider) return u;
+      const own = pace.estimate(provider, model, at);
+      const all = pace.estimate(provider, undefined, at);
+      return { ...u, ...(own ? { pace: own } : {}), ...(all ? { providerPace: all } : {}) };
+    },
     async recheck(minAgeMs = RECHECK_MIN_MS) {
       if (!supported || stopped || installing) return;
       if (state.proxy.phase !== 'running' && state.proxy.phase !== 'outdated') return;

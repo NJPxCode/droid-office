@@ -23,6 +23,7 @@ import type { ThreadLive } from './thread-live.js';
 import type { ThreadEntry } from './worker-thread.js';
 import type { WorkerLabelSettings, WorkerLabelState } from './worker-labels.js';
 import type { FloorVibesState, GeminiConnectionState } from './gemini-vibes.js';
+import type { BenchmarksState } from './benchmarks.js';
 
 export type WorkerStatus =
   | 'starting' // PTY launched, agent booting
@@ -948,6 +949,12 @@ type ClientMessage =
   | { t: 'gemini.vibes'; on: boolean }
   /** Turn the Gemini inter-agent noise gate and smart lead wakeup filter on or off (persisted in `gemini.json`). */
   | { t: 'gemini.wakeFilter'; on: boolean }
+  /** Connect the office to Artificial Analysis for model benchmarks in team_models; answered with `benchmarks.setup`. */
+  | { t: 'benchmarks.connect'; key: string }
+  /** Forget the office's Artificial Analysis key and benchmarks. */
+  | { t: 'benchmarks.disconnect' }
+  /** Read the benchmarks again now; answered with `benchmarks.setup`. */
+  | { t: 'benchmarks.refresh' }
   /** True strictly while this 3D office tab is open, visible, uncovered, and standing on an indoor floor. */
   | { t: 'vibes.watch'; active: boolean }
   /** Look at Droid (installed, signed in, newest release) and DroidProxy again now (docs/subscriptions.md). */
@@ -1115,6 +1122,8 @@ export type ServerMsg =
       factory: FactoryState;
       /** Google Gemini Decisions (`gemini-decision-1`) connection and Living 3D Studio telemetry. */
       gemini?: GeminiConnectionState;
+      /** Artificial Analysis model benchmarks connection. */
+      benchmarks?: BenchmarksState;
       /** Droid installed and signed in, and whether the owner has been through the welcome (docs/subscriptions.md). */
       setup: SetupState;
       /** DroidProxy, the subscriptions it serves, and which of their models can run now. */
@@ -1212,6 +1221,10 @@ export type ServerMsg =
   | { t: 'gemini'; state: GeminiConnectionState }
   /** To whoever sent `gemini.connect` or `gemini.check`: verified, or why not. */
   | { t: 'gemini.setup'; ok: boolean; error?: string; latencyMs?: number }
+  /** Artificial Analysis connection or benchmarks changed. */
+  | { t: 'benchmarks'; state: BenchmarksState }
+  /** To whoever sent `benchmarks.connect` or `benchmarks.refresh`: read, or why not. */
+  | { t: 'benchmarks.setup'; ok: boolean; error?: string }
   /** Living 3D worker postures, micro-reactions, monitor spill and room mood lighting for a floor. */
   | { t: 'vibes'; state: FloorVibesState }
   /** Droid's install or sign-in changed, or the welcome was finished: all of it, to everyone. */

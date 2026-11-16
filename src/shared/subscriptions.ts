@@ -197,12 +197,36 @@ export interface ModelUsage {
   updatedAt?: number;
   unreadable?: string;
   at: number;
+  /** How fast the office's workers on this model spend these windows (`UsagePace`). */
+  pace?: UsagePace;
+  /** The same for every model of the provider together, for a per-provider summary. */
+  providerPace?: UsagePace;
 }
+
+/**
+ * One window's measured pace: `perHour` percentage points of one account per busy worker-hour, and
+ * `hoursLeft` busy worker-hours until the provider's live accounts run out of it together (null when
+ * the measured pace is too small to divide by).
+ */
+export interface UsagePaceWindow {
+  name: string;
+  perHour: number;
+  leftPercent: number;
+  hoursLeft: number | null;
+}
+
+/**
+ * How far a plan's remaining quota goes, from the office's own usage samples over the last 7 days
+ * (server/subscriptions/pace.ts), so nobody needs to know which plan tier an account is on.
+ * - measured: `basis` says whether the rate came from this model alone or every model of the provider
+ * - learning: fewer than `needHours` busy worker-hours measured yet
+ */
+export type UsagePace = { state: 'measured'; basis: 'model' | 'provider'; workerHours: number; accounts: number; windows: UsagePaceWindow[] } | { state: 'learning'; workerHours: number; needHours: number };
 
 const leftPercent = (w: UsageWindow): number => Math.max(0, Math.min(100, Math.round(100 - w.usedPercent)));
 
 /** A window named for a model family ("Weekly (Opus)", "Weekly (Sonnet)") covers only that family's models, as DroidProxy judges availability. */
-function covers(window: UsageWindow, model: string): boolean {
+export function windowCovers(window: UsageWindow, model: string): boolean {
   const family = /\((opus|sonnet)\)\s*$/i.exec(window.name)?.[1];
   return !family || model.toLowerCase().includes(family.toLowerCase());
 }
@@ -219,7 +243,7 @@ export function modelUsage(s: SubscriptionsState, model: string | undefined, now
   if (!key || !provider?.enabled) return undefined;
   const live = provider.accounts.filter((a) => !a.expired && !a.disabled);
   if (!live.length) return undefined;
-  const windowsOf = (a: SubscriptionAccount) => a.windows.filter((w) => covers(w, model));
+  const windowsOf = (a: SubscriptionAccount) => a.windows.filter((w) => windowCovers(w, model));
   const readable = live.filter((a) => windowsOf(a).length);
   if (!readable.length) return { provider: key, accounts: live.length, windows: [], unreadable: live.find((a) => a.usageError)?.usageError ?? 'the plan reports no usage', at: now };
   const headroom = (a: SubscriptionAccount) => Math.min(...windowsOf(a).map(leftPercent));
@@ -243,6 +267,22 @@ export function modelUsageWords(u: ModelUsage): string {
   });
   const stale = u.updatedAt !== undefined && u.at - u.updatedAt > USAGE_STALE_MS ? `; read ${durationWords(u.at - u.updatedAt)} ago, may be out of date` : '';
   return `${name}${u.accounts > 1 ? `, best of ${u.accounts} accounts` : ''}: ${parts.join(', ')}${stale}`;
+}
+
+const tenths = (n: number) => (n < 10 ? String(Math.round(n * 10) / 10) : String(Math.round(n)));
+
+/**
+ * "5-hour ~9% per worker-hour (about 10 worker-hours left), Weekly ~1.5% per worker-hour (about 23 worker-hours left);
+ * measured over 3.2 worker-hours on this model in the last 7 days, across 2 accounts".
+ */
+export function paceWords(p: UsagePace, provider: SubscriptionProviderKey): string {
+  if (p.state === 'learning') return `still learning: ${tenths(p.workerHours)} of ${tenths(p.needHours)} worker-hours measured on ${providerName(provider)} in the last 7 days`;
+  const parts = p.windows.map((w) => {
+    const left = w.hoursLeft === null ? 'too little measured use to project' : `about ${tenths(w.hoursLeft)} worker-hours left`;
+    return `${w.name} ~${tenths(w.perHour)}% per worker-hour (${left})`;
+  });
+  const basis = p.basis === 'model' ? 'this model' : `all ${providerName(provider)} models`;
+  return `${parts.join(', ')}; measured over ${tenths(p.workerHours)} worker-hours on ${basis} in the last 7 days${p.accounts > 1 ? `, across ${p.accounts} accounts` : ''}`;
 }
 
 /**

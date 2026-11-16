@@ -62,6 +62,8 @@ interface RigOptions {
   settings?: { id: string; displayName: string }[];
   world?: Partial<World>;
   delay?: boolean;
+  /** The models of the office's busy workers, for the pace each plan is spent at. */
+  busy?: string[];
 }
 
 /**
@@ -210,6 +212,7 @@ async function rig(t: { after(fn: () => void): void }, o: RigOptions = {}): Prom
     broadcast: (s) => broadcasts.push(structuredClone(s)),
     toast: (text, level) => toasts.push([text, level]),
     modelsChanged: () => r.modelsChanged++,
+    busyModels: () => o.busy ?? [],
     fetchImpl,
     home,
     platform: o.platform ?? 'darwin',
@@ -318,6 +321,29 @@ test('a running DroidProxy: providers with their windows, models in Droid, and w
   r.world.models = { ...MODELS, models: MODELS.models?.map((m) => (m.id === OPUS ? { ...m, availability: { state: 'signed-out' as const } } : m)) };
   await r.send({ t: 'subscriptions.refresh' });
   assert.equal(r.subs.gate(OPUS), "Can't hire on Opus 5.5: no Claude account is connected. Pick another model.");
+});
+
+test("a busy worker's half hour on Grok turns its weekly percent left into worker-hours", async (t) => {
+  const r = await rig(t, { busy: [GROK], delay: true });
+  const grokAt = (step: number): RawUsage => ({
+    ...USAGE,
+    accounts: USAGE.accounts?.map((a) => (a.provider === 'grok' ? { ...a, as_of: new Date(NOW + step * 5 * 60_000).toISOString(), windows: a.windows?.map((w) => ({ ...w, used_percent: 66 + step, remaining_percent: 34 - step })) } : a)),
+  });
+  await r.advance(0);
+  assert.deepEqual(r.subs.usage(GROK, r.clock.now)?.pace, { state: 'learning', workerHours: 0, needHours: 0.5 });
+  for (let step = 1; step <= 6; step++) {
+    r.world.usage = grokAt(step);
+    await r.advance(5 * 60_000);
+  }
+  const usage = r.subs.usage(GROK, r.clock.now);
+  assert.equal(usage?.pace?.state, 'measured');
+  assert.deepEqual(usage?.pace, { state: 'measured', basis: 'model', workerHours: 0.5, accounts: 1, windows: [{ name: 'Weekly', perHour: 12, leftPercent: 28, hoursLeft: 28 / 12 }] });
+  assert.deepEqual(usage?.providerPace, { ...usage?.pace, basis: 'provider' });
+  const saved = JSON.parse(readFileSync(path.join(r.home, 'usage-pace.json'), 'utf8')) as { intervals: { provider: string; busy: Record<string, number> }[] };
+  assert.deepEqual(
+    saved.intervals.map((i) => [i.provider, i.busy[GROK]]),
+    Array.from({ length: 6 }, () => ['grok', 5 * 60_000]),
+  );
 });
 
 test('fast status checks and concurrent manual refreshes share a five-minute usage cadence', async (t) => {
