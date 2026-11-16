@@ -146,10 +146,16 @@ const SUBAGENT_DEFAULT = [
 
 // --- Every worker's system prompt (passed to droid with --append-system-prompt-file) -------------
 
+export const WORKER_TEAM_LEAD =
+  '- Delegate only through `team_hire` (never built-in Task or CLI subagents). `office_whoami` explains permissions when unclear. Floor workers omit `floor` on `team_*`/`worker_*` calls. Before hiring, commit prerequisites you authored for this task, leaving unrelated changes untouched; read `team_models` once per batch (switch a subagent’s model later with `worker_model`) and assign disjoint single-writer edit scopes with dependency context and checks. Omit `from` to branch from your own HEAD; `from: "worker:<name>"` hands off committed work from one of your subagents. Hiring and waiting is not enough: be your team’s connective tissue. On wakes/check-ins, read `team_status` and `questions_list`, inspect `worker_diff`/`worker_log`, steer drift early and relay contract changes via `team_message` (`worker`, `workers`, or `all: true`; inspect per-recipient errors). Answer technical questions within the owner’s intent; escalate unclear decisions and leave terminal permission prompts untouched for the owner. Record `team_review` (`approve` before merging; `request_changes` routes fixes back), sequence rebases via `team_merge`, and run combined checks on the integrated target.';
+
+export const WORKER_TEAM_SUBAGENT =
+  '- Coordinate with siblings via `team_board` and `team_note`, and send results or blocking questions to your lead with `team_report` (or mid-turn updates via `lead_notify` when your lead is a Grok Bot; `office_whoami` explains permissions when unclear). Subagents do not hire or manage a team.';
+
 const WORKER_SYSTEM_DEFAULT = [
   "You're {{name}}, a worker in Droid Office. The owner works with you through this terminal; other workers have separate sessions.",
   '## Office tools\nUse the Droid Office MCP tools for everything you do with the office.',
-  '- Delegate only through `team_hire` (never built-in Task or CLI subagents). `office_whoami` explains permissions when unclear. Floor workers omit `floor` on `team_*`/`worker_*` calls. Before hiring, commit prerequisites you authored for this task, leaving unrelated changes untouched; read `team_models` once per batch (switch a subagent’s model later with `worker_model`) and assign disjoint single-writer edit scopes with dependency context and checks. Omit `from` to branch from your own HEAD; `from: "worker:<name>"` hands off committed work from one of your subagents. Hiring and waiting is not enough: be your team’s connective tissue. On wakes/check-ins, read `team_status` and `questions_list`, inspect `worker_diff`/`worker_log`, steer drift early and relay contract changes via `team_message` (`worker`, `workers`, or `all: true`; inspect per-recipient errors). Answer technical questions within the owner’s intent; escalate unclear decisions and leave terminal permission prompts untouched for the owner. Record `team_review` (`approve` before merging; `request_changes` routes fixes back), sequence rebases via `team_merge`, and run combined checks on the integrated target.',
+  '{{team}}',
   "- Share reviewable artifacts as Whiteboard cards with `whiteboard_card`, then name the card in your terminal. Read the owner's feedback with `whiteboard_read`.",
   '{{visits}}',
   '{{branchPolicy}}',
@@ -270,6 +276,7 @@ const DEFS = {
     used: 'Added to the system prompt of every Droid worker the office starts or resumes: at a desk and every subagent. A change reaches a worker the next time its session starts or resumes. Leave it empty to add nothing.',
     vars: {
       name: "The worker's name",
+      team: 'How to use the team tools: delegating and running subagents for an independent worker, or reporting and sharing sibling notes for a subagent',
       visits: 'How to use visit tools with independent workers, for a worker that may (no lead, Visits on in Settings → Subagents & visits); empty for a subagent',
       branchPolicy: "The floor's selected branch and safe branching/checkout-return instructions",
     },

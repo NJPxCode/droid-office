@@ -7,6 +7,8 @@ import {
   PROMPTS,
   PROMPT_IDS,
   PROMPT_MAX,
+  WORKER_TEAM_LEAD,
+  WORKER_TEAM_SUBAGENT,
   WORKER_VISITS,
   fillPrompt,
   floorHint,
@@ -22,7 +24,7 @@ import {
 } from '../src/shared/prompts.js';
 import { buildingInstructions } from '../src/server/office-mcp/remote.js';
 import { ownerInstructions } from '../src/server/office-mcp/owner.js';
-import { INSTRUCTIONS } from '../src/server/office-mcp/index.js';
+import { INSTRUCTIONS, SUBAGENT_INSTRUCTIONS } from '../src/server/office-mcp/index.js';
 import { OfficePrompts, officePrompt, type PromptSource } from '../src/server/prompts.js';
 import type { AgentChoice, PromptsState } from '../src/shared/protocol.js';
 
@@ -342,7 +344,13 @@ test("each audience is told once to send workers home and to weigh a subscriptio
   // Built the way the Office MCP's serverFor does: a building agent with owner access reads its building text and the owner text, any other worker the general text.
   const orchestrator = [PROMPTS['orchestrator.system'].text, buildingInstructions({ id: 'orchestrator', name: 'Orchestrator' }), ownerInstructions].join('\n');
   const bot = [buildingInstructions({ id: 'remote-1', name: 'Bot', remote: true }), ownerInstructions].join('\n');
-  const lead = [PROMPTS['worker.system'].text, PROMPTS['subagent.nudge'].text, INSTRUCTIONS].join('\n');
+  const leadSystem = fillPrompt(PROMPTS['worker.system'].text, { name: 'Lead', team: WORKER_TEAM_LEAD, visits: WORKER_VISITS, branchPolicy: '' });
+  const lead = [leadSystem, PROMPTS['subagent.nudge'].text, INSTRUCTIONS].join('\n');
+  const subagentSystem = fillPrompt(PROMPTS['worker.system'].text, { name: 'Sub', team: WORKER_TEAM_SUBAGENT, visits: '', branchPolicy: '' });
+  const subagent = [subagentSystem, SUBAGENT_INSTRUCTIONS].join('\n');
+  for (const omitted of [/Factory Standard/, /Droid Core/, /DroidProxy/, /Benchmarks lines/, /Pace lines/, /worker_model/, /team_hire/, /team_models/, /visit_roster/]) {
+    assert.doesNotMatch(subagent, omitted);
+  }
   const count = (text: string, rule: RegExp) => (text.match(rule) ?? []).length;
   assert.deepEqual(
     [orchestrator, bot, lead].map((text) => count(text, /team_dismiss/g)),

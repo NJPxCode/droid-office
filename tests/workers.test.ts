@@ -692,11 +692,19 @@ test('only a worker with no lead is told about the visit tools, and only while v
   assert.match(systemOf(lead.id), /`visit_roster`, `visit_look` and `visit_message`/);
   assert.match(systemOf(lead.id), /when your task needs something from an independent worker/);
   assert.match(systemOf(lead.id), /Use the Droid Office MCP tools/);
+  assert.match(systemOf(lead.id), /`team_hire`/);
+  assert.match(systemOf(lead.id), /`team_models`/);
+  assert.match(systemOf(lead.id), /`worker_model`/);
 
   const sub = workers.spawn('desk-3', 'test', 'help out', false, 'agent', undefined, undefined, [], lead.id);
   if (typeof sub === 'string') return assert.fail(sub);
   await launched(sub.id);
-  assert.doesNotMatch(systemOf(sub.id), /visit_roster/, 'a subagent is never told');
+  for (const allowed of [/`team_board`/, /`team_note`/, /`team_report`/, /`lead_notify`/, /`whiteboard_card`/]) {
+    assert.match(systemOf(sub.id), allowed);
+  }
+  for (const omitted of [/visit_roster/, /team_hire/, /team_models/, /worker_model/, /team_merge/, /team_review/]) {
+    assert.doesNotMatch(systemOf(sub.id), omitted, 'a subagent is never told lead or visit instructions');
+  }
   assert.doesNotMatch(systemOf(sub.id), /\n{3,}/, 'no gap where it would have been');
 
   // An owner's own system prompt from before visits still tells a worker about them.
