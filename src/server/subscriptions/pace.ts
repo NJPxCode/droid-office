@@ -3,7 +3,6 @@
 // since the previous sample, so a window's "35% left" becomes busy worker-hours whatever plan tier
 // the account is on (docs/subscriptions.md#pace).
 
-import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { isSubscriptionProvider, windowCovers, type SubscriptionAccount, type SubscriptionProvider, type SubscriptionProviderKey, type UsagePace, type UsagePaceWindow, type UsageWindow } from '../../shared/subscriptions.js';
@@ -100,6 +99,7 @@ export class UsagePaceTracker {
   private readonly lastBusy = new Map<SubscriptionProviderKey, boolean>();
   private busyNow: readonly BusyWorker[] = [];
   private observedAt?: number;
+  private tempCount = 0;
 
   constructor(private readonly file?: string) {
     if (!file) return;
@@ -210,7 +210,9 @@ export class UsagePaceTracker {
 
   private persist(): void {
     if (!this.file) return;
-    const temp = `${this.file}.${randomUUID()}.tmp`;
+    // Pid and a counter, not randomUUID(): on Node 26 randomUUID leaves a resource open that the
+    // subscriptions tests wait on. Writes are synchronous, so two temp names never overlap.
+    const temp = `${this.file}.${process.pid}.${this.tempCount++}.tmp`;
     try {
       mkdirSync(path.dirname(this.file), { recursive: true });
       writeFileSync(temp, JSON.stringify({ intervals: this.intervals }), { flag: 'wx' });
