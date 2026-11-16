@@ -13,7 +13,7 @@ import type { ToolRefresh } from '../src/server/hook-refresh.js';
 import { Worktrees } from '../src/server/worktrees.js';
 import type { PromptSource } from '../src/server/prompts.js';
 import { CLEAR_DROID_QUEUE } from '../src/shared/droid-queue.js';
-import { PROMPTS } from '../src/shared/prompts.js';
+import { PROMPTS, WORKER_TEAM_LEAD, WORKER_VISITS } from '../src/shared/prompts.js';
 import { SUBAGENT_DEFAULTS, type AgentChoice, type AgentEffort, type GhPull, type WorkerInfo } from '../src/shared/protocol.js';
 import { nextFreeSeat } from '../src/shared/layout.js';
 import { SCREEN_SETTLE_MS } from '../src/server/droid-screen.js';
@@ -713,6 +713,15 @@ test('only a worker with no lead is told about the visit tools, and only while v
   if (typeof custom === 'string') return assert.fail(custom);
   await launched(custom.id);
   assert.match(systemOf(custom.id), /^You are .*, at a desk\.\n\n- Use `visit_roster`/);
+
+  // A saved custom prompt with verbatim lead and visit paragraphs still scrubs both for a subagent.
+  system = `You are {{name}}.\n\n${WORKER_TEAM_LEAD}\n\n${WORKER_VISITS}\n\nFinish cleanly.`;
+  const legacySub = workers.spawn('desk-6', 'test', 'help out', false, 'agent', undefined, undefined, [], lead.id);
+  if (typeof legacySub === 'string') return assert.fail(legacySub);
+  await launched(legacySub.id);
+  assert.match(systemOf(legacySub.id), /`team_board`/);
+  assert.doesNotMatch(systemOf(legacySub.id), /team_hire|visit_roster/);
+  assert.doesNotMatch(systemOf(legacySub.id), /\n{3,}/);
 
   on = false;
   system = PROMPTS['worker.system'].text;

@@ -100,8 +100,15 @@ export class WorkerLaunchSettings {
     // Only a worker with no lead may visit the others; a subagent isn't told the visit tools exist.
     const visits = info.kind === 'agent' && !info.lead && this.context.visitsOn() ? WORKER_VISITS : '';
     let text = officePrompt(this.context.prompts, 'worker.system', { name: info.name, team, visits, branchPolicy });
-    // A saved custom prompt from before {{team}} existed may still hold the lead paragraph verbatim.
-    if (text && info.lead && text.includes(WORKER_TEAM_LEAD)) text = text.replace(WORKER_TEAM_LEAD, WORKER_TEAM_SUBAGENT);
+    // A saved custom prompt from before {{team}} or {{visits}} existed may still hold those paragraphs verbatim.
+    if (text && info.lead) {
+      if (text.includes(WORKER_TEAM_LEAD)) text = text.replaceAll(WORKER_TEAM_LEAD, WORKER_TEAM_SUBAGENT);
+      if (text.includes(WORKER_VISITS))
+        text = text
+          .replaceAll(WORKER_VISITS, '')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+    }
     // A saved system prompt from before visits existed still tells the worker about them.
     if (text && visits && !template.includes('{{visits}}')) text += `\n\n${visits}`;
     // A saved system prompt may predate the floor selector. Keep it, but don't let its generic
