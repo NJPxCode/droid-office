@@ -36,6 +36,7 @@ import { forgeWords, type ForgeWords } from '../shared/floors';
 import type { JiraBoardState, JiraFloorState } from '../shared/jira';
 import { DEFAULT_AUTOPILOT, type LinearBoardState, type LinearFloorState } from '../shared/linear';
 import { emptyFactoryState, type FactoryState } from '../shared/factory';
+import { emptyBenchmarksState, type BenchmarksState } from '../shared/benchmarks';
 import { emptyFloorVibes, emptyGeminiState, type FloorVibesState, type GeminiConnectionState } from '../shared/gemini-vibes';
 import { emptySetupState, type SetupState } from '../shared/setup';
 import { emptySubscriptionsState, type SubscriptionsState } from '../shared/subscriptions';
@@ -76,6 +77,7 @@ export type Topic =
   | 'linearBoard'
   | 'factory'
   | 'gemini'
+  | 'benchmarks'
   | 'vibes'
   | 'setup'
   | 'subscriptions'
@@ -309,6 +311,8 @@ export class Store {
   factory: FactoryState = emptyFactoryState();
   /** Google Gemini Decisions (`gemini-decision-1`) connection and Living 3D Studio telemetry. */
   gemini: GeminiConnectionState = emptyGeminiState();
+  /** Artificial Analysis model benchmarks connection (team_models). */
+  benchmarks: BenchmarksState = emptyBenchmarksState();
   /** Living 3D worker postures, micro-reactions, monitor spill and room mood lighting on this floor. */
   vibes: FloorVibesState | null = null;
   /** Droid installed and signed in, and whether the owner has been through the welcome (docs/subscriptions.md). */
@@ -438,12 +442,31 @@ export class Store {
         this.prompts = msg.prompts ?? { custom: {} };
         this.factory = msg.factory ?? emptyFactoryState();
         this.gemini = msg.gemini ?? emptyGeminiState();
+        this.benchmarks = msg.benchmarks ?? emptyBenchmarksState();
         this.setup = msg.setup ?? emptySetupState();
         this.subscriptions = msg.subscriptions ?? emptySubscriptionsState();
         this.missionControl = msg.missionControl;
         this.building = new Map((msg.building ?? []).map((r) => [r.floor, { floor: r.floor, workers: [...r.workers], pulls: [...r.pulls] }]));
         this.enter(msg);
-        for (const t of ['upgrade', 'machine', 'floors', 'building', 'projectsDir', 'sky', 'jukebox', 'leaveOnMerge', 'freshMain', 'subagents', 'prompts', 'factory', 'gemini', 'setup', 'subscriptions', 'missionControl'] as Topic[])
+        for (const t of [
+          'upgrade',
+          'machine',
+          'floors',
+          'building',
+          'projectsDir',
+          'sky',
+          'jukebox',
+          'leaveOnMerge',
+          'freshMain',
+          'subagents',
+          'prompts',
+          'factory',
+          'gemini',
+          'benchmarks',
+          'setup',
+          'subscriptions',
+          'missionControl',
+        ] as Topic[])
           this.emit(t);
         break;
       case 'floor.enter':
@@ -687,6 +710,10 @@ export class Store {
       case 'gemini':
         this.gemini = msg.state;
         this.emit('gemini');
+        break;
+      case 'benchmarks':
+        this.benchmarks = msg.state;
+        this.emit('benchmarks');
         break;
       case 'vibes':
         if (msg.state.floor !== this.floor) break;

@@ -13,11 +13,14 @@ import {
   type ModelAvailability,
   type ModelUsage,
   type ProxyState,
+  type SubscriptionProvider,
   type SubscriptionProviderKey,
   type SubscriptionsState,
+  type UsagePace,
 } from '../../shared/subscriptions.js';
 import { ControlError, controlClient, type RawProvider, type RawStatus, type RawUsage } from './control.js';
 import { fallbackName, hireRefusal, mapAvailability, mapProviders, modelNames, modelProviders, providersFromUsage, stripPrefix } from './map.js';
+import { UsagePaceTracker } from './pace.js';
 import { APP_NAME, DROIDPROXY_BUNDLE_ID, InstallError, installProxy, latestRelease, readBundle, runCommand, type AppDirs, type Runner } from './proxy-install.js';
 
 /** The subscriptions.* messages a client sends (see protocol.ts). */
@@ -29,6 +32,8 @@ export type SubscriptionsMsg = Extract<
 export interface SubscriptionsTimers {
   setTimeout(fn: () => void, ms: number): unknown;
   clearTimeout(handle: unknown): void;
+  setInterval?(fn: () => void, ms: number): unknown;
+  clearInterval?(handle: unknown): void;
 }
 
 export interface SubscriptionsOptions {
@@ -39,6 +44,8 @@ export interface SubscriptionsOptions {
   toast(text: string, level?: 'info' | 'warn' | 'error'): void;
   /** DroidProxy rewrote its models in Droid's settings: the office reads Droid's model list again. */
   modelsChanged(): void;
+  /** The model of every office worker busy on a turn right now, for the pace each plan's quota is spent at. */
+  busyModels?(): string[];
   /** For tests: the network (GitHub and DroidProxy). */
   fetchImpl?: typeof fetch;
   /** For tests: the home folder with .droidproxy/control.json and .factory/settings.json. */
@@ -88,6 +95,8 @@ const STALE_MS = 5 * 60_000;
 const START_WAIT_MS = 30_000;
 /** The office puts DroidProxy's models into Droid by itself at most this often, while Droid has none of them. */
 const AUTO_MODELS_EVERY_MS = 10 * 60_000;
+/** How often busy workers are counted for pace, between looks at DroidProxy. */
+const OBSERVE_MS = 10_000;
 
 const message = (err: unknown) => (err instanceof ControlError || err instanceof InstallError ? err.message : String((err as Error)?.message ?? err));
 
@@ -120,6 +129,33 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
   const supported = (opts.platform ?? process.platform) === 'darwin' && (opts.arch ?? process.arch) === 'arm64';
 
   const state: SubscriptionsState = emptySubscriptionsState();
+  const pace = new UsagePaceTracker(path.join(opts.dataDir, 'usage-pace.json'));
+  const providerPaceCache = new Map<SubscriptionProviderKey, { provider: SubscriptionProvider; at: number; rev: number; pace: UsagePace | undefined }>();
+  const canSamplePace = () => (state.proxy.phase === 'running' || state.proxy.phase === 'outdated') && (state.checkedAt === null || now() - state.checkedAt <= STALE_MS);
+  const readBusyModels = (): string[] => {
+    try {
+      return canSamplePace() ? (opts.busyModels?.() ?? []) : [];
+    } catch {
+      return [];
+    }
+  };
+  const observeBusy = () => {
+    const busy = readBusyModels().flatMap((model) => {
+      const provider = state.modelProviders?.[model];
+      return provider ? [{ provider, model }] : [];
+    });
+    pace.observe(busy, now());
+  };
+  const startInterval =
+    timers.setInterval ??
+    ((fn, ms) => {
+      const t = setInterval(fn, ms);
+      t.unref();
+      return t;
+    });
+  const stopInterval = timers.clearInterval ?? ((h) => clearInterval(h as NodeJS.Timeout));
+  // Looks at DroidProxy are a minute or more apart: a turn that starts and ends between two would add no busy time.
+  const observeTimer = supported && opts.busyModels ? startInterval(observeBusy, OBSERVE_MS) : undefined;
   if (supported) state.proxy = { phase: 'missing', version: null, latest: null, path: null, error: null };
   /** When `state.availability` was last judged; older than STALE_MS counts as unknown. */
   let judgedAt = 0;
@@ -190,6 +226,7 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
   const down = (ids: Iterable<string>, installed: boolean) => Object.fromEntries([...new Set(ids)].map((id) => [id, { state: 'proxy-down', installed } as ModelAvailability]));
 
   const lookOnce = async () => {
+    observeBusy();
     const inSettings = await settingsModels(home);
     droidHasModels = inSettings.size > 0;
     names = { ...Object.fromEntries(inSettings), ...names };
@@ -198,6 +235,7 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       setProxy({ phase: installing ? 'installing' : 'missing', version: null, path: null });
       state.providers = [];
       state.models = null;
+      pace.sample([], now());
       setAvailability(down(inSettings.keys(), false));
       return;
     }
@@ -225,6 +263,9 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
         served = (models.value.models ?? []).map((m) => m?.id).filter((id): id is string => typeof id === 'string');
       }
       state.checkedAt = now();
+      // Again now that the providers of the models are known: the first look learns them.
+      observeBusy();
+      pace.sample(state.providers, now());
       maybeApplyModels(prev, status.value);
       return;
     }
@@ -241,6 +282,7 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
         errorFromLook = true;
       }
       setProxy({ phase: keep(waiting ? 'starting' : 'stopped') });
+      if (!waiting) pace.sample([], now());
       setAvailability(down([...served, ...inSettings.keys()], true));
       return;
     }
@@ -255,9 +297,11 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       setProxy({ phase: keep('outdated'), ...(errorFromLook ? { error: null } : {}) });
       errorFromLook = false;
       state.providers = providersFromUsage(lastUsage);
+      state.checkedAt = now();
+      observeBusy();
+      pace.sample(state.providers, now());
       state.models = null;
       setAvailability({});
-      state.checkedAt = now();
       return;
     }
     // It answered badly or not in time: keep the last good state, which goes stale by itself.
@@ -557,7 +601,22 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       void handle(msg).catch((err) => fail(message(err)));
     },
     availability,
-    usage: (model, at) => modelUsage(state, model, at),
+    usage: (model, at) => {
+      const u = modelUsage(state, model, at);
+      if (!u?.windows.length) return u;
+      const provider = state.providers.find((p) => p.key === u.provider);
+      if (!provider) return u;
+      const own = pace.estimate(provider, model, at);
+      const cached = providerPaceCache.get(provider.key);
+      let all: UsagePace | undefined;
+      if (cached && cached.provider === provider && cached.at === at && cached.rev === pace.revision) {
+        all = cached.pace;
+      } else {
+        all = pace.estimate(provider, undefined, at);
+        providerPaceCache.set(provider.key, { provider, at, rev: pace.revision, pace: all });
+      }
+      return { ...u, ...(own ? { pace: own } : {}), ...(all ? { providerPace: all } : {}) };
+    },
     async recheck(minAgeMs = RECHECK_MIN_MS) {
       if (!supported || stopped || installing) return;
       if (state.proxy.phase !== 'running' && state.proxy.phase !== 'outdated') return;
@@ -576,6 +635,7 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       stopped = true;
       timers.clearTimeout(pollTimer);
       timers.clearTimeout(releaseTimer);
+      if (observeTimer !== undefined) stopInterval(observeTimer);
     },
   };
 }

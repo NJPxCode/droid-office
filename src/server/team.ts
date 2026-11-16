@@ -14,6 +14,7 @@ import type { PipelinesState } from '../shared/pipelines.js';
 import { isAsleep } from '../shared/status.js';
 import type { DroidModelCatalogue, DroidModelOption } from './droid-models.js';
 import type { FactoryState } from '../shared/factory.js';
+import type { BenchmarkModel } from '../shared/benchmarks.js';
 import { factoryModelAvailability, factoryModelTier } from '../shared/factory-limits.js';
 import { availabilityWords, cannotRun, durationWords, isSubscriptionModel, type ModelAvailability, type ModelUsage, type SubscriptionProviderKey } from '../shared/subscriptions.js';
 import { restoreStoredImages, type StoredImageMeta } from './office-images.js';
@@ -103,6 +104,8 @@ export interface TeamOptions {
   availability?: (model: string) => ModelAvailability | undefined;
   /** Subscriptions: what the plan behind a subscription model has left at `now`, for team_models. */
   usage?: (model: string, now: number) => ModelUsage | undefined;
+  /** Artificial Analysis benchmarks for a model by its display name, for team_models. */
+  benchmarks?: (name: string) => BenchmarkModel | undefined;
   /** Throttled DroidProxy `/models` recheck so recently exhausted subscription windows show up without waiting 60s. */
   recheckModels?: () => Promise<void>;
   factory?: () => FactoryState;
@@ -343,6 +346,8 @@ export interface TeamModel {
   /** A subscription model: what its plan has left, so a lead can weigh a nearly spent plan against a full one. */
   usage?: ModelUsage;
   factoryUsage?: FactoryModelUsage;
+  /** Artificial Analysis benchmarks at each reasoning effort, when the office is connected and knows the model. */
+  benchmarks?: BenchmarkModel;
   enabled?: boolean;
 }
 
@@ -904,6 +909,7 @@ export class Team {
       else if (factoryAvailability && factoryAvailability.state !== 'ok') stuck = factoryAvailability.reason;
       const usage = this.opts.usage?.(id, now);
       const factoryUsage = factoryModelUsage(factory, m ?? { id }, now);
+      const benchmarks = m?.displayName ? this.opts.benchmarks?.(m.displayName) : undefined;
       const subscriptionProvider = usage?.provider ?? (avail && 'provider' in avail ? avail.provider : undefined);
       const emptyWin = usage?.windows.find((w) => w.leftPercent <= 0);
       const cooldownFor = (until: number | null, window: string): NonNullable<TeamModel['cooldown']> => ({
@@ -938,6 +944,7 @@ export class Team {
         ...(cooldown ? { cooldown } : {}),
         ...(usage ? { usage } : {}),
         ...(factoryUsage ? { factoryUsage } : {}),
+        ...(benchmarks ? { benchmarks } : {}),
       };
     };
     const models = includeDisabled

@@ -76,6 +76,7 @@ import { RemoteMcp } from './remote-mcp-http.js';
 import { Orchestrator } from './orchestrator.js';
 import { missionTeam, type BuildingAgents } from './building-agent.js';
 import { GeminiDecisionsStore } from './gemini-decisions.js';
+import { Benchmarks } from './benchmarks.js';
 import { OfficeVibes, type VibesFloorView } from './office-vibes.js';
 import { WakeFilter } from './wake-filter.js';
 import { createBoardCommands } from './server-runtime/board-commands.js';
@@ -672,7 +673,16 @@ export async function startServer(cfg: Config) {
       setup.message('office', { t: 'setup.check' });
       missionChanged();
     },
+    busyModels: () =>
+      [...floors.values()]
+        .flatMap((f) => f.everyone())
+        .concat(orchestrator.workers.list())
+        .filter((w) => w.kind === 'agent' && !w.remote && w.status === 'working')
+        .map((w) => w.activeModel ?? w.model)
+        .filter((model): model is string => Boolean(model)),
   });
+  // Artificial Analysis benchmarks for team_models, read once a day with the owner's key.
+  const benchmarks = new Benchmarks({ dataDir: cfg.dataDir, broadcast: (state) => broadcast({ t: 'benchmarks', state }), paused: () => Boolean(setup.state().airgapped) });
 
   // The machine's CPU and memory, for the monitor on the wall and a warning before hiring, and the
   // most workers the office runs at once, across every floor (--max-workers, or ⚙️ Settings).
@@ -749,6 +759,7 @@ export async function startServer(cfg: Config) {
     modelGate,
     modelAvailability: (model) => subscriptions.availability(model),
     modelUsage: (model, now) => subscriptions.usage(model, now),
+    modelBenchmarks: (name) => benchmarks.forModel(name),
     recheckModels: () => subscriptions.recheck(),
     factory: () => factory.state(),
     recheckFactoryLimits: () => factory.recheckLimits(),
@@ -1028,6 +1039,7 @@ export async function startServer(cfg: Config) {
       prompts: prompts.state(),
       factory: factory.state(),
       gemini: officeVibes.geminiState(),
+      benchmarks: benchmarks.state(),
       setup: setup.state(),
       subscriptions: subscriptions.state(),
       missionControl: missionState(),
@@ -2329,6 +2341,24 @@ export async function startServer(cfg: Config) {
         done();
         break;
       }
+      case 'benchmarks.connect':
+      case 'benchmarks.refresh': {
+        const isConnect = msg.t === 'benchmarks.connect';
+        const pending = isConnect ? benchmarks.connect(str(msg.key, 512), who) : benchmarks.refresh();
+        void pending
+          .then((error) => {
+            sendTo(c, { t: 'benchmarks.setup', ok: !error, ...(error ? { error } : {}) });
+            if (!error && isConnect) toastAll(`${who} connected Artificial Analysis benchmarks`);
+          })
+          .catch(() => sendTo(c, { t: 'benchmarks.setup', ok: false, error: 'Artificial Analysis check failed.' }));
+        break;
+      }
+      case 'benchmarks.disconnect': {
+        const err = benchmarks.disconnect();
+        if (err) return stop(err);
+        done();
+        break;
+      }
       case 'vibes.watch':
         if (typeof msg.active !== 'boolean') return stop('Send {"active": true} or {"active": false}.');
         if (!c.dashboard) officeVibes.setWatching(c.id, msg.active);
@@ -2534,6 +2564,7 @@ export async function startServer(cfg: Config) {
     officeVibes.stop();
     setup.stop();
     subscriptions.stop();
+    benchmarks.stop();
     for (const f of floors.values()) f.shutdown(keep);
     floorActivity.flush();
     orchestrator.shutdown(keep);

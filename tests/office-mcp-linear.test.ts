@@ -175,6 +175,11 @@ test('all eight Linear tools appear while connected, building agents cannot star
   assert.deepEqual(names.sort(), ['linear_comment', 'linear_create_issue', 'linear_graphql', 'linear_issue', 'linear_issues', 'linear_start', 'linear_update_issue', 'linear_workspace']);
   const building = await r.connect(true);
   assert.ok(!(await building.listTools()).tools.some((tool) => tool.name === 'linear_start'));
+  r.worker.lead = 'lead';
+  const sub = await r.connect();
+  assert.match(sub.getInstructions() ?? '', /linear_graphql/);
+  assert.doesNotMatch(sub.getInstructions() ?? '', /team_hire|visit_roster/);
+  delete r.worker.lead;
   const refused = await building.callTool({ name: 'linear_start', arguments: { issue: 'DOFF-900' } });
   assert.equal(refused.isError, true);
   assert.equal(refused.structuredContent?.code, 'permission_denied');

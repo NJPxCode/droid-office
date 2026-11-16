@@ -262,6 +262,13 @@ test('a real HTTP MCP client reads office identity and server instructions', asy
   assert.deepEqual(result.structuredContent?.floor, { id: 'floor', name: 'Test floor' });
   assert.match(JSON.stringify(result.content), /lead/);
   const sub = await r.connect('sub');
+  const subInstructions = sub.getInstructions() ?? '';
+  for (const allowed of [/owner's instructions outrank/, /team_board/, /team_note/, /team_report/, /lead_notify/, /whiteboard_card/]) {
+    assert.match(subInstructions, allowed);
+  }
+  for (const omitted of [/team_hire/, /team_models/, /worker_model/, /Factory Standard/, /DroidProxy/, /Benchmarks lines/, /Pace lines/, /visit_roster/, /Otherwise keep to your own task/]) {
+    assert.doesNotMatch(subInstructions, omitted);
+  }
   const identity = await sub.callTool({ name: 'office_whoami', arguments: {} });
   assert.equal(identity.structuredContent?.canHire, false);
   assert.equal(identity.structuredContent?.canVisit, false);

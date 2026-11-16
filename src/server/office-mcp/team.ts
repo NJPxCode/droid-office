@@ -6,7 +6,8 @@ import type { TeamEvent, TeamMember, TeamModel, TeamReply, WorkerReview } from '
 import { teamBoardText, type TeamBoardMember } from '../team.js';
 import { formatOtherFloorWorkers, type OtherFloorWorker } from '../floor-watch.js';
 import { formatImageLines, OfficeImageStore, type StoredImageMeta } from '../office-images.js';
-import { isSubscriptionModel, modelUsageWords } from '../../shared/subscriptions.js';
+import { isSubscriptionModel, modelUsageWords, paceWords } from '../../shared/subscriptions.js';
+import { benchmarkWords } from '../../shared/benchmarks.js';
 import { briefAge, factoryUsageWords, formatForgeLines, formatProviderQuotas, formatTaskTag, formatWorkerInspection, type ProviderQuotaSummary, type WorkerInspection } from '../worker-status.js';
 import { hasOwnerAccess } from './owner.js';
 import { formatBlockingSummary, formatQueueBrief } from '../worker-queue.js';
@@ -16,8 +17,12 @@ import { compactEvent, compactEventText, compactWorker, compactWorkerText, curso
 
 export const instructions = `Subagents are real workers with their own terminals and (by default) git worktrees reporting to you, their lead. Subagents cannot hire.
 Have task-authored prerequisites committed BEFORE hiring (worktrees see committed state only; leave unrelated changes untouched). Read team_models once per hiring batch, then hire one fresh subagent per task, only as many as independent scopes need. Independent scopes touch separate files: assign single-writer edit ownership in each brief, plus goal, dependency context, boundaries, checks and delivery; sibling files can be referenced as read-only context. Subagents share areas/findings via team_board and team_note. Continue a subagent's committed work via from / task.baseBranch set to worker:<name/id> or its absolute worktree path; floor leads omit from for their own current HEAD.
-Owner notes take priority when picking an exact model id from team_models. Weigh Factory Standard and Droid Core 5-hour, weekly and monthly remaining windows, reset times, active overage mode and Extra Usage balance alongside DroidProxy subscription quotas and credit multipliers. Droid Core fallback does not make an exhausted Standard model runnable; Extra Usage only does when allowed with a positive balance. Custom/subscription models use no Factory credits; prefer ample quota and keep nearly spent tiers off long tasks. Pick <=x0.5 for mechanical work, ~x1 for standard tasks, and top models for hard design, security, or concurrency; never give visual tasks to a no-images model. To switch a subagent's model, call worker_model with what you would type after /model in its terminal: "Sol" picks GPT Sol on Factory credits, "droidproxy sol" DroidProxy's Sol, and the same pattern names any other model (or pass an exact team_models id); team_message cannot run slash commands.
-Hiring and waiting is not enough: run the team as its connective tissue. On wakes/check-ins read team_status and questions_list, inspect relevant worker_diff/worker_log and full reports with team_report_get. Steer drift and relay contract changes via team_message (default queue: false steers at the next step; queue: true queues behind the turn; urgent: true interrupts blocking commands; images attaches uploaded image ids; worker_queue lists/clears/promotes queued items; workers/all: true broadcasts; inspect per-recipient errors). Answer technical questions within the owner's intent; escalate unclear decisions and leave workers at permission prompts untouched for the owner. Record team_review approve before merging (a lead workflow gate, not a server-enforced lock; request_changes routes fixes back). Integrate via team_merge (building agents name target), land foundations first, then have dependent siblings rebase/align and re-verify. Resolve returned conflict hunks in the reported worktree and run combined target checks after review and integration, before team_dismiss. team_pr requires authorization and a pushed branch. With Wake the lead on, end your turn when nothing else remains; otherwise use team_wait. Subagents attach produced screenshots/images (or Whiteboard card ids) via images on team_report and lead_notify so leads receive downloadable image ids and Tailnet URLs. When your lead is a Grok Bot (office_whoami shows leadPush: true), team_report pushes straight to its webhook on turn end and lead_notify sends immediate mid-turn updates, questions, blockers, or test pings without ending your turn.`;
+Owner notes take priority when picking an exact model id from team_models. Weigh Factory Standard and Droid Core 5-hour, weekly and monthly remaining windows, reset times, active overage mode and Extra Usage balance alongside DroidProxy subscription quotas and credit multipliers. Droid Core fallback does not make an exhausted Standard model runnable; Extra Usage only does when allowed with a positive balance. Custom/subscription models use no Factory credits; prefer ample quota and keep nearly spent tiers off long tasks. Benchmarks lines rate intelligence and engineering per effort (higher is better) with $/task as API cost per task, not plan quota: match model and effort to the task's difficulty. Pace lines turn remaining quota into busy worker-hours for one worker; divide by how many you run at once. Pick <=x0.5 for mechanical work, ~x1 for standard tasks, and top models for hard design, security, or concurrency; never give visual tasks to a no-images model. To switch a subagent's model, call worker_model with what you would type after /model in its terminal: "Sol" picks GPT Sol on Factory credits, "droidproxy sol" DroidProxy's Sol, and the same pattern names any other model (or pass an exact team_models id); team_message cannot run slash commands.
+Hiring and waiting is not enough: run the team as its connective tissue. On wakes/check-ins read team_status and questions_list, inspect relevant worker_diff/worker_log and full reports with team_report_get. Steer drift and relay contract changes via team_message (default queue: false steers at the next step; queue: true queues behind the turn; urgent: true interrupts blocking commands; images attaches uploaded image ids; worker_queue lists/clears/promotes queued items; workers/all: true broadcasts; inspect per-recipient errors). Answer technical questions within the owner's intent; escalate unclear decisions and leave workers at permission prompts untouched for the owner. Record team_review approve before merging (a lead workflow gate, not a server-enforced lock; request_changes routes fixes back). Integrate via team_merge (building agents name target), land foundations first, then have dependent siblings rebase/align and re-verify. Resolve returned conflict hunks in the reported worktree and run combined target checks after review and integration, before team_dismiss. team_pr requires authorization and a pushed branch. With Wake the lead on, end your turn when nothing else remains; otherwise use team_wait. Subagents can attach produced screenshots/images (or Whiteboard card ids) on team_report so you receive downloadable image ids and Tailnet URLs.`;
+
+export const subagentInstructions = `You are a subagent reporting to your lead; subagents cannot hire or manage a team.
+Read team_board before editing shared areas to inspect sibling tasks, status, branches, edit areas and notes, and post short findings or updated edit areas with team_note ([] clears areas; never replaces team_report). Incorporate mid-turn steering from your lead at your next step.
+Finish by calling team_report with your results, verified checks, remaining work, links, optional structured result, and any contract or schema changes your lead must relay to siblings (pass question: true for a blocking question, or progress: true only when ending your turn while a background job you started will wake you on exit), then end your turn. Attach produced screenshots/images (or Whiteboard card ids) via images on team_report and lead_notify so your lead receives downloadable image ids and Tailnet URLs. When your lead is a Grok Bot (office_whoami shows leadPush: true), team_report pushes straight to its webhook on turn end and lead_notify sends immediate mid-turn updates, questions, blockers, or test pings without ending your turn.`;
 
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const changesState = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
@@ -103,6 +108,14 @@ function eventText(event: TeamEvent, imageOrigin?: string): string {
   return `${at} Office status: ${event.name} ${status[event.kind]}${event.text ? `: ${event.text}` : ''}.${event.kind === 'needs_input' ? ' Tell whoever asked you; someone must answer at its desk.' : ''}`;
 }
 
+/** Said once above models that carry benchmarks, so agents know what the numbers mean. */
+function benchmarksLegend(models: readonly TeamModel[]): string[] {
+  if (!models.some((m) => m.benchmarks)) return [];
+  return [
+    `Intelligence and engineering are 0-100 indexes (higher is better); $/task is what one index task costs at the model's API prices at that effort (tokens spent times price), not plan quota; Pace lines measure how fast a plan runs out. Compare models at the effort you will hire on.`,
+  ];
+}
+
 function modelText(model: TeamModel): string {
   return [
     `${model.id}${model.default ? ' (default)' : ''}: ${model.name}`,
@@ -118,7 +131,10 @@ function modelText(model: TeamModel): string {
       .filter(Boolean)
       .join(', '),
     ...(model.usage ? [`Subscription usage: ${modelUsageWords(model.usage)}`] : []),
+    // The provider's own pace is on its quota line; a model only adds one measured on itself.
+    ...(model.usage?.pace?.state === 'measured' && model.usage.pace.basis === 'model' ? [`Pace on this model: ${paceWords(model.usage.pace, model.usage.provider)}`] : []),
     ...(model.factoryUsage ? [`Factory usage: ${factoryUsageWords(model.factoryUsage)}`] : []),
+    ...(model.benchmarks ? [`Benchmarks: ${benchmarkWords(model.benchmarks, model.efforts, model.defaultEffort)}`] : []),
     ...(model.note ? [`Owner's note: ${model.note}`] : []),
     ...(model.cannotRun ? [`Cannot run: ${model.cannotRun}`] : []),
     ...(model.cooldown?.until ? [`Cooldown resets at: ${model.cooldown.until} (${model.cooldown.window})`] : []),
@@ -401,9 +417,11 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
       if (!team) return officeError('No floor is open, so the office cannot list models yet.');
       return reply(await team.handle(caller.worker, { action: 'models_list' }), (body) => {
         const quotas = body.quotas as ProviderQuotaSummary[] | undefined;
-        return [...(quotas?.length ? [formatProviderQuotas(quotas)] : []), ...(body.models as TeamModel[]).map((model) => `${model.enabled === false ? (model.cannotRun ? 'Unavailable: ' : 'Not allowed: ') : ''}${modelText(model)}`)].join(
-          '\n\n',
-        );
+        return [
+          ...(quotas?.length ? [formatProviderQuotas(quotas)] : []),
+          ...benchmarksLegend(body.models as TeamModel[]),
+          ...(body.models as TeamModel[]).map((model) => `${model.enabled === false ? (model.cannotRun ? 'Unavailable: ' : 'Not allowed: ') : ''}${modelText(model)}`),
+        ].join('\n\n');
       });
     },
   );
@@ -568,6 +586,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
           ...(quotas?.length ? [formatProviderQuotas(quotas)] : []),
           body.restricted ? 'Settings restrict subagent models to the listed picks.' : 'Subagents may use any current Droid model.',
           ...(body.unavailable ? ['Droid could not list its models; costs and providers may be missing.'] : []),
+          ...benchmarksLegend(filtered),
           ...filtered.map(modelText),
           defaultLine,
         ].join('\n\n'),

@@ -112,12 +112,32 @@ A window covers a model unless it is named for another model family: Claude's "W
 - No account with usage: `usage couldn't be read (the reason DroidProxy gave)`.
 - A model that can't run keeps its `Cannot run:` line and the refusal text; a signed-out or switched-off provider has no usable account, so no usage line. Models that aren't subscription models have none.
 
+## Pace
+
+A percentage alone doesn't say how far it goes: the same 15% is days of work on one plan tier and minutes on another, and nobody, lead or office, is told which tier an account is on. The office measures it instead (`UsagePaceTracker`, `src/server/subscriptions/pace.ts`).
+
+- **Busy time.** Every 10 seconds, and at every look at DroidProxy, the office records which office workers are busy on a turn (`status: 'working'`, local agents on every floor and Mission Control) and the subscription model each runs (`activeModel`, else `model`). The time since the previous look counts for whoever was busy then, at most 3 minutes per gap, so a sleeping Mac adds nothing.
+- **Usage.** Each new usage sample (an account's `usageUpdatedAt` moved; for an account without one, a percentage or reset time moved) closes an interval for its provider: the busy milliseconds per model since the last sample, and the percentage points each window rose, summed over the provider's live accounts. A window that reset in between (its percentage fell, or its reset time passed) is left out of that interval. Usage that lands while nobody is busy goes to the interval just before when there was one (usage often arrives a sample late), and is ignored otherwise (the owner working outside the office).
+- **History.** Intervals with busy time from the last 7 days, in office-wide `.droid-office/usage-pace.json`.
+- **Rate.** Per window: points used over busy worker-hours on the models that window meters (only Opus time counts for `Weekly (Opus)`). A model gets its own rate once intervals where it had at least 90% of the provider's busy time add up to half a worker-hour; until then it gets the provider's rate over all its models. Fewer than half a worker-hour in total, or for every window, is `learning`.
+- **Worker-hours left.** What is left of the window across all live accounts (DroidProxy moves on to the next account when one runs out) divided by the rate. A model's pace leaves out a window named for another family (`Weekly (Opus)` on Sonnet); the provider's pace lists every window.
+- **Where it shows.** `ModelUsage.pace` (this model) and `providerPace` (the provider). The provider's line in `Subscription quotas:` ends with `pace: 5-hour ~9% per worker-hour (about 10 worker-hours left), Weekly ~1.5% per worker-hour (about 23 worker-hours left); measured over 3.2 worker-hours on all Claude models in the last 7 days`, or `pace: still learning: …`. A model with a rate of its own adds `Pace on this model: …` under its usage line. Rates are per busy worker: three workers at once go three times as fast, which lead and Orchestrator guidance says.
+
+## Benchmarks
+
+**⚙️ Settings → Connections → Model benchmarks → Artificial Analysis** connects an [Artificial Analysis](https://artificialanalysis.ai) Data API key (`Benchmarks`, `src/server/benchmarks.ts`; office-wide `.droid-office/artificial-analysis.json`, mode 0600, with the last read; the key never reaches a client, a log line or an error). A free key is enough.
+
+- **Reading.** `GET https://artificialanalysis.ai/api/v2/language/models/free?page=N` (header `x-api-key`) until `pagination.has_more` is false, at most 10 pages (about 4 today, of the free tier's 100 requests a day). Connecting reads it at once and keeps the key only if that works. After that the office reads it again once it is a day old (looking every hour, never more than once an hour after a failure), or on **Read now**. A failed read keeps the benchmarks from before and shows why (`401` rejected key, `429` with the wait from `Retry-After`). Airgapped mode reads nothing; turning it on stops a read before its next page. A connect or disconnect while a read is under way wins: the older read saves nothing.
+- **Shape.** Each row's name is a family plus a reasoning setting in parentheses (`Claude Opus 5.5 (High, Default Fallback)`); rows group by family with one `BenchmarkVariant` per effort (`low` … `max`, `reasoning`, `non-reasoning`): Intelligence Index, Engineering index, dollars per Intelligence Index task (`artificial_analysis_intelligence_index_cost.cost_per_task.total_cost`) and output tokens per second. A parenthesis that isn't a setting (`Gemini 1.5 Pro (Sep '24)`) stays part of the name. Rows with neither score are dropped. Artificial Analysis publishes no Coding or Agentic index any more.
+- **Matching.** A Droid model matches the family whose name reads the same after dropping `Gateway:` prefixes (`DroidProxy: Antigravity:`), a reasoning-effort suffix (`(High)`), case, hyphens and a leading brand word (`DroidProxy: Opus 5.5` is `Claude Opus 5.5`, `DroidProxy: GPT 6.1 Sol` is `GPT-6.1 Sol`). Versions must match exactly (`Opus 5` is not `Opus 5.5`).
+- **Where it shows.** `TeamModel.benchmarks`, printed by `benchmarkWords` as `Benchmarks: medium (default): intelligence 48.2, engineering 53.7, $2.45/task; low: …` for the efforts the model takes, default first. `team_models` and `models_list` say once above the models where the numbers come from and what they mean (attribution is a condition of the API). Dollars per task are what one task costs at the creator's API prices (tokens spent times price), not plan quota; [Pace](#pace) measures how fast a plan runs out. A model measured at one effort prints that effort's name.
+
 ## Where a model is refused
 
 | Where | What happens |
 | --- | --- |
 | `WorkerManager.spawn` (`modelGate`) | Every hire of an agent: the owner's, subagents'. Refused with `availabilityWords`: "Can't hire on GPT 6.1 Sol: out of quota, back in 3 h 10 min (5-hour). Pick another model." |
-| `team_models` | Each model that can't run says why on its own line, and the default too. A subscription model also gets a "Subscription usage" line (below). |
+| `team_models` | Each model that can't run says why on its own line, and the default too. A subscription model also gets a "Subscription usage" line (above), and its own "Pace on this model" once measured ([Pace](#pace)). |
 | `team_hire` | A model that can't run, named or the default, is refused before a desk is taken, naming the ones that can. |
 | Model pickers (web and Android) | Shown dimmed with the reason and not pickable; a stopped DroidProxy only shows a note. |
 
@@ -143,9 +163,10 @@ A window covers a model unless it is named for another model family: Claude's "W
 | Where | What |
 | --- | --- |
 | `src/shared/setup.ts` | `SetupState`, `DroidCliState`, `needsWelcome`, `droidReady`, `compareVersions`. |
-| `src/shared/subscriptions.ts` | `SubscriptionsState`, `ModelAvailability`, `cannotRun`, `availabilityWords`, `providerName`. |
+| `src/shared/subscriptions.ts` | `SubscriptionsState`, `ModelAvailability`, `cannotRun`, `availabilityWords`, `providerName`, `UsagePace`, `paceWords`. |
 | `src/server/setup/` | `index.ts` (`mountSetup`), the Droid installer, its sign-in, `setup.json`. |
-| `src/server/subscriptions/` | `index.ts` (`mountSubscriptions`), the DroidProxy installer, the control API client, availability and the gate. |
+| `src/server/subscriptions/` | `index.ts` (`mountSubscriptions`), the DroidProxy installer, the control API client, availability and the gate, `pace.ts` (`UsagePaceTracker`). |
+| `src/shared/benchmarks.ts`, `src/server/benchmarks.ts`, `src/client/ui/benchmarks-settings.ts` | Artificial Analysis benchmarks: names and words, reading and the key, the Settings card. |
 | `src/server/team.ts`, `src/server/office-mcp/team.ts` | Team tools with model availability. |
 | `src/client/ui/welcome.ts`, `subscriptions-settings.ts`, `droid-settings.ts` | The welcome and the two Settings cards. |
 | `src/client/ui/models.ts`, `model-search.ts`, `model-picker.ts`, `subagent-models.ts` | Availability in pickers. |
@@ -154,4 +175,4 @@ A window covers a model unless it is named for another model family: Claude's "W
 
 ## Testing
 
-Unit tests stub the network and the binaries (`fetchImpl`, a fake `droid` and a fake control API), because CI has neither. The installers are tested on a real download in the owner's clone: Droid into a throwaway `HOME`, DroidProxy only with the owner's go-ahead (it replaces their app). The welcome is checked end to end in a clone of the owner's office whose `HOME` has no Droid, and Subscriptions against the owner's real DroidProxy and accounts.
+Unit tests stub the network and the binaries (`fetchImpl`, a fake `droid` and a fake control API), because CI has neither. Pace (`tests/usage-pace.test.ts`, and end to end through `mountSubscriptions` in `tests/subscriptions-state.test.ts`) and benchmarks (`tests/benchmarks.test.ts`, rows trimmed from the owner's free-tier read) run on the fake clock. The installers are tested on a real download in the owner's clone: Droid into a throwaway `HOME`, DroidProxy only with the owner's go-ahead (it replaces their app). The welcome is checked end to end in a clone of the owner's office whose `HOME` has no Droid, and Subscriptions against the owner's real DroidProxy and accounts.

@@ -14,6 +14,7 @@ import { Visits } from '../src/server/visits.js';
 import { WhiteboardStore } from '../src/server/whiteboard.js';
 import { SUBAGENT_DEFAULTS, type SubagentSettings, type WorkerInfo } from '../src/shared/protocol.js';
 import type { ModelAvailability, ModelUsage } from '../src/shared/subscriptions.js';
+import type { BenchmarkModel } from '../src/shared/benchmarks.js';
 
 function worker(id: string, extra: Partial<WorkerInfo> = {}): WorkerInfo {
   return { id, name: id, kind: 'agent', deskId: 'desk-1', color: '#fff', status: 'done', acked: true, createdBy: 'test', createdAt: 1, cols: 100, rows: 30, open: false, ...extra };
@@ -256,17 +257,27 @@ test('team_models and models_list print the plan a subscription model runs on, a
       ],
       updatedAt: now - 40 * 60_000,
       at: now,
+      pace: { state: 'measured', basis: 'model', workerHours: 1.5, accounts: 2, windows: [{ name: 'Weekly', perHour: 6, leftPercent: 61, hoursLeft: 61 / 6 }] },
+      providerPace: { state: 'measured', basis: 'provider', workerHours: 4, accounts: 2, windows: [{ name: 'Weekly', perHour: 7.5, leftPercent: 61, hoursLeft: 61 / 7.5 }] },
     },
     [GROK]: { provider: 'grok', accounts: 1, windows: [], unreadable: 'timed out', at: now },
+  };
+  const sol: BenchmarkModel = {
+    name: 'GPT-6.1 Sol',
+    variants: [
+      { effort: 'high', intelligence: 50.3, engineering: 55.4, costPerTask: 0.591, tokensPerSecond: 49.67 },
+      { effort: 'medium', intelligence: 46.3, engineering: 52.1, costPerTask: 0.3594, tokensPerSecond: 51.93 },
+    ],
   };
   const r = await rig(t, {
     availability: (model) => availability[model],
     usage: (model) => usage[model],
+    benchmarks: (name) => (name === 'DroidProxy: GPT 6.1 Sol' ? sol : undefined),
     now: () => now,
     models: async () => ({
       defaultModel: 'glm-5.3-flash',
       models: [
-        { id: SOL, displayName: 'DroidProxy: GPT 6.1 Sol', custom: true },
+        { id: SOL, displayName: 'DroidProxy: GPT 6.1 Sol', custom: true, supportedReasoningEfforts: ['low', 'medium', 'high'], defaultReasoningEffort: 'medium' },
         { id: GROK, displayName: 'DroidProxy: Grok 4.7', custom: true },
         { id: 'glm-5.3-flash', displayName: 'GLM-5.3-Flash', tokenMultiplier: 0.06 },
       ],
@@ -277,6 +288,10 @@ test('team_models and models_list print the plan a subscription model runs on, a
   assert.match(shown, /Subscription usage: ChatGPT, best of 2 accounts: 5-hour 100% left \(resets in 4 h 57 min\), Weekly 61% left \(resets in 2 d 9 h\); read 40 min ago, may be out of date/);
   assert.match(shown, /Subscription usage: Grok: usage couldn't be read \(timed out\)\nCannot run: Out of quota, back in 1 h \(Weekly\)/);
   assert.equal((shown.match(/Subscription usage/g) ?? []).length, 2, 'GLM is not a subscription model');
+  assert.match(shown, /Pace on this model: Weekly ~6% per worker-hour \(about 10 worker-hours left\); measured over 1\.5 worker-hours on this model in the last 7 days, across 2 accounts/);
+  assert.match(shown, /- ChatGPT \(best of 2 accounts, 1\/1 runnable\): .* · pace: Weekly ~7\.5% per worker-hour \(about 8\.1 worker-hours left\); measured over 4 worker-hours on all ChatGPT models/);
+  assert.match(shown, /Benchmarks: medium \(default\): intelligence 46\.3, engineering 52\.1, \$0\.36\/task; high: intelligence 50\.3, engineering 55\.4, \$0\.59\/task/);
+  assert.equal((shown.match(/^Benchmarks:/gm) ?? []).length, 1, 'only models Artificial Analysis knows get a line');
   const listed = (await r.call(r.lead, 'models_list')).content as { text: string }[];
   assert.match(listed.map((c) => c.text).join('\n'), /Subscription usage: ChatGPT, best of 2 accounts/);
 

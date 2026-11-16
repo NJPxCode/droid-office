@@ -75,6 +75,7 @@ test('every setting is in a category', () => {
     ['DroidProxy', 'connections'],
     ['Accounts', 'connections'],
     ['Models in Droid', 'connections'],
+    ['Artificial Analysis', 'connections'],
     ['Gemini Decisions API', 'connections'],
     ['Linear', 'connections'],
     ["This floor's Linear team", 'connections'],
@@ -145,6 +146,7 @@ test('search finds a setting by name, pane or keyword, every word required', () 
   assert.deepEqual(searchSettings('workspace folder'), [{ pane: 'office', title: 'Workspace folder' }]);
   assert.deepEqual(searchSettings('hot reload'), [{ pane: 'office', title: 'Source hot reload' }]);
   assert.deepEqual(searchSettings('factory key'), [{ pane: 'connections', title: 'Factory API key' }]);
+  assert.deepEqual(searchSettings('benchmarks'), [{ pane: 'connections', title: 'Artificial Analysis' }]);
   assert.deepEqual(searchSettings('new conversation'), [{ pane: 'orchestrator', title: 'New conversation' }]);
   assert.deepEqual(searchSettings('orchestrator model'), [{ pane: 'orchestrator', title: 'Orchestrator model' }]);
   assert.deepEqual(searchSettings('there is no such setting'), []);

@@ -32,6 +32,7 @@ import { Visits } from './visits.js';
 import type { DroidModelCatalogue } from './droid-models.js';
 import type { SubagentSettings } from '../shared/protocol.js';
 import type { ModelAvailability, ModelUsage } from '../shared/subscriptions.js';
+import type { BenchmarkModel } from '../shared/benchmarks.js';
 import type { FactoryState } from '../shared/factory.js';
 import type { WorktreeSetupState } from '../shared/worktree-setup.js';
 import { setupState, writeOverride } from './worktree-setup.js';
@@ -102,6 +103,8 @@ export interface FloorContext {
   modelAvailability?(model: string): ModelAvailability | undefined;
   /** Subscriptions: what the plan behind a subscription model has left at `now`; undefined when it isn't one or nobody can tell. */
   modelUsage?(model: string, now: number): ModelUsage | undefined;
+  /** Artificial Analysis benchmarks for a model by its display name, while the office is connected. */
+  modelBenchmarks?(name: string): BenchmarkModel | undefined;
   /** Subscriptions: throttled DroidProxy `/models` recheck when a worker retries or a lead reads `team_models`. */
   recheckModels?(): Promise<void>;
   factory?(): FactoryState;
@@ -451,6 +454,7 @@ export class Floor {
         ...(ctx.droidModels ? { models: ctx.droidModels.bind(ctx) } : {}),
         availability: (model) => ctx.modelAvailability?.(model),
         usage: (model, now) => ctx.modelUsage?.(model, now),
+        benchmarks: (name) => ctx.modelBenchmarks?.(name),
         ...(ctx.recheckModels ? { recheckModels: ctx.recheckModels.bind(ctx) } : {}),
         ...(ctx.factory ? { factory: ctx.factory.bind(ctx) } : {}),
         ...(ctx.recheckFactoryLimits ? { recheckFactoryLimits: ctx.recheckFactoryLimits.bind(ctx) } : {}),

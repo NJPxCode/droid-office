@@ -141,6 +141,7 @@ export const SETTINGS_CARDS = [
   { pane: 'connections', title: 'DroidProxy', keywords: 'droidproxy subscriptions claude chatgpt plan menu bar install start' },
   { pane: 'connections', title: 'Accounts', keywords: 'subscription accounts claude chatgpt plans usage connect remove' },
   { pane: 'connections', title: 'Models in Droid', keywords: 'subscription models droidproxy droid list update' },
+  { pane: 'connections', title: 'Artificial Analysis', keywords: 'artificial analysis benchmarks intelligence engineering index cost per task api key team_models' },
   {
     pane: 'connections',
     title: 'Gemini Decisions API',
