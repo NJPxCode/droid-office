@@ -139,6 +139,21 @@ test('the web companion fills its floor strip with the most relevant full tabs t
     await page.goto(`${fx.base}/dashboard`);
     await page.locator('.dash-floor-chip.on').waitFor();
     const current = (await page.locator('.dash-floor-chip.on .dash-floor-name').textContent()) ?? '';
+    const toggle = page.locator('.dash-side-toggle-bay button');
+    assert.equal(await toggle.getAttribute('aria-label'), 'Hide floor');
+    for (const label of ['Show floor', 'Hide floor']) {
+      await toggle.click();
+      assert.equal(await toggle.getAttribute('aria-label'), label);
+      assert.equal(
+        await page.evaluate(() => {
+          const bay = document.querySelector('.dash-side-toggle-bay')?.getBoundingClientRect();
+          const floors = document.querySelector('.dash-floor-bays')?.getBoundingClientRect();
+          return !!bay && !!floors && bay.right <= floors.left;
+        }),
+        true,
+        'the sidebar toggle stays to the left of the floor tabs',
+      );
+    }
 
     const counts: number[] = [];
     for (const width of [960, 1280, 1600, 2400, 3600]) {

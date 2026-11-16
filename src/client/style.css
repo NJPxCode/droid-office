@@ -2348,6 +2348,7 @@ html:has(body.dashboard), body.dashboard { overflow: auto; }
 .dash-top .dash-layout-trigger.on { border-color: var(--border-strong); background: #141414; color: var(--text); box-shadow: none; }
 
 .dash-top-lower { position: relative; display: flex; align-items: stretch; height: 32px; background: #0a0a0a; }
+.dash-side-toggle-bay { flex: none; display: flex; align-items: center; justify-content: center; width: 36px; border-right: 1px solid var(--border); }
 /* Never scrolls: fitFloorStrip in dashboard.ts shows only the full-width tabs that fit and folds the rest into "+N more". */
 .dash-floor-bays { flex: 0 1 auto; min-width: 0; display: flex; align-items: stretch; overflow: hidden; }
 .dash-floor-chip { position: relative; flex: none; display: inline-flex; align-items: center; gap: 7px; min-width: 88px; height: 100%; padding: 2px var(--space-3) 0; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text-secondary); font: 500 12px/1.1 var(--font-sans); cursor: pointer; white-space: nowrap; transition: background var(--duration) var(--ease), color var(--duration) var(--ease); }

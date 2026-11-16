@@ -159,6 +159,8 @@ const pulseDone = h('span.dash-pulse-done', { hidden: true });
 const pulse = h('div.dash-pulse', { hidden: true }, pulseNeedsBtn, pulseCalm, pulseWork, pulseDone);
 const topSep = h('span.dash-top-sep', { 'aria-hidden': 'true', hidden: true });
 
+const sideToggle = h('button.btn.icon.sm.ghost.dash-top-btn', { type: 'button', onclick: () => toggleSide() }, icon('panel', 14));
+const sideToggleBay = h('div.dash-side-toggle-bay', {}, sideToggle);
 const floors = h('nav.dash-floor-bays', { 'aria-label': 'Floors' });
 const quietLabel = h('span.dash-quiet-label');
 let quietOpen = false;
@@ -224,11 +226,10 @@ const quietPop = h(
   quietList,
   h('div.dash-quiet-foot', {}, h('span', {}, nativeCompanion ? '⌘ − / ⌘ + step adjacent floors' : '⇧ ⌘ 1–0 jump directly'), h('span.dash-quiet-actions', {}, quietReorderBtn, quietAddBtn)),
 );
-const lowerDeck = h('div.dash-top-lower', { hidden: true }, floors, quietTrigger, floorTrack, reorderFloors, addFloorBtn, quietPop);
+const lowerDeck = h('div.dash-top-lower', { hidden: true }, sideToggleBay, floors, quietTrigger, floorTrack, reorderFloors, addFloorBtn, quietPop);
 
 const boardCount = h('span.dash-count.hidden');
 let showingWorkers = false;
-const sideToggle = h('button.btn.icon.sm.ghost.dash-top-btn', { type: 'button', onclick: () => toggleSide() }, icon('panel', 14));
 const allWorkersCount = h('span.dash-building-nav-count');
 const allWorkersBtn = h(
   'button.btn.sm.ghost.dash-top-btn.dash-all-workers',
@@ -410,7 +411,7 @@ const layoutPop = h(
   h('div.dash-layout-pop-row', {}, h('span', {}, 'Terminal text'), zoomSeg),
 );
 const layoutMenu = h('div.dash-layout-menu', {}, layoutTrigger, layoutPop);
-const upperDeck = h('div.dash-top-upper', {}, brand, gitPill, dragSpacer, pulse, topSep, h('div.dash-top-end', {}, sideToggle, allWorkersBtn, layoutMenu, board, subscriptions, settingsBtn));
+const upperDeck = h('div.dash-top-upper', {}, brand, gitPill, dragSpacer, pulse, topSep, h('div.dash-top-end', {}, allWorkersBtn, layoutMenu, board, subscriptions, settingsBtn));
 const top = h('header.dash-top', {}, upperDeck, lowerDeck);
 
 function showLayouts(open: boolean, refocus = false) {
@@ -934,7 +935,7 @@ function measureFloorStrip() {
     if (c.dataset.floor) tabs.set(c.dataset.floor, width(c));
     else reserved += width(c);
   }
-  stripSize = { deck, fixed: width(reorderFloors) + width(addFloorBtn), reserved, more: width(quietTrigger), tabs };
+  stripSize = { deck, fixed: width(sideToggleBay) + width(reorderFloors) + width(addFloorBtn), reserved, more: width(quietTrigger), tabs };
   chips.forEach((c, i) => {
     c.hidden = wasHidden[i] ?? false;
   });
