@@ -58,10 +58,8 @@ function moved(prev: ProviderSnap, next: ProviderSnap): boolean {
   for (const [id, a] of next.accounts) {
     const b = prev.accounts.get(id);
     if (!b) return true;
-    if (a.stamp !== undefined || b.stamp !== undefined) {
-      if (a.stamp !== b.stamp) return true;
-      continue;
-    }
+    if (a.stamp !== b.stamp) return true;
+    if (a.stamp !== undefined) continue;
     for (const [name, w] of a.windows) {
       const was = b.windows.get(name);
       if (!was || was.used !== w.used || was.resetsAt !== w.resetsAt) return true;
@@ -160,7 +158,7 @@ export class UsagePaceTracker {
         changed = true;
       } else if (wasBusy) {
         // Usage often lands a sample late: it belongs to the work just before.
-        const last = [...this.intervals].reverse().find((i) => i.provider === p.key);
+        const last = this.intervals.filter((i) => i.provider === p.key).at(-1);
         if (last)
           for (const [name, n] of Object.entries(used))
             if (n > 0 && name in last.used) {

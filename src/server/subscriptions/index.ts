@@ -581,8 +581,9 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
     availability,
     usage: (model, at) => {
       const u = modelUsage(state, model, at);
-      const provider = u?.windows.length ? state.providers.find((p) => p.key === u.provider) : undefined;
-      if (!u || !provider) return u;
+      if (!u?.windows.length) return u;
+      const provider = state.providers.find((p) => p.key === u.provider);
+      if (!provider) return u;
       const own = pace.estimate(provider, model, at);
       const all = pace.estimate(provider, undefined, at);
       return { ...u, ...(own ? { pace: own } : {}), ...(all ? { providerPace: all } : {}) };

@@ -76,8 +76,8 @@ export function groupBenchmarks(rows: readonly unknown[], into: BenchmarkModel[]
 }
 
 function isModel(v: unknown): v is BenchmarkModel {
-  const m = v as BenchmarkModel;
-  return !!m && typeof m.name === 'string' && Array.isArray(m.variants);
+  const m = obj(v);
+  return typeof m.name === 'string' && Array.isArray(m.variants);
 }
 
 export class Benchmarks {
@@ -113,9 +113,9 @@ export class Benchmarks {
     try {
       const raw = JSON.parse(readFileSync(this.file, 'utf8')) as Persisted;
       if (isValidBenchmarksKey(raw?.apiKey)) this.key = raw.apiKey.trim();
-      if (num(raw?.at) !== null) this.at = raw.at;
+      this.at = num(raw?.at) ?? undefined;
       if (typeof raw?.by === 'string') this.by = raw.by;
-      if (num(raw?.fetchedAt) !== null) this.fetchedAt = raw.fetchedAt;
+      this.fetchedAt = num(raw?.fetchedAt) ?? undefined;
       if (typeof raw?.error === 'string' && raw.error) this.error = raw.error;
       if (Array.isArray(raw?.models)) this.list = raw.models.filter(isModel);
     } catch {
