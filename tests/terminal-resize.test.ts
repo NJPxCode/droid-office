@@ -39,17 +39,11 @@ test('inline terminals follow pane geometry without focus or stale size rollback
     await page.evaluate(
       ({ shared, delaySnapshot, hidden, pageHidden }) => {
         const w = window as any;
-        w.pageHidden = pageHidden;
-        Object.defineProperty(document, 'hidden', {
-          configurable: true,
-          get() {
-            return w.pageHidden;
-          },
-        });
-        w.visibility = (hidden: boolean) => {
-          w.pageHidden = hidden;
+        w.visibility = (nextHidden: boolean) => {
+          Object.defineProperty(document, 'hidden', { configurable: true, value: nextHidden });
           document.dispatchEvent(new Event('visibilitychange'));
         };
+        w.visibility(pageHidden);
         const { Terminal, store, openTerminal, routeTerminalMessage } = w.TerminalUI;
         const open = Terminal.prototype.open;
         Terminal.prototype.open = function (host: HTMLElement) {
@@ -156,9 +150,13 @@ test('inline terminals follow pane geometry without focus or stale size rollback
       w.snapshot();
       w.TerminalUI.routeTerminalMessage({ t: 'term.data', workerId: 'pixel', data: 'invisible output' });
     });
-    assert.deepEqual(await page.evaluate(() => (window as any).messages.map((m: any) => m.t)), ['worker.detach']);
-    assert.equal(await page.evaluate(() => (window as any).writes), 0);
-    assert.equal(await page.evaluate(() => (window as any).term.options.disableStdin), true);
+    assert.deepEqual(
+      await page.evaluate(() => {
+        const w = window as any;
+        return { messages: w.messages.map((m: any) => m.t), writes: w.writes, stdinDisabled: w.term.options.disableStdin };
+      }),
+      { messages: ['worker.detach'], writes: 0, stdinDisabled: true },
+    );
     await page.evaluate(() => (window as any).visibility(false));
     await page.waitForFunction(() => !(window as any).term.options.disableStdin);
     await page.evaluate(() => (window as any).visibility(false));
