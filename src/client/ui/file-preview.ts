@@ -10,6 +10,9 @@ import { emptyState, windowHeader } from './kit';
 const MAX_HIGHLIGHTED_LINES = 2_500;
 
 export interface FilePreviewOptions {
+  source?: 'terminal';
+  /** Original terminal token, re-resolved by the host rather than trusting its displayed absolute path. */
+  requestPath?: string;
   floor: string;
   workerId: string;
   workerName?: string;
@@ -36,20 +39,27 @@ export function formatFilePreviewBytes(bytes: number | undefined): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Builds the authenticated `/api/thread/file` URL for a worker's workspace path. */
-export function threadFilePreviewUrl(opts: { floor: string; workerId: string; path: string }): string {
+type FilePreviewUrlOptions = Pick<FilePreviewOptions, 'floor' | 'workerId' | 'path' | 'source' | 'requestPath'>;
+
+function filePreviewUrl(opts: FilePreviewUrlOptions, raw?: 'image'): string {
+  const endpoint = opts.source === 'terminal' ? '/api/term/file' : '/api/thread/file';
   const params = new URLSearchParams({
     floor: opts.floor,
     worker: opts.workerId,
-    path: opts.path,
+    path: opts.requestPath ?? opts.path,
+    ...(raw ? { raw } : {}),
   });
-  return withToken(`/api/thread/file?${params}`);
+  return withToken(`${endpoint}?${params}`);
+}
+
+/** Builds the authenticated `/api/thread/file` URL for a worker's workspace path. */
+export function threadFilePreviewUrl(opts: FilePreviewUrlOptions): string {
+  return filePreviewUrl(opts);
 }
 
 /** The authenticated URL of a picture in a worker's workspace, as its bytes. */
-export function threadFileImageUrl(opts: { floor: string; workerId: string; path: string }): string {
-  const params = new URLSearchParams({ floor: opts.floor, worker: opts.workerId, path: opts.path, raw: 'image' });
-  return withToken(`/api/thread/file?${params}`);
+export function threadFileImageUrl(opts: FilePreviewUrlOptions): string {
+  return filePreviewUrl(opts, 'image');
 }
 
 function splitFileLines(content: string): string[] {
@@ -143,7 +153,7 @@ export function openFilePreviewModal(opts: FilePreviewOptions): Modal {
     return modal;
   }
 
-  const url = threadFilePreviewUrl({ floor: opts.floor, workerId: opts.workerId, path: opts.path });
+  const url = threadFilePreviewUrl(opts);
 
   void (async () => {
     try {
