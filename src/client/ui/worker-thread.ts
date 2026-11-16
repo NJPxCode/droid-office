@@ -1088,6 +1088,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     if (row.kind !== 'notice' && row.turnChanges) {
       const author = renderOpts.author ?? worker;
       node.append(renderTurnChanges(row.turnChanges, { floorDir: resolveFloorDir(), onOpenPath: onOpenPathFor(author), openChanges: changesOf(author) }));
+      node.hidden = false;
     }
     return node;
   };
@@ -1128,6 +1129,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       };
       const { work, tools } = threadViewPrefs();
       renderThreadActivity(node, row, loaded, asking, { ...cardCtx, thought: (block, entry) => thought(block, entry, toggles), live: (id) => liveTools.get(id), toolsOpen: tools === 'open' });
+      // Hidden thinking can leave a stretch of nothing but thoughts with nothing to show: no fold, and no row to take a gap in the list.
+      if (!node.childElementCount) {
+        node.hidden = true;
+        return node;
+      }
       // The live stretch and one the worker is asking in stay as steps; the fold is for work that is done.
       return work === 'fold' && !row.live && !asking ? foldActivity(node, row, toggles) : node;
     }
