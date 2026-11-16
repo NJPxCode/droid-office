@@ -292,7 +292,6 @@ test('team_models and models_list print the plan a subscription model runs on, a
   assert.match(shown, /- ChatGPT \(best of 2 accounts, 1\/1 runnable\): .* · pace: Weekly ~7\.5% per worker-hour \(about 8\.1 worker-hours left\); measured over 4 worker-hours on all ChatGPT models/);
   assert.match(shown, /Benchmarks: medium \(default\): intelligence 46\.3, engineering 52\.1, \$0\.36\/task; high: intelligence 50\.3, engineering 55\.4, \$0\.59\/task/);
   assert.equal((shown.match(/^Benchmarks:/gm) ?? []).length, 1, 'only models Artificial Analysis knows get a line');
-  assert.equal((shown.match(/Benchmarks are from Artificial Analysis \(https:\/\/artificialanalysis\.ai\)/g) ?? []).length, 1, 'attribution once');
   const listed = (await r.call(r.lead, 'models_list')).content as { text: string }[];
   assert.match(listed.map((c) => c.text).join('\n'), /Subscription usage: ChatGPT, best of 2 accounts/);
 

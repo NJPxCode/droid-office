@@ -7,7 +7,7 @@ import { teamBoardText, type TeamBoardMember } from '../team.js';
 import { formatOtherFloorWorkers, type OtherFloorWorker } from '../floor-watch.js';
 import { formatImageLines, OfficeImageStore, type StoredImageMeta } from '../office-images.js';
 import { isSubscriptionModel, modelUsageWords, paceWords } from '../../shared/subscriptions.js';
-import { ARTIFICIAL_ANALYSIS_URL, benchmarkWords } from '../../shared/benchmarks.js';
+import { benchmarkWords } from '../../shared/benchmarks.js';
 import { briefAge, factoryUsageWords, formatForgeLines, formatProviderQuotas, formatTaskTag, formatWorkerInspection, type ProviderQuotaSummary, type WorkerInspection } from '../worker-status.js';
 import { hasOwnerAccess } from './owner.js';
 import { formatBlockingSummary, formatQueueBrief } from '../worker-queue.js';
@@ -102,14 +102,6 @@ function eventText(event: TeamEvent, imageOrigin?: string): string {
     sent_home: 'was sent home by the owner',
   };
   return `${at} Office status: ${event.name} ${status[event.kind]}${event.text ? `: ${event.text}` : ''}.${event.kind === 'needs_input' ? ' Tell whoever asked you; someone must answer at its desk.' : ''}`;
-}
-
-/** Said once above models that carry benchmarks; Artificial Analysis asks for attribution wherever its data is shown. */
-function benchmarksLegend(models: readonly TeamModel[]): string[] {
-  if (!models.some((m) => m.benchmarks)) return [];
-  return [
-    `Benchmarks are from Artificial Analysis (${ARTIFICIAL_ANALYSIS_URL}): intelligence and engineering are 0-100 indexes (higher is better); $/task is what one index task costs at the model's API prices at that effort (tokens spent times price), not plan quota; Pace lines measure how fast a plan runs out. Compare models at the effort you will hire on.`,
-  ];
 }
 
 function modelText(model: TeamModel): string {
@@ -413,11 +405,9 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
       if (!team) return officeError('No floor is open, so the office cannot list models yet.');
       return reply(await team.handle(caller.worker, { action: 'models_list' }), (body) => {
         const quotas = body.quotas as ProviderQuotaSummary[] | undefined;
-        return [
-          ...(quotas?.length ? [formatProviderQuotas(quotas)] : []),
-          ...benchmarksLegend(body.models as TeamModel[]),
-          ...(body.models as TeamModel[]).map((model) => `${model.enabled === false ? (model.cannotRun ? 'Unavailable: ' : 'Not allowed: ') : ''}${modelText(model)}`),
-        ].join('\n\n');
+        return [...(quotas?.length ? [formatProviderQuotas(quotas)] : []), ...(body.models as TeamModel[]).map((model) => `${model.enabled === false ? (model.cannotRun ? 'Unavailable: ' : 'Not allowed: ') : ''}${modelText(model)}`)].join(
+          '\n\n',
+        );
       });
     },
   );
@@ -582,7 +572,6 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
           ...(quotas?.length ? [formatProviderQuotas(quotas)] : []),
           body.restricted ? 'Settings restrict subagent models to the listed picks.' : 'Subagents may use any current Droid model.',
           ...(body.unavailable ? ['Droid could not list its models; costs and providers may be missing.'] : []),
-          ...benchmarksLegend(filtered),
           ...filtered.map(modelText),
           defaultLine,
         ].join('\n\n'),
