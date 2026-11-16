@@ -35,6 +35,7 @@ import { promptImages } from './images';
 import { expandPastes, insertQuote, isLargePaste, livePastes, type PastedText, pastedText, replacePaste } from './thread-compose';
 import { renderTurnChanges, setDisclosureOpen, type ThreadCardRenderContext } from './thread-diff-view';
 import { refreshLiveOutput, renderThreadActivity } from './thread-tool-activity';
+import { onThreadViewPrefs, threadViewPrefs, threadViewRowKey, threadViewVars } from './thread-view-prefs';
 import { openImageLightbox } from './thread-md-lightbox';
 import { attachQuoteReply } from './thread-md-quote';
 import { threadMarkdown, threadUserMarkdown, type WorkspacePathRef } from './thread-markdown';
@@ -839,6 +840,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     planBar,
     form,
   );
+  const applyViewPrefs = () => {
+    for (const [name, value] of Object.entries(threadViewVars(threadViewPrefs()))) element.style.setProperty(name, value);
+  };
+  applyViewPrefs();
   element.addEventListener('keydown', (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
       event.preventDefault();
@@ -1033,11 +1038,13 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
 
   const chevron = () => h('span.wt-chevron', { 'aria-hidden': true }, icon('chevron', 14));
   const thought = (block: Extract<ThreadBlock, { kind: 'thought' }>, entry: ThreadEntry | undefined, toggles: ReadonlyMap<string, boolean>) => {
+    const { thinking } = threadViewPrefs();
+    if (thinking === 'hidden') return null;
     const label = thoughtLabel(entryTook(entry));
     const summary = h('summary', { 'aria-label': `Expand ${label}` }, h('span.wt-thought-label', {}, label), chevron());
     const details = h('details.wt-thinking', { 'data-disclosure': block.id }, summary, h('div.wt-thinking-text', {}, entry?.text ?? block.preview));
     details.addEventListener('toggle', () => summary.setAttribute('aria-label', `${details.open ? 'Collapse' : 'Expand'} ${label}`));
-    return setDisclosureOpen(details, toggles.get(block.id) ?? block.open);
+    return setDisclosureOpen(details, toggles.get(block.id) ?? (block.open || thinking === 'open'));
   };
 
   /** An entry's pictures, each opening at full size, read from `owner`'s session. A cloud worker's session has none here. */
@@ -1081,7 +1088,18 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     if (row.kind !== 'notice' && row.turnChanges) {
       const author = renderOpts.author ?? worker;
       node.append(renderTurnChanges(row.turnChanges, { floorDir: resolveFloorDir(), onOpenPath: onOpenPathFor(author), openChanges: changesOf(author) }));
+      node.hidden = false;
     }
+    return node;
+  };
+
+  /** A finished stretch of work as one disclosure: its summary line, and the steps inside. */
+  const foldActivity = (node: HTMLElement, row: Extract<ThreadRow, { kind: 'activity' }>, toggles: ReadonlyMap<string, boolean>) => {
+    const label = row.label;
+    const summary = h('summary', { 'aria-label': `Expand ${label}` }, h('span.wt-fold-label', {}, label), chevron());
+    const details = h('details.wt-activity', { 'data-disclosure': `fold:${row.id}` }, summary, h('div.wt-activity-body', {}, ...node.childNodes));
+    details.addEventListener('toggle', () => summary.setAttribute('aria-label', `${details.open ? 'Collapse' : 'Expand'} ${label}`));
+    node.append(setDisclosureOpen(details, toggles.get(`fold:${row.id}`) ?? false));
     return node;
   };
 
@@ -1109,7 +1127,15 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         openChanges,
         ...(opts.sendToWhiteboard && canOpenFiles(author) ? { sendToWhiteboard: (path: string) => opts.sendToWhiteboard?.(author.id, path) } : {}),
       };
-      return renderThreadActivity(node, row, loaded, asking, { ...cardCtx, thought: (block, entry) => thought(block, entry, toggles), live: (id) => liveTools.get(id) });
+      const { work, tools } = threadViewPrefs();
+      renderThreadActivity(node, row, loaded, asking, { ...cardCtx, thought: (block, entry) => thought(block, entry, toggles), live: (id) => liveTools.get(id), toolsOpen: tools === 'open' });
+      // Hidden thinking can leave a stretch of nothing but thoughts with nothing to show: no fold, and no row to take a gap in the list.
+      if (!node.childElementCount) {
+        node.hidden = true;
+        return node;
+      }
+      // The live stretch and one the worker is asking in stay as steps; the fold is for work that is done.
+      return work === 'fold' && !row.live && !asking ? foldActivity(node, row, toggles) : node;
     }
 
     node.classList.add(row.role, row.kind === 'message' ? 'text' : 'notice');
@@ -1242,6 +1268,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       }
     }
     const rosterKey = (opts.team?.() ?? []).map((w) => `${w.id}:${w.name}:${w.lead ?? ''}`).join(',');
+    const viewKey = threadViewRowKey(threadViewPrefs());
     for (const [id, member] of team.members) {
       const child = member.worker;
       let card = teamNodes.get(id);
@@ -1300,7 +1327,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       for (const row of rows) {
         const isLastRow = row === last;
         const streamFlag = isLastRow && row.kind === 'message' && row.role === 'assistant' && isBusy(child.status);
-        const key = JSON.stringify([row, child.status === 'needs_input', child.name, streamFlag, hasDelegateCard(row) ? rosterKey : '', rowContent(row, loaded)]);
+        const key = JSON.stringify([row, child.status === 'needs_input', child.name, streamFlag, hasDelegateCard(row) ? rosterKey : '', rowContent(row, loaded), viewKey]);
         let had = card.rows.get(row.id);
         // Don't discard text while the owner is selecting a command or patch to copy.
         if (!had || (had.key !== key && (selection?.isCollapsed !== false || !had.node.contains(selection.anchorNode)))) {
@@ -1429,14 +1456,22 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     streamNode.hidden = !showStream && !pendingTools.length;
     streamNode.className = streamNode.hidden ? 'wt-stream' : 'wt-entry assistant text wt-stream';
     if (streamNode.hidden) return;
-    const key = JSON.stringify([showStream ? stream : undefined, pendingTools.map((tool) => [tool.name, tool.output, tool.more])]);
+    const thinkingHidden = threadViewPrefs().thinking === 'hidden';
+    const key = JSON.stringify([showStream ? stream : undefined, pendingTools.map((tool) => [tool.name, tool.output, tool.more]), thinkingHidden]);
     if (streamNode.dataset.liveKey !== key) {
       streamNode.dataset.liveKey = key;
       const children: HTMLElement[] = [];
       if (showStream && stream) {
         if (stream.kind === 'thinking') {
           const time = h('span.wt-live-time.wt-thought-duration', { 'data-since': stream.since }, `for ${thinkingSeconds(Date.now() - (liveView?.skew ?? 0) - stream.since)}`);
-          children.push(h('details.wt-thinking.wt-live-thinking', { open: true }, h('summary', {}, h('span.wt-thought-label.wt-shimmer', {}, 'Thinking'), time, chevron()), h('div.wt-thinking-text', {}, stream.text)));
+          children.push(
+            h(
+              'details.wt-thinking.wt-live-thinking',
+              { open: !thinkingHidden, class: thinkingHidden ? 'is-textless' : '' },
+              h('summary', {}, h('span.wt-thought-label.wt-shimmer', {}, 'Thinking'), time, chevron()),
+              thinkingHidden ? null : h('div.wt-thinking-text', {}, stream.text),
+            ),
+          );
         } else {
           children.push(h('div.wt-stream-copy', {}, ...stream.text.split(/\n{2,}/).map((paragraph) => h('p', {}, paragraph))));
         }
@@ -1477,6 +1512,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const loaded = new Map(history.entries.map((entry) => [entry.id, entry]));
     const asking = worker.status === 'needs_input';
     const rosterKey = (opts.team?.() ?? []).map((w) => `${w.id}:${w.name}:${w.lead ?? ''}`).join(',');
+    const viewKey = threadViewRowKey(threadViewPrefs());
 
     for (const [rowIndex, row] of rows.entries()) {
       const isLastRow = row === lastRow;
@@ -1484,7 +1520,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       const nextRole = nextRow && 'role' in nextRow ? nextRow.role : 'assistant';
       const turnEnd = row.kind === 'message' && row.role === 'assistant' && nextRole !== 'assistant';
       const streamFlag = isLastRow && row.kind === 'message' && row.role === 'assistant' && isBusy(worker.status);
-      const key = JSON.stringify([row, asking, streamFlag, turnEnd, hasDelegateCard(row) ? rosterKey : '', rowContent(row, loaded)]);
+      const key = JSON.stringify([row, asking, streamFlag, turnEnd, hasDelegateCard(row) ? rosterKey : '', rowContent(row, loaded), viewKey]);
       let had = nodes.get(row.id);
       if (!had || had.key !== key) {
         const groupPositions = new Map(
@@ -1925,6 +1961,14 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     if (!document.hidden && active) read(undefined, 0);
   };
   document.addEventListener('visibilitychange', visibility);
+  // Text, font, spacing and width are CSS variables. Fold, tool and thinking choices change how rows are built, and each row's paint key carries them.
+  const offViewPrefs = onThreadViewPrefs(() => {
+    if (disposed) return;
+    applyViewPrefs();
+    if (received) paintEntries(false);
+    paintLive();
+    paintTeam(true);
+  });
 
   return {
     element,
@@ -2020,6 +2064,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       detachQuote();
       off();
       offFactory();
+      offViewPrefs();
       resize.disconnect();
       questionChanges.disconnect();
       images.discard();
