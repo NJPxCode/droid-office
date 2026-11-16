@@ -104,6 +104,14 @@ function eventText(event: TeamEvent, imageOrigin?: string): string {
   return `${at} Office status: ${event.name} ${status[event.kind]}${event.text ? `: ${event.text}` : ''}.${event.kind === 'needs_input' ? ' Tell whoever asked you; someone must answer at its desk.' : ''}`;
 }
 
+/** Said once above models that carry benchmarks, so agents know what the numbers mean. */
+function benchmarksLegend(models: readonly TeamModel[]): string[] {
+  if (!models.some((m) => m.benchmarks)) return [];
+  return [
+    `Intelligence and engineering are 0-100 indexes (higher is better); $/task is what one index task costs at the model's API prices at that effort (tokens spent times price), not plan quota; Pace lines measure how fast a plan runs out. Compare models at the effort you will hire on.`,
+  ];
+}
+
 function modelText(model: TeamModel): string {
   return [
     `${model.id}${model.default ? ' (default)' : ''}: ${model.name}`,
@@ -405,9 +413,11 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
       if (!team) return officeError('No floor is open, so the office cannot list models yet.');
       return reply(await team.handle(caller.worker, { action: 'models_list' }), (body) => {
         const quotas = body.quotas as ProviderQuotaSummary[] | undefined;
-        return [...(quotas?.length ? [formatProviderQuotas(quotas)] : []), ...(body.models as TeamModel[]).map((model) => `${model.enabled === false ? (model.cannotRun ? 'Unavailable: ' : 'Not allowed: ') : ''}${modelText(model)}`)].join(
-          '\n\n',
-        );
+        return [
+          ...(quotas?.length ? [formatProviderQuotas(quotas)] : []),
+          ...benchmarksLegend(body.models as TeamModel[]),
+          ...(body.models as TeamModel[]).map((model) => `${model.enabled === false ? (model.cannotRun ? 'Unavailable: ' : 'Not allowed: ') : ''}${modelText(model)}`),
+        ].join('\n\n');
       });
     },
   );
@@ -572,6 +582,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
           ...(quotas?.length ? [formatProviderQuotas(quotas)] : []),
           body.restricted ? 'Settings restrict subagent models to the listed picks.' : 'Subagents may use any current Droid model.',
           ...(body.unavailable ? ['Droid could not list its models; costs and providers may be missing.'] : []),
+          ...benchmarksLegend(filtered),
           ...filtered.map(modelText),
           defaultLine,
         ].join('\n\n'),
