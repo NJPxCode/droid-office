@@ -132,13 +132,18 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
   const pace = new UsagePaceTracker(path.join(opts.dataDir, 'usage-pace.json'));
   const providerPaceCache = new Map<SubscriptionProviderKey, { provider: SubscriptionProvider; at: number; rev: number; pace: UsagePace | undefined }>();
   const canSamplePace = () => (state.proxy.phase === 'running' || state.proxy.phase === 'outdated') && (state.checkedAt === null || now() - state.checkedAt <= STALE_MS);
+  const readBusyModels = (): string[] => {
+    try {
+      return canSamplePace() ? (opts.busyModels?.() ?? []) : [];
+    } catch {
+      return [];
+    }
+  };
   const observeBusy = () => {
-    const busy = canSamplePace()
-      ? (opts.busyModels?.() ?? []).flatMap((model) => {
-          const provider = state.modelProviders?.[model];
-          return provider ? [{ provider, model }] : [];
-        })
-      : [];
+    const busy = readBusyModels().flatMap((model) => {
+      const provider = state.modelProviders?.[model];
+      return provider ? [{ provider, model }] : [];
+    });
     pace.observe(busy, now());
   };
   const startInterval =
@@ -301,7 +306,6 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
     }
     // It answered badly or not in time: keep the last good state, which goes stale by itself.
     if (state.proxy.phase !== 'running' && state.proxy.phase !== 'outdated') setProxy({ phase: keep('running') });
-    if (state.checkedAt !== null && now() - state.checkedAt > STALE_MS) pace.sample([], now());
     setProxy({ error: message(err) });
     errorFromLook = true;
   };

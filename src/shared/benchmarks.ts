@@ -103,6 +103,7 @@ export function benchmarkWords(m: BenchmarkModel, efforts?: readonly string[], d
   const order: string[] = [...AGENT_EFFORTS, 'reasoning', 'non-reasoning'];
   const rank = (v: BenchmarkVariant) => (v.effort ? order.indexOf(v.effort) : -1);
   const taken = m.variants.filter((v) => v.effort && (!efforts?.length || efforts.includes(v.effort)));
+  // Models Artificial Analysis rates only as (Reasoning) / (Non-reasoning) match none of Droid's efforts, so show all variants.
   const shown = [...(taken.length ? taken : m.variants)].sort((a, b) => Number(b.effort === defaultEffort) - Number(a.effort === defaultEffort) || rank(a) - rank(b));
   return shown.map((v) => `${v.effort ?? 'default'}${v.effort && v.effort === defaultEffort ? ' (default)' : ''}: ${variantWords(v)}`).join('; ');
 }

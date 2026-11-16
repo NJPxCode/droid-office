@@ -243,7 +243,7 @@ export function modelUsage(s: SubscriptionsState, model: string | undefined, now
   if (!key || !provider?.enabled) return undefined;
   const live = provider.accounts.filter((a) => !a.expired && !a.disabled);
   if (!live.length) return undefined;
-  const windowsOf = (a: SubscriptionAccount) => a.windows.filter((w) => windowCovers(w, model));
+  const windowsOf = (a: SubscriptionAccount) => a.windows.filter((w) => Number.isFinite(w.usedPercent) && windowCovers(w, model));
   const readable = live.filter((a) => windowsOf(a).length);
   if (!readable.length) return { provider: key, accounts: live.length, windows: [], unreadable: live.find((a) => a.usageError)?.usageError ?? 'the plan reports no usage', at: now };
   const headroom = (a: SubscriptionAccount) => Math.min(...windowsOf(a).map(leftPercent));

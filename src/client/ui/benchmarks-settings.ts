@@ -110,13 +110,12 @@ export function benchmarksSettings(net: Net): { card: { desc: Node; below: Node[
 
   const offSetup = net.onMessage((msg) => {
     if (msg.t !== 'benchmarks.setup') return;
-    if (busy) {
-      busy = false;
-      failure = msg.error ?? '';
-      if (msg.ok) {
-        replacing = false;
-        keyInput.value = '';
-      }
+    const wasConnecting = busy;
+    busy = false;
+    failure = !msg.ok && (wasConnecting || !store.benchmarks.error) ? (msg.error ?? '') : '';
+    if (wasConnecting && msg.ok) {
+      replacing = false;
+      keyInput.value = '';
     }
     paint();
   });

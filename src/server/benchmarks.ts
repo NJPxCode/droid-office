@@ -174,23 +174,17 @@ export class Benchmarks {
       this.publish();
       return read;
     }
-    const prev = this.snapshot();
-    this.key = trimmed;
-    this.at = this.now();
-    this.by = by;
-    this.fetchedAt = this.now();
-    this.error = undefined;
-    this.list = read;
-    const err = this.persist();
-    if (err) this.restore(prev);
-    this.publish();
-    return err;
+    return this.commit({ apiKey: trimmed, at: this.now(), by, fetchedAt: this.now(), models: read });
   }
 
   disconnect(): string | undefined {
     this.gen++;
+    return this.commit({});
+  }
+
+  private commit(next: Persisted): string | undefined {
     const prev = this.snapshot();
-    this.restore({});
+    this.restore(next);
     const err = this.persist();
     if (err) this.restore(prev);
     this.publish();
@@ -214,10 +208,16 @@ export class Benchmarks {
         this.persist();
         return read;
       }
+      const prev = this.snapshot();
       this.list = read;
       this.fetchedAt = this.now();
-      this.error = this.persist();
-      return this.error;
+      this.error = undefined;
+      const err = this.persist();
+      if (err) {
+        this.restore(prev);
+        this.error = err;
+      }
+      return err;
     })();
     this.publish();
     try {

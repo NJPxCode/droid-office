@@ -78,7 +78,9 @@ function moved(prev: ProviderSnap, next: ProviderSnap): boolean {
   return false;
 }
 
-const isCountMap = (v: unknown): v is Record<string, number> => !!v && typeof v === 'object' && !Array.isArray(v) && Object.values(v).every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0);
+const safeKey = (k: string): boolean => k !== '__proto__' && k !== 'constructor' && k !== 'prototype';
+const isCountMap = (v: unknown): v is Record<string, number> =>
+  !!v && typeof v === 'object' && !Array.isArray(v) && !Object.hasOwn(v, '__proto__') && Object.entries(v).every(([k, n]) => safeKey(k) && typeof n === 'number' && Number.isFinite(n) && n >= 0);
 
 function isInterval(v: unknown): v is PaceInterval {
   const i = v as PaceInterval;
@@ -104,7 +106,7 @@ export class UsagePaceTracker {
     if (!file) return;
     try {
       const raw = JSON.parse(readFileSync(file, 'utf8')) as { intervals?: unknown };
-      if (Array.isArray(raw?.intervals)) this.intervals = raw.intervals.filter(isInterval);
+      if (Array.isArray(raw?.intervals)) this.intervals = raw.intervals.filter(isInterval).slice(-MAX_INTERVALS);
     } catch {
       // A fresh office, or an unreadable file: start learning again.
     }
@@ -116,6 +118,7 @@ export class UsagePaceTracker {
       const step = Math.min(Math.max(0, at - this.observedAt), MAX_STEP_MS);
       if (step > 0)
         for (const w of this.busyNow) {
+          if (!safeKey(w.model)) continue;
           const acc = this.pending.get(w.provider) ?? {};
           acc[w.model] = (Object.hasOwn(acc, w.model) ? acc[w.model] : 0) + step;
           this.pending.set(w.provider, acc);
@@ -146,6 +149,7 @@ export class UsagePaceTracker {
         const b = prev.accounts.get(id);
         if (!b) continue;
         for (const [name, w] of a.windows) {
+          if (!safeKey(name)) continue;
           const was = b.windows.get(name);
           if (!was) continue;
           const crossedReset = was.resetsAt !== null && was.resetsAt <= at && (was.resetsAt > prev.at || w.resetsAt !== was.resetsAt);
@@ -153,6 +157,7 @@ export class UsagePaceTracker {
           else used[name] = (Object.hasOwn(used, name) ? used[name] : 0) + Math.max(0, w.used - was.used);
         }
       }
+      // Busy time isn't split by account: if any account reset, omit this window for the whole interval (flat windows stay as 0).
       for (const name of reset) delete used[name];
       const busyMs = total(busy);
       const wasBusy = this.lastBusy.get(p.key) ?? false;
@@ -161,7 +166,7 @@ export class UsagePaceTracker {
         this.intervals.push({ provider: p.key, from: prev.at, to: at, busy, used });
         changed = true;
       } else if (wasBusy) {
-        // Usage often lands a sample late: it belongs to the work just before.
+        // Usage often lands a sample late: add it to the non-reset windows (already seeded with 0) of the busy interval just before.
         for (let i = this.intervals.length - 1; i >= 0; i--) {
           if (this.intervals[i].provider !== p.key) continue;
           for (const [name, n] of Object.entries(used))
@@ -214,6 +219,7 @@ export class UsagePaceTracker {
     for (const [name, window] of metered) {
       // Only time on models this window meters counts: Sonnet hours spend nothing of `Weekly (Opus)`.
       const exposed = (i: PaceInterval) => Object.entries(i.busy).reduce((s, [m, ms]) => s + (windowCovers(window, m) ? ms : 0), 0);
+      // Flat intervals keep used[name] = 0 and count; only intervals where this window reset (or wasn't reported) lack the key.
       const counted = pool.filter((i) => Object.hasOwn(i.used, name) && exposed(i) > 0);
       const h = counted.reduce((s, i) => s + exposed(i), 0) / HOUR;
       if (h > bestHours) bestHours = h;
