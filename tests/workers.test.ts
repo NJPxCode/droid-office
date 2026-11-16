@@ -2534,7 +2534,8 @@ test('a subagent sits down told who hired it and where it works; its lead goes o
   assert.equal(await startedWith(f, workers, leadLaunch, 'lead-session'), 'Ship the login fix', 'a worker nobody hired is told nothing extra');
   const brief = (await startedWith(f, workers, subLaunch, 'sub-session')) ?? '';
   assert.match(brief, new RegExp(`^Droid Office role: ${sub.name}, subagent of ${lead.name} \\(a worker, not the owner\\)`));
-  assert.match(brief, /the project's main checkout/);
+  assert.match(brief, /Your session starts in the project's main checkout/);
+  assert.doesNotMatch(brief, /You work in/);
   assert.match(brief, /`team_report`/);
   assert.ok(brief.endsWith(`## Task from ${lead.name}\n\`\`\`text\nFix the redirect\n\`\`\`\n\n${context}`));
   assert.equal(workers.get(sub.id)?.prompt, 'Fix the redirect');

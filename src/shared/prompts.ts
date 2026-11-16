@@ -221,8 +221,8 @@ export function workerMessageVars(text: string): { text: string; fence: string }
 /** One branch policy for new work and returning the shared checkout, including saved custom prompts. */
 export function workerBranchPolicy(branch: string | undefined, settingsPath: string): string {
   return `## Floor branch
-The floor branch is currently ${branch ? `\`${branch}\`` : 'the repository default'}: the owner's base for new work.
-- Work in the checkout you started in without creating your own worktree. Read \`${settingsPath}\` at the start of each task and before returning the shared checkout. An existing worktree keeps its task branch and recorded base; a task naming another target takes precedence.
+The floor branch is currently ${branch ? `\`${branch}\`` : 'the repository default'}: the owner's base for new work in this repository.
+- Read \`${settingsPath}\` at the start of each task and before returning the shared checkout. An existing worktree keeps its task branch and recorded base; a task naming another target takes precedence.
 - For new work, use "branch" when set, else \`git symbolic-ref --short refs/remotes/origin/HEAD\` without \`origin/\`, else an existing \`main\`/\`master\`, else the current branch. After \`git fetch origin\`, branch from \`origin/<floor>\` if it exists, otherwise the local floor branch. Report a nonexistent selected branch rather than substituting another.
 - Return a switched shared checkout with \`git fetch origin && git switch <floor>\` (and fast-forward \`origin/<floor>\`); in a worktree, fetch and stay on your task branch. Leave uncommitted changes and checkouts in use alone.`;
 }
@@ -590,7 +590,7 @@ const DEFS = {
       '',
       '{{repos}}',
       '',
-      "- Make every change inside these folders. The projects' own checkouts belong to the owner and other workers, so their files, branches and uncommitted changes stay as they are.",
+      "- The projects' own checkouts belong to the owner and other workers, so their files, branches and uncommitted changes stay as they are.",
       "- cd into a project's folder before running git or its tools, read its own instructions (AGENTS.md, README) before changing it, and install its dependencies there when you need them.",
       '- When the task spans projects, keep them working together and test them together. Commit in each project you change.',
       "- Each project gets its own pull request, from its folder. An issue number in your task (#12) is one of {{home}}'s; in the other projects' pull requests write it as {{home}}#12. When you open the pull requests yourself, name the others in each description so they are reviewed and merged together.",
