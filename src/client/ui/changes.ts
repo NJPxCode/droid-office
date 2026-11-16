@@ -13,7 +13,7 @@ import { h, openModal, toast, type Modal } from './dom';
 import { colorDot, emptyState } from './kit';
 import { confirmDialog, openPrompt } from './prompt';
 import { officePrompt } from './prompts';
-import { termFontSize } from './term-font';
+import { onTermFontSize, termFontSize } from './term-font';
 import { followTerminalPrefs, terminalOptions } from './terminal-prefs';
 
 // The Changes window at a desk: the files a worker changed and their diff against the branch the
@@ -187,7 +187,7 @@ export function openChanges(net: Net, workerId: string, onTerminal?: () => void,
 
   /** The worker's terminal, read-only, made the first time T shows it and attached until the window closes. */
   let term: Terminal | null = null;
-  let offPrefs = () => {};
+  let unfollow = () => {};
   let attached = false;
   let view: 'diff' | 'log' = 'diff';
 
@@ -195,7 +195,13 @@ export function openChanges(net: Net, workerId: string, onTerminal?: () => void,
     if (term) return term.scrollToBottom();
     const fixed = { cursorBlink: false };
     const t = new Terminal({ ...terminalOptions(), ...fixed, fontFamily: TERM_FONT, fontSize: termFontSize(), theme: TERM_THEME, minimumContrastRatio: 4.5, disableStdin: true, scrollback: 5000, allowProposedApi: true });
-    offPrefs = followTerminalPrefs(t, { fixed });
+    const offPrefs = followTerminalPrefs(t, { fixed });
+    // The log keeps its PTY's rows and columns; only its cells grow or shrink.
+    const offFont = onTermFontSize((px) => (t.options.fontSize = px));
+    unfollow = () => {
+      offPrefs();
+      offFont();
+    };
     const unicode = new Unicode11Addon();
     t.loadAddon(unicode);
     t.unicode.activeVersion = '11';
@@ -543,7 +549,7 @@ export function openChanges(net: Net, workerId: string, onTerminal?: () => void,
       unsub();
       net.send({ t: 'changes.unwatch', workerId, repo });
       if (attached) net.send({ t: 'worker.detach', workerId });
-      offPrefs();
+      unfollow();
       term?.dispose();
       term = null;
       if (current?.modal === modal) current = null;

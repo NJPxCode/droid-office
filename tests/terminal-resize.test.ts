@@ -71,7 +71,7 @@ test('inline terminals follow pane geometry without focus or stale size rollback
             return () => {};
           },
         };
-        w.snapshot = () => routeTerminalMessage({ t: 'term.snapshot', workerId: mode === 'shell' ? OFFICE_SHELL_ID : worker.id, data: '', cols: worker.cols, rows: worker.rows, shared });
+        w.snapshot = (data = '') => routeTerminalMessage({ t: 'term.snapshot', workerId: mode === 'shell' ? OFFICE_SHELL_ID : worker.id, data, cols: worker.cols, rows: worker.rows, shared });
         w.update = (cols = worker.cols, rows = worker.rows) => {
           Object.assign(worker, { cols, rows });
           if (mode === 'shell') {
@@ -176,6 +176,29 @@ test('inline terminals follow pane geometry without focus or stale size rollback
         await new Promise<void>((resolve) => w.term.write('\x1b[?1004h', resolve));
       });
       assert.deepEqual(await sent(), ['\x1b[I', '\x1b[I'], 'the returning focus-in is not mistaken for a repeat');
+    });
+
+    await t.test(`${mode} keeps forwarding focus when it stays focused through a snapshot`, async () => {
+      const page = await rig(true, false, false, mode);
+      if (mode === 'shell') await page.waitForFunction(() => document.activeElement === (window as any).term.textarea);
+      const sent = () => page.evaluate(() => (window as any).messages.filter((m: any) => m.t === 'term.input' || m.t === 'shell.input').map((m: any) => m.data));
+      await page.evaluate(async () => {
+        const w = window as any;
+        w.term.focus();
+        await new Promise<void>((resolve) => w.term.write('\x1b[?1004h', resolve));
+        w.messages = [];
+        // A snapshot carries the program's modes, focus reporting among them.
+        w.snapshot('\x1b[?1004h');
+      });
+      await page.evaluate(() => (window as any).frames());
+      assert.deepEqual(await sent(), ['\x1b[I'], 'the snapshot reasserts this window’s focus');
+      await page.evaluate(async () => {
+        const w = window as any;
+        await new Promise<void>((resolve) => w.term.write('\x1b[?1004h', resolve));
+        document.getElementById('focus')!.focus();
+      });
+      await page.evaluate(() => (window as any).frames());
+      assert.deepEqual(await sent(), ['\x1b[I', '\x1b[O'], 'the next blur reaches the program');
     });
   }
 

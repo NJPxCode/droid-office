@@ -30,7 +30,7 @@ test('each choice sets its xterm option', () => {
 
 test('an open terminal follows every change, re-fits only when its rows change height, and keeps its fixed options', (t) => {
   t.after(resetTerminalPrefs);
-  const term = { options: { ...terminalOptions(), fontSize: 14 } as Record<string, unknown> };
+  const term = { options: { ...terminalOptions(), fontSize: 14 } };
   let resized = 0;
   const off = followTerminalPrefs(term as never, { fixed: { cursorBlink: false }, resized: () => resized++ });
   setTerminalPrefs({ smoothScroll: true, cursorStyle: 'bar' });

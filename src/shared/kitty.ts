@@ -357,7 +357,9 @@ export function encodeKittyKey(e: KittyKeyEvent, flags: number, opts: KittyEncod
   const cps = [...e.key];
   if (cps.length === 1 && opts.optionTypes && e.altKey && !e.ctrlKey && !e.metaKey) {
     // The character Option made is the key, as if typed on its own; `code` would name the physical key instead.
-    return encodeKittyKey({ ...e, altKey: false, code: undefined }, flags, opts);
+    // Fields are copied one by one: a DOM KeyboardEvent's are prototype getters, which a spread drops.
+    const typed: KittyKeyEvent = { type: e.type, key: e.key, ctrlKey: false, shiftKey: e.shiftKey, altKey: false, metaKey: false, repeat: e.repeat };
+    return encodeKittyKey(typed, flags, opts);
   }
   if (cps.length === 1) {
     const actualCp = cps[0].codePointAt(0)!;

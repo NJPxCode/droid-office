@@ -414,7 +414,8 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     term,
     (snapshot) => {
       adoptSharedSize = snapshot.shared ?? adoptSharedSize;
-      focus.reset();
+      const focusIn = focus.reset(document.hasFocus() && document.activeElement === term.textarea, term.modes.sendFocusMode);
+      if (focusIn) net.send({ t: 'term.input', workerId, data: focusIn });
       lastSentSize = '';
       pendingSizes.length = 0;
       term.options.disableStdin = !net.up;
@@ -810,7 +811,8 @@ export function openOfficeShell(net: Net) {
     term,
     (snapshot) => {
       shared = snapshot.shared === true;
-      focus.reset();
+      const focusIn = focus.reset(document.hasFocus() && document.activeElement === term.textarea, term.modes.sendFocusMode);
+      if (focusIn) net.send({ t: 'shell.input', data: focusIn });
       ptyCols = snapshot.cols;
       ptyRows = snapshot.rows;
       lastSentSize = '';

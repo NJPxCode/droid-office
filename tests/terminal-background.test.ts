@@ -102,6 +102,10 @@ test('focus reports pass only when the window focus changes', () => {
   assert.equal(focus.classify('\x1b[O'), 'focus');
   assert.equal(focus.classify('\x1b[O'), 'repeat');
   focus.classify('\x1b[I');
-  focus.reset();
+  assert.equal(focus.reset(), undefined);
   assert.equal(focus.classify('\x1b[I'), 'focus', 'after a fresh snapshot the next focus-in is sent again');
+  assert.equal(focus.reset(true, false), undefined, 'no report for a program that has not asked for them');
+  assert.equal(focus.classify('\x1b[I'), 'focus', 'so the focus-in xterm sends when it turns reporting on goes through');
+  assert.equal(focus.reset(true, true), '\x1b[I', 'a window still focused through a snapshot tells the program again');
+  assert.equal(focus.classify('\x1b[O'), 'focus', 'and its next blur reaches the program');
 });

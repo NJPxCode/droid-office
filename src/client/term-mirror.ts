@@ -103,9 +103,16 @@ export function focusReports() {
       focused = now;
       return 'focus';
     },
-    /** Reports dropped while disconnected or loading never reached the program, so start over. */
-    reset() {
-      focused = false;
+    /**
+     * A fresh snapshot: reports dropped while disconnected or loading never reached the program, so
+     * start again from this window's own focus. Returns the focus-in to send when this window has
+     * focus and the program asks for reports; an unfocused window stays silent.
+     */
+    reset(hasFocus = false, reporting = false): string | undefined {
+      // Tracked as focused only once the program has heard so; with reporting off, the focus-in
+      // xterm sends when it is turned on is the first the program hears.
+      focused = hasFocus && reporting;
+      return focused ? FOCUS_IN : undefined;
     },
   };
 }
