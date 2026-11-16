@@ -49,17 +49,27 @@ const total = (busy: Record<string, number>) => Object.values(busy).reduce((s, m
 function snapshot(accounts: readonly SubscriptionAccount[], at: number): ProviderSnap {
   return {
     at,
-    accounts: new Map(accounts.map((a) => [a.id, { stamp: a.usageUpdatedAt, windows: new Map(a.windows.map((w) => [w.name, { used: w.usedPercent, resetsAt: w.resetsAt }])) }])),
+    accounts: new Map(
+      accounts.map((a) => [
+        a.id,
+        {
+          stamp: a.usageUpdatedAt,
+          windows: new Map(a.windows.filter((w) => Number.isFinite(w.usedPercent)).map((w) => [w.name, { used: w.usedPercent, resetsAt: w.resetsAt }])),
+        },
+      ]),
+    ),
   };
 }
 
 /** A new sample: an account's sample time moved, or (with no sample times) a percentage or reset time moved. */
 function moved(prev: ProviderSnap, next: ProviderSnap): boolean {
+  if (prev.accounts.size !== next.accounts.size) return true;
   for (const [id, a] of next.accounts) {
     const b = prev.accounts.get(id);
     if (!b) return true;
     if (a.stamp !== b.stamp) return true;
     if (a.stamp !== undefined) continue;
+    if (b.windows.size !== a.windows.size) return true;
     for (const [name, w] of a.windows) {
       const was = b.windows.get(name);
       if (!was || was.used !== w.used || was.resetsAt !== w.resetsAt) return true;
@@ -68,21 +78,11 @@ function moved(prev: ProviderSnap, next: ProviderSnap): boolean {
   return false;
 }
 
+const isCountMap = (v: unknown): v is Record<string, number> => !!v && typeof v === 'object' && !Array.isArray(v) && Object.values(v).every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0);
+
 function isInterval(v: unknown): v is PaceInterval {
   const i = v as PaceInterval;
-  return (
-    !!i &&
-    typeof i === 'object' &&
-    isSubscriptionProvider(i.provider) &&
-    Number.isFinite(i.from) &&
-    Number.isFinite(i.to) &&
-    !!i.busy &&
-    typeof i.busy === 'object' &&
-    Object.values(i.busy).every((n) => Number.isFinite(n) && n >= 0) &&
-    !!i.used &&
-    typeof i.used === 'object' &&
-    Object.values(i.used).every((n) => Number.isFinite(n) && n >= 0)
-  );
+  return !!i && typeof i === 'object' && isSubscriptionProvider(i.provider) && Number.isFinite(i.from) && Number.isFinite(i.to) && isCountMap(i.busy) && isCountMap(i.used);
 }
 
 /**
@@ -91,6 +91,7 @@ function isInterval(v: unknown): v is PaceInterval {
  * Usage that moved while nobody in the office was busy (the owner chatting elsewhere) is left out.
  */
 export class UsagePaceTracker {
+  revision = 0;
   private intervals: PaceInterval[] = [];
   private readonly snaps = new Map<SubscriptionProviderKey, ProviderSnap>();
   private readonly pending = new Map<SubscriptionProviderKey, Record<string, number>>();
@@ -116,20 +117,22 @@ export class UsagePaceTracker {
       if (step > 0)
         for (const w of this.busyNow) {
           const acc = this.pending.get(w.provider) ?? {};
-          acc[w.model] = (acc[w.model] ?? 0) + step;
+          acc[w.model] = (Object.hasOwn(acc, w.model) ? acc[w.model] : 0) + step;
           this.pending.set(w.provider, acc);
         }
     }
     this.observedAt = at;
-    this.busyNow = busy;
+    this.busyNow = [...busy];
   }
 
   /** The providers as last read: each new usage sample closes an interval for its provider. */
   sample(providers: readonly SubscriptionProvider[], at: number): void {
     let changed = false;
+    const seen = new Set<SubscriptionProviderKey>();
     for (const p of providers) {
       const accounts = live(p);
       if (!accounts.length) continue;
+      seen.add(p.key);
       const next = snapshot(accounts, at);
       const prev = this.snaps.get(p.key);
       if (prev && !moved(prev, next)) continue;
@@ -145,8 +148,9 @@ export class UsagePaceTracker {
         for (const [name, w] of a.windows) {
           const was = b.windows.get(name);
           if (!was) continue;
-          if (w.used < was.used - 0.5 || (was.resetsAt !== null && was.resetsAt <= at)) reset.add(name);
-          else used[name] = (used[name] ?? 0) + Math.max(0, w.used - was.used);
+          const crossedReset = was.resetsAt !== null && was.resetsAt <= at && (was.resetsAt > prev.at || w.resetsAt !== was.resetsAt);
+          if (w.used < was.used - 0.5 || crossedReset) reset.add(name);
+          else used[name] = (Object.hasOwn(used, name) ? used[name] : 0) + Math.max(0, w.used - was.used);
         }
       }
       for (const name of reset) delete used[name];
@@ -158,18 +162,30 @@ export class UsagePaceTracker {
         changed = true;
       } else if (wasBusy) {
         // Usage often lands a sample late: it belongs to the work just before.
-        const last = this.intervals.filter((i) => i.provider === p.key).at(-1);
-        if (last)
+        for (let i = this.intervals.length - 1; i >= 0; i--) {
+          if (this.intervals[i].provider !== p.key) continue;
           for (const [name, n] of Object.entries(used))
-            if (n > 0 && name in last.used) {
-              last.used[name] += n;
+            if (n > 0 && Object.hasOwn(this.intervals[i].used, name)) {
+              this.intervals[i].used[name] += n;
               changed = true;
             }
+          break;
+        }
+      }
+    }
+    for (const key of [...this.snaps.keys(), ...this.pending.keys()]) {
+      if (!seen.has(key)) {
+        this.snaps.delete(key);
+        this.pending.delete(key);
+        this.lastBusy.delete(key);
       }
     }
     const before = this.intervals.length;
     this.intervals = this.intervals.filter((i) => i.to >= at - PACE_HISTORY_MS).slice(-MAX_INTERVALS);
-    if (changed || this.intervals.length !== before) this.persist();
+    if (changed || this.intervals.length !== before) {
+      this.revision++;
+      this.persist();
+    }
   }
 
   /**
@@ -181,7 +197,12 @@ export class UsagePaceTracker {
     if (!accounts.length) return undefined;
     const recent = this.intervals.filter((i) => i.provider === provider.key && i.to >= at - PACE_HISTORY_MS);
     const hours = (list: readonly PaceInterval[]) => list.reduce((s, i) => s + total(i.busy), 0) / HOUR;
-    const own = model ? recent.filter((i) => total(i.busy) > 0 && (i.busy[model] ?? 0) >= OWN_SHARE * total(i.busy)) : [];
+    const own = model
+      ? recent.filter((i) => {
+          const busyMs = total(i.busy);
+          return busyMs > 0 && (Object.hasOwn(i.busy, model) ? i.busy[model] : 0) >= OWN_SHARE * busyMs;
+        })
+      : [];
     const basis = hours(own) >= PACE_MIN_HOURS ? 'model' : 'provider';
     const pool = basis === 'model' ? own : recent;
     const poolHours = hours(pool);
@@ -189,20 +210,22 @@ export class UsagePaceTracker {
     const metered = new Map<string, UsageWindow>();
     for (const a of accounts) for (const w of a.windows) if ((!model || windowCovers(w, model)) && !metered.has(w.name)) metered.set(w.name, w);
     const windows: UsagePaceWindow[] = [];
+    let bestHours = 0;
     for (const [name, window] of metered) {
       // Only time on models this window meters counts: Sonnet hours spend nothing of `Weekly (Opus)`.
       const exposed = (i: PaceInterval) => Object.entries(i.busy).reduce((s, [m, ms]) => s + (windowCovers(window, m) ? ms : 0), 0);
-      const counted = pool.filter((i) => name in i.used && exposed(i) > 0);
+      const counted = pool.filter((i) => Object.hasOwn(i.used, name) && exposed(i) > 0);
       const h = counted.reduce((s, i) => s + exposed(i), 0) / HOUR;
+      if (h > bestHours) bestHours = h;
       if (h < PACE_MIN_HOURS) continue;
       const perHour = counted.reduce((s, i) => s + i.used[name], 0) / h;
       const leftPercent = accounts.reduce((s, a) => {
         const w = a.windows.find((x) => x.name === name);
-        return s + (w ? Math.max(0, 100 - w.usedPercent) : 0);
+        return s + (w && Number.isFinite(w.usedPercent) ? Math.max(0, 100 - w.usedPercent) : 0);
       }, 0);
       windows.push({ name, perHour, leftPercent, hoursLeft: perHour >= 0.05 ? leftPercent / perHour : null });
     }
-    if (!windows.length) return { state: 'learning', workerHours: poolHours, needHours: PACE_MIN_HOURS };
+    if (!windows.length) return { state: 'learning', workerHours: bestHours, needHours: PACE_MIN_HOURS };
     return { state: 'measured', basis, workerHours: poolHours, accounts: accounts.length, windows };
   }
 

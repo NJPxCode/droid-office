@@ -223,7 +223,7 @@ export interface UsagePaceWindow {
  */
 export type UsagePace = { state: 'measured'; basis: 'model' | 'provider'; workerHours: number; accounts: number; windows: UsagePaceWindow[] } | { state: 'learning'; workerHours: number; needHours: number };
 
-const leftPercent = (w: UsageWindow): number => Math.max(0, Math.min(100, Math.round(100 - w.usedPercent)));
+const leftPercent = (w: UsageWindow): number => (Number.isFinite(w.usedPercent) ? Math.max(0, Math.min(100, Math.round(100 - w.usedPercent))) : 0);
 
 /** A window named for a model family ("Weekly (Opus)", "Weekly (Sonnet)") covers only that family's models, as DroidProxy judges availability. */
 export function windowCovers(window: UsageWindow, model: string): boolean {

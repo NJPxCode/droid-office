@@ -1,7 +1,6 @@
 // Office-wide Artificial Analysis connection: the owner's Data API key, and the public model
 // benchmarks read with it once a day for team_models (docs/subscriptions.md#benchmarks).
 
-import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { benchmarkName, matchBenchmark, type BenchmarkModel, type BenchmarksState, type BenchmarkVariant } from '../shared/benchmarks.js';
@@ -75,9 +74,18 @@ export function groupBenchmarks(rows: readonly unknown[], into: BenchmarkModel[]
   return into;
 }
 
+const VALID_EFFORTS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max', 'reasoning', 'non-reasoning']);
+const isNullableNum = (v: unknown): v is number | null => v === null || (typeof v === 'number' && Number.isFinite(v));
+
+function isVariant(v: unknown): v is BenchmarkVariant {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const x = v as Record<string, unknown>;
+  return (x.effort === undefined || (typeof x.effort === 'string' && VALID_EFFORTS.has(x.effort))) && isNullableNum(x.intelligence) && isNullableNum(x.engineering) && isNullableNum(x.costPerTask) && isNullableNum(x.tokensPerSecond);
+}
+
 function isModel(v: unknown): v is BenchmarkModel {
   const m = obj(v);
-  return typeof m.name === 'string' && Array.isArray(m.variants);
+  return typeof m.name === 'string' && m.name.trim().length > 0 && Array.isArray(m.variants) && m.variants.length > 0 && m.variants.every(isVariant);
 }
 
 export class Benchmarks {
@@ -92,11 +100,13 @@ export class Benchmarks {
   private error?: string;
   private list: BenchmarkModel[] = [];
   private reading: Promise<string | undefined> | null = null;
+  private connecting = 0;
   private triedAt = Number.NEGATIVE_INFINITY;
   private timer: unknown;
   private stopped = false;
   /** Moves on every connect and disconnect, so a read that started before one never saves over it. */
   private gen = 0;
+  private tempCount = 0;
 
   constructor(private readonly opts: BenchmarksOptions) {
     this.file = path.join(opts.dataDir, 'artificial-analysis.json');
@@ -132,7 +142,7 @@ export class Benchmarks {
       ...(this.at !== undefined ? { at: this.at } : {}),
       ...(this.fetchedAt !== undefined ? { fetchedAt: this.fetchedAt } : {}),
       models: this.list.length,
-      ...(this.reading ? { checking: true } : {}),
+      ...(this.reading || this.connecting > 0 ? { checking: true } : {}),
       ...(this.error ? { error: this.error } : {}),
     };
   }
@@ -148,9 +158,22 @@ export class Benchmarks {
     if (this.opts.paused()) return AIRGAPPED_REASON;
     const trimmed = key.trim();
     const gen = ++this.gen;
-    const read = await this.read(trimmed);
-    if (gen !== this.gen || this.stopped) return 'The Artificial Analysis connection changed while the key was being checked; nothing was saved.';
-    if (typeof read === 'string') return read;
+    this.connecting++;
+    this.publish();
+    let read: BenchmarkModel[] | string;
+    try {
+      read = await this.read(trimmed);
+    } finally {
+      this.connecting--;
+    }
+    if (gen !== this.gen || this.stopped) {
+      this.publish();
+      return 'The Artificial Analysis connection changed while the key was being checked; nothing was saved.';
+    }
+    if (typeof read === 'string') {
+      this.publish();
+      return read;
+    }
     const prev = this.snapshot();
     this.key = trimmed;
     this.at = this.now();
@@ -178,6 +201,7 @@ export class Benchmarks {
   async refresh(): Promise<string | undefined> {
     if (!this.key) return 'Connect an Artificial Analysis API key first.';
     if (this.opts.paused()) return AIRGAPPED_REASON;
+    if (this.connecting > 0) return 'An Artificial Analysis key check is already under way.';
     if (this.reading) return this.reading;
     const key = this.key;
     const gen = this.gen;
@@ -213,7 +237,7 @@ export class Benchmarks {
     if (this.stopped) return;
     this.timer = this.timers.setTimeout(() => {
       const t = this.now();
-      const due = this.key && !this.opts.paused() && (this.fetchedAt === undefined || t - this.fetchedAt >= BENCHMARKS_REFRESH_MS) && t - this.triedAt >= CHECK_EVERY_MS;
+      const due = this.key && !this.connecting && !this.opts.paused() && (this.fetchedAt === undefined || t - this.fetchedAt >= BENCHMARKS_REFRESH_MS) && t - this.triedAt >= CHECK_EVERY_MS;
       void (due ? this.refresh() : Promise.resolve()).finally(() => this.schedule(CHECK_EVERY_MS));
     }, ms);
   }
@@ -275,7 +299,7 @@ export class Benchmarks {
   }
 
   private persist(): string | undefined {
-    const temp = `${this.file}.${randomUUID()}.tmp`;
+    const temp = `${this.file}.${process.pid}.${this.tempCount++}.tmp`;
     const disk: Persisted = this.key ? Object.fromEntries(Object.entries(this.snapshot()).filter(([, v]) => v !== undefined)) : {};
     try {
       mkdirSync(path.dirname(this.file), { recursive: true });

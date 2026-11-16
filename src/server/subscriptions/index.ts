@@ -13,8 +13,10 @@ import {
   type ModelAvailability,
   type ModelUsage,
   type ProxyState,
+  type SubscriptionProvider,
   type SubscriptionProviderKey,
   type SubscriptionsState,
+  type UsagePace,
 } from '../../shared/subscriptions.js';
 import { ControlError, controlClient, type RawProvider, type RawStatus, type RawUsage } from './control.js';
 import { fallbackName, hireRefusal, mapAvailability, mapProviders, modelNames, modelProviders, providersFromUsage, stripPrefix } from './map.js';
@@ -30,6 +32,8 @@ export type SubscriptionsMsg = Extract<
 export interface SubscriptionsTimers {
   setTimeout(fn: () => void, ms: number): unknown;
   clearTimeout(handle: unknown): void;
+  setInterval?(fn: () => void, ms: number): unknown;
+  clearInterval?(handle: unknown): void;
 }
 
 export interface SubscriptionsOptions {
@@ -126,16 +130,27 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
 
   const state: SubscriptionsState = emptySubscriptionsState();
   const pace = new UsagePaceTracker(path.join(opts.dataDir, 'usage-pace.json'));
+  const providerPaceCache = new Map<SubscriptionProviderKey, { provider: SubscriptionProvider; at: number; rev: number; pace: UsagePace | undefined }>();
+  const canSamplePace = () => (state.proxy.phase === 'running' || state.proxy.phase === 'outdated') && (state.checkedAt === null || now() - state.checkedAt <= STALE_MS);
   const observeBusy = () => {
-    const busy = (opts.busyModels?.() ?? []).flatMap((model) => {
-      const provider = state.modelProviders?.[model];
-      return provider ? [{ provider, model }] : [];
-    });
+    const busy = canSamplePace()
+      ? (opts.busyModels?.() ?? []).flatMap((model) => {
+          const provider = state.modelProviders?.[model];
+          return provider ? [{ provider, model }] : [];
+        })
+      : [];
     pace.observe(busy, now());
   };
+  const startInterval =
+    timers.setInterval ??
+    ((fn, ms) => {
+      const t = setInterval(fn, ms);
+      t.unref();
+      return t;
+    });
+  const stopInterval = timers.clearInterval ?? ((h) => clearInterval(h as NodeJS.Timeout));
   // Looks at DroidProxy are a minute or more apart: a turn that starts and ends between two would add no busy time.
-  const observeTimer = opts.busyModels ? setInterval(observeBusy, OBSERVE_MS) : undefined;
-  observeTimer?.unref();
+  const observeTimer = supported && opts.busyModels ? startInterval(observeBusy, OBSERVE_MS) : undefined;
   if (supported) state.proxy = { phase: 'missing', version: null, latest: null, path: null, error: null };
   /** When `state.availability` was last judged; older than STALE_MS counts as unknown. */
   let judgedAt = 0;
@@ -215,6 +230,7 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       setProxy({ phase: installing ? 'installing' : 'missing', version: null, path: null });
       state.providers = [];
       state.models = null;
+      pace.sample([], now());
       setAvailability(down(inSettings.keys(), false));
       return;
     }
@@ -241,10 +257,10 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
         names = { ...names, ...modelNames(models.value) };
         served = (models.value.models ?? []).map((m) => m?.id).filter((id): id is string => typeof id === 'string');
       }
+      state.checkedAt = now();
       // Again now that the providers of the models are known: the first look learns them.
       observeBusy();
       pace.sample(state.providers, now());
-      state.checkedAt = now();
       maybeApplyModels(prev, status.value);
       return;
     }
@@ -261,6 +277,7 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
         errorFromLook = true;
       }
       setProxy({ phase: keep(waiting ? 'starting' : 'stopped') });
+      if (!waiting) pace.sample([], now());
       setAvailability(down([...served, ...inSettings.keys()], true));
       return;
     }
@@ -275,15 +292,16 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       setProxy({ phase: keep('outdated'), ...(errorFromLook ? { error: null } : {}) });
       errorFromLook = false;
       state.providers = providersFromUsage(lastUsage);
+      state.checkedAt = now();
       observeBusy();
       pace.sample(state.providers, now());
       state.models = null;
       setAvailability({});
-      state.checkedAt = now();
       return;
     }
     // It answered badly or not in time: keep the last good state, which goes stale by itself.
     if (state.proxy.phase !== 'running' && state.proxy.phase !== 'outdated') setProxy({ phase: keep('running') });
+    if (state.checkedAt !== null && now() - state.checkedAt > STALE_MS) pace.sample([], now());
     setProxy({ error: message(err) });
     errorFromLook = true;
   };
@@ -585,7 +603,14 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       const provider = state.providers.find((p) => p.key === u.provider);
       if (!provider) return u;
       const own = pace.estimate(provider, model, at);
-      const all = pace.estimate(provider, undefined, at);
+      const cached = providerPaceCache.get(provider.key);
+      let all: UsagePace | undefined;
+      if (cached && cached.provider === provider && cached.at === at && cached.rev === pace.revision) {
+        all = cached.pace;
+      } else {
+        all = pace.estimate(provider, undefined, at);
+        providerPaceCache.set(provider.key, { provider, at, rev: pace.revision, pace: all });
+      }
       return { ...u, ...(own ? { pace: own } : {}), ...(all ? { providerPace: all } : {}) };
     },
     async recheck(minAgeMs = RECHECK_MIN_MS) {
@@ -606,7 +631,7 @@ export function mountSubscriptions(opts: SubscriptionsOptions): Subscriptions {
       stopped = true;
       timers.clearTimeout(pollTimer);
       timers.clearTimeout(releaseTimer);
-      clearInterval(observeTimer);
+      if (observeTimer !== undefined) stopInterval(observeTimer);
     },
   };
 }

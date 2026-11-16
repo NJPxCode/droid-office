@@ -77,8 +77,9 @@ export function benchmarksSettings(net: Net): { card: { desc: Node; below: Node[
   const send = () => {
     const key = keyInput.value.trim();
     if (!key) return keyInput.focus();
-    failure = net.send({ t: 'benchmarks.connect', key }) ? '' : OFFLINE;
-    busy = !failure;
+    const ok = net.send({ t: 'benchmarks.connect', key });
+    failure = ok ? '' : OFFLINE;
+    busy = ok;
     paint();
   };
   connect.addEventListener('click', send);

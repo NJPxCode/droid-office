@@ -677,10 +677,9 @@ export async function startServer(cfg: Config) {
       [...floors.values()]
         .flatMap((f) => f.everyone())
         .concat(orchestrator.workers.list())
-        .flatMap((w) => {
-          const model = w.kind === 'agent' && !w.remote && w.status === 'working' ? (w.activeModel ?? w.model) : undefined;
-          return model ? [model] : [];
-        }),
+        .filter((w) => w.kind === 'agent' && !w.remote && w.status === 'working')
+        .map((w) => w.activeModel ?? w.model)
+        .filter((model): model is string => Boolean(model)),
   });
   // Artificial Analysis benchmarks for team_models, read once a day with the owner's key.
   const benchmarks = new Benchmarks({ dataDir: cfg.dataDir, broadcast: (state) => broadcast({ t: 'benchmarks', state }), paused: () => Boolean(setup.state().airgapped) });
@@ -2343,20 +2342,23 @@ export async function startServer(cfg: Config) {
         break;
       }
       case 'benchmarks.connect':
-        void benchmarks.connect(str(msg.key, 512), who).then((error) => {
-          sendTo(c, { t: 'benchmarks.setup', ok: !error, ...(error ? { error } : {}) });
-          if (!error) toastAll(`${who} connected Artificial Analysis benchmarks`);
-        });
+      case 'benchmarks.refresh': {
+        const isConnect = msg.t === 'benchmarks.connect';
+        const pending = isConnect ? benchmarks.connect(str(msg.key, 512), who) : benchmarks.refresh();
+        void pending
+          .then((error) => {
+            sendTo(c, { t: 'benchmarks.setup', ok: !error, ...(error ? { error } : {}) });
+            if (!error && isConnect) toastAll(`${who} connected Artificial Analysis benchmarks`);
+          })
+          .catch(() => sendTo(c, { t: 'benchmarks.setup', ok: false, error: 'Artificial Analysis check failed.' }));
         break;
+      }
       case 'benchmarks.disconnect': {
         const err = benchmarks.disconnect();
         if (err) return stop(err);
         done();
         break;
       }
-      case 'benchmarks.refresh':
-        void benchmarks.refresh().then((error) => sendTo(c, { t: 'benchmarks.setup', ok: !error, ...(error ? { error } : {}) }));
-        break;
       case 'vibes.watch':
         if (typeof msg.active !== 'boolean') return stop('Send {"active": true} or {"active": false}.');
         if (!c.dashboard) officeVibes.setWatching(c.id, msg.active);

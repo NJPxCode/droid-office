@@ -62,10 +62,12 @@ const EFFORT_WORDS: Record<string, BenchmarkEffort> = {
 
 /** "Claude Opus 5.5 (High, Default Fallback)" is Claude Opus 5.5 at high; "Gemini 1.5 Pro (Sep '24)" is a name of its own. */
 export function benchmarkName(name: string): { base: string; effort?: BenchmarkEffort } {
-  const m = /^(.*?)\s*\(([^)]*)\)\s*$/.exec(name);
-  const first = m?.[2].split(',')[0].trim().toLowerCase();
-  const effort = first !== undefined ? EFFORT_WORDS[first] : undefined;
-  return m && effort ? { base: m[1], effort } : { base: name.trim() };
+  const trimmed = name.trim();
+  const m = /^(.*?)\s*\(([^)]*)\)\s*$/.exec(trimmed);
+  if (!m) return { base: trimmed };
+  const base = m[1].trim();
+  const effort = EFFORT_WORDS[m[2].split(',')[0].trim().toLowerCase()];
+  return base && effort ? { base, effort } : { base: trimmed };
 }
 
 /** Brand words a name may or may not lead with: "Claude Opus 5.5" is Droid's "Opus 5.5". */
@@ -88,7 +90,7 @@ export function matchBenchmark(displayName: string, models: readonly BenchmarkMo
 }
 
 const score = (n: number | null) => (n === null ? '?' : String(Math.round(n * 10) / 10));
-const dollars = (n: number | null) => (n === null ? '$?' : n < 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(n < 10 ? 2 : 1)}`);
+const dollars = (n: number | null) => (n === null ? '$?' : `$${n.toFixed(n < 10 ? 2 : 1)}`);
 const variantWords = (v: BenchmarkVariant) => `intelligence ${score(v.intelligence)}, engineering ${score(v.engineering)}, ${dollars(v.costPerTask)}/task`;
 
 /**
@@ -96,10 +98,11 @@ const variantWords = (v: BenchmarkVariant) => `intelligence ${score(v.intelligen
  * model takes, in order, default first; a model measured at one unnamed setting prints just its numbers.
  */
 export function benchmarkWords(m: BenchmarkModel, efforts?: readonly string[], defaultEffort?: string): string {
+  if (!m.variants.length) return '';
   if (m.variants.length === 1 && !m.variants[0].effort) return variantWords(m.variants[0]);
   const order: string[] = [...AGENT_EFFORTS, 'reasoning', 'non-reasoning'];
   const rank = (v: BenchmarkVariant) => (v.effort ? order.indexOf(v.effort) : -1);
   const taken = m.variants.filter((v) => v.effort && (!efforts?.length || efforts.includes(v.effort)));
-  const shown = (taken.length ? taken : m.variants).sort((a, b) => Number(b.effort === defaultEffort) - Number(a.effort === defaultEffort) || rank(a) - rank(b));
+  const shown = [...(taken.length ? taken : m.variants)].sort((a, b) => Number(b.effort === defaultEffort) - Number(a.effort === defaultEffort) || rank(a) - rank(b));
   return shown.map((v) => `${v.effort ?? 'default'}${v.effort && v.effort === defaultEffort ? ' (default)' : ''}: ${variantWords(v)}`).join('; ');
 }
