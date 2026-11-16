@@ -24,7 +24,7 @@ export interface QuestionState {
 export type QuestionReply = { choice?: number; choices?: number[]; text?: string };
 
 /** One scrollable answer surface, with pinned navigation and submit controls. */
-export function openQuestionWorkspace(opts: { name: string; state: QuestionState; draft: QuestionDraft; onDraft(): void; reply(value: QuestionReply, menu: Menu): Promise<void>; review(): void; raw(): void; onClose(): void }) {
+export function openQuestionWorkspace(opts: { name: string; state: QuestionState; draft: QuestionDraft; onDraft(): void; reply(value: QuestionReply, menu: Menu): Promise<void>; review(): void; raw?(): void; onClose(): void }) {
   let state = opts.state;
   let key = '';
   let selected = new Set<number>();
@@ -35,17 +35,19 @@ export function openQuestionWorkspace(opts: { name: string; state: QuestionState
   const count = h('span.qw-count');
   const submit = h('button.btn.accent', { type: 'submit' }, 'Submit answer');
   const review = h('button.btn', { type: 'button', onclick: opts.review, hidden: true }, 'Show current question');
-  const raw = h(
-    'button.btn.ghost',
-    {
-      type: 'button',
-      onclick: () => {
-        modal.close();
-        opts.raw();
-      },
-    },
-    'Raw TTY',
-  );
+  const raw = opts.raw
+    ? h(
+        'button.btn.ghost',
+        {
+          type: 'button',
+          onclick: () => {
+            modal.close();
+            opts.raw?.();
+          },
+        },
+        'Raw TTY',
+      )
+    : null;
   const back = h('button.btn.ghost', { type: 'button', onclick: () => modal.close() }, 'Back to thread');
   const form = h(
     'form.modal.question-workspace',

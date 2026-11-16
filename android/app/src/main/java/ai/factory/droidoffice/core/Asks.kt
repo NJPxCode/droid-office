@@ -16,12 +16,19 @@ object Asks {
             .sortedWith(compareBy<WorkerInfo> { it.waitingSince ?: Long.MAX_VALUE }.thenBy { it.createdAt }.thenBy { it.id })
             .map { w -> PendingAsk(w, menu(w, screens[w.id])) }
 
-    /** The numbered menu on its screen: a shell's numbered output is never an ask. */
-    fun menu(w: WorkerInfo, screen: ScreenState?): Menu? = if (w.isShell || screen == null) null else Choices.read(screen)
+    /**
+     * The numbered menu on its screen: a shell's numbered output is never an ask. A cloud worker has
+     * no screen here: its menu is the waiting AskUser question the office holds for it.
+     */
+    fun menu(w: WorkerInfo, screen: ScreenState?): Menu? = when {
+        w.isCloud -> w.cloud?.menu
+        w.isShell || screen == null -> null
+        else -> Choices.read(screen)
+    }
 
-    /** The thread can answer only a live local worker's waiting question with a readable menu. */
+    /** The thread can answer only a waiting question with a readable menu (or a cloud worker's held AskUser). */
     fun canAnswer(w: WorkerInfo, screen: ScreenState?): Boolean =
-        w.state == WorkerStatus.NeedsInput && !w.isShell && !w.isCloud && menu(w, screen) != null
+        w.state == WorkerStatus.NeedsInput && !w.isShell && menu(w, screen) != null
 
     /** One line of what it's on, above the question: its task or title, else the start of its prompt. */
     fun context(w: WorkerInfo): String? =
@@ -166,7 +173,11 @@ object Asks {
         val asked = matching(known(ask, entries), menu) ?: return menu
         return menu.copy(
             question = asked.question,
-            choices = menu.choices.map { c -> c.copy(label = asked.options[c.number - 1].trim(), description = null) },
+            // A description stays only beside its option's exact label: a screen's wrapped one might belong to a cut-off label.
+            choices = menu.choices.map { c ->
+                val full = asked.options[c.number - 1].trim()
+                c.copy(label = full, description = c.description.takeIf { c.label == full })
+            },
         )
     }
     /** The bottom line of its terminal with the box drawing taken off: the live line under a thread. */

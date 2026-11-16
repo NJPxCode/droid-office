@@ -239,16 +239,20 @@ export function sameMenu(a: Menu | undefined, b: Menu | undefined): boolean {
 export interface AskWorker {
   status: string;
   kind: string;
-  cloud?: unknown;
+  cloud?: { menu?: Menu };
 }
 
-/** The numbered menu on a worker's screen: a shell's numbered output is never an ask. */
+/**
+ * The numbered menu on a worker's screen: a shell's numbered output is never an ask. A cloud worker
+ * has no screen here: its menu is the waiting AskUser question the office holds for it.
+ */
 export function workerMenu(worker: AskWorker, lines: readonly string[] | undefined): Menu | undefined {
-  if (worker.kind !== 'agent' || worker.cloud || !lines) return undefined;
+  if (worker.cloud) return worker.cloud.menu;
+  if (worker.kind !== 'agent' || !lines) return undefined;
   return readMenu(lines);
 }
 
-/** Only a live local agent's waiting question with a readable menu can be answered safely. */
+/** Only a waiting question with a readable menu (or a cloud worker's held AskUser) can be answered safely. */
 export function canAnswer(worker: AskWorker, lines: readonly string[] | undefined): boolean {
   return worker.status === 'needs_input' && workerMenu(worker, lines) !== undefined;
 }

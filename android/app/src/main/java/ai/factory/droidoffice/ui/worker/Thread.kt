@@ -253,7 +253,7 @@ internal fun Thread(
         }
     }
 
-    val menu = remember(w.isShell, screen) { Asks.menu(w, screen) }
+    val menu = remember(w.isShell, w.cloud?.menu, screen) { Asks.menu(w, screen) }
     val asking = w.state == WorkerStatus.NeedsInput
     val showAsk = asking || menu?.pointer != null
     // Nothing from a presentation this app can't read is shown: the head says why instead.
@@ -615,7 +615,7 @@ internal fun Thread(
                 if (showAsk) item(key = ASK) {
                     Box(Modifier.padding(top = 12.dp)) {
                         if (menu == null) {
-                            NeedsTty(w.name, Asks.question(PendingAsk(w, null), state.entries), onTty)
+                            NeedsTty(w.name, Asks.question(PendingAsk(w, null), state.entries), if (rawTty) onTty else null)
                         } else {
                             AskCard(
                                 worker = w,
@@ -627,7 +627,7 @@ internal fun Thread(
                                 inline = true,
                                 connected = connected,
                                 entries = state.entries,
-                                onOpenThread = onTty,
+                                onOpenThread = if (rawTty) onTty else null,
                             )
                         }
                     }
@@ -985,9 +985,12 @@ private fun Notice(w: WorkerInfo, n: ThreadRow.Notice, entry: ThreadEntry?) {
 }
 
 
-/** A question the phone can't read off the terminal: it's answered in Raw TTY, never with a prompt typed into it. */
+/**
+ * A question the phone can't read off the terminal: it's answered in Raw TTY, never with a prompt
+ * typed into it. A cloud worker has no Raw TTY ([onTty] null): its Factory session answers it.
+ */
 @Composable
-private fun NeedsTty(name: String, question: String, onTty: () -> Unit) {
+private fun NeedsTty(name: String, question: String, onTty: (() -> Unit)?) {
     Column(
         Modifier.fillMaxWidth().panel(RoundedCornerShape(4.dp), ThreadPalette.Danger.copy(alpha = 0.07f), ThreadPalette.Danger.copy(alpha = 0.4f))
             .tagged(Tags.Asks.CARD).padding(12.dp),
@@ -995,10 +998,11 @@ private fun NeedsTty(name: String, question: String, onTty: () -> Unit) {
         Eyebrow("${name.ifBlank { "Droid" }} needs your answer", color = ThreadPalette.Danger)
         Text(question, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 6.dp).tagged(Tags.Asks.QUESTION))
         Text(
-            "The phone can't read this question off the terminal. Answer it in Raw TTY.",
+            if (onTty == null) "The office can't answer this one from the phone. Answer it in its Factory session."
+            else "The phone can't read this question off the terminal. Answer it in Raw TTY.",
             style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp).tagged(Tags.Asks.WAITING),
         )
-        Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.End) {
+        if (onTty != null) Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.End) {
             QuietButton("Answer in Raw TTY", OfficeIcons.Terminal, Tags.Worker.THREAD_RAW_TTY, true, onTty)
         }
     }
@@ -1009,17 +1013,19 @@ private fun NeedsTty(name: String, question: String, onTty: () -> Unit) {
  * be typed into the question on its terminal. The question card above answers it, or Raw TTY does.
  */
 @Composable
-internal fun ThreadWaiting(w: WorkerInfo, onTty: () -> Unit) {
+internal fun ThreadWaiting(w: WorkerInfo, onTty: (() -> Unit)?) {
     Row(
         Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 10.dp).panel(RoundedCornerShape(4.dp), ThreadPalette.Surface, ThreadPalette.BorderStrong)
             .tagged(Tags.Worker.THREAD_WAITING).padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            "${w.name.ifBlank { "It" }} is waiting on a question. Answer it above, or in Raw TTY, before sending a message.",
+            "${w.name.ifBlank { "It" }} is waiting on a question. Answer it above${if (onTty != null) ", or in Raw TTY," else ""} before sending a message.",
             style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f).padding(vertical = 6.dp),
         )
-        Spacer(Modifier.width(8.dp))
-        QuietButton("Raw TTY", OfficeIcons.Terminal, Tags.Worker.THREAD_WAITING_TTY, true, onTty)
+        if (onTty != null) {
+            Spacer(Modifier.width(8.dp))
+            QuietButton("Raw TTY", OfficeIcons.Terminal, Tags.Worker.THREAD_WAITING_TTY, true, onTty)
+        }
     }
 }

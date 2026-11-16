@@ -124,10 +124,10 @@ fun AskCard(
         if (menu != null) {
             SecondaryButton(
                 if (menu.review != null) "Review answers" else "Answer questions", { opened = OfficeJson.encodeToString(Menu.serializer(), menu) },
-                Modifier.tagged(Tags.Answer.OPEN), enabled = enabled && connected && !worker.isShell && !worker.isCloud, color = ThreadPalette.Accent,
+                Modifier.tagged(Tags.Answer.OPEN), enabled = enabled && connected && !worker.isShell, color = ThreadPalette.Accent,
             )
         } else {
-            Text("This question needs Raw TTY.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.tagged(Tags.Asks.WAITING))
+            Text(if (worker.isCloud) "Answer it in its Factory session." else "This question needs Raw TTY.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.tagged(Tags.Asks.WAITING))
         }
         onOpenThread?.let { SecondaryButton(openLabel, it, Modifier.tagged(Tags.Asks.OPEN_THREAD)) }
     }
@@ -228,7 +228,8 @@ private fun AnswerWorkspace(worker: WorkerInfo, shown: Menu, entries: List<Threa
             Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 SecondaryButton("Back", { dismiss() }, Modifier.tagged(Tags.Answer.CLOSE), enabled = !delivering)
                 Text("Answer ${worker.name}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                SecondaryButton("Raw TTY", { keep(); onRaw() }, Modifier.tagged(Tags.Answer.RAW_TTY), enabled = !pending)
+                // A cloud worker has no terminal to fall back on.
+                if (!worker.isCloud) SecondaryButton("Raw TTY", { keep(); onRaw() }, Modifier.tagged(Tags.Answer.RAW_TTY), enabled = !pending)
             }
             LazyColumn(
                 Modifier.weight(1f).fillMaxWidth().tagged(Tags.Answer.CONTENT).selectableGroup(),

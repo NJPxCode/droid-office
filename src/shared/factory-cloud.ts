@@ -2,6 +2,7 @@
 // instead of in a terminal on this machine (see src/server/factory/cloud.ts). The office drives the
 // session through Factory's Sessions API with its key: it has no PTY, worktree or hooks here.
 
+import type { Menu } from './asks.js';
 import type { WorkerAction, WorkerStatus } from './protocol.js';
 import { toolAction } from './actions.js';
 
@@ -29,6 +30,11 @@ export interface CloudWorker {
   intro?: boolean;
   /** Its next message goes with the cloud.environment prompt first: its clone is from the Environment's build. */
   catchUp?: boolean;
+  /**
+   * The question of its waiting AskUser to answer next, as a menu `worker.answer` takes, while the
+   * office holds that AskUser on its computer's relay (factory/cloud-ask.ts). Not saved.
+   */
+  menu?: Menu;
 }
 
 /**

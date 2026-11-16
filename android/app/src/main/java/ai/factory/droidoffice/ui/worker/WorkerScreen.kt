@@ -363,7 +363,7 @@ fun WorkerScreen(
                 snackbarHost.showSnackbar("That permission prompt was already handled.")
                 return@LaunchedEffect
             }
-            val menu = if (!worker.isShell && !worker.isCloud) Asks.menu(worker, screen) else null
+            val menu = if (!worker.isShell) Asks.menu(worker, screen) else null
             if (menu != null) {
                 questionHandled = true
                 openedQuestionMenu = menu
@@ -530,7 +530,7 @@ fun WorkerScreen(
                 }
                 // A prompt from the thread would be typed into the question its terminal is showing.
                 val waiting = !tty && worker.state == WorkerStatus.NeedsInput
-                if (waiting) ThreadWaiting(worker, onTty = { ttyChoice = true })
+                if (waiting) ThreadWaiting(worker, onTty = if (cloud) null else { { ttyChoice = true } })
                 val snackbar = LocalSnackbar.current
                 val connected = link.phase == Phase.Connected
                 if (cloud && cloudError != null) CloudError(worker, cloudError)

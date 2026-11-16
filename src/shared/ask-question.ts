@@ -107,7 +107,8 @@ export function questionPresentation(menu: Menu, entries: readonly ThreadEntry[]
   const full = matches.length === 1 ? matches[0] : byQuestion.length === 1 ? byQuestion[0] : undefined;
   return {
     question: full?.question || menu.question || 'Choose an answer',
-    choices: menu.choices.map((choice, index) => ({ ...choice, ...(full ? { label: full.options[index], description: undefined } : {}) })),
+    // A description stays only beside its option's exact label: a screen's wrapped one might belong to a cut-off label.
+    choices: menu.choices.map((choice, index) => ({ ...choice, ...(full ? { label: full.options[index], description: choice.label === full.options[index] ? choice.description : undefined } : {}) })),
     ...(full ? { position: all.indexOf(full) + 1, total: all.length } : {}),
     complete: !!full,
   };

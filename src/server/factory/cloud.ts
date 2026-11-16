@@ -33,6 +33,8 @@ import type { FactoryRegistry } from './registry.js';
 import type { SessionsFeature } from './sessions.js';
 import { CloudThreadReader } from './cloud-thread.js';
 import { CloudStream, type CloudStreamOptions } from './cloud-stream.js';
+import { askAnswer, askedQuestions, askMenu, type AskReply, type CloudAsk } from './cloud-ask.js';
+import type { Menu } from '../../shared/asks.js';
 import { record } from './cloud-stream-messages.js';
 import type { ThreadPage } from '../worker-thread.js';
 
@@ -156,6 +158,8 @@ export class CloudFeature extends SliceFeature<'cloud'> {
   private acceptedAt = new Map<string, number>();
   private screens = new Set<string>();
   private screenTimer?: ReturnType<typeof setTimeout>;
+  /** Each session's waiting AskUser, by session id, with the answers the owner has given so far. */
+  private asks = new Map<string, { ask: CloudAsk; answers: string[] }>();
 
   readonly routes: readonly FactoryRoute[] = [
     {
@@ -208,6 +212,7 @@ export class CloudFeature extends SliceFeature<'cloud'> {
           this.screens.clear();
           this.streamRevisions.clear();
           this.acceptedAt.clear();
+          for (const id of [...this.asks.keys()]) this.clearAsk(id);
         },
         snapshot: (id, snapshot, superseded) => {
           const session = record(snapshot.session);
@@ -220,6 +225,7 @@ export class CloudFeature extends SliceFeature<'cloud'> {
           if (found) this.opts.onThreadChange?.(found.info.id);
         },
         notification: (id, n) => this.streamEvent(id, n),
+        ask: (id, ask) => this.streamAsk(id, ask),
       });
       this.stream.start();
     }
@@ -254,6 +260,8 @@ export class CloudFeature extends SliceFeature<'cloud'> {
     const found = this.session(id);
     if (!found) return;
     const { floor, info } = found;
+    // Anything but waiting on the owner means its AskUser was answered, here or elsewhere.
+    if (typeof state === 'string' && state !== 'waiting_for_tool_confirmation') this.clearAsk(id);
     if (state === 'idle') {
       if (floor.cloud.turn(info.id)?.seenBusy && info.status === 'working' && !this.waitingForAcceptance(id, floor.cloud.turn(info.id))) {
         floor.cloud.update(info.id, (_, w) => {
@@ -284,6 +292,8 @@ export class CloudFeature extends SliceFeature<'cloud'> {
     if (n.type === 'settings_updated') this.streamMetadata(id, record(n.settings));
     if (n.type === 'session_title_updated') this.streamMetadata(id, {}, n.title);
     if (n.type === 'droid_working_state_changed') this.streamState(id, n.newState);
+    if (n.type === 'tool_result' && n.toolUseId && n.toolUseId === this.asks.get(id)?.ask.toolCallId) this.clearAsk(id);
+    if (n.type === 'session_closed' || n.type === 'session_process_exited') this.clearAsk(id);
     if (n.type === 'tool_call') {
       const tool = latestTool([{ role: 'assistant', content: [n.toolUse] }]);
       if (tool)
@@ -308,6 +318,71 @@ export class CloudFeature extends SliceFeature<'cloud'> {
       floor.cloud.setStatus(info.id, 'done');
     }
     if (typeof n.type === 'string' && THREAD_STREAM_EVENTS.has(n.type)) this.opts.onThreadChange?.(info.id);
+  }
+
+  /** The AskUser a session waits on: its next unanswered question becomes the worker's menu. */
+  private streamAsk(id: string, ask: CloudAsk | undefined): void {
+    if (!ask) {
+      this.clearAsk(id);
+      return;
+    }
+    const held = this.asks.get(id)?.ask.requestId === ask.requestId ? this.asks.get(id) : undefined;
+    // A load snapshot lists the AskUser without the option descriptions its live request carried.
+    if (held) ask = { ...ask, questions: ask.questions.map((q, i) => (q.descriptions ? q : { ...q, ...(held.ask.questions[i]?.descriptions ? { descriptions: held.ask.questions[i].descriptions } : {}) })) };
+    const entry = { ask, answers: held?.answers ?? [] };
+    this.asks.set(id, entry);
+    this.paintAsk(id);
+  }
+
+  private paintAsk(id: string): void {
+    const found = this.session(id);
+    const entry = this.asks.get(id);
+    if (!found || !entry) return;
+    const next = entry.ask.questions[entry.answers.length];
+    found.floor.cloud.update(found.info.id, (i) => {
+      i.ask = { kind: 'question', questions: askedQuestions(entry.ask) };
+      if (i.cloud) i.cloud = { ...i.cloud, menu: next ? askMenu(next) : undefined };
+    });
+    found.floor.cloud.setStatus(found.info.id, 'needs_input');
+  }
+
+  private clearAsk(id: string): void {
+    const had = this.asks.delete(id);
+    const found = this.session(id);
+    if (!found || (!had && !found.info.ask && !found.info.cloud?.menu)) return;
+    found.floor.cloud.update(found.info.id, (i) => {
+      i.ask = undefined;
+      if (i.cloud?.menu) i.cloud = { ...i.cloud, menu: undefined };
+    });
+  }
+
+  /**
+   * The owner's answer to the question a cloud worker's menu shows: held until the last question is
+   * answered, then all of them go to its session together. Undefined when it was taken, else why not.
+   */
+  answer(id: string, shown: Menu, reply: AskReply): string | undefined {
+    const found = this.find(id);
+    const sessionId = found?.info.sessionId;
+    const entry = sessionId ? this.asks.get(sessionId) : undefined;
+    if (!found || !sessionId || !entry) return 'The question changed or was already answered. Your answer was not sent.';
+    const result = askAnswer(found.info.cloud?.menu, shown, reply);
+    if ('error' in result) return result.error;
+    const answers = [...entry.answers, result.answer];
+    if (answers.length < entry.ask.questions.length) {
+      entry.answers = answers;
+      this.paintAsk(sessionId);
+      return undefined;
+    }
+    const sent = this.stream?.answer(
+      sessionId,
+      entry.ask.requestId,
+      entry.ask.questions.map((q, i) => ({ index: q.index, question: q.question, answer: answers[i]! })),
+    );
+    if (!sent) return `The office lost its link to ${found.info.cloud?.computerName ?? 'its computer'}. Nothing was sent; try again in a moment.`;
+    this.clearAsk(sessionId);
+    found.floor.cloud.setStatus(found.info.id, 'working');
+    this.opts.onThreadChange?.(found.info.id);
+    return undefined;
   }
 
   /** A prompt the office sent stays open until the stream shows it arrived: an earlier turn's completion doesn't end it. */
@@ -815,7 +890,8 @@ export class CloudFeature extends SliceFeature<'cloud'> {
       if (frame) floor.cloud.setScreen(id, frame);
     }
     floor.cloud.polled(id, { count, updatedAt }, mapped.turn, now);
-    if (next) floor.cloud.setStatus(id, next);
+    // Factory's REST status says only "running" while an AskUser waits: the AskUser the stream holds stands.
+    if (next && !this.asks.has(info.sessionId!)) floor.cloud.setStatus(id, next);
     if (messages || next) this.opts.onThreadChange?.(id);
   }
 
@@ -929,6 +1005,18 @@ export function mountCloud(registry: FactoryRegistry, opts: Omit<CloudOptions, '
             ctx.done?.(why, info.id);
           },
         );
+        break;
+      }
+      case 'worker.answer': {
+        const hasChoice = typeof msg.choice === 'number';
+        const hasChoices = Array.isArray(msg.choices) && msg.choices.every((n) => typeof n === 'number');
+        const hasText = typeof msg.text === 'string';
+        let error: string | undefined;
+        if (!msg.menu || typeof msg.menu !== 'object') error = 'The question changed or was already answered. Your answer was not sent.';
+        else if (msg.choices !== undefined && !hasChoices) error = 'Send checkbox selections as numbered choices.';
+        else if (hasChoice ? hasChoices || hasText : !hasChoices && !hasText) error = 'Send one choice, a checkbox selection, or a typed answer.';
+        else error = feature.answer(info.id, msg.menu, { ...(hasChoice ? { choice: msg.choice } : {}), ...(hasChoices ? { choices: msg.choices } : {}), ...(hasText ? { text: msg.text } : {}) });
+        ctx.done?.(error, info.id);
         break;
       }
       case 'worker.resume':

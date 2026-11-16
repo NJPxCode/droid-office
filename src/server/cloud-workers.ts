@@ -327,6 +327,8 @@ function validInfo(raw: unknown): WorkerInfo | undefined {
   if (!c || typeof c.computerId !== 'string' || typeof c.computerName !== 'string') return undefined;
   return {
     ...r,
+    // Its stream hands a waiting AskUser over again once it loads the session.
+    ask: undefined,
     color: typeof r.color === 'string' ? r.color : '#5bc0eb',
     status: STATUSES.has(r.status) ? r.status : 'idle',
     effort: isAgentEffort(r.effort) ? r.effort : undefined,

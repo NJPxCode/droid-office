@@ -2,7 +2,7 @@
 // the office knows of one with no local terminal, or a picker when the pane is empty.
 
 import type { ClientMsg, WorkerInfo, WorkerStatus } from '../shared/protocol';
-import { canAnswer, readMenu, sameMenu, type Menu } from '../shared/asks';
+import { canAnswer, sameMenu, workerMenu, type Menu } from '../shared/asks';
 import { questionPresentation } from '../shared/ask-question';
 import { isAsleep, isBusy, needsOwnerInput, workerActivity } from '../shared/status';
 import { sessionWebUrl } from '../shared/factory-sessions';
@@ -747,7 +747,7 @@ export function createPane(host: PaneHost, index: number): Pane {
     const w = id ? host.worker(id) : undefined;
     if (!w || mode === 'empty' || !mode) return;
     const screen = lines(w.id);
-    const next = screen && canAnswer(w, screen) ? readMenu(screen) : undefined;
+    const next = canAnswer(w, screen) ? workerMenu(w, screen) : undefined;
     if (w.status !== 'needs_input') {
       shownMenu = undefined;
       answered = false;
@@ -787,7 +787,7 @@ export function createPane(host: PaneHost, index: number): Pane {
             {},
             h('b', {}, `${w.name} needs you. `),
             w.cloud
-              ? 'There is no local menu to answer: open its Factory session.'
+              ? 'The office can’t answer this one from here: open its Factory session.'
               : mode === 'thread'
                 ? 'This CLI dialog cannot be answered safely here. Open TTY to continue.'
                 : 'Its screen has no menu the companion can answer safely. Answer it in the terminal below.',
@@ -855,7 +855,8 @@ export function createPane(host: PaneHost, index: number): Pane {
                   questionKey = '';
                   paintQuestion(true);
                 },
-                raw: () => host.setView(w.id, 'terminal'),
+                // A cloud worker has no terminal to fall back on.
+                raw: w.cloud ? undefined : () => host.setView(w.id, 'terminal'),
                 onClose: () => {
                   questionWorkspace = undefined;
                 },
