@@ -138,6 +138,13 @@ test('the web companion fills its floor strip with the most relevant full tabs t
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`${fx.base}/dashboard`);
     await page.locator('.dash-floor-chip.on').waitFor();
+    const usage = page.getByRole('button', { name: 'Usage and subscriptions' });
+    assert.equal(await usage.locator('svg').count(), 1);
+    assert.equal(await usage.innerText(), '');
+    await usage.click();
+    await page.locator('.modal.subs-status').waitFor();
+    await page.keyboard.press('Escape');
+    await page.locator('.modal.subs-status').waitFor({ state: 'hidden' });
     const current = (await page.locator('.dash-floor-chip.on .dash-floor-name').textContent()) ?? '';
     const toggle = page.locator('.dash-side-toggle-bay button');
     assert.equal(await toggle.getAttribute('aria-label'), 'Hide floor');

@@ -145,33 +145,6 @@ export function factoryQuotaRings(s: FactoryLimitsState, now: number, date?: Dat
   });
 }
 
-/** Small non-interactive rings inside the dashboard's Subscriptions button. */
-export function factoryHeaderRings(s: FactoryLimitsState, now: number): HTMLElement | null {
-  if (!factoryLimitsActive(s)) return null;
-  return h(
-    'span.factory-header-rings',
-    {},
-    ...FACTORY_TIERS.filter(({ key }) => !!s.limits[key]).map(({ key, label }) => {
-      const windows = factoryWindows(s, key);
-      const title = `Factory ${label}: ${windows.map((w) => `${windowLine(w)}, ${factoryReset(w, now)}`).join('; ')}. ${factoryLimitsSummary(s)}`;
-      return h(
-        'span.factory-header-quota',
-        { title, role: 'img', 'aria-label': title },
-        h(
-          'span.factory-mini-ring',
-          {},
-          ...windows.map((w, i) => {
-            const arc = h('span.subs-arc', { class: `layer-${i} ${usageTone(w)}`, 'aria-hidden': 'true' });
-            arc.style.setProperty('--left', String(percentLeft(w)));
-            return arc;
-          }),
-        ),
-        h('span', { 'aria-hidden': 'true' }, key === 'core' ? 'Core' : label),
-      );
-    }),
-  );
-}
-
 /** A muted line of providers ("Off" or "Not connected") with their logos; null when there are none. */
 function providerLine(label: string, providers: SubscriptionProvider[]): HTMLElement | null {
   if (!providers.length) return null;

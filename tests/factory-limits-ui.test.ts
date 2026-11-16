@@ -4,7 +4,7 @@ import { emptyFactoryState, type FactoryState } from '../src/shared/factory.js';
 import { emptyLimits, type FactoryLimitsState } from '../src/shared/factory-limits.js';
 import { emptySubscriptionsState } from '../src/shared/subscriptions.js';
 import { factoryBalance, factoryLimitsNote, factoryLimitsSummary, factoryLimitsView, factoryReset } from '../src/client/ui/factory-limits-view.js';
-import { factoryHeaderRings, factoryQuotaRings, subscriptionsView } from '../src/client/ui/subscriptions-rings.js';
+import { factoryQuotaRings, subscriptionsView } from '../src/client/ui/subscriptions-rings.js';
 import { availabilityOf, canPick, withAvailability } from '../src/client/ui/model-search.js';
 import { QuotaWallTexture, quotaView } from '../src/client/world/droidproxy-wall.js';
 import { FactoryTvTexture } from '../src/client/world/factory-tv.js';
@@ -157,10 +157,6 @@ test('Factory rings remain visible without DroidProxy, show three arcs each, and
   const combined = subscriptionsView({ ...s, proxy: { ...s.proxy, phase: 'missing' }, providers: [{ key: 'codex', name: 'ChatGPT', enabled: true, connect: 'browser', accounts }] }, NOW, undefined, limits());
   assert.equal(combined.rings.length, 10);
   assert.equal(combined.rings.at(-1)?.key, 'codex/account-7');
-  const header = factoryHeaderRings(limits(), NOW) as unknown as Element;
-  assert.equal(header.cls('subs-arc').length, 6);
-  assert.match(header.cls('factory-header-quota')[0].attrs.title, /Standard.*Resets in/);
-  assert.equal(factoryHeaderRings(emptyLimits(), NOW), null);
 });
 
 test('Factory exhaustion dims hosted pickers with reset and overage reason while Core and custom models stay runnable', () => {
