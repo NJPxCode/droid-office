@@ -3,7 +3,7 @@
 
 import type { ClientMsg, WorkerInfo, WorkerStatus } from '../shared/protocol';
 import { canAnswer, readMenu, sameMenu, type Menu } from '../shared/asks';
-import { questionPresentation } from '../shared/ask-question';
+import { pendingQuestions, questionPresentation, replySummary } from '../shared/ask-question';
 import { isAsleep, isBusy, needsOwnerInput, workerActivity } from '../shared/status';
 import { sessionWebUrl } from '../shared/factory-sessions';
 import { forkRefusal } from '../shared/worker-fork';
@@ -199,6 +199,8 @@ export function createPane(host: PaneHost, index: number): Pane {
   let questionKey = '';
   let questionDraft: QuestionDraft = { text: '' };
   let questionWorkspace: ReturnType<typeof openQuestionWorkspace> | undefined;
+  /** What this pane sent for the questionnaire being asked, by position, for the workspace's step bar. */
+  let series = { key: '', answers: {} as Record<number, string> };
   let answered = false;
   let questionReplying = false;
   let answerSettlesAt = 0;
@@ -270,6 +272,7 @@ export function createPane(host: PaneHost, index: number): Pane {
     shownMenu = undefined;
     questionKey = '';
     questionDraft = { text: next ? host.read(draftKey(host.floor(), `${next}:answer`)) : '' };
+    series = { key: '', answers: {} };
     answered = false;
     questionReplying = false;
     answerSettlesAt = 0;
@@ -752,7 +755,10 @@ export function createPane(host: PaneHost, index: number): Pane {
       shownMenu = undefined;
       answered = false;
     }
-    if ((!shownMenu && next) || review || (answered && next && !sameMenu(shownMenu, next))) {
+    // The workspace follows the questionnaire: after an answer, or when the owner hasn't started on the
+    // shown question (it was answered in the terminal), the next menu replaces it. A started draft waits.
+    const untouched = !questionDraft.text.trim() && questionDraft.choices === undefined;
+    if ((!shownMenu && next) || review || (next && !questionReplying && !sameMenu(shownMenu, next) && (answered || untouched))) {
       shownMenu = next;
       answered = false;
       questionDraft.choices = undefined;
@@ -760,11 +766,13 @@ export function createPane(host: PaneHost, index: number): Pane {
     const current = sameMenu(shownMenu, next);
     const settling = questionReplying || Date.now() < answerSettlesAt;
     const entries = thread?.entries() ?? [];
+    const asked = JSON.stringify(pendingQuestions(entries, w.ask).map((q) => [q.question, q.options]));
+    if (asked !== series.key) series = { key: asked, answers: {} };
     const display = shownMenu && questionPresentation(shownMenu, entries, w.ask);
     const supported = !shownMenu?.multiSelect || store.workerAnswerMultiSelect;
     const live = host.live();
     const enabled = live && supported && current && !host.busy(w.id) && !answered && !questionReplying;
-    const qs = shownMenu && { menu: shownMenu, entries, ask: w.ask, enabled, supported, sending: questionReplying, answered, current, connected: live };
+    const qs = shownMenu && { menu: shownMenu, entries, ask: w.ask, answers: series.answers, enabled, supported, sending: questionReplying, answered, current, connected: live };
     if (qs) questionWorkspace?.update(qs);
     else if (questionWorkspace && !settling) questionWorkspace.close();
     const key = JSON.stringify([shownMenu, display, current, supported, live, host.busy(w.id), answered, questionReplying, settling, w.status, mode]);
@@ -810,6 +818,8 @@ export function createPane(host: PaneHost, index: number): Pane {
         answerSettlesAt = 0;
         toast(error, 'warn');
       } else {
+        const sent = questionPresentation(answerMenu, thread?.entries() ?? [], w.ask);
+        if (sent.position) series.answers = { ...series.answers, [sent.position]: replySummary(sent, value) };
         answered = true;
         const until = Date.now() + 3000;
         answerSettlesAt = until;

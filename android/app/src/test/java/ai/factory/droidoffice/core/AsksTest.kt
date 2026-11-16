@@ -151,7 +151,7 @@ class AsksTest {
     @Test
     fun multilineMetadataPreservesParagraphsAndModesWithoutTopicDetails() {
         val call = askCall("""{"questionnaire":"1. [question] Context before the question.\n\nWhich design? (multi)\n[topic] Design\nIgnored topic detail\n[option] Persistent roster\nwith live status\n[option] Several conversations\nside by side"}""")
-        assertEquals(listOf(Asks.Asked("Context before the question.\n\nWhich design?", listOf("Persistent roster\nwith live status", "Several conversations\nside by side"), true)), Asks.questions(listOf(call)))
+        assertEquals(listOf(Asks.Asked("Context before the question.\n\nWhich design?", listOf("Persistent roster\nwith live status", "Several conversations\nside by side"), true, "Design")), Asks.questions(listOf(call)))
     }
 
     @Test
@@ -194,5 +194,64 @@ class AsksTest {
         assertEquals(Keys.DOWN.repeat(2) + "hey there" + Keys.ENTER, Asks.replyKeys(menu, "hey there"))
         assertNull(Asks.replyKeys(null, "2"))
         assertEquals("1 · Wait for the cart dra…", Asks.buttonLabel(Choice(1, "Wait for the cart drawer to open")))
+    }
+
+    @Test
+    fun aQuestionnaireBecomesStepsEndingWithItsReview() {
+        val ask = WorkerAsk(
+            kind = "question",
+            questions = listOf(
+                AskedQuestion("Which hypervisor should we use?", "Hypervisor", listOf("UTM", "Parallels")),
+                AskedQuestion("Which Windows licence features should the virtual machines have for agents?", null, listOf("Evaluation", "Pro", "Enterprise"), multiSelect = true),
+                AskedQuestion("How should agents connect?", "Agent-access", listOf("SSH", "RDP")),
+            ),
+        )
+        val second = Choices.read(listOf("  Which Windows licence features should the virtual machines have for agents?", "  1. [ ] Evaluation", "  2. [x] Pro", "  3. [ ] Enterprise", "  [ ] Or type your own answer...", "  Submit"))!!
+        assertEquals(
+            listOf(
+                Asks.Step("Hypervisor", Asks.StepState.Done, "Parallels"),
+                // No topic: the question's start, cut at a word.
+                Asks.Step("Which Windows licence…", Asks.StepState.Current),
+                Asks.Step("Agent-access", Asks.StepState.Upcoming),
+                Asks.Step("Review", Asks.StepState.Upcoming, review = true),
+            ),
+            Asks.steps(second, emptyList(), ask, mapOf(1 to "Parallels", 2 to "Stale")),
+        )
+        val display = Asks.display(second, emptyList(), ask)
+        assertEquals("Evaluation, Enterprise + Keep shortcuts handy", Asks.replySummary(display, null, listOf(1, 3), "Keep  shortcuts\nhandy"))
+        assertEquals("Pro", Asks.replySummary(display, null, listOf(2), null))
+        val first = Choices.read(listOf("  Which hypervisor should we use?", "", "  1. UTM", "  2. Parallels", "  Or type your own answer..."))!!
+        assertEquals("Parallels", Asks.replySummary(Asks.display(first, emptyList(), ask), 2, null, null))
+        assertEquals("Hyper-V", Asks.replySummary(Asks.display(first, emptyList(), ask), null, null, "Hyper-V"))
+
+        val review = Choices.read(javaClass.getResource("/askuser-1.7.1-review.txt")!!.readText().lines())!!
+        assertEquals(
+            listOf("Which hypervisor should we use?" to "UTM", "Which Windows licence should we use?" to "Evaluation", "How should agents connect?" to "SSH"),
+            Asks.reviewAnswers(review.review!!),
+        )
+        // The terminal's summary outranks what this app remembers sending.
+        assertEquals(
+            listOf(Asks.StepState.Done to "UTM", Asks.StepState.Done to "Evaluation", Asks.StepState.Done to "SSH", Asks.StepState.Current to null),
+            Asks.steps(review, emptyList(), ask, mapOf(1 to "Parallels")).map { it.state to it.answer },
+        )
+        assertEquals(listOf("Pick tools?" to "Git, Docker", "Unanswered?" to ""), Asks.reviewAnswers(listOf("Pick tools?", "→ Git", "→ Docker", "Unanswered?")))
+
+        // A lone question, a menu matching no single question, or a permission prompt gets no step bar.
+        assertEquals(emptyList<Asks.Step>(), Asks.steps(first, emptyList(), ask.copy(questions = ask.questions.take(1))))
+        assertEquals(emptyList<Asks.Step>(), Asks.steps(Choices.read(noMark)!!, emptyList(), ask))
+        assertEquals(emptyList<Asks.Step>(), Asks.steps(review, emptyList(), null))
+        assertEquals(emptyList<Asks.Step>(), Asks.steps(first, emptyList(), WorkerAsk(kind = "permission", tool = "Execute")))
+    }
+
+    @Test
+    fun askUserHeadersAreTopicsAndTheThreadStandsInForAMissingHookAsk() {
+        val call = askCall("""{"questions":[{"question":"Which hypervisor?","header":" Hypervisor ","options":[{"label":"UTM"},{"label":"Parallels"}]},{"question":"Licence?","options":["Evaluation"]}]}""")
+        assertEquals(
+            listOf(Asks.Asked("Which hypervisor?", listOf("UTM", "Parallels"), topic = "Hypervisor"), Asks.Asked("Licence?", listOf("Evaluation"))),
+            Asks.pending(null, listOf(call)),
+        )
+        val hook = WorkerAsk(kind = "question", questions = listOf(AskedQuestion("From the hook?", "Hook", listOf("Yes", "No"))))
+        assertEquals(listOf(Asks.Asked("From the hook?", listOf("Yes", "No"), topic = "Hook")), Asks.pending(hook, listOf(call)))
+        assertEquals(2, Asks.pending(WorkerAsk(kind = "question"), listOf(call)).size)
     }
 }

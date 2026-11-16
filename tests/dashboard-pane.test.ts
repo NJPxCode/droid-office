@@ -282,3 +282,156 @@ test('only the focused thread pane shows its composer, reclaiming space without 
   await page.evaluate(() => (window as any).panes.forEach((pane: any) => pane.dispose()));
   assert.deepEqual(errors, []);
 });
+
+test('a pane keeps one answer window open across a questionnaire and closes it when the worker moves on', { skip: status.installed ? false : `Chromium is not installed in ${status.path}` }, async (t) => {
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const context = await newIsolatedContext(browser, { viewport: { width: 1280, height: 860 } });
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const bundle = buildSync({
+    stdin: { contents: "export { createPane } from './dashboard-pane'; export { store } from './state';", resolveDir: fileURLToPath(new URL('../src/client', import.meta.url)) },
+    bundle: true,
+    format: 'iife',
+    globalName: 'PaneUI',
+    write: false,
+    target: 'es2022',
+  }).outputFiles[0].text;
+  const captured = JSON.parse(readFileSync(FIXTURE, 'utf8')).cases.find((example: { name: string }) => example.name === 'reported_release_turn');
+  // Screens as Droid's AskUser draws them, ending with the captured review.
+  const screens = {
+    first: ['  Ask User', '  Which hypervisor should we use?', '', '  1. UTM', '  2. Parallels', '  Or type your own answer...', '', '  Space/Enter/1-9 Select'],
+    second: ['  Ask User', '  Which Windows licence should we use?', '', '  1. Evaluation', '  2. Retail', '  Or type your own answer...', '', '  Space/Enter/1-9 Select'],
+    third: ['  Ask User', '  How should agents connect?', '', '  1. SSH', '  2. RDP', '  Or type your own answer...', '', '  Space/Enter/1-9 Select'],
+    review: readFileSync(new URL('../android/app/src/test/resources/askuser-1.7.1-review.txt', import.meta.url), 'utf8').split('\n'),
+  };
+  await page.setContent('<!doctype html><div id="dashboard"><div class="dash-workspace"></div></div><div id="modal-root"></div>');
+  await page.addStyleTag({ content: readFileSync(new URL('../src/client/style.css', import.meta.url), 'utf8') });
+  await page.addStyleTag({ content: '.dash-workspace { position: relative; height: 700px; } .dash-pane { top: 0; left: 0; width: 100%; height: 100%; transition: none; animation: none; }' });
+  await page.addScriptTag({ content: bundle });
+  await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
+  await page.evaluate(
+    ({ captured, screens }) => {
+      const w = window as any;
+      w.screens = screens;
+      w.worker = {
+        id: 'pixel',
+        name: 'Pixel',
+        color: '#89d9ed',
+        kind: 'agent',
+        status: 'needs_input',
+        sessionId: 'captured',
+        acked: true,
+        ask: {
+          kind: 'question',
+          questions: [
+            { question: 'Which hypervisor should we use?', topic: 'Hypervisor', options: ['UTM', 'Parallels'], multiSelect: false },
+            { question: 'Which Windows licence should we use?', topic: 'Windows-licence', options: ['Evaluation', 'Retail'], multiSelect: false },
+            { question: 'How should agents connect?', topic: 'Agent-access', options: ['SSH', 'RDP'], multiSelect: false },
+          ],
+        },
+      };
+      w.PaneUI.store.workers.set('pixel', w.worker);
+      w.show = (name: string | undefined) => {
+        if (name) {
+          const lines = w.screens[name];
+          w.PaneUI.store.screens.set('pixel', { cols: 100, rows: lines.length, lines: lines.map((line: string) => [[line, -1, -1, 0]]) });
+        } else w.PaneUI.store.screens.delete('pixel');
+        w.pane.paintQuestion();
+      };
+      w.actions = [];
+      const listeners = new Set<(msg: any) => void>();
+      const net = {
+        send(msg: any) {
+          if (msg.t === 'thread.read')
+            queueMicrotask(() => {
+              for (const receive of listeners)
+                receive({ t: 'thread.snapshot', workerId: msg.workerId, request: msg.request, sessionId: 'captured', entries: captured.entries, hasMore: false, presentation: { version: 1, rows: captured.expected } });
+            });
+          return true;
+        },
+        onMessage(receive: (msg: any) => void) {
+          listeners.add(receive);
+          return () => listeners.delete(receive);
+        },
+      };
+      w.pane = w.PaneUI.createPane(
+        {
+          net,
+          live: () => true,
+          floor: () => 'floor',
+          busy: () => false,
+          usable: () => true,
+          read: () => '',
+          remember() {},
+          setView() {},
+          action: async (msg: any) => {
+            w.actions.push(msg);
+          },
+          mission: () => undefined,
+          worker: (id: string) => (id === 'pixel' ? w.worker : undefined),
+          focus() {},
+        },
+        0,
+      );
+      document.querySelector('.dash-workspace')!.append(w.pane.el);
+      w.paint = () => w.pane.update({ worker: w.worker, view: 'thread', focused: true, maximized: false, canMaximize: false, covered: false, candidates: [], anyone: true, takeFocus: false });
+      w.show('first');
+      w.paint();
+    },
+    { captured, screens },
+  );
+  const workspace = page.locator('.question-workspace');
+  const question = () => workspace.locator('.qw-question').textContent();
+  const states = () => workspace.locator('.qw-step').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-state')));
+  const show = (name?: string) => page.evaluate((name) => (window as any).show(name), name);
+  await page.getByRole('button', { name: 'Answer questions' }).click();
+  assert.equal(await question(), 'Which hypervisor should we use?');
+  assert.deepEqual(await states(), ['current', 'upcoming', 'upcoming', 'upcoming']);
+
+  // Answered in the terminal before the owner started: the window follows to the next question.
+  await show('second');
+  assert.equal(await question(), 'Which Windows licence should we use?');
+  assert.deepEqual(await states(), ['done', 'current', 'upcoming', 'upcoming']);
+  assert.equal(await workspace.getByRole('button', { name: 'Show current question' }).isVisible(), false);
+
+  // A started draft is never swapped for another question without the owner's say.
+  await workspace.locator('input[value="2"]').check();
+  await show('third');
+  assert.equal(await question(), 'Which Windows licence should we use?');
+  assert.match((await workspace.locator('.qw-feedback').textContent()) ?? '', /changed or was answered elsewhere/);
+  await workspace.getByRole('button', { name: 'Show current question' }).click();
+  assert.equal(await question(), 'How should agents connect?');
+  assert.equal(await workspace.locator('input[value="2"]').isChecked(), false, 'the earlier draft does not carry over');
+
+  await workspace.locator('input[value="1"]').check();
+  await workspace.getByRole('button', { name: 'Submit and continue' }).click();
+  await page.waitForFunction(() => (window as any).actions.length === 1);
+  const sent = await page.evaluate(() => (window as any).actions[0]);
+  assert.equal(sent.t, 'worker.answer');
+  assert.equal(sent.choice, 1);
+  assert.equal(sent.menu.question, 'How should agents connect?');
+  await page.waitForFunction(() => document.querySelector('.qw-feedback')?.textContent === 'Answer sent. Opening the review…');
+  assert.equal(await workspace.locator('.qw-step').nth(2).locator('.qw-step-answer').textContent(), 'SSH');
+
+  await show('review');
+  assert.equal(await workspace.locator('.qw-question').textContent(), 'Review your answers');
+  assert.deepEqual(await states(), ['done', 'done', 'done', 'current']);
+  await workspace.getByRole('button', { name: 'Submit answers', exact: true }).click();
+  await page.waitForFunction(() => (window as any).actions.length === 2);
+  assert.equal(await page.evaluate(() => (window as any).actions[1].menu.review.length), 6);
+  assert.equal(await workspace.count(), 1, 'one window served the whole questionnaire');
+
+  // The worker moves on: the window says so, then closes by itself.
+  await page.evaluate(() => {
+    const w = window as any;
+    w.worker = { ...w.worker, status: 'working', ask: undefined };
+    w.PaneUI.store.workers.set('pixel', w.worker);
+    w.show(undefined);
+    w.paint();
+  });
+  await workspace.waitFor({ state: 'detached', timeout: 6000 });
+  assert.deepEqual(errors, []);
+});
