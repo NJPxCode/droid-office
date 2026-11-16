@@ -908,7 +908,8 @@ test('cloud feature: an AskUser answered elsewhere, or with the relay down, is n
 });
 
 test('cloud ask: checkbox answers join their labels and a typed one; malformed requests are not shown', () => {
-  const ask = cloudAsk('request', { toolCallId: 'call', questions: [{ index: 1, topic: 'Areas', question: 'Which flows?', options: ['Single', 'Multiple'], multiSelect: true }] })!;
+  const ask = cloudAsk('request', { toolCallId: 'call', questions: [{ index: 1, header: 'Areas', question: 'Which flows?', options: ['Single', 'Multiple'], multiSelect: true }] })!;
+  assert.equal(ask.questions[0].topic, 'Areas');
   const menu = askMenu(ask.questions[0]);
   assert.equal(menu.multiSelect, true);
   assert.deepEqual(askAnswer(menu, menu, { choices: [2, 1], text: 'Review' }), { answer: 'Single, Multiple, Review' });
