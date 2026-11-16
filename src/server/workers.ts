@@ -900,10 +900,10 @@ export class WorkerManager {
     if (!lead) return prompt;
     const wt = w.info.worktree;
     const where = wt
-      ? `You work in your own git worktree, ${path.join(this.dir, wt.path)}, on the branch ${wt.branch} made for this task from ${wt.from ?? wt.base.slice(0, 7)}: commit your work there.`
+      ? `Your session starts in your own git worktree, ${path.join(this.dir, wt.path)}, on the branch ${wt.branch} made for this task from ${wt.from ?? wt.base.slice(0, 7)}.`
       : this.plain
-        ? "You work in the floor's folder, which isn't a git checkout and which other people and workers use too: don't undo or overwrite anyone else's files."
-        : "You work in the project's main checkout, which other people and workers use too: don't switch branches, stash, reset or commit in it unless your task says to.";
+        ? "Your session starts in the floor's folder, which isn't a git checkout and which other people and workers use too: don't undo or overwrite anyone else's files."
+        : "Your session starts in the project's main checkout, which other people and workers use too: don't switch branches, stash, reset or commit in it unless your task says to.";
     const template = this.prompts?.text('subagent.brief') ?? PROMPTS['subagent.brief'].text;
     const brief = officePrompt(this.prompts, 'subagent.brief', { name: w.info.name, lead: lead.name, where, ...forgeVars(this.forge), ...workerMessageVars(prompt) });
     const taskBrief = placeholders(template).includes('text') ? brief : `${brief}\n\n${prompt}`;

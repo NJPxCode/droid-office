@@ -20,6 +20,7 @@ import {
   pullPromptVars,
   shipPromptVars,
   withoutReminders,
+  workerBranchPolicy,
   workerMessageVars,
 } from '../src/shared/prompts.js';
 import { buildingInstructions } from '../src/server/office-mcp/remote.js';
@@ -379,4 +380,12 @@ test("each audience is told once to send workers home and to weigh a subscriptio
     assert.equal(count(text, /never prompt, interrupt, answer or send home/g), 1, 'the rule about building agents is kept once');
     assert.equal(count(text, /worktrees, branches and cloud sessions/g), 1, 'the rule about keeping worktrees is kept once');
   }
+});
+
+test('worker prompts do not confine workers to their starting checkout or workspace folders', () => {
+  const policy = workerBranchPolicy('main', '/repo/.droid-office/floor-branch.json');
+  const system = fillPrompt(PROMPTS['worker.system'].text, { name: 'Sprocket', team: WORKER_TEAM_LEAD, visits: WORKER_VISITS, branchPolicy: policy });
+  assert.doesNotMatch(system, /Work in the checkout/i);
+  assert.match(policy, /owner's base for new work in this repository/);
+  assert.doesNotMatch(PROMPTS['worker.repos'].text, /Make every change inside these folders/i);
 });
