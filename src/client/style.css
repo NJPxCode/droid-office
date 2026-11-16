@@ -3879,6 +3879,7 @@ button.wt-setting:hover { background: var(--surface-hover); color: var(--text); 
 .wt-recent-item { display: block; width: 100%; padding: var(--space-2); overflow: hidden; border: 0; border-radius: var(--radius-xs); background: transparent; color: var(--text); font: 400 13px/20px var(--font-sans); text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .wt-recent-item:hover, .wt-recent-item[aria-selected='true'] { background: var(--surface-hover); }
 
+.wt-stream { max-width: var(--wt-measure); margin: var(--space-5) auto 0; }
 .wt-stream-copy { color: var(--text); font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
 .wt-stream-copy p { margin: 0 0 var(--space-2); }
 .wt-live-tool { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); min-height: 30px; color: var(--text-secondary); font-size: 13px; }
