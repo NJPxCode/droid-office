@@ -112,6 +112,8 @@ export interface KittyEncodeOpts {
   csiEnter?: boolean;
   /** DECSET 1 (`DECCKM`) application cursor mode for unmodified arrow/home/end keys. */
   appCursor?: boolean;
+  /** macOS with Option not used as Meta: Option+key types the character the layout gives it (`@`, `€`) rather than sending Alt+key. */
+  optionTypes?: boolean;
 }
 
 /** Functional keys encoded as `CSI <number> ; <mod> u` (or `CSI <number> u`). */
@@ -353,6 +355,10 @@ export function encodeKittyKey(e: KittyKeyEvent, flags: number, opts: KittyEncod
 
   // 4. Printable / text keys (`e.key` is a single Unicode grapheme/codepoint, e.g. 'a', 'A', '!', ' ', 'é').
   const cps = [...e.key];
+  if (cps.length === 1 && opts.optionTypes && e.altKey && !e.ctrlKey && !e.metaKey) {
+    // The character Option made is the key, as if typed on its own; `code` would name the physical key instead.
+    return encodeKittyKey({ ...e, altKey: false, code: undefined }, flags, opts);
+  }
   if (cps.length === 1) {
     const actualCp = cps[0].codePointAt(0)!;
     // Plain typing (no Ctrl/Alt, press event, REPORT_ALL off): let xterm/IME emit UTF-8 text normally,
