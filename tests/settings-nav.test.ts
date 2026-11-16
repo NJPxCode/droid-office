@@ -2,18 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SETTINGS_CARDS, SETTINGS_PANES, initialSettingsPane, resolveSettingsPane, searchSettings, settingsCards, settingsPaneAfter, settingsPanes, type SettingsPane } from '../src/shared/settings-nav.js';
 
-test('settings has the ten categories, grouped Personal / Workers / Office, in order', () => {
+test('settings has the eleven categories, grouped Personal / Workers / Office, in order', () => {
   assert.deepEqual(
     SETTINGS_PANES.map((p) => p.label),
-    ['You', 'Sound & alerts', 'Display', 'Workers', 'Models', 'Subagents & visits', 'Orchestrator', 'Connections', 'Office & floors', 'Phone & web'],
+    ['You', 'Sound & alerts', 'Display', 'Thread', 'Workers', 'Models', 'Subagents & visits', 'Orchestrator', 'Connections', 'Office & floors', 'Phone & web'],
   );
   assert.deepEqual(
     SETTINGS_PANES.map((p) => p.id),
-    ['you', 'sound', 'graphics', 'workers', 'models', 'subagents', 'orchestrator', 'connections', 'office', 'phone'],
+    ['you', 'sound', 'graphics', 'thread', 'workers', 'models', 'subagents', 'orchestrator', 'connections', 'office', 'phone'],
   );
   assert.deepEqual(
     SETTINGS_PANES.map((p) => p.section),
-    ['Personal', 'Personal', 'Personal', 'Workers', 'Workers', 'Workers', 'Workers', 'Office', 'Office', 'Office'],
+    ['Personal', 'Personal', 'Personal', 'Personal', 'Workers', 'Workers', 'Workers', 'Workers', 'Office', 'Office', 'Office'],
   );
   for (const pane of SETTINGS_PANES) {
     assert.ok(pane.scope, `${pane.id} says who it applies to`);
@@ -40,6 +40,14 @@ test('every setting is in a category', () => {
     ['Frame rate limit', 'graphics'],
     ['Overhead lights', 'graphics'],
     ['Performance overlay', 'graphics'],
+    ['Text size', 'thread'],
+    ['Font', 'thread'],
+    ['Spacing', 'thread'],
+    ['Column width', 'thread'],
+    ['Work between replies', 'thread'],
+    ['Tool calls', 'thread'],
+    ['Thinking', 'thread'],
+    ['Restore Thread defaults', 'thread'],
     ['Worker labels', 'workers'],
     ['Where fresh workers start', 'workers'],
     ['Prompts', 'workers'],
@@ -154,9 +162,10 @@ test('arrow keys move between categories and wrap, Home and End jump', () => {
   assert.equal(settingsPaneAfter('phone', 'ArrowDown'), 'you');
   assert.equal(settingsPaneAfter('connections', 'ArrowDown'), 'office');
   assert.equal(settingsPaneAfter('office', 'ArrowDown'), 'phone');
-  assert.equal(settingsPaneAfter('workers', 'ArrowUp'), 'graphics');
+  assert.equal(settingsPaneAfter('workers', 'ArrowUp'), 'thread');
   assert.equal(settingsPaneAfter('sound', 'ArrowDown'), 'graphics');
-  assert.equal(settingsPaneAfter('graphics', 'ArrowDown'), 'workers');
+  assert.equal(settingsPaneAfter('graphics', 'ArrowDown'), 'thread');
+  assert.equal(settingsPaneAfter('thread', 'ArrowDown'), 'workers');
   assert.equal(settingsPaneAfter('sound', 'Home'), 'you');
   assert.equal(settingsPaneAfter('sound', 'End'), 'phone');
   assert.equal(settingsPaneAfter('you', 'Enter'), null);
@@ -171,11 +180,11 @@ test('the companions leave out what only the 3D office has, and only the Mac app
   );
   assert.deepEqual(
     settingsPanes('companion').map((p) => p.label),
-    ['Workers', 'Models', 'Subagents & visits', 'Orchestrator', 'Connections', 'Office & floors'],
+    ['Thread', 'Workers', 'Models', 'Subagents & visits', 'Orchestrator', 'Connections', 'Office & floors'],
   );
   assert.deepEqual(
     settingsPanes('mac-companion').map((p) => p.label),
-    ['Workers', 'Models', 'Subagents & visits', 'Orchestrator', 'Connections', 'Office & floors', 'Phone & web'],
+    ['Thread', 'Workers', 'Models', 'Subagents & visits', 'Orchestrator', 'Connections', 'Office & floors', 'Phone & web'],
   );
   const officeOnly = [
     'Your character',
@@ -217,7 +226,8 @@ test('the companions leave out what only the 3D office has, and only the Mac app
     titles('mac-companion'),
     SETTINGS_CARDS.map((c) => c.title as string).filter((t) => !officeOnly.includes(t)),
   );
-  for (const kept of ['Workspace folder', 'Host desktop app', 'Droid', 'Factory API key', 'Gemini Decisions API', 'DroidProxy', 'Worktree setup', 'Default worker']) assert.ok(titles('companion').includes(kept), kept);
+  for (const kept of ['Text size', 'Tool calls', 'Restore Thread defaults', 'Workspace folder', 'Host desktop app', 'Droid', 'Factory API key', 'Gemini Decisions API', 'DroidProxy', 'Worktree setup', 'Default worker'])
+    assert.ok(titles('companion').includes(kept), kept);
 });
 
 test('a companion’s blurbs only promise what it shows', () => {
@@ -241,11 +251,12 @@ test('a companion’s search and arrow keys stay among its own settings', () => 
   assert.deepEqual(searchSettings('openclaw', 'mac-companion'), [{ pane: 'phone', title: 'Tailscale MCP' }]);
   assert.deepEqual(searchSettings('office mcp', 'companion'), [{ pane: 'subagents', title: 'Office MCP' }]);
 
-  assert.equal(settingsPaneAfter('workers', 'ArrowUp', 'companion'), 'office');
-  assert.equal(settingsPaneAfter('office', 'ArrowDown', 'companion'), 'workers');
+  assert.equal(settingsPaneAfter('workers', 'ArrowUp', 'companion'), 'thread');
+  assert.equal(settingsPaneAfter('thread', 'ArrowUp', 'companion'), 'office');
+  assert.equal(settingsPaneAfter('office', 'ArrowDown', 'companion'), 'thread');
   assert.equal(settingsPaneAfter('office', 'ArrowDown', 'mac-companion'), 'phone');
-  assert.equal(settingsPaneAfter('phone', 'ArrowDown', 'mac-companion'), 'workers');
-  assert.equal(settingsPaneAfter('models', 'Home', 'companion'), 'workers');
+  assert.equal(settingsPaneAfter('phone', 'ArrowDown', 'mac-companion'), 'thread');
+  assert.equal(settingsPaneAfter('models', 'Home', 'companion'), 'thread');
   assert.equal(settingsPaneAfter('models', 'End', 'companion'), 'office');
   assert.equal(settingsPaneAfter('models', 'End', 'mac-companion'), 'phone');
   assert.equal(settingsPaneAfter('you', 'ArrowDown', 'companion'), null, 'a pane the surface lacks moves nowhere');
@@ -262,7 +273,7 @@ test('initialSettingsPane selects focusCard’s registered pane before first or 
   // When focusCard is not offered on the surface (e.g. Linear on web companion), falls back cleanly to first -> remembered -> first pane.
   assert.equal(initialSettingsPane({ surface: 'companion', first: 'models', focusCard: 'Linear', remembered: 'office' }), 'models');
   assert.equal(initialSettingsPane({ surface: 'companion', focusCard: 'Linear', remembered: 'office' }), 'office');
-  assert.equal(initialSettingsPane({ surface: 'companion', focusCard: 'Linear', remembered: 'you' }), 'workers');
+  assert.equal(initialSettingsPane({ surface: 'companion', focusCard: 'Linear', remembered: 'you' }), 'thread');
 
   // Without focusCard, preserves first -> remembered -> surface's first pane.
   assert.equal(initialSettingsPane({ surface: 'office', first: 'graphics', remembered: 'you' }), 'graphics');

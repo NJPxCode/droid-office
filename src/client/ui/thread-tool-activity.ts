@@ -24,8 +24,10 @@ export interface ThreadLiveToolView {
 }
 
 export interface ThreadActivityContext extends ThreadCardRenderContext {
-  /** The shell's thinking block for a thought. */
-  thought: (block: ThoughtBlock, entry: ThreadEntry | undefined) => HTMLElement;
+  /** The shell's thinking block for a thought, or null when the owner hides thinking. */
+  thought: (block: ThoughtBlock, entry: ThreadEntry | undefined) => HTMLElement | null;
+  /** Tool rows and summary groups start open (the owner's Tool calls choice); a row they opened or closed by hand still wins. */
+  toolsOpen?: boolean;
   /** The live overlay for a canonical tool id, while it runs. */
   live?: (id: string) => ThreadLiveToolView | undefined;
 }
@@ -165,7 +167,7 @@ function executeRow(action: ThreadModelAction, entry: ThreadEntry | undefined, c
     id: action.id,
     scope: ctx.owner.id,
     toggles: ctx.userToggles,
-    open: false,
+    open: !!ctx.toolsOpen,
     onLayoutChange: ctx.onLayoutChange,
     icon: 'terminal',
     verb: nested ? 'Ran' : '',
@@ -245,7 +247,7 @@ function deliverableActions(relPath: string, ctx: ThreadActivityContext): HTMLEl
 
 function changeRows(action: ThreadModelAction, entry: ThreadEntry | undefined, ctx: ThreadActivityContext, rowLive: boolean, nested: boolean): HTMLElement[] {
   const state = rowState(action, rowLive, ctx.live?.(action.id));
-  const base = { scope: ctx.owner.id, toggles: ctx.userToggles, open: false, onLayoutChange: ctx.onLayoutChange, state, chip: true, hideFailedWhenOpen: true, dense: nested, testId: 'change-row' } as const;
+  const base = { scope: ctx.owner.id, toggles: ctx.userToggles, open: !!ctx.toolsOpen, onLayoutChange: ctx.onLayoutChange, state, chip: true, hideFailedWhenOpen: true, dense: nested, testId: 'change-row' } as const;
   const changes = action.changes ?? [];
   if (!changes.length) {
     return [toolRow({ ...base, id: action.id, icon: action.icon ?? 'edit', verb: action.verb || action.title, subject: action.subject ?? action.detail, failedLabel: action.failedLabel, body: () => changeBody(undefined, action, entry) })];
@@ -299,7 +301,7 @@ function taskRow(action: ThreadModelAction, entry: ThreadEntry | undefined, ctx:
     id: action.id,
     scope: ctx.owner.id,
     toggles: ctx.userToggles,
-    open: false,
+    open: !!ctx.toolsOpen,
     onLayoutChange: ctx.onLayoutChange,
     icon: 'bot',
     verb: action.verb || delegation.agent,
@@ -322,7 +324,7 @@ function genericRow(action: ThreadModelAction, entry: ThreadEntry | undefined, c
     id: action.id,
     scope: ctx.owner.id,
     toggles: ctx.userToggles,
-    open: false,
+    open: !!ctx.toolsOpen,
     onLayoutChange: ctx.onLayoutChange,
     icon: action.icon ?? 'tool',
     verb: action.verb ?? action.title,
@@ -392,7 +394,8 @@ export function renderThreadActivity(node: HTMLElement, row: ActivityRow, loaded
   for (const segment of row.segments ?? plainSegments(row.blocks)) {
     if (segment.kind === 'thought') {
       const block = blocks.get(segment.blockId);
-      if (block?.kind === 'thought') node.append(ctx.thought(block, loaded.get(block.id)));
+      const thought = block?.kind === 'thought' ? ctx.thought(block, loaded.get(block.id)) : null;
+      if (thought) node.append(thought);
       continue;
     }
     if (segment.kind === 'tool') {
@@ -400,14 +403,16 @@ export function renderThreadActivity(node: HTMLElement, row: ActivityRow, loaded
       continue;
     }
     const live = segment.live && rowLive;
-    const group = { id: segment.id, scope: ctx.owner.id, toggles: ctx.userToggles, open: segment.open && !asking, onLayoutChange: ctx.onLayoutChange, live };
+    const group = { id: segment.id, scope: ctx.owner.id, toggles: ctx.userToggles, open: (segment.open || !!ctx.toolsOpen) && !asking, onLayoutChange: ctx.onLayoutChange, live };
     if (segment.kind === 'explore') {
       const ids = new Set(segment.actionIds);
       const rows: Node[] = [];
       for (const blockId of segment.blockIds) {
         const block = blocks.get(blockId);
-        if (block?.kind === 'thought') rows.push(ctx.thought(block, loaded.get(block.id)));
-        else if (block) for (const action of block.actions) if (ids.has(action.id)) rows.push(exploreRow(action, loaded.get(action.id), ctx, row.live));
+        if (block?.kind === 'thought') {
+          const thought = ctx.thought(block, loaded.get(block.id));
+          if (thought) rows.push(thought);
+        } else if (block) for (const action of block.actions) if (ids.has(action.id)) rows.push(exploreRow(action, loaded.get(action.id), ctx, row.live));
       }
       const providers = segment.providers?.length
         ? h('span.wt-sg-providers', {}, ...segment.providers.slice(0, 3).map((provider) => h('span.wt-sg-provider', { title: provider }, toolGlyph(provider.toLowerCase().includes('memory') ? 'memory' : 'tool', 14))))
