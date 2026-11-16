@@ -15,10 +15,14 @@ import {
 import { THEME } from '../android/app/src/main/assets/terminal/theme.js';
 import { TERM_THEME } from '../src/client/world/laptop.js';
 import { decodeBase64, decodePlaceholderCell, KITTY_CELL_PX_H, KITTY_CELL_PX_W, KITTY_DIACRITICS, KITTY_PLACEHOLDER_CHAR } from '../src/shared/kitty.js';
-import { vendoredPaths } from '../tools/android-terminal.mjs';
+import { builtFiles, vendoredPaths } from '../tools/android-terminal.mjs';
 
 test("the phone's vendored xterm.js matches the installed packages (node tools/android-terminal.mjs)", () => {
   for (const [from, to] of vendoredPaths()) assert.ok(readFileSync(from).equals(readFileSync(to)), `${to} is stale: run node tools/android-terminal.mjs`);
+});
+
+test("the phone's pixel scroller is built from the office terminal's (node tools/android-terminal.mjs)", () => {
+  for (const [to, text] of builtFiles()) assert.equal(readFileSync(to, 'utf8'), text, `${to} is stale: run node tools/android-terminal.mjs`);
 });
 
 test("the phone's terminal colours are the office's", () => {
@@ -118,6 +122,10 @@ test('hitTestKittyTap maps scaled Desktop and Phone terminal taps to the topmost
   assert.equal(hitTestKittyTap(rects, grid, 80, 20, 8 + 9 * 4, 8 + 4 * 8)?.imageId, 22, 'higher z placement wins');
   assert.equal(hitTestKittyTap(rects, grid, 80, 20, 8 + 20 * 4, 8 + 3 * 8), null, 'cell outside placement');
   assert.equal(hitTestKittyTap(rects, grid, 80, 20, 4, 20), null, 'tap in outer padding misses grid');
+  const above = [{ imageId: 33, placementId: 0, x: 0, y: -1, cols: 4, rows: 2, z: 0 }];
+  assert.equal(hitTestKittyTap(above, grid, 80, 20, 8 + 4, 8 - 4, 1)?.imageId, 33, 'the part-shown row above the grid');
+  assert.equal(hitTestKittyTap(above, grid, 80, 20, 8 + 4, 8 - 4), null, 'no row above the grid while it sits on whole rows');
+  assert.equal(hitTestKittyTap(above, grid, 80, 20, 8 + 4, 8 - 12, 1), null, 'nothing past the one extra row');
 });
 
 test("the phone's Kitty graphics and keyboard helpers match src/shared/kitty.ts", () => {

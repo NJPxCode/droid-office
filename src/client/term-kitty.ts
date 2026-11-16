@@ -20,6 +20,7 @@ import {
 } from '../shared/kitty';
 import type { KeyAction } from '../shared/csi-enter';
 import type { ScreenImage } from '../shared/protocol';
+import { pixelScrollOf } from './term-pixel-scroll';
 import { icon } from './ui/icons';
 
 const ALT_BUFFER_MODES = [47, 1047, 1049];
@@ -338,6 +339,8 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
   let expandBtn: HTMLButtonElement | null = null;
   let cleanupScreenListeners: (() => void) | null = null;
   let screenEl: HTMLElement | null = null;
+  /** The screen's clipping box: past the screen's edges it is what the pointer is over in a part-shown row. */
+  let pointerEl: HTMLElement | null = null;
   let drawnRects: DrawnKittyRect[] = [];
   let hoveredHit: { imageId: number; placementId: number } | null = null;
   let pointerClient: { x: number; y: number } | null = null;
@@ -357,6 +360,7 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
     if (!screenEl) return;
     const clickable = !!opts.onExpandImage && !!hoveredHit && !overExpandBtn && (isNormalKittyShell(shellState()) || modHeld);
     screenEl.classList.toggle('term-kitty-clickable', clickable);
+    pointerEl?.classList.toggle('term-kitty-clickable', clickable);
   };
 
   const hideHover = () => {
@@ -394,6 +398,11 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
     }
   };
 
+  const paintNow = () => {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = 0;
+    paintOverlay();
+  };
   const schedulePaint = () => {
     if (disposed || !canvas || rafId) return;
     rafId = requestAnimationFrame(() => {
@@ -497,14 +506,18 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
     return undefined;
   };
 
-  const collectViewportRects = (): { rects: CoalescedRect[]; mutated: boolean } => {
+  /** Rows drawn past each edge of the screen: the one a pixel scroll part-shows above and below. */
+  const extraRows = () => (pixelScrollOf(term)?.drawsExtraRows() ? 1 : 0);
+
+  const collectViewportRects = (extra: number): { rects: CoalescedRect[]; mutated: boolean } => {
     const buf = term.buffer.active;
     const rects: CoalescedRect[] = [];
     const active = new Map<string, CoalescedRect>();
     let mutated = false;
 
-    for (let y = 0; y < term.rows; y++) {
-      const { mutated: lineMut, map } = extractLinePlaceholders(term, buf.viewportY + y, linePlaceholders);
+    for (let y = -extra; y < term.rows + extra; y++) {
+      const line = buf.viewportY + y;
+      const { mutated: lineMut, map } = line >= 0 ? extractLinePlaceholders(term, line, linePlaceholders) : { mutated: false, map: undefined };
       if (lineMut) mutated = true;
       const nextActive = new Map<string, CoalescedRect>();
       if (map) {
@@ -559,9 +572,9 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
           continue;
         }
         const yRel = p.marker.line - buf.viewportY;
-        if (yRel + p.rows <= 0 || yRel >= term.rows) continue;
-        const visY0 = Math.max(0, yRel);
-        const visY1 = Math.min(term.rows, yRel + p.rows);
+        if (yRel + p.rows <= -extra || yRel >= term.rows + extra) continue;
+        const visY0 = Math.max(-extra, yRel);
+        const visY1 = Math.min(term.rows + extra, yRel + p.rows);
         rects.push({
           imageId: p.imageId,
           placementId: p.placementId,
@@ -602,9 +615,11 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
   const hitAtClient = (clientX: number, clientY: number): DrawnKittyRect | undefined => {
     if (!screenEl || !drawnRects.length) return undefined;
     const r = screenEl.getBoundingClientRect();
+    // Part of the row above or below the screen shows inside the clipping box while it sits between rows.
+    const box = extraRows() && pointerEl ? pointerEl.getBoundingClientRect() : r;
+    if (clientX < r.left || clientX >= r.right || clientY < box.top || clientY >= box.bottom) return undefined;
     const px = clientX - r.left;
     const py = clientY - r.top;
-    if (px < 0 || py < 0 || px >= r.width || py >= r.height) return undefined;
     const hit = hitTestKittyRect(drawnRects, px, py);
     if (!hit || !graphics.get(hit.imageId) || !decoded.get(hit.imageId)?.root) return undefined;
     return hit;
@@ -670,21 +685,26 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
     if (disposed || !canvas || !ctx || !screenEl) return;
     const geom = cellGeometry();
     if (!geom) return;
-    const { rects, mutated } = collectViewportRects();
+    const extra = extraRows();
+    const { rects, mutated } = collectViewportRects(extra);
     if (mutated) term.refresh(0, term.rows - 1);
     pruneDecoded();
     const visibleRects = graphics.size > 0 ? rects : [];
     const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    // The canvas reaches a row past each edge; drawing stays in screen coordinates.
+    const pad = extra * geom.cellH;
+    const cssH = geom.cssH + 2 * pad;
     const devW = Math.max(1, Math.round(geom.cssW * dpr));
-    const devH = Math.max(1, Math.round(geom.cssH * dpr));
+    const devH = Math.max(1, Math.round(cssH * dpr));
     if (canvas.width !== devW || canvas.height !== devH) {
       canvas.width = devW;
       canvas.height = devH;
       canvas.style.width = `${geom.cssW}px`;
-      canvas.style.height = `${geom.cssH}px`;
+      canvas.style.height = `${cssH}px`;
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, geom.cssW, geom.cssH);
+    canvas.style.top = `${-pad}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, pad * dpr);
+    ctx.clearRect(0, -pad, geom.cssW, cssH);
     drawnRects = [];
     if (!visibleRects.length) {
       syncHoverAfterPaint();
@@ -864,6 +884,8 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
     cleanupScreenListeners?.();
     cleanupScreenListeners = null;
     screenEl = term.element?.querySelector<HTMLElement>('.xterm-screen') ?? parent;
+    const clip = screenEl.parentElement;
+    pointerEl = clip?.classList.contains('xterm-scrollable-element') ? clip : screenEl;
     canvas?.remove();
     expandBtn?.remove();
     const c = document.createElement('canvas');
@@ -906,12 +928,14 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
 
       let pendingPress: { imageId: number; x: number; y: number; mod: boolean; hadSelection: boolean } | null = null;
       let swallowNextClick = false;
-      const targetEl = screenEl;
+      const targetEl = pointerEl ?? screenEl;
+      const onScrollbar = (e: Event) => !!(e.target as Element | null)?.closest?.('.scrollbar');
 
       const onMouseMove = (e: MouseEvent) => {
         modHeld = e.metaKey || e.ctrlKey;
         pointerClient = { x: e.clientX, y: e.clientY };
         if (btn.contains(e.target as Node)) return;
+        if (onScrollbar(e)) return hideHover();
         syncHoverAt(e.clientX, e.clientY);
       };
       const onMouseLeave = () => {
@@ -920,7 +944,7 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
         hideHover();
       };
       const onMouseDown = (e: MouseEvent) => {
-        if (btn.contains(e.target as Node)) return;
+        if (btn.contains(e.target as Node) || onScrollbar(e)) return;
         swallowNextClick = false;
         modHeld = e.metaKey || e.ctrlKey;
         const hit = hitAtClient(e.clientX, e.clientY);
@@ -1051,7 +1075,8 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
       scannedLength = buf.length;
       schedulePaint();
     }),
-    term.onRender(() => schedulePaint()),
+    // Painted in the frame xterm drew its rows in, so images move with their rows when it scrolls.
+    term.onRender(() => paintNow()),
     term.onScroll(() => schedulePaint()),
     term.onResize(() => schedulePaint()),
   ];
@@ -1075,7 +1100,9 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
     canvas = null;
     ctx = null;
     screenEl?.classList.remove('term-kitty-clickable');
+    pointerEl?.classList.remove('term-kitty-clickable');
     screenEl = null;
+    pointerEl = null;
   };
 
   const origDispose = term.dispose.bind(term);
