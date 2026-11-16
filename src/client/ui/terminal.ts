@@ -6,7 +6,7 @@ import type { Net } from '../net';
 import { store } from '../state';
 import { withToken } from '../token';
 import { TERM_THEME } from '../term-theme';
-import { suppressMirrorQueries, TerminalMirror } from '../term-mirror';
+import { focusReports, suppressMirrorQueries, TerminalMirror } from '../term-mirror';
 import { h, hintToast, openModal, STATUS_LABEL, toast, type Modal } from './dom';
 import { colorDot } from './kit';
 import { OFFICE_SHELL_ID } from '../../shared/office-shell';
@@ -299,6 +299,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   });
 
   const offQueries = suppressMirrorQueries(term);
+  const focus = focusReports();
   let lastSentSize = '';
   let lastPtySize = '';
   const pendingSizes: string[] = [];
@@ -412,6 +413,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     term,
     (snapshot) => {
       adoptSharedSize = snapshot.shared ?? adoptSharedSize;
+      focus.reset();
       lastSentSize = '';
       pendingSizes.length = 0;
       term.options.disableStdin = !net.up;
@@ -616,7 +618,10 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   });
   term.onData((data) => {
     if (!mirror.ready || !net.up) return;
-    sendSize(true);
+    const kind = focus.classify(data);
+    if (kind === 'repeat') return;
+    // Focus moving is not typing, so it leaves the shared PTY at its size.
+    if (kind === 'input') sendSize(true);
     net.send({ t: 'term.input', workerId, data });
   });
 
@@ -768,6 +773,7 @@ export function openOfficeShell(net: Net) {
   let box: { width: number; height: number } | undefined;
   let boxChanged = false;
   const offQueries = suppressMirrorQueries(term);
+  const focus = focusReports();
   let mirror: TerminalMirror | undefined;
 
   const sendSize = (typing = false) => {
@@ -798,6 +804,7 @@ export function openOfficeShell(net: Net) {
     term,
     (snapshot) => {
       shared = snapshot.shared === true;
+      focus.reset();
       ptyCols = snapshot.cols;
       ptyRows = snapshot.rows;
       lastSentSize = '';
@@ -904,7 +911,10 @@ export function openOfficeShell(net: Net) {
     return false;
   });
   term.onData((data) => {
-    sendSize(true);
+    if (!mirror?.ready || !net.up) return;
+    const kind = focus.classify(data);
+    if (kind === 'repeat') return;
+    if (kind === 'input') sendSize(true);
     net.send({ t: 'shell.input', data });
   });
 

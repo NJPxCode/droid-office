@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { TerminalMirror } from '../src/client/term-mirror.js';
+import { focusReports, TerminalMirror } from '../src/client/term-mirror.js';
 
 function rig() {
   const writes: string[] = [];
@@ -90,4 +90,18 @@ test('disconnect while hidden does not resume parsing before a new visible snaps
   r.mirror.snapshot(snapshot);
   r.drain();
   assert.equal(r.mirror.ready, true);
+});
+
+test('focus reports pass only when the window focus changes', () => {
+  const focus = focusReports();
+  assert.equal(focus.classify('x'), 'input');
+  assert.equal(focus.classify('\x1b[O'), 'repeat', 'a window that never had focus does not report losing it');
+  assert.equal(focus.classify('\x1b[I'), 'focus');
+  assert.equal(focus.classify('\x1b[I'), 'repeat', 'focus reporting turned on again must not echo focus-in back');
+  assert.equal(focus.classify('\x1b[Ix'), 'input');
+  assert.equal(focus.classify('\x1b[O'), 'focus');
+  assert.equal(focus.classify('\x1b[O'), 'repeat');
+  focus.classify('\x1b[I');
+  focus.reset();
+  assert.equal(focus.classify('\x1b[I'), 'focus', 'after a fresh snapshot the next focus-in is sent again');
 });
