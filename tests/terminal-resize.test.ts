@@ -25,7 +25,7 @@ test('inline terminals follow pane geometry without focus or stale size rollback
   }).outputFiles[0].text;
   const css = await readFile(new URL('../src/client/style.css', import.meta.url), 'utf8');
   const xtermCss = await readFile(new URL('../node_modules/@xterm/xterm/css/xterm.css', import.meta.url), 'utf8');
-  const rig = async (shared = true, delaySnapshot = false, hidden = false) => {
+  const rig = async (shared = true, delaySnapshot = false, hidden = false, pageHidden = false) => {
     const page = await context.newPage();
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
@@ -37,8 +37,19 @@ test('inline terminals follow pane geometry without focus or stale size rollback
     await page.addStyleTag({ content: css + xtermCss });
     await page.addScriptTag({ content: bundle });
     await page.evaluate(
-      ({ shared, delaySnapshot, hidden }) => {
+      ({ shared, delaySnapshot, hidden, pageHidden }) => {
         const w = window as any;
+        w.pageHidden = pageHidden;
+        Object.defineProperty(document, 'hidden', {
+          configurable: true,
+          get() {
+            return w.pageHidden;
+          },
+        });
+        w.visibility = (hidden: boolean) => {
+          w.pageHidden = hidden;
+          document.dispatchEvent(new Event('visibilitychange'));
+        };
         const { Terminal, store, openTerminal, routeTerminalMessage } = w.TerminalUI;
         const open = Terminal.prototype.open;
         Terminal.prototype.open = function (host: HTMLElement) {
@@ -81,10 +92,10 @@ test('inline terminals follow pane geometry without focus or stale size rollback
         document.getElementById('focus')!.focus();
         w.handle = openTerminal(w.net, worker.id, undefined, undefined, { mount, focus: false });
       },
-      { shared, delaySnapshot, hidden },
+      { shared, delaySnapshot, hidden, pageHidden },
     );
     await page.waitForFunction(() => !!(window as any).term?.element);
-    if (!delaySnapshot) await page.waitForFunction(() => !(window as any).term.options.disableStdin);
+    if (!delaySnapshot && !pageHidden) await page.waitForFunction(() => !(window as any).term.options.disableStdin);
     await page.evaluate(() => (window as any).frames());
     return page;
   };
@@ -126,6 +137,74 @@ test('inline terminals follow pane geometry without focus or stale size rollback
     await page.evaluate(() => (window as any).resize(700, 400));
     await page.evaluate(() => (window as any).frames());
     assert.equal(await page.evaluate(() => (window as any).sizes().length), before + 1);
+  });
+
+  await t.test('a hidden following pane detaches once, ignores late snapshots, and hydrates once on return', async () => {
+    const page = await rig();
+    await page.evaluate(() => {
+      const w = window as any;
+      w.messages = [];
+      w.writes = 0;
+      const write = w.term.write.bind(w.term);
+      w.term.write = (...args: any[]) => {
+        w.writes++;
+        return write(...args);
+      };
+      w.visibility(true);
+      w.visibility(true);
+      w.handle.attach();
+      w.snapshot();
+      w.TerminalUI.routeTerminalMessage({ t: 'term.data', workerId: 'pixel', data: 'invisible output' });
+    });
+    assert.deepEqual(await page.evaluate(() => (window as any).messages.map((m: any) => m.t)), ['worker.detach']);
+    assert.equal(await page.evaluate(() => (window as any).writes), 0);
+    assert.equal(await page.evaluate(() => (window as any).term.options.disableStdin), true);
+    await page.evaluate(() => (window as any).visibility(false));
+    await page.waitForFunction(() => !(window as any).term.options.disableStdin);
+    await page.evaluate(() => (window as any).visibility(false));
+    assert.deepEqual(await page.evaluate(() => (window as any).messages.map((m: any) => m.t)), ['worker.detach', 'worker.attach']);
+    await page.evaluate(() => {
+      const w = window as any;
+      w.handle.close();
+      w.messages = [];
+      w.visibility(true);
+      w.visibility(false);
+    });
+    assert.deepEqual(await page.evaluate(() => (window as any).messages), []);
+  });
+
+  await t.test('initially hidden panes wait for visibility; reconnecting while hidden does not attach early', async () => {
+    const page = await rig(true, false, false, true);
+    assert.deepEqual(await page.evaluate(() => (window as any).messages.map((m: any) => m.t)), ['worker.detach']);
+    await page.evaluate(() => {
+      const w = window as any;
+      w.net.up = false;
+      w.connectionStatus(false);
+      w.net.up = true;
+      w.connectionStatus(true);
+      w.handle.attach();
+    });
+    assert.equal(await page.evaluate(() => (window as any).messages.filter((m: any) => m.t === 'worker.attach').length), 0);
+    await page.evaluate(() => (window as any).visibility(false));
+    await page.waitForFunction(() => !(window as any).term.options.disableStdin);
+    assert.equal(await page.evaluate(() => (window as any).messages.filter((m: any) => m.t === 'worker.attach').length), 1);
+  });
+
+  await t.test('a scrolled-up reader keeps its exact history and input readiness across backgrounding', async () => {
+    const page = await rig();
+    const before = await page.evaluate(async () => {
+      const w = window as any;
+      await new Promise<void>((resolve) => w.term.write(Array.from({ length: 100 }, (_, i) => `history ${i}\r\n`).join(''), resolve));
+      w.term.scrollToTop();
+      w.messages = [];
+      w.visibility(true);
+      return { viewport: w.term.buffer.active.viewportY, base: w.term.buffer.active.baseY };
+    });
+    assert.ok(before.base > before.viewport);
+    await page.evaluate(() => (window as any).visibility(false));
+    assert.deepEqual(await page.evaluate(() => (window as any).messages), []);
+    assert.equal(await page.evaluate(() => (window as any).term.buffer.active.viewportY), before.viewport);
+    assert.equal(await page.evaluate(() => (window as any).term.options.disableStdin), false);
   });
 
   await t.test('initial unshared fit survives the snapshot refresh before its acknowledgement', async () => {

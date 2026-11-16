@@ -34,10 +34,11 @@ export class TerminalMirror {
 
   /** Hidden following terminals discard live parsing, then hydrate once from the authoritative PTY. */
   setVisible(visible: boolean) {
-    if (visible === this.visible) return;
+    if (visible === this.visible) return false;
     this.visible = visible;
     this.disconnect();
     if (visible) this.resnapshot();
+    return true;
   }
 
   snapshot(snapshot: Snapshot) {

@@ -40,18 +40,18 @@ test('a hidden mirror parses no snapshots or live output and requests one fresh 
   r.mirror.snapshot(snapshot);
   r.drain();
   assert.equal(r.mirror.ready, true);
-  r.mirror.setVisible(false);
+  assert.equal(r.mirror.setVisible(false), true);
   const before = r.writes.length;
   for (let i = 0; i < 1000; i++) {
     r.mirror.data('x'.repeat(2048));
     r.mirror.snapshot(snapshot);
-    r.mirror.setVisible(false);
+    assert.equal(r.mirror.setVisible(false), false);
   }
   assert.equal(r.writes.length, before);
   assert.equal(r.mirror.ready, false);
   assert.equal(r.requests(), 0);
-  r.mirror.setVisible(true);
-  r.mirror.setVisible(true);
+  assert.equal(r.mirror.setVisible(true), true);
+  assert.equal(r.mirror.setVisible(true), false);
   assert.equal(r.requests(), 1);
   r.mirror.data('ignored until snapshot');
   assert.equal(r.writes.length, before);
