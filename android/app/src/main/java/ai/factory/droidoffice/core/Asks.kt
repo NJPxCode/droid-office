@@ -41,7 +41,7 @@ object Asks {
      */
     fun question(ask: PendingAsk, entries: List<ThreadEntry> = emptyList()): String =
         ask.worker.ask?.takeIf { it.isPermission }?.let(::permissionLine)
-            ?: matching(known(ask.worker.ask, entries), ask.menu)?.question
+            ?: matching(pending(ask.worker.ask, entries), ask.menu)?.question
             ?: ask.menu?.question
             ?: Workers.detail(ask.worker)?.takeUnless(::generic)
             ?: "${ask.worker.name.ifBlank { "It" }} is waiting on an answer"
@@ -94,8 +94,9 @@ object Asks {
                     if (question != null) options += it.groupValues[1].trim()
                     lastOption = true
                 } ?: run {
-                    if (line.trimStart().startsWith("[topic]")) {
-                        if (question != null) line.trimStart().removePrefix("[topic]").trim().takeIf { it.isNotEmpty() }?.let { topic = it }
+                    val trimmed = line.trimStart()
+                    if (trimmed.startsWith("[topic]")) {
+                        if (question != null) trimmed.removePrefix("[topic]").trim().takeIf { it.isNotEmpty() }?.let { topic = it }
                         lastOption = false
                         continuingQuestion = false
                     }
@@ -132,14 +133,14 @@ object Asks {
      */
     fun asked(entries: List<ThreadEntry>, menu: Menu?): String? = matching(questions(entries), menu)?.question
 
-    /** The hook's questionnaire has the exact text; the thread's open call is the fallback for an office that sends none. */
-    private fun known(ask: WorkerAsk?, entries: List<ThreadEntry>): List<Asked> =
+    /**
+     * The whole questionnaire being asked (src/shared/ask-question.ts pendingQuestions): the hook's
+     * questionnaire has the exact text; the thread's open call is the fallback when none was sent.
+     */
+    fun pending(ask: WorkerAsk?, entries: List<ThreadEntry>): List<Asked> =
         ask?.takeIf { it.kind == "question" && it.questions.isNotEmpty() }?.questions
             ?.filter { it.question.isNotBlank() }?.map { Asked(it.question.trim(), it.options.map(String::trim), it.multiSelect, it.topic?.trim()?.ifEmpty { null }) }
             ?: questions(entries)
-
-    /** The whole questionnaire being asked (src/shared/ask-question.ts pendingQuestions). */
-    fun pending(ask: WorkerAsk?, entries: List<ThreadEntry>): List<Asked> = known(ask, entries)
 
     enum class StepState { Done, Current, Upcoming }
 
@@ -148,6 +149,7 @@ object Asks {
 
     private const val STEP_LABEL = 28
     private val TRAILING_WORD = Regex("""\s+\S*$""")
+    private val WHITESPACE = Regex("""\s+""")
 
     private fun stepLabel(asked: Asked): String {
         asked.topic?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
@@ -165,7 +167,9 @@ object Asks {
             val line = raw.trim()
             val answer = REVIEW_ANSWER.matchEntire(line)?.groupValues?.get(1)?.trim()
             when {
-                answer != null && question.isEmpty() && pairs.isNotEmpty() -> pairs[pairs.lastIndex] = pairs.last().let { it.first to "${it.second}, $answer" }
+                answer != null && question.isEmpty() && pairs.isNotEmpty() -> if (answer.isNotEmpty()) {
+                    pairs[pairs.lastIndex] = pairs.last().let { (q, prev) -> q to if (prev.isEmpty()) answer else "$prev, $answer" }
+                }
                 answer != null -> {
                     pairs += question.joinToString(" ") to answer
                     question.clear()
@@ -186,7 +190,7 @@ object Asks {
      */
     fun steps(menu: Menu, entries: List<ThreadEntry>, ask: WorkerAsk?, answers: Map<Int, String> = emptyMap(), hasReview: Boolean = true): List<Step> {
         if (ask?.isPermission == true) return emptyList()
-        val all = known(ask, entries)
+        val all = pending(ask, entries)
         if (all.isEmpty() || (all.size < 2 && menu.review == null)) return emptyList()
         val at = if (menu.review != null) all.size + 1 else matching(all, menu)?.let { all.indexOf(it) + 1 } ?: return emptyList()
         val reviewed = menu.review?.let(::reviewAnswers).orEmpty()
@@ -196,17 +200,22 @@ object Asks {
                 index + 1 == at -> StepState.Current
                 else -> StepState.Upcoming
             }
-            val answer = if (state != StepState.Done) null
-            else (if (reviewed.size == all.size) reviewed[index].second else "").ifEmpty { answers[index + 1].orEmpty() }.ifEmpty { null }
+            val answer = when {
+                state != StepState.Done -> null
+                reviewed.size == all.size && reviewed[index].second.isNotEmpty() -> reviewed[index].second
+                else -> answers[index + 1]?.ifEmpty { null }
+            }
             Step(stepLabel(asked), state, answer)
         }
-        return if (hasReview || menu.review != null) questionSteps + Step("Review", if (menu.review != null) StepState.Current else StepState.Upcoming, review = true) else questionSteps
+        if (!hasReview && menu.review == null) return questionSteps
+        val reviewState = if (menu.review != null) StepState.Current else StepState.Upcoming
+        return questionSteps + Step("Review", reviewState, review = true)
     }
 
     /** One line for what a reply answered, in the question's own words (src/shared/ask-question.ts replySummary). */
     fun replySummary(display: Menu, choice: Int?, choices: List<Int>?, text: String?): String {
         fun label(number: Int) = display.choices.firstOrNull { it.number == number }?.label?.lineSequence()?.first()?.trim() ?: number.toString()
-        val typed = text?.replace(Regex("""\s+"""), " ")?.trim()?.ifEmpty { null }
+        val typed = text?.replace(WHITESPACE, " ")?.trim()?.ifEmpty { null }
         if (choices != null) return listOfNotNull(choices.joinToString(", ") { label(it) }.ifEmpty { null }, typed).joinToString(" + ")
         return typed ?: choice?.let(::label).orEmpty()
     }
@@ -221,7 +230,7 @@ object Asks {
         return "Approve $risk$what$detail"
     }
 
-    private fun norm(s: String) = s.lowercase().replace(Regex("""\s+"""), " ").trim().trimEnd('…', '.')
+    private fun norm(s: String) = s.lowercase().replace(WHITESPACE, " ").trim().trimEnd('…', '.')
 
     /** Match by numbered prefixes, never by an option appearing at a different number. */
     private fun matching(all: List<Asked>, menu: Menu?): Asked? {
@@ -247,12 +256,12 @@ object Asks {
     fun display(menu: Menu, entries: List<ThreadEntry>, ask: WorkerAsk? = null): Menu {
         if (menu.review != null) return menu
         if (ask?.isPermission == true) return menu.copy(question = permissionLine(ask))
-        val asked = matching(known(ask, entries), menu) ?: return menu
+        val asked = matching(pending(ask, entries), menu) ?: return menu
         return menu.copy(
             question = asked.question,
             // A description stays only beside its option's exact label: a screen's wrapped one might belong to a cut-off label.
             choices = menu.choices.map { c ->
-                val full = asked.options[c.number - 1].trim()
+                val full = asked.options.getOrNull(c.number - 1)?.trim() ?: c.label
                 c.copy(label = full, description = c.description.takeIf { c.label == full })
             },
         )

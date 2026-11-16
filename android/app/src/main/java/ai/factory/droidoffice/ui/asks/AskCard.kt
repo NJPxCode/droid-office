@@ -37,6 +37,8 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -79,10 +81,22 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 
 private const val ANSWER_DELAY_MS = 3_000L
 /** How long a worker that stopped asking after an answer keeps the workspace open: a status blip is not the end. */
 private const val SERIES_END_MS = 1_500L
+
+private val menuSaver = Saver<Menu, String>(
+    save = { OfficeJson.encodeToString(Menu.serializer(), it) },
+    restore = { OfficeJson.decodeFromString(Menu.serializer(), it) },
+)
+private val answersSerializer = MapSerializer(Int.serializer(), String.serializer())
+private val answersSaver = Saver<Map<Int, String>, String>(
+    save = { OfficeJson.encodeToString(answersSerializer, it) },
+    restore = { runCatching { OfficeJson.decodeFromString(answersSerializer, it) }.getOrDefault(emptyMap()) },
+)
 
 private fun OfficeData.askIdentity(workerId: String, sessionId: String?): String {
     val ownerFloor = workerFloorId(workerId) ?: floorId
@@ -200,11 +214,11 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
             delay(1_000)
         }
     }
-    var shown by remember { mutableStateOf(initial) }
+    var shown by rememberSaveable(identity, stateSaver = menuSaver) { mutableStateOf(initial) }
     /** What this dialog sent for earlier questions, by position, for the step bar. */
-    var answers by remember { mutableStateOf(emptyMap<Int, String>()) }
+    var answers by rememberSaveable(identity, stateSaver = answersSaver) { mutableStateOf(emptyMap()) }
     /** Sent, and waiting for the worker to show its next question. */
-    var advancing by remember { mutableStateOf(false) }
+    var advancing by rememberSaveable(identity) { mutableStateOf(false) }
     // Saveable fields cover recreation; the bounded process cache also covers dismissal and other views.
     val draftKey = OfficeJson.encodeToString(Menu.serializer(), shown.copy(pointer = null, choices = shown.choices.map { it.copy(selected = null) }))
     val draft = remember(identity, draftKey) { answerDrafts.getOrPut(identity to draftKey) { AnswerDraft(shown.choices.filter { it.selected == true }.map { it.number }) } }
@@ -252,11 +266,17 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
             epoch = connection.answerEpoch
         }
     }
+    val latestAnswers by rememberUpdatedState(answers)
+    val latestOnAnswered by rememberUpdatedState(onAnswered)
+    val latestOnDismiss by rememberUpdatedState(onDismiss)
     LaunchedEffect(advancing, asking) {
         if (advancing && !asking) {
             delay(SERIES_END_MS)
-            if (answers.isNotEmpty()) onAnswered?.invoke("Answers submitted")
-            onDismiss()
+            val fresh = connection.data.value
+            val freshWorker = fresh.worker(worker.id)
+            if (fresh.askIdentity(worker.id, freshWorker?.sessionId) == identity && freshWorker?.state == ai.factory.droidoffice.core.WorkerStatus.NeedsInput) return@LaunchedEffect
+            if (latestAnswers.isNotEmpty()) latestOnAnswered?.invoke("Answers submitted")
+            latestOnDismiss()
         }
     }
     val listState = rememberLazyListState()
@@ -359,6 +379,9 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
                     else -> error
                 }
                 status?.let { Text(it, color = if (advancing) ThreadPalette.TextSecondary else ThreadPalette.Warning, style = MaterialTheme.typography.bodySmall, modifier = Modifier.tagged(Tags.Answer.STATUS).semantics { liveRegion = LiveRegionMode.Polite }) }
+                if (connected && asking && !same && currentMenu != null && !pending && !advancing) {
+                    SecondaryButton("Show current question", { shown = currentMenu; epoch = connection.answerEpoch }, Modifier.fillMaxWidth().tagged(Tags.Answer.CURRENT))
+                }
                 if (pending && !delivering) SecondaryButton("Cancel", { job?.cancel(); pending = false }, Modifier.fillMaxWidth().tagged(Tags.Answer.CANCEL))
                 else SecondaryButton(
                     if (delivering) "Submitting…" else if (shown.review != null) "Submit answers" else if (following != null) "Submit and continue" else "Submit answer",

@@ -211,8 +211,9 @@ test('a questionnaire becomes steps: each question by topic, then the review wit
       ['current', undefined],
     ],
   );
-  assert.deepEqual(reviewAnswers(['Pick tools?', '→ Git', '→ Docker', 'Unanswered?']), [
+  assert.deepEqual(reviewAnswers(['Pick tools?', '→ Git', '→', '→ Docker', 'Empty first?', '→ ', '→ Podman', 'Unanswered?']), [
     { question: 'Pick tools?', answer: 'Git, Docker' },
+    { question: 'Empty first?', answer: 'Podman' },
     { question: 'Unanswered?', answer: '' },
   ]);
 

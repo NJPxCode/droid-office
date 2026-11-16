@@ -30,6 +30,21 @@ export type QuestionReply = { choice?: number; choices?: number[]; text?: string
 /** Enter right after the next question appears belongs to the previous one, not to this one. */
 const SETTLE_MS = 400;
 
+function feedbackMessage(state: QuestionState, name: string, hasRaw: boolean, at: number, questionCount: number, following?: QuestionStep): string {
+  if (state.sending) return 'Sending your answer…';
+  if (state.answered) {
+    if (state.menu.review || !following) return `Sent. ${name} is continuing.`;
+    if (following.review) return 'Answer sent. Opening the review…';
+    return `Answer sent. Opening question ${at + 2} of ${questionCount}…`;
+  }
+  if (!state.connected) return 'Disconnected. Your draft is kept. Nothing will be sent automatically.';
+  if (state.supported === false) {
+    return hasRaw ? 'This office version cannot safely submit checkbox answers. Update the host, or use Raw TTY.' : 'This office version cannot safely submit checkbox answers. Update the host.';
+  }
+  if (!state.current) return 'This question changed or was answered elsewhere. Review the current question before sending.';
+  return 'Your draft stays here if you go back to the thread.';
+}
+
 /**
  * One scrollable answer surface for a whole questionnaire, with pinned navigation and submit
  * controls. It follows the worker from question to question (update) until the series ends.
@@ -115,10 +130,14 @@ export function openQuestionWorkspace(opts: { name: string; state: QuestionState
     const at = asked.findIndex((step) => step.state === 'current');
     const following = at >= 0 ? asked[at + 1] : undefined;
     // Once sent, the bar moves on before the worker draws its next question.
-    steps =
-      state.answered && following
-        ? asked.map((step, index) => (index === at ? { ...step, state: 'done' as const, ...(state.answers?.[at + 1] ? { answer: state.answers[at + 1] } : {}) } : index === at + 1 ? { ...step, state: 'current' as const } : step))
-        : asked;
+    steps = asked;
+    if (state.answered && following && at >= 0) {
+      steps = asked.map((step, index) => {
+        if (index === at) return { ...step, state: 'done' as const, ...(state.answers?.[at + 1] ? { answer: state.answers[at + 1] } : {}) };
+        if (index === at + 1) return { ...step, state: 'current' as const };
+        return step;
+      });
+    }
     paintSteps();
     const nextKey = JSON.stringify([state.menu.question, state.menu.choices.map((c) => [c.number, c.label, c.description]), state.menu.multiSelect, state.menu.review, display]);
     if (key !== nextKey) {
@@ -198,23 +217,7 @@ export function openQuestionWorkspace(opts: { name: string; state: QuestionState
         });
     }
     for (const input of body.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea')) input.disabled = locked();
-    feedback.textContent = state.sending
-      ? 'Sending your answer…'
-      : state.answered
-        ? state.menu.review || !following
-          ? `Sent. ${opts.name} is continuing.`
-          : following.review
-            ? 'Answer sent. Opening the review…'
-            : `Answer sent. Opening question ${at + 2} of ${questionCount}…`
-        : !state.connected
-          ? 'Disconnected. Your draft is kept. Nothing will be sent automatically.'
-          : state.supported === false
-            ? opts.raw
-              ? 'This office version cannot safely submit checkbox answers. Update the host, or use Raw TTY.'
-              : 'This office version cannot safely submit checkbox answers. Update the host.'
-            : !state.current
-              ? 'This question changed or was answered elsewhere. Review the current question before sending.'
-              : 'Your draft stays here if you go back to the thread.';
+    feedback.textContent = feedbackMessage(state, opts.name, Boolean(opts.raw), at, questionCount, following);
     review.hidden = state.current || state.sending || state.answered || !state.connected;
     submit.textContent = state.sending ? 'Sending…' : state.menu.review ? 'Submit answers' : following ? 'Submit and continue' : 'Submit answer';
     updateSelection();
@@ -225,7 +228,12 @@ export function openQuestionWorkspace(opts: { name: string; state: QuestionState
     const text = opts.draft.text.trim();
     submitting = true;
     updateSelection();
-    void opts.reply(state.menu.review ? { choice: 1 } : state.menu.multiSelect ? { choices: [...selected], ...(text ? { text } : {}) } : text ? { text } : { choice: [...selected][0] }, state.menu).finally(() => {
+    let payload: QuestionReply;
+    if (state.menu.review) payload = { choice: 1 };
+    else if (state.menu.multiSelect) payload = { choices: [...selected], ...(text ? { text } : {}) };
+    else if (text) payload = { text };
+    else payload = { choice: [...selected][0] };
+    void opts.reply(payload, state.menu).finally(() => {
       submitting = false;
       updateSelection();
     });

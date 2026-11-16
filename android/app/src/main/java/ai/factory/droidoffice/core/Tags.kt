@@ -119,6 +119,7 @@ object Tags {
         const val STATUS = "answer.status"
         const val SUBMIT = "answer.submit"
         const val CANCEL = "answer.cancel"
+        const val CURRENT = "answer.current"
         const val PROGRESS = "answer.progress"
         const val STEPS = "answer.steps"
         fun option(number: Int) = "answer.option/$number"

@@ -255,7 +255,10 @@ class AsksTest {
             listOf(Asks.StepState.Done to "UTM", Asks.StepState.Done to "Evaluation", Asks.StepState.Done to "SSH", Asks.StepState.Current to null),
             Asks.steps(review, emptyList(), ask, mapOf(1 to "Parallels")).map { it.state to it.answer },
         )
-        assertEquals(listOf("Pick tools?" to "Git, Docker", "Unanswered?" to ""), Asks.reviewAnswers(listOf("Pick tools?", "→ Git", "→ Docker", "Unanswered?")))
+        assertEquals(
+            listOf("Pick tools?" to "Git, Docker", "Empty first?" to "Podman", "Unanswered?" to ""),
+            Asks.reviewAnswers(listOf("Pick tools?", "→ Git", "→", "→ Docker", "Empty first?", "→ ", "→ Podman", "Unanswered?")),
+        )
 
         // A cloud worker sends all answers on the last question, without Droid's terminal review step.
         assertEquals(

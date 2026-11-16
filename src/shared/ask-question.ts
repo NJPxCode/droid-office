@@ -127,8 +127,13 @@ export function reviewAnswers(review: readonly string[]): { question: string; an
   for (const raw of review) {
     const line = raw.trim();
     const answer = /^→\s*(.*)$/.exec(line);
-    if (answer && !question.length && pairs.length) pairs[pairs.length - 1]!.answer += `, ${answer[1]!.trim()}`;
-    else if (answer) {
+    if (answer && !question.length && pairs.length) {
+      const extra = answer[1]!.trim();
+      if (extra) {
+        const last = pairs[pairs.length - 1]!;
+        last.answer = last.answer ? `${last.answer}, ${extra}` : extra;
+      }
+    } else if (answer) {
       pairs.push({ question: question.join(' '), answer: answer[1]!.trim() });
       question = [];
     } else if (line) question.push(line);
