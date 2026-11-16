@@ -424,6 +424,17 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     },
     () => net.send({ t: 'worker.attach', workerId }),
   );
+  // Keep a scrolled-up reader's exact history. Only a following companion terminal can discard
+  // invisible output and return to the latest snapshot, without retaining an unbounded backlog.
+  const visibility = () => {
+    if (!inline) return;
+    if (!document.hidden || term.buffer.active.viewportY >= term.buffer.active.baseY) {
+      mirror.setVisible(!document.hidden);
+      term.options.disableStdin = !net.up || !mirror.ready;
+    }
+  };
+  if (inline) document.addEventListener('visibilitychange', visibility);
+  if (document.hidden) visibility();
   const onMsg = (msg: ServerMsg) => {
     if (msg.t === 'term.data' && msg.workerId === workerId) mirror.data(msg.data);
     else if (msg.t === 'term.snapshot' && msg.workerId === workerId) {
@@ -461,6 +472,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   });
 
   const onClose = () => {
+    document.removeEventListener('visibilitychange', visibility);
     thread?.dispose();
     listeners.delete(onMsg);
     unsub();

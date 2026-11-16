@@ -2281,6 +2281,7 @@ li.cmp-muted:hover { background: none; }
 #scene.hdr-under { opacity: 0; }
 
 /* Web companion (/dashboard, dashboard.ts): the office's workers, terminals and Whiteboard in a desktop browser, without the 3D scene. */
+.companion-background *, .companion-background *::before, .companion-background *::after { animation-play-state: paused !important; }
 /* The companion's own tokens: every surface is the black base, so an OLED screen stays dark; hover and selection show as edges, not lifted fills. */
 .dashboard { --key-h: 18px; --key-border: 1px solid var(--border-strong); --key-depth: 1px; --key-bg: transparent; --key-fg: var(--text-secondary); --surface: var(--bg); --surface-raised: var(--bg); --surface-hover: var(--bg); --text-secondary: #a3a3a3; --border: rgba(255, 255, 255, .075); --border-strong: rgba(255, 255, 255, .14); --text-tertiary: rgba(255, 255, 255, .5); font-size: var(--text-body); line-height: var(--leading-body); min-width: 960px; background: var(--bg); }
 html:has(body.dashboard), body.dashboard { overflow: auto; }
