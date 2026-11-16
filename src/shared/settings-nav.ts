@@ -1,5 +1,5 @@
 /** The categories down the side of Settings, grouped so a setting's place can be guessed: what is only yours, what workers do, and what the whole office shares. */
-export type SettingsPane = 'you' | 'sound' | 'graphics' | 'workers' | 'models' | 'subagents' | 'orchestrator' | 'connections' | 'office' | 'phone';
+export type SettingsPane = 'you' | 'sound' | 'graphics' | 'thread' | 'workers' | 'models' | 'subagents' | 'orchestrator' | 'connections' | 'office' | 'phone';
 
 /** The sidebar groups, in order. Every pane belongs to exactly one. */
 export type SettingsSection = 'Personal' | 'Workers' | 'Office';
@@ -26,6 +26,14 @@ export const SETTINGS_PANES: PaneDef[] = [
   { id: 'you', icon: '🧍', label: 'You', section: 'Personal', scope: 'Just you', blurb: 'Your character, what you hold and the mouse. Kept in this browser.' },
   { id: 'sound', icon: '🔊', label: 'Sound & alerts', section: 'Personal', scope: 'Just you', blurb: 'How loud the office is for you, and how it tells you a worker needs you.' },
   { id: 'graphics', icon: '🖥️', label: 'Display', section: 'Personal', scope: 'Just you', blurb: 'How this screen draws the office.' },
+  {
+    id: 'thread',
+    icon: '💬',
+    label: 'Thread',
+    section: 'Personal',
+    scope: 'Just you',
+    blurb: 'How worker conversations read: text, spacing, and how much of their tools and thinking shows. Kept in this browser.',
+  },
   { id: 'workers', icon: '🤖', label: 'Workers', section: 'Workers', scope: 'Everyone', blurb: 'Where new workers start, how many run, when they leave, how their worktrees are set up and what the office tells them.' },
   { id: 'models', icon: '🧠', label: 'Models', section: 'Workers', scope: 'Everyone', blurb: 'The model a worker starts on, and which models the pickers offer.' },
   { id: 'subagents', icon: '🧭', label: 'Subagents & visits', section: 'Workers', scope: 'Everyone', blurb: 'Workers that hire workers at the desks near them, and workers visiting each other’s desks.' },
@@ -98,6 +106,14 @@ export const SETTINGS_CARDS = [
   { pane: 'graphics', title: 'Frame rate limit', keywords: 'fps frame rate limit 40 60 120 performance graphics', on: OFFICE },
   { pane: 'graphics', title: 'Performance overlay', keywords: 'fps gpu frame pacing stats overlay diagnostics performance', on: OFFICE },
   { pane: 'graphics', title: 'Overhead lights', keywords: 'lights brightness ceiling lamps lighting dark', on: OFFICE },
+  { pane: 'thread', title: 'Text size', keywords: 'thread text size font bigger smaller larger zoom scale small large conversation chat reading' },
+  { pane: 'thread', title: 'Font', keywords: 'thread font typeface sans serif mono monospace text conversation chat reading' },
+  { pane: 'thread', title: 'Spacing', keywords: 'thread spacing gap line height leading compact relaxed density padding conversation chat reading' },
+  { pane: 'thread', title: 'Column width', keywords: 'thread column width measure narrow wide full line length margin conversation chat reading' },
+  { pane: 'thread', title: 'Work between replies', keywords: 'thread work between replies steps fold collapse activity summary one line tools thinking conversation chat' },
+  { pane: 'thread', title: 'Tool calls', keywords: 'thread tool calls commands edits diffs expand open folded collapse conversation chat' },
+  { pane: 'thread', title: 'Thinking', keywords: 'thread thinking thoughts reasoning hide hidden show expand open folded collapse conversation chat' },
+  { pane: 'thread', title: 'Restore Thread defaults', keywords: 'thread reset restore defaults text font spacing width tools thinking' },
   { pane: 'workers', title: 'Where fresh workers start', keywords: 'fresh workers branch main floor branch checkout start' },
   { pane: 'workers', title: 'Worker limit', keywords: 'limit most workers at once max ceiling hire' },
   { pane: 'workers', title: 'Workers whose pull request merged', keywords: 'merged pull request go home leave stay worker cleanup' },

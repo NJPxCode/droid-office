@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { askedQuestions, inputQuestions, parseQuestionnaire, permissionLine, questionPresentation } from '../src/shared/ask-question.js';
+import { askedQuestions, inputQuestions, parseQuestionnaire, pendingQuestions, permissionLine, questionPresentation, questionSteps, replySummary, reviewAnswers } from '../src/shared/ask-question.js';
 import { readMenu } from '../src/shared/asks.js';
 import type { ThreadEntry } from '../src/shared/worker-thread.js';
 
@@ -154,4 +155,92 @@ test("the hook's pending ask names the question without any Thread history, and 
   assert.equal(permissionLine({ kind: 'permission', tool: 'Edit', file: 'src/a.ts' }), 'Approve Edit: src/a.ts');
   assert.equal(permissionLine({ kind: 'permission', tool: 'WebSearch', risk: 'extreme' }), 'Approve WebSearch');
   assert.deepEqual(inputQuestions({ questions: 'nope' }), []);
+});
+
+test('a questionnaire becomes steps: each question by topic, then the review with its own summary', () => {
+  const ask = {
+    kind: 'question' as const,
+    questions: parseQuestionnaire(
+      [
+        '1. [question] Which hypervisor should we use?',
+        '[topic] Hypervisor',
+        '[option] UTM',
+        '[option] Parallels',
+        '2. [question] Which Windows licence features should the virtual machines have for agents? (multi)',
+        '[option] Evaluation',
+        '[option] Pro',
+        '[option] Enterprise',
+        '3. [question] How should agents connect?',
+        '[topic] Agent-access',
+        '[option] SSH',
+        '[option] RDP',
+      ].join('\n'),
+    ),
+  };
+  const second = readMenu(['  Which Windows licence features should the virtual machines have for agents?', '  1. [ ] Evaluation', '  2. [x] Pro', '  3. [ ] Enterprise', '  [ ] Or type your own answer...', '  Submit'])!;
+  const display = questionPresentation(second, [], ask);
+  assert.equal(display.position, 2);
+  const steps = questionSteps(second, display, pendingQuestions([], ask), { 1: 'Parallels', 2: 'Stale' });
+  assert.deepEqual(steps, [
+    { label: 'Hypervisor', state: 'done', answer: 'Parallels' },
+    // No topic: the question's start, cut at a word.
+    { label: 'Which Windows licence…', state: 'current' },
+    { label: 'Agent-access', state: 'upcoming' },
+    { label: 'Review', state: 'upcoming', review: true },
+  ]);
+  assert.equal(replySummary(display, { choices: [1, 3], text: 'Keep  shortcuts\nhandy' }), 'Evaluation, Enterprise + Keep shortcuts handy');
+  assert.equal(replySummary(display, { choices: [2] }), 'Pro');
+  const first = readMenu(['  Which hypervisor should we use?', '', '  1. UTM', '  2. Parallels', '  Or type your own answer...'])!;
+  const firstDisplay = questionPresentation(first, [], ask);
+  assert.equal(replySummary(firstDisplay, { choice: 2 }), 'Parallels');
+  assert.equal(replySummary(firstDisplay, { text: 'Hyper-V' }), 'Hyper-V');
+
+  const review = readMenu(readFileSync(new URL('../android/app/src/test/resources/askuser-1.7.1-review.txt', import.meta.url), 'utf8').split('\n'))!;
+  assert.deepEqual(reviewAnswers(review.review!), [
+    { question: 'Which hypervisor should we use?', answer: 'UTM' },
+    { question: 'Which Windows licence should we use?', answer: 'Evaluation' },
+    { question: 'How should agents connect?', answer: 'SSH' },
+  ]);
+  // The terminal's summary outranks what this client remembers sending.
+  assert.deepEqual(
+    questionSteps(review, questionPresentation(review, [], ask), ask.questions, { 1: 'Parallels' }).map((step) => [step.state, step.answer]),
+    [
+      ['done', 'UTM'],
+      ['done', 'Evaluation'],
+      ['done', 'SSH'],
+      ['current', undefined],
+    ],
+  );
+  assert.deepEqual(reviewAnswers(['Pick tools?', '→ Git', '→', '→ Docker', 'Empty first?', '→ ', '→ Podman', 'Unanswered?']), [
+    { question: 'Pick tools?', answer: 'Git, Docker' },
+    { question: 'Empty first?', answer: 'Podman' },
+    { question: 'Unanswered?', answer: '' },
+  ]);
+
+  // A cloud worker sends all answers on the last question, without Droid's terminal review step.
+  assert.deepEqual(questionSteps(second, display, pendingQuestions([], ask), { 1: 'Parallels' }, false), [
+    { label: 'Hypervisor', state: 'done', answer: 'Parallels' },
+    { label: 'Which Windows licence…', state: 'current' },
+    { label: 'Agent-access', state: 'upcoming' },
+  ]);
+  // A lone question, or a menu that matches no single question, gets no step bar.
+  assert.deepEqual(questionSteps(first, firstDisplay, [ask.questions[0]]), []);
+  assert.deepEqual(questionSteps(screen, questionPresentation(screen, [], ask), ask.questions), []);
+  assert.deepEqual(questionSteps(review, questionPresentation(review, []), []), []);
+});
+
+test("AskUser's question headers are their topics, and the Thread's call stands in for a missing hook ask", () => {
+  const call = entry({
+    questions: [
+      { question: 'Which hypervisor?', header: ' Hypervisor ', options: [{ label: 'UTM' }, { label: 'Parallels' }] },
+      { question: 'Licence?', options: ['Evaluation'] },
+    ],
+  });
+  assert.deepEqual(pendingQuestions([call]), [
+    { question: 'Which hypervisor?', topic: 'Hypervisor', options: ['UTM', 'Parallels'], multiSelect: false },
+    { question: 'Licence?', options: ['Evaluation'], multiSelect: false },
+  ]);
+  const hook = { kind: 'question' as const, questions: [{ question: 'From the hook?', options: ['Yes', 'No'], multiSelect: false }] };
+  assert.deepEqual(pendingQuestions([call], hook), hook.questions);
+  assert.equal(pendingQuestions([call], { kind: 'question', questions: [] }).length, 2);
 });

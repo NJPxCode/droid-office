@@ -42,9 +42,10 @@ export function cloudAsk(requestId: unknown, params: unknown): CloudAsk | undefi
     const options = Array.isArray(q.options) ? q.options.slice(0, MAX_OPTIONS).map((o) => text(o, OPTION_MAX)) : [];
     if (!question || options.some((o) => !o)) return undefined;
     const described = Array.isArray(q.optionDescriptions) ? options.map((_, i) => text((q.optionDescriptions as unknown[])[i], TEXT_MAX) || undefined) : undefined;
+    const topic = text(q.header, OPTION_MAX) || text(q.topic, OPTION_MAX);
     questions.push({
       index: Number.isInteger(q.index) ? (q.index as number) : questions.length + 1,
-      ...(text(q.topic, OPTION_MAX) ? { topic: text(q.topic, OPTION_MAX) } : {}),
+      ...(topic ? { topic } : {}),
       question,
       options,
       ...(described?.some(Boolean) ? { descriptions: described } : {}),

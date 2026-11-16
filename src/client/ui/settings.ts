@@ -20,6 +20,7 @@ import { subscriptionsSettings } from './subscriptions-settings';
 import { droidSettings } from './droid-settings';
 import { hiddenModelSettings } from './hidden-models';
 import { workerLabelSettings } from './worker-labels';
+import { onThreadViewPrefs, resetThreadViewPrefs, setThreadViewPrefs, isDefaultThreadViewPrefs, threadViewPrefs, type ThreadViewPrefs } from './thread-view-prefs';
 import { openHostUpdate } from './host-update';
 import { openPhone, pairedPhones } from './phone';
 import { companionState, openCompanion } from './companion';
@@ -115,6 +116,81 @@ function radios<T>(label: string, options: readonly (readonly [T, string])[], no
     );
   };
   return { row, paint };
+}
+
+/** The Thread pane: how worker conversations read, saved in this browser and applied live to every open Thread. `dispose` stops listening. */
+function threadRows() {
+  const choose = <K extends keyof ThreadViewPrefs>(key: K, label: string, options: readonly (readonly [ThreadViewPrefs[K], string])[]) =>
+    radios<ThreadViewPrefs[K]>(
+      label,
+      options,
+      () => threadViewPrefs()[key],
+      (value) => setThreadViewPrefs({ [key]: value } as Partial<ThreadViewPrefs>),
+    );
+  const textSize = choose('textSize', 'Text size', [
+    ['sm', 'Small'],
+    ['md', 'Default'],
+    ['lg', 'Large'],
+    ['xl', 'Extra large'],
+  ]);
+  const font = choose('font', 'Font', [
+    ['sans', 'Sans'],
+    ['serif', 'Serif'],
+    ['mono', 'Mono'],
+  ]);
+  const spacing = choose('spacing', 'Spacing', [
+    ['compact', 'Compact'],
+    ['default', 'Default'],
+    ['relaxed', 'Relaxed'],
+  ]);
+  const width = choose('width', 'Column width', [
+    ['narrow', 'Narrow'],
+    ['default', 'Default'],
+    ['wide', 'Wide'],
+    ['full', 'Full width'],
+  ]);
+  const work = choose('work', 'Work between replies', [
+    ['steps', 'Show each step'],
+    ['fold', 'Fold into one line'],
+  ]);
+  const tools = choose('tools', 'Tool calls', [
+    ['folded', 'Folded'],
+    ['open', 'Open'],
+  ]);
+  const thinking = choose('thinking', 'Thinking', [
+    ['hidden', 'Hidden'],
+    ['folded', 'Folded'],
+    ['open', 'Open'],
+  ]);
+  const restore = h('button.btn', { type: 'button', onclick: resetThreadViewPrefs }, 'Restore defaults') as HTMLButtonElement;
+  const paint = () => {
+    for (const radio of [textSize, font, spacing, width, work, tools, thinking]) radio.paint();
+    restore.disabled = isDefaultThreadViewPrefs(threadViewPrefs());
+  };
+  paint();
+  const off = onThreadViewPrefs(paint);
+  return {
+    groups: [
+      group(
+        'Reading',
+        card('Text size', { desc: desc('How big a conversation reads. Tool rows, code and the message box scale with it.'), control: textSize.row }),
+        card('Font', { desc: desc('The typeface for messages and thinking. Code, diffs and tool rows keep their own.'), control: font.row }),
+        card('Spacing', { desc: desc('The room between messages, and between the lines of one.'), control: spacing.row }),
+        card('Column width', { desc: desc('How wide the conversation runs. The message box and plan follow it.'), control: width.row }),
+      ),
+      group(
+        'Tools & thinking',
+        card('Work between replies', {
+          desc: desc('The tool calls and thoughts a worker runs between its messages. Folded, each stretch is one line you can open. Work still running, or waiting on you, stays open.'),
+          control: work.row,
+        }),
+        card('Tool calls', { desc: desc('Whether commands, edits and subagent results start open or folded. A row you open or close yourself stays as you left it.'), control: tools.row }),
+        card('Thinking', { desc: desc('Whether a finished thought starts hidden, folded or open. Hidden, a live thought shows only how long it has run.'), control: thinking.row }),
+      ),
+      group(null, card('Restore Thread defaults', { desc: desc('Put every Thread setting back to how it came.'), control: restore })),
+    ],
+    dispose: off,
+  };
 }
 
 /** The sky and clock outside as a quiet value: its leading weather glyph spaced from the words. */
@@ -810,6 +886,7 @@ function phoneRows(companion: boolean): Node[] {
 export function openSettings(net: Net, opts: SettingsOptions) {
   const { surface, first, hireForSetup } = opts;
   const only = opts.surface === 'office' ? officeRows(net, opts.office) : undefined;
+  const threadPane = threadRows();
   const shown = settingsPanes(surface);
   // ---- Workers ------------------------------------------------------------------------------------
   // Where a fresh worker starts: the latest main, or the branch the checkout is on.
@@ -1250,6 +1327,7 @@ export function openSettings(net: Net, opts: SettingsOptions) {
   // ---- The panes ----------------------------------------------------------------------------------
   const panes: Partial<Record<SettingsPane, Node[]>> = {
     ...(only ? { you: only.you, sound: only.sound, graphics: only.graphics } : {}),
+    thread: threadPane.groups,
     workers: [
       group(
         'Hiring',
@@ -1471,6 +1549,7 @@ export function openSettings(net: Net, opts: SettingsOptions) {
       wide.removeEventListener('change', orient);
       for (const off of offStore) off();
       only?.dispose();
+      threadPane.dispose();
       factoryKey.dispose();
       gemini.dispose();
       benchmarks.dispose();
