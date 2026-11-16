@@ -50,15 +50,12 @@ export function emptyBenchmarksState(): BenchmarksState {
   return { connected: false, models: 0 };
 }
 
-const EFFORT_WORDS: Record<string, BenchmarkEffort> = {
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  xhigh: 'xhigh',
-  max: 'max',
-  reasoning: 'reasoning',
-  'non-reasoning': 'non-reasoning',
-};
+export const BENCHMARK_EFFORTS: readonly BenchmarkEffort[] = [...AGENT_EFFORTS, 'reasoning', 'non-reasoning'];
+const EFFORT_WORDS = new Set<string>(BENCHMARK_EFFORTS);
+
+export function isBenchmarkEffort(v: unknown): v is BenchmarkEffort {
+  return typeof v === 'string' && EFFORT_WORDS.has(v);
+}
 
 /** "Claude Opus 5.5 (High, Default Fallback)" is Claude Opus 5.5 at high; "Gemini 1.5 Pro (Sep '24)" is a name of its own. */
 export function benchmarkName(name: string): { base: string; effort?: BenchmarkEffort } {
@@ -66,8 +63,8 @@ export function benchmarkName(name: string): { base: string; effort?: BenchmarkE
   const m = /^(.*?)\s*\(([^)]*)\)\s*$/.exec(trimmed);
   if (!m) return { base: trimmed };
   const base = m[1].trim();
-  const effort = EFFORT_WORDS[m[2].split(',')[0].trim().toLowerCase()];
-  return base && effort ? { base, effort } : { base: trimmed };
+  const word = m[2].split(',')[0].trim().toLowerCase();
+  return base && isBenchmarkEffort(word) ? { base, effort: word } : { base: trimmed };
 }
 
 /** Brand words a name may or may not lead with: "Claude Opus 5.5" is Droid's "Opus 5.5". */
@@ -100,10 +97,12 @@ const variantWords = (v: BenchmarkVariant) => `intelligence ${score(v.intelligen
 export function benchmarkWords(m: BenchmarkModel, efforts?: readonly string[], defaultEffort?: string): string {
   if (!m.variants.length) return '';
   if (m.variants.length === 1 && !m.variants[0].effort) return variantWords(m.variants[0]);
-  const order: string[] = [...AGENT_EFFORTS, 'reasoning', 'non-reasoning'];
-  const rank = (v: BenchmarkVariant) => (v.effort ? order.indexOf(v.effort) : -1);
+  const rank = (v: BenchmarkVariant) => (v.effort ? BENCHMARK_EFFORTS.indexOf(v.effort) : -1);
   const taken = m.variants.filter((v) => v.effort && (!efforts?.length || efforts.includes(v.effort)));
   // Models Artificial Analysis rates only as (Reasoning) / (Non-reasoning) match none of Droid's efforts, so show all variants.
-  const shown = [...(taken.length ? taken : m.variants)].sort((a, b) => Number(b.effort === defaultEffort) - Number(a.effort === defaultEffort) || rank(a) - rank(b));
+  const shown = [...(taken.length ? taken : m.variants)].sort((a, b) => {
+    if ((a.effort === defaultEffort) !== (b.effort === defaultEffort)) return a.effort === defaultEffort ? -1 : 1;
+    return rank(a) - rank(b);
+  });
   return shown.map((v) => `${v.effort ?? 'default'}${v.effort && v.effort === defaultEffort ? ' (default)' : ''}: ${variantWords(v)}`).join('; ');
 }

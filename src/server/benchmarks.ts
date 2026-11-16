@@ -3,7 +3,7 @@
 
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { benchmarkName, matchBenchmark, type BenchmarkModel, type BenchmarksState, type BenchmarkVariant } from '../shared/benchmarks.js';
+import { benchmarkName, isBenchmarkEffort, matchBenchmark, type BenchmarkModel, type BenchmarksState, type BenchmarkVariant } from '../shared/benchmarks.js';
 import { AIRGAPPED_REASON } from '../shared/setup.js';
 import { durationWords } from '../shared/subscriptions.js';
 
@@ -74,13 +74,12 @@ export function groupBenchmarks(rows: readonly unknown[], into: BenchmarkModel[]
   return into;
 }
 
-const VALID_EFFORTS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max', 'reasoning', 'non-reasoning']);
 const isNullableNum = (v: unknown): v is number | null => v === null || (typeof v === 'number' && Number.isFinite(v));
 
 function isVariant(v: unknown): v is BenchmarkVariant {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
   const x = v as Record<string, unknown>;
-  return (x.effort === undefined || (typeof x.effort === 'string' && VALID_EFFORTS.has(x.effort))) && isNullableNum(x.intelligence) && isNullableNum(x.engineering) && isNullableNum(x.costPerTask) && isNullableNum(x.tokensPerSecond);
+  return (x.effort === undefined || isBenchmarkEffort(x.effort)) && isNullableNum(x.intelligence) && isNullableNum(x.engineering) && isNullableNum(x.costPerTask) && isNullableNum(x.tokensPerSecond);
 }
 
 function isModel(v: unknown): v is BenchmarkModel {

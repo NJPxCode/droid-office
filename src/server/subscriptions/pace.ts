@@ -168,10 +168,11 @@ export class UsagePaceTracker {
       } else if (wasBusy) {
         // Usage often lands a sample late: add it to the non-reset windows (already seeded with 0) of the busy interval just before.
         for (let i = this.intervals.length - 1; i >= 0; i--) {
-          if (this.intervals[i].provider !== p.key) continue;
+          const prior = this.intervals[i];
+          if (prior.provider !== p.key) continue;
           for (const [name, n] of Object.entries(used))
-            if (n > 0 && Object.hasOwn(this.intervals[i].used, name)) {
-              this.intervals[i].used[name] += n;
+            if (n > 0 && Object.hasOwn(prior.used, name)) {
+              prior.used[name] += n;
               changed = true;
             }
           break;
@@ -216,9 +217,9 @@ export class UsagePaceTracker {
     for (const a of accounts) for (const w of a.windows) if ((!model || windowCovers(w, model)) && !metered.has(w.name)) metered.set(w.name, w);
     const windows: UsagePaceWindow[] = [];
     let bestHours = 0;
-    for (const [name, window] of metered) {
+    for (const [name, spec] of metered) {
       // Only time on models this window meters counts: Sonnet hours spend nothing of `Weekly (Opus)`.
-      const exposed = (i: PaceInterval) => Object.entries(i.busy).reduce((s, [m, ms]) => s + (windowCovers(window, m) ? ms : 0), 0);
+      const exposed = (i: PaceInterval) => Object.entries(i.busy).reduce((s, [m, ms]) => s + (windowCovers(spec, m) ? ms : 0), 0);
       // Flat intervals keep used[name] = 0 and count; only intervals where this window reset (or wasn't reported) lack the key.
       const counted = pool.filter((i) => Object.hasOwn(i.used, name) && exposed(i) > 0);
       const h = counted.reduce((s, i) => s + exposed(i), 0) / HOUR;
