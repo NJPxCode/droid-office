@@ -203,7 +203,7 @@ function countLines(buf: Buffer): number {
  * Where a workspace-relative path really is: inside the worker's folder, not through a symlink leading
  * out of it, and not a secret or repository-internal file.
  */
-async function resolveWorkspaceFile(cwd: string, rawPath: string): Promise<{ abs: string; rel: string } | ThreadWorkspaceFailure> {
+async function resolveWorkspaceFile(cwd: string, rawPath: string, knownRealRoot?: string): Promise<{ abs: string; rel: string } | ThreadWorkspaceFailure> {
   const trimmed = rawPath.trim();
   if (!trimmed) return { status: 400, error: 'Missing file path.' };
 
@@ -217,10 +217,14 @@ async function resolveWorkspaceFile(cwd: string, rawPath: string): Promise<{ abs
   }
 
   let root: string;
-  try {
-    root = await realpath(cwd);
-  } catch {
-    return { status: 404, error: 'Workspace folder is unavailable.' };
+  if (knownRealRoot !== undefined) {
+    root = knownRealRoot;
+  } else {
+    try {
+      root = await realpath(cwd);
+    } catch {
+      return { status: 404, error: 'Workspace folder is unavailable.' };
+    }
   }
 
   const candidate = path.resolve(root, cleanRelPath);
@@ -257,11 +261,11 @@ async function resolveWorkspaceFile(cwd: string, rawPath: string): Promise<{ abs
 }
 
 /** A path a tool named (absolute, or relative to the worker's folder) as a workspace-relative path, or undefined outside it. */
-async function workspaceRelative(cwd: string, filePath: string): Promise<string | undefined> {
+async function workspaceRelative(cwd: string, filePath: string, knownRoots?: readonly string[]): Promise<string | undefined> {
   const raw = filePath.trim();
   if (!raw) return undefined;
   if (!path.isAbsolute(raw)) return raw;
-  const roots = [...new Set([path.resolve(cwd), await realpath(cwd).catch(() => path.resolve(cwd))])];
+  const roots = knownRoots ?? [...new Set([path.resolve(cwd), await realpath(cwd).catch(() => path.resolve(cwd))])];
   const target = path.resolve(raw);
   for (const root of roots) {
     const rel = path.relative(root, target);
@@ -313,13 +317,21 @@ export class WorkspaceTexts {
 
   async read(cwd: string, filePaths: readonly string[]): Promise<{ key: string; text: (filePath: string) => string | undefined }> {
     const wanted = [...new Set(filePaths.map((p) => p.trim()).filter(Boolean))].slice(-ANCHOR_FILES);
+    if (!wanted.length) return { key: '', text: () => undefined };
+    let realRoot: string | undefined;
+    try {
+      realRoot = await realpath(cwd);
+    } catch {
+      return { key: '', text: () => undefined };
+    }
+    const roots = [...new Set([path.resolve(cwd), realRoot])];
     const texts = new Map<string, string>();
     const stamps: string[] = [];
     await Promise.all(
       wanted.map(async (filePath) => {
-        const rel = await workspaceRelative(cwd, filePath);
+        const rel = await workspaceRelative(cwd, filePath, roots);
         if (!rel) return;
-        const resolved = await resolveWorkspaceFile(cwd, rel);
+        const resolved = await resolveWorkspaceFile(cwd, rel, realRoot);
         if ('error' in resolved) return;
         const info = await stat(resolved.abs).catch(() => undefined);
         if (!info?.isFile() || info.size > MAX_STAT_BYTES) return;

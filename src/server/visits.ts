@@ -183,6 +183,7 @@ export class Visits {
   /** The last message typed into each host, and whether a turn has started since. */
   private last = new Map<string, { at: number; sawWork: boolean }>();
   private timer?: NodeJS.Timeout;
+  private started = false;
   private dirty = false;
   private now: () => number;
 
@@ -194,14 +195,28 @@ export class Visits {
   }
 
   start() {
-    if (this.timer) return;
-    this.timer = setInterval(() => this.tick(), TICK_MS);
-    this.timer.unref?.();
+    this.started = true;
+    this.syncTimer();
   }
 
   stop() {
-    clearInterval(this.timer);
-    this.timer = undefined;
+    this.started = false;
+    this.syncTimer();
+  }
+
+  private syncTimer() {
+    const active = this.started && (this.runs.size > 0 || this.questions.size > 0 || this.inbox.size > 0 || this.ended.size > 0);
+    if (!active) {
+      if (this.timer) {
+        clearInterval(this.timer);
+        this.timer = undefined;
+      }
+      return;
+    }
+    if (!this.timer) {
+      this.timer = setInterval(() => this.tick(), TICK_MS);
+      this.timer.unref?.();
+    }
   }
 
   /** Every visit on the floor, as the browser shows them. */
@@ -226,6 +241,7 @@ export class Visits {
     const why = this.cannotVisit(caller);
     if (why) return no(403, why);
     const reply = this.act(caller, b);
+    this.syncTimer();
     this.flush();
     return reply;
   }
@@ -253,6 +269,7 @@ export class Visits {
     this.inbox.delete(id);
     this.last.delete(id);
     for (const host of [...this.inbox.keys()]) this.keepNotes(host, (n) => n.from !== id);
+    this.syncTimer();
     this.flush();
   }
 
@@ -270,6 +287,7 @@ export class Visits {
     for (const run of [...this.runs.values()]) this.step(run, now);
     for (const host of [...this.inbox.keys()]) this.deliver(host, now);
     for (const [id, e] of this.ended) if (now - e.at > KEEP_MS) this.ended.delete(id);
+    this.syncTimer();
     this.flush();
   }
 

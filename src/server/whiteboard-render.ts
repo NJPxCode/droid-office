@@ -212,9 +212,29 @@ export class RenderEngine implements WhiteboardRenderers {
   /** Stops every floor's renders and the browser. */
   async close(): Promise<void> {
     this.closed = true;
+    this.clearIdleClose();
     for (const f of [...this.floors]) f.stop();
     this.queue.length = 0;
     if (!this.opts.launch && !this.opts.capture) await closeBrowser();
+  }
+
+  private idleTimer?: NodeJS.Timeout;
+
+  private clearIdleClose() {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
+  }
+
+  private scheduleIdleClose() {
+    this.clearIdleClose();
+    if (this.closed || this.active > 0 || this.queue.length > 0 || this.opts.launch || this.opts.capture) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = undefined;
+      if (!this.closed && this.active === 0 && this.queue.length === 0) void closeBrowser();
+    }, 60_000);
+    this.idleTimer.unref?.();
   }
 
   // ---- For FloorRenderer ----
@@ -249,18 +269,26 @@ export class RenderEngine implements WhiteboardRenderers {
   /** @internal A read's render of exactly this snapshot (or the cached image of exactly it). */
   async renderRead(f: FloorRenderer, slot: Slot, pin: PinnedCard, timeoutMs: number): Promise<RenderOutcome> {
     if (slot.image && sameKey(slot.image.key, pin.key)) return { ok: true, image: slot.image };
+    this.clearIdleClose();
+    this.active++;
     const start = this.now();
     try {
-      const ready = await within(this.prepare(), timeoutMs);
-      if (ready === TIMEOUT) return this.settle(f, slot, pin, { ok: false, error: this.status().reason ?? `Chromium wasn't ready within ${seconds(timeoutMs)}` });
-    } catch (err) {
-      return this.settle(f, slot, pin, { ok: false, error: errorText(err) });
+      try {
+        const ready = await within(this.prepare(), timeoutMs);
+        if (ready === TIMEOUT) return this.settle(f, slot, pin, { ok: false, error: this.status().reason ?? `Chromium wasn't ready within ${seconds(timeoutMs)}` });
+      } catch (err) {
+        return this.settle(f, slot, pin, { ok: false, error: errorText(err) });
+      }
+      return await this.run(f, slot, pin, Math.max(1000, timeoutMs - (this.now() - start)));
+    } finally {
+      this.active--;
+      this.scheduleIdleClose();
     }
-    return this.run(f, slot, pin, Math.max(1000, timeoutMs - (this.now() - start)));
   }
 
   private enqueue(f: FloorRenderer, slot: Slot) {
     if (this.closed || f.stopped || f.slot(slot.id, false) !== slot) return;
+    this.clearIdleClose();
     if (slot.running) {
       slot.dirty = true;
       return;
@@ -317,6 +345,7 @@ export class RenderEngine implements WhiteboardRenderers {
         this.enqueue(f, slot);
       }
       this.pump();
+      this.scheduleIdleClose();
     }
   }
 

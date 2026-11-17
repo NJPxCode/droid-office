@@ -142,15 +142,27 @@ export class HotReload {
     return { ...this.current };
   }
 
-  async start(): Promise<void> {
-    if (!this.current.available || this.stopped || this.timer) return;
-    try {
-      this.baseline = this.seen = await sourceStamp(this.options.appDir!);
-    } catch (err) {
-      this.fail(err);
+  private syncTimer() {
+    const want = this.current.available && this.current.enabled && !this.stopped;
+    if (want && !this.timer) {
+      this.timer = setInterval(() => void this.check(), this.options.pollMs ?? 1000);
+      this.timer.unref();
+    } else if (!want && this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
     }
-    this.timer = setInterval(() => void this.check(), this.options.pollMs ?? 1000);
-    this.timer.unref();
+  }
+
+  async start(): Promise<void> {
+    if (!this.current.available || this.stopped) return;
+    if (!this.baseline) {
+      try {
+        this.baseline = this.seen = await sourceStamp(this.options.appDir!);
+      } catch (err) {
+        this.fail(err);
+      }
+    }
+    this.syncTimer();
     if (this.current.enabled) this.requestBuild();
   }
 
@@ -179,6 +191,7 @@ export class HotReload {
     this.pending = false;
     this.current.phase = 'idle';
     this.current.error = undefined;
+    this.syncTimer();
     if (enabled) this.requestBuild();
   }
 

@@ -15,13 +15,7 @@ import { setBrowserAuth, withToken } from './token';
 import { $, closeAllModals, closeTopModal, h, modalOpen, onModalChange, openModal, toast } from './ui/dom';
 import { windowHeader } from './ui/kit';
 import { icon, type IconName } from './ui/icons';
-import { confirmDialog, openPrompt, routeWorktreeMessage, sendHomeDialog } from './ui/prompt';
 import { CLOUD_HIRE_CONFIRM_MS } from '../shared/factory-cloud';
-import { cloudSpawn, runsOnPicker } from './ui/factory-cloud';
-import { openAddFloor, routeAddFloorMessage } from './ui/add-floor';
-import { routeFolderMessage } from './ui/folder-browser';
-import { openFloorOrder } from './ui/floor-reorder';
-import { openSubscriptionsStatus } from './ui/subscriptions-status';
 import { onTermFontSize, setTermFontSize, stepTermFont, termFontSize, TERM_FONT_MAX, TERM_FONT_MIN } from './ui/term-font';
 import { parseWorkerLink } from './worker-link';
 import { DashboardWorkerLink } from './dashboard-worker-link';
@@ -63,7 +57,6 @@ import { createBuildingView } from './dashboard-building-view';
 import { buildTriageFloors, filterSwitcherFloors, nextUrgentTarget, rankTriageFloors, type TriageFloor, unackedDoneBuildingCount } from './dashboard-triage';
 import { fitTabs } from '../shared/floor-relevance';
 import { createWorkerMenu } from './dashboard-worker-menu';
-import { openForkWorker } from './ui/fork-worker';
 import { copy } from './ui/clipboard';
 import { workersByTeam } from '../shared/team';
 import { resolveSettingsPane, type SettingsPane } from '../shared/settings-nav';
@@ -74,7 +67,7 @@ import { INCLUDE_FILE, SETUP_FILE, describeSetup } from '../shared/worktree-setu
 import { ORCHESTRATOR_ID } from '../shared/mission-control';
 import { createMissionRoster } from './dashboard-mission';
 import { missionWaiting, missionWorker } from './mission';
-import { newOrchestratorConversation } from './ui/orchestrator';
+store.decodeBitmaps = false;
 const read = (key: string) => {
   try {
     return localStorage.getItem(key) ?? '';
@@ -132,6 +125,9 @@ let terminal: typeof import('./ui/terminal') | undefined;
 let whiteboard: typeof import('./ui/whiteboard') | undefined;
 let settingsUi: typeof import('./ui/settings') | undefined;
 let changesUi: typeof import('./ui/changes') | undefined;
+let promptUi: typeof import('./ui/prompt') | undefined;
+let addFloorUi: typeof import('./ui/add-floor') | undefined;
+let folderUi: typeof import('./ui/folder-browser') | undefined;
 const busy = new Set<string>();
 
 function defaultBrowserName() {
@@ -182,7 +178,7 @@ const quietTrigger = h(
 );
 const floorTrackText = h('span');
 const floorTrack = h('div.dash-floor-track', {}, floorTrackText);
-const reorderFloors = h('button.dash-end-bay', { type: 'button', 'aria-label': 'Reorder floors', title: 'Reorder floors', onclick: () => openFloorOrder(net) }, icon('grip', 13));
+const reorderFloors = h('button.dash-end-bay', { type: 'button', 'aria-label': 'Reorder floors', title: 'Reorder floors', onclick: () => void showFloorOrder() }, icon('grip', 13));
 const addFloorLabel = h('span.dash-floor-add-label', { hidden: true }, 'Add floor');
 const addFloorBtn = h('button.dash-end-bay.dash-floor-add', { type: 'button', 'aria-label': 'Add floor', title: 'Add floor', onclick: () => addFloor() }, icon('plus', 13), addFloorLabel);
 const quietInput = h('input.dash-quiet-input', {
@@ -200,7 +196,7 @@ const quietReorderBtn = h(
     type: 'button',
     onclick: () => {
       showQuiet(false);
-      openFloorOrder(net);
+      void showFloorOrder();
     },
   },
   icon('grip', 11),
@@ -239,7 +235,11 @@ const allWorkersBtn = h(
   allWorkersCount,
 );
 const board = h('button.btn.sm.ghost.dash-top-btn.dash-board', { type: 'button', title: 'The floor’s Whiteboard (⌘ B)', onclick: () => void openBoard() }, icon('board', 14), boardCount);
-const subscriptions = h('button.btn.icon.sm.ghost.dash-top-btn', { type: 'button', 'aria-label': 'Usage and subscriptions', title: 'Usage and subscriptions', onclick: () => openSubscriptionsStatus() }, icon('usage', 14));
+const subscriptions = h(
+  'button.btn.icon.sm.ghost.dash-top-btn',
+  { type: 'button', 'aria-label': 'Usage and subscriptions', title: 'Usage and subscriptions', onclick: () => void import('./ui/subscriptions-status').then(({ openSubscriptionsStatus }) => openSubscriptionsStatus()) },
+  icon('usage', 14),
+);
 const settingsBtn = h('button.btn.icon.sm.ghost.dash-top-btn', { type: 'button', 'aria-label': 'Settings', title: 'Settings (⌘ ,)', onclick: () => void showSettings() }, icon('settings', 14));
 
 const bannerIcon = h('span.dash-banner-icon');
@@ -284,7 +284,7 @@ const workerMenu = createWorkerMenu({
         void action({ t: 'worker.interrupt', workerId: w.id }, w.id, intended).then(warn);
         break;
       case 'fork':
-        openForkWorker(net, w.id);
+        void import('./ui/fork-worker').then(({ openForkWorker }) => openForkWorker(net, w.id));
         break;
       case 'pr':
         if (w.pr) {
@@ -675,7 +675,7 @@ const paneHost: PaneHost = {
   worker: (id) => workerOf(id),
   mission: () => store.missionControl,
   openAcross: (id, to) => openAcross(id, to),
-  resetOrchestrator: () => newOrchestratorConversation(net),
+  resetOrchestrator: () => void import('./ui/orchestrator').then(({ newOrchestratorConversation }) => newOrchestratorConversation(net)),
   settings: (pane) => void showSettings(pane),
   changes: (id) => void showChanges(id),
   toWhiteboard: (id, path, intended) => void toBoard(id, path, intended),
@@ -714,6 +714,8 @@ function place(el: HTMLElement, [x, y, w, hgt]: Rect) {
 }
 
 let dragAxis: 'col' | 'row' | '' = '';
+let dragRect: DOMRect | undefined;
+let dragFrame = 0;
 for (const [handle, axis] of [
   [colHandle, 'col'],
   [rowHandle, 'row'],
@@ -723,17 +725,29 @@ for (const [handle, axis] of [
     e.preventDefault();
     handle.setPointerCapture(e.pointerId);
     dragAxis = axis;
+    dragRect = workspaceEl.getBoundingClientRect();
     workspaceEl.classList.add('resizing');
   });
   handle.addEventListener('pointermove', (e) => {
     if (dragAxis !== axis) return;
-    const r = workspaceEl.getBoundingClientRect();
+    const r = dragRect ?? workspaceEl.getBoundingClientRect();
     ws[axis] = clampRatio(axis === 'col' ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height);
-    paintWorkspace();
+    if (!dragFrame) {
+      dragFrame = requestAnimationFrame(() => {
+        dragFrame = 0;
+        paintWorkspace();
+      });
+    }
   });
   const end = () => {
     if (dragAxis !== axis) return;
     dragAxis = '';
+    dragRect = undefined;
+    if (dragFrame) {
+      cancelAnimationFrame(dragFrame);
+      dragFrame = 0;
+      paintWorkspace();
+    }
     workspaceEl.classList.remove('resizing');
     saveWorkspace();
   };
@@ -842,9 +856,9 @@ net.onMessage((msg) => {
   store.apply(msg);
   terminal?.routeTerminalMessage(msg);
   whiteboard?.routeWhiteboardMessage(msg);
-  routeWorktreeMessage(msg);
-  routeAddFloorMessage(msg);
-  routeFolderMessage(msg);
+  promptUi?.routeWorktreeMessage(msg);
+  addFloorUi?.routeAddFloorMessage(msg);
+  folderUi?.routeFolderMessage(msg);
   changesUi?.routeChangesMessage(msg);
   if (msg.t === 'welcome') {
     // After a reconnect the office has forgotten which worker's changes were on screen.
@@ -868,14 +882,20 @@ net.onMessage((msg) => {
   if (entering || msg.t === 'floors' || msg.t === 'worker.update') followWorkerLink();
 });
 for (const topic of ['floors', 'workers', 'building', 'pulls', 'whiteboard', 'project', 'missionControl'] as const) store.on(topic, () => paints.schedule());
-store.on('screens', () => {
+store.on('screens', (changedId) => {
   if (document.hidden) return;
-  for (const p of panes) p?.paintQuestion();
+  for (const p of panes) if (!changedId || p?.workerId() === changedId) p?.paintQuestion();
   schedulePreviews();
 });
-function addFloor() {
+async function showFloorOrder() {
+  const { openFloorOrder } = await import('./ui/floor-reorder');
+  openFloorOrder(net);
+}
+async function addFloor() {
   if (!live()) return;
-  openAddFloor(net, (id) => goFloor(id));
+  [addFloorUi, folderUi] = await Promise.all([addFloorUi ?? import('./ui/add-floor'), folderUi ?? import('./ui/folder-browser')]);
+  if (!live()) return;
+  addFloorUi.openAddFloor(net, (id) => goFloor(id));
 }
 function goFloor(id: string) {
   if (!live()) return;
@@ -1172,7 +1192,6 @@ function paintConsole(up: boolean, buildingRows: readonly BuildingWorkerRow[]) {
   // Lower floor tabs: every floor gets one, and fitFloorStrip hides those that don't fit.
   const key = JSON.stringify([
     store.floor === ROOF,
-    store.floor,
     latestTriageItems.map((item) => [item.floor.id, item.number, item.floor.name, item.floor.repo, item.branch, item.chord, item.triage, item.needsInput, item.unackedDone, item.busy, item.totalWorkers, item.idleState]),
   ]);
   const changedList = key !== floorListKey;
@@ -1524,30 +1543,34 @@ function hire(deskId = 'auto', targetPane?: number) {
   const intended = floor;
   const key = draftKey(intended, 'hire:agent');
   const desk = deskId === 'auto' ? undefined : DESK_BY_ID.get(deskId)?.label;
-  openPrompt({
-    title: 'Hire Droid',
-    subtitle: [store.currentFloor()?.name, desk].filter(Boolean).join(' · '),
-    submitLabel: 'Hire Droid',
-    allowEmpty: true,
-    initial: read(key),
-    onDraft: (v) => remember(key, v),
-    modelOption: true,
-    deskId: deskId === 'auto' ? undefined : deskId,
-    imagesOption: true,
-    recall: true,
-    worktreeOption: !store.currentFloor()?.home && !store.currentFloor()?.plain && !!store.currentFloor()?.branch,
-    repoOptions: repoChoices(store.floors, intended),
-    runsOn: runsOnPicker(),
-    onCloud: async (text, o) => {
-      const error = await action(cloudSpawn(deskId, text, o), '', intended, `Droid hired on ${o.cloud.computerName}.`, targetPane);
-      if (!error) remember(key, '');
-      return error;
-    },
-    onSubmit: async (text, opts) => {
-      const error = await action({ t: 'worker.spawn', deskId, kind: 'agent', prompt: text, ...opts }, '', intended, 'Droid hired.', targetPane);
-      if (!error) remember(key, '');
-      return error;
-    },
+  void Promise.all([promptUi ?? import('./ui/prompt'), import('./ui/factory-cloud')]).then(([loadedPrompt, { cloudSpawn, runsOnPicker }]) => {
+    promptUi = loadedPrompt;
+    if (!live() || floor !== intended || !store.currentFloor()) return;
+    promptUi.openPrompt({
+      title: 'Hire Droid',
+      subtitle: [store.currentFloor()?.name, desk].filter(Boolean).join(' · '),
+      submitLabel: 'Hire Droid',
+      allowEmpty: true,
+      initial: read(key),
+      onDraft: (v) => remember(key, v),
+      modelOption: true,
+      deskId: deskId === 'auto' ? undefined : deskId,
+      imagesOption: true,
+      recall: true,
+      worktreeOption: !store.currentFloor()?.home && !store.currentFloor()?.plain && !!store.currentFloor()?.branch,
+      repoOptions: repoChoices(store.floors, intended),
+      runsOn: runsOnPicker(),
+      onCloud: async (text, o) => {
+        const error = await action(cloudSpawn(deskId, text, o), '', intended, `Droid hired on ${o.cloud.computerName}.`, targetPane);
+        if (!error) remember(key, '');
+        return error;
+      },
+      onSubmit: async (text, opts) => {
+        const error = await action({ t: 'worker.spawn', deskId, kind: 'agent', prompt: text, ...opts }, '', intended, 'Droid hired.', targetPane);
+        if (!error) remember(key, '');
+        return error;
+      },
+    });
   });
 }
 const warn = (error: string | undefined) => {
@@ -1556,28 +1579,31 @@ const warn = (error: string | undefined) => {
 function sendHome(w: WorkerInfo) {
   const intended = floor;
   const confirm = (cleanup: 'keep' | 'worktree' | 'all' = 'keep') => void action({ t: 'worker.kill', workerId: w.id, cleanup, deleteSession: false }, w.id, intended, `${w.name} went home.`).then(warn);
-  if (w.worktree && !w.cloud)
-    sendHomeDialog({
-      workerId: w.id,
-      name: w.name,
-      where: store.currentFloor()?.name ?? 'this floor',
-      worktree: w.worktree,
-      ask: () => {
-        if (usable(w.id, intended)) net.send({ t: 'worker.worktree', workerId: w.id });
-      },
-      onConfirm: confirm,
-    });
-  else
-    confirmDialog(
-      `Send ${w.name} home?`,
-      w.cloud ? 'This frees its desk. Its Factory session stays archived; a computer this worker made is deleted, as in the office.' : 'This stops its terminal for every window and frees its desk. Work in the checkout is kept.',
-      'Send home',
-      () => confirm(),
-    );
+  void (promptUi ? Promise.resolve(promptUi) : import('./ui/prompt')).then((loadedPrompt) => {
+    promptUi = loadedPrompt;
+    if (w.worktree && !w.cloud)
+      promptUi.sendHomeDialog({
+        workerId: w.id,
+        name: w.name,
+        where: store.currentFloor()?.name ?? 'this floor',
+        worktree: w.worktree,
+        ask: () => {
+          if (usable(w.id, intended)) net.send({ t: 'worker.worktree', workerId: w.id });
+        },
+        onConfirm: confirm,
+      });
+    else
+      promptUi.confirmDialog(
+        `Send ${w.name} home?`,
+        w.cloud ? 'This frees its desk. Its Factory session stays archived; a computer this worker made is deleted, as in the office.' : 'This stops its terminal for every window and frees its desk. Work in the checkout is kept.',
+        'Send home',
+        () => confirm(),
+      );
+  });
 }
 /** The office's Settings, less what only the 3D office has (see SETTINGS_CARDS); the Mac app's companion also gets Phone & web. */
 async function showSettings(pane?: SettingsPane) {
-  settingsUi ??= await import('./ui/settings');
+  [settingsUi, folderUi] = await Promise.all([settingsUi ?? import('./ui/settings'), folderUi ?? import('./ui/folder-browser')]);
   if (!live()) return;
   settingsUi.openSettings(net, { surface: nativeCompanion ? 'mac-companion' : 'companion', first: pane, hireForSetup: hireForWorktreeSetup });
 }
@@ -1593,16 +1619,20 @@ function hireForWorktreeSetup() {
   if (!live() || !store.currentFloor()) return;
   const intended = floor;
   const now = store.worktreeSetup ? describeSetup(store.worktreeSetup.resolved) : 'runs what the office detects from its lockfiles';
-  openPrompt({
-    title: 'Set up worktrees',
-    subtitle: 'A worker writes this repository’s worktree setup, tests it, and opens a pull request with it. Pick its model, edit the task if you like, then hire.',
-    initial: officePrompt('worktree.setup', { file: SETUP_FILE, include: INCLUDE_FILE, now, ...forgeVars(store.project?.forge) }),
-    submitLabel: 'Hire & start',
-    modelOption: true,
-    worktreeOption: true,
-    worktreeChecked: true,
-    imagesOption: true,
-    onSubmit: (text, opts) => action({ t: 'worker.spawn', deskId: 'auto', kind: 'agent', prompt: text, ...opts }, '', intended, 'Droid hired.'),
+  void (promptUi ? Promise.resolve(promptUi) : import('./ui/prompt')).then((loadedPrompt) => {
+    promptUi = loadedPrompt;
+    if (!live() || floor !== intended || !store.currentFloor()) return;
+    promptUi.openPrompt({
+      title: 'Set up worktrees',
+      subtitle: 'A worker writes this repository’s worktree setup, tests it, and opens a pull request with it. Pick its model, edit the task if you like, then hire.',
+      initial: officePrompt('worktree.setup', { file: SETUP_FILE, include: INCLUDE_FILE, now, ...forgeVars(store.project?.forge) }),
+      submitLabel: 'Hire & start',
+      modelOption: true,
+      worktreeOption: true,
+      worktreeChecked: true,
+      imagesOption: true,
+      onSubmit: (text, opts) => action({ t: 'worker.spawn', deskId: 'auto', kind: 'agent', prompt: text, ...opts }, '', intended, 'Droid hired.'),
+    });
   });
 }
 async function openBoard() {

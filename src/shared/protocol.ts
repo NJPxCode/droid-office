@@ -852,7 +852,8 @@ type ClientMessage =
   | { t: 'worker.worktree'; workerId: string }
   /** Puts a lost worker's worktree back and starts it again (see WorkerInfo.lost); `all`: every lost worker on the floor. */
   | { t: 'worker.rebuild'; workerId: string; all?: boolean }
-  | { t: 'worker.attach'; workerId: string }
+  /** `stream: false` opens the worker without a raw terminal snapshot or live `term.data` stream (Thread view). */
+  | { t: 'worker.attach'; workerId: string; stream?: boolean }
   | { t: 'worker.detach'; workerId: string }
   /**
    * With `issue`, the prompt hands the worker that GitHub issue, which is taken as for worker.spawn.

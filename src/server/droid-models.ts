@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { isAgentEffort, type AgentEffort } from '../shared/protocol.js';
@@ -100,7 +100,25 @@ function multiplier(value: unknown): number | undefined {
  * like `glm-5.3-flash` never appear in `customModels`). A bad id in an overlay silently runs the
  * default model instead, so only well-shaped ids are listed.
  */
+const settingsCache = new Map<string, { stamp: string; value: DroidModelCatalogue }>();
+
 export function readDroidModels(settingsPath: string = DROID_SETTINGS_PATH): DroidModelCatalogue {
+  let stamp = '';
+  try {
+    const st = statSync(settingsPath);
+    stamp = `${st.ino}:${st.size}:${st.mtimeMs}`;
+    const cached = settingsCache.get(settingsPath);
+    if (cached?.stamp === stamp) {
+      return {
+        models: cached.value.models.map((m) => ({ ...m, ...(m.supportedReasoningEfforts ? { supportedReasoningEfforts: [...m.supportedReasoningEfforts] } : {}) })),
+        ...(cached.value.defaultModel ? { defaultModel: cached.value.defaultModel } : {}),
+        ...(cached.value.defaultReasoningEffort ? { defaultReasoningEffort: cached.value.defaultReasoningEffort } : {}),
+      };
+    }
+  } catch {
+    settingsCache.delete(settingsPath);
+    return { models: [] };
+  }
   const models: DroidModelOption[] = [];
   const seen = new Set<string>();
   const add = (id: unknown, name?: unknown, fallback?: AgentEffort, supported?: AgentEffort[], custom = false) => {
@@ -133,7 +151,15 @@ export function readDroidModels(settingsPath: string = DROID_SETTINGS_PATH): Dro
   if (defaultModel) add(defaultModel);
   const favorites = Array.isArray(raw.modelFavorites) ? raw.modelFavorites : [];
   for (const fav of favorites) add(fav);
-  return { models, ...(defaultModel ? { defaultModel } : {}), ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}) };
+  const result: DroidModelCatalogue = { models, ...(defaultModel ? { defaultModel } : {}), ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}) };
+  if (stamp) {
+    if (settingsCache.size >= 16) {
+      const oldest = settingsCache.keys().next().value;
+      if (oldest !== undefined) settingsCache.delete(oldest);
+    }
+    settingsCache.set(settingsPath, { stamp, value: result });
+  }
+  return result;
 }
 
 /**

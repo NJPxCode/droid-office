@@ -1,7 +1,7 @@
 import './style.css';
 import './scrollbars';
 import * as THREE from 'three';
-import { OutlineEffect } from 'three/examples/jsm/effects/OutlineEffect.js';
+import { OutlineEffect } from './outline-effect';
 import {
   BEANBAGS,
   DESK_BY_ID,
@@ -65,7 +65,7 @@ import { RenderLoop } from './render-loop';
 import { Climber, type Grip, type Way } from './climb';
 import { buildOffice, type Collider, type DeskView, type InteractKind, type Interactable } from './world/office';
 
-import { propManifest, propScene } from './world/props';
+import { loadPropManifest, propScene } from './world/props';
 import { buildRooftop, type Rooftop } from './world/rooftop';
 
 import { ROOF, ROOF_NAME } from '../shared/rooftop';
@@ -100,10 +100,10 @@ import { OfficeSound } from './sound';
 import { DesktopNotifier, askNotifyPermission, notifyPermission, waitingOnSomeone } from './notify';
 import { NextUp, waitingInOrder, waitingLabel } from './nextup';
 import { linkStep, parseWorkerLink, type WorkerLink } from './worker-link';
-import { $, h, clip, closeAllModals, modalOpen, onModalChange, openModalList, readingNow, toast, STATUS_LABEL } from './ui/dom';
+import { $, h, clip, closeAllModals, lightboxOpen, modalOpen, onModalChange, openModalList, readingNow, toast, STATUS_LABEL } from './ui/dom';
 import { deskApproach, type ApproachPose } from './approach';
 import { createAutomation, facingToward, pitchToward, runCommand, type CameraPose } from './automation';
-import { onOpenTeammate, openOfficeShell, openTerminal, openTerminalFor, routeTerminalMessage, terminalOnTop, type TerminalFind } from './ui/terminal';
+import { onOpenTeammate, openOfficeShell, openTerminal, openTerminalFor, openTerminalStreams, routeTerminalMessage, terminalOnTop, type TerminalFind } from './ui/terminal';
 import { openSearch } from './ui/search';
 import { changesLogFor, openChanges, openChangesFor, routeChangesMessage } from './ui/changes';
 import { openRepoPulls, workerRepos } from './ui/repos';
@@ -167,28 +167,30 @@ import { presenterStats, reportHdr } from './native-bridge';
 import { GpuTimer } from './gpu-timer';
 import { gpuBusy, statsText } from './graphics';
 import { withToken } from './token';
-import { warmOfficeShaders, warmOutlines } from './shader-warmup';
+import { warmOfficeShaders } from './shader-warmup';
 import { WarmupWatch, type WarmupStatus } from './warmup';
 import { mountWallBoards } from './runtime/wall-boards';
 import { installElevatorPanels } from './world/elevator-panels';
 import { installRoofPlanters } from './world/rooftop-planter';
 import { installCityFacades } from './world/city-facades';
-import { loadOfficeModels } from './runtime/prop-models';
+import { DYNAMIC_WARMUP_PROPS, loadOfficeModels } from './runtime/prop-models';
 import { createSidearm } from './runtime/sidearm';
 import { createWorkerScene, WORKER_HEAD, type WorkerView } from './runtime/worker-scene';
 import { createFloorTravel } from './runtime/floor-travel';
 
 // Up from the first paint (index.html) until the office has drawn a frame. Props and shaders are waited on below.
 const loading = loadingScreen(() => () => {});
+loadPropManifest().catch(() => {});
+void loadFonts();
 
 // ---- Renderer & scene ---------------------------------------------------------------------------
 const canvas = $('scene') as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-/** The ink outline round every solid. Its thickness and alpha are fixed when it's made, so the Remastered renderer makes a new one to change them. */
+/** The ink outline round every solid; Remastered updates its thickness and alpha uniforms in place. */
 const outlineEffect = (thickness = 1.8, alpha = 1) => new OutlineEffect(renderer, { defaultThickness: thickness / 1000, defaultColor: [0.035, 0.035, 0.035], defaultAlpha: alpha });
-let effect = outlineEffect();
+const effect = outlineEffect();
 let outlineKey = '1.8|1';
 // Draw calls add up over a frame's passes and are cleared once a frame (see drawFrame).
 renderer.info.autoReset = false;
@@ -489,6 +491,10 @@ function showMyProfile(p: Profile) {
   hands.setSkin(me.skinColor);
 }
 
+const viewFrustum = new THREE.Frustum();
+const projScreenMatrix = new THREE.Matrix4();
+const bossSeat = SEATING_BY_ID.get('boss-chair')!;
+
 const workerScene = createWorkerScene({
   scene,
   office,
@@ -519,6 +525,7 @@ const workerScene = createWorkerScene({
   get vibeFxMoving() {
     return vibeFxMoving;
   },
+  screenVisible: (laptop) => !upTop && laptop.screenInView(viewFrustum, camera.position),
 });
 const { workerViews, sentHome, shotWorkers, departures, visitors, casualties, syncWorkers, syncMissionControl, anyWorker, focusTeam, paintPrs, sayVisit, workerMoving } = workerScene;
 const sidearm = createSidearm({
@@ -718,11 +725,14 @@ net.onMessage((msg) => {
       } else if (!store.floor) arrive();
       // After a reconnect the server has forgotten which terminal we had open.
       const openId = openTerminalFor();
+      const following = changesLogFor();
       if (openId === OFFICE_SHELL_ID) net.send({ t: 'shell.attach' });
-      else if (openId && store.worker(openId)) net.send({ t: 'worker.attach', workerId: openId });
+      else if (openId && store.worker(openId)) {
+        const stream = openTerminalStreams() || following === openId;
+        net.send({ t: 'worker.attach', workerId: openId, ...(stream ? {} : { stream: false }) });
+      }
       const watching = openChangesFor();
       if (watching && store.workers.has(watching.workerId)) net.send({ t: 'changes.watch', ...watching });
-      const following = changesLogFor();
       if (following && following !== openId && store.workers.has(following)) net.send({ t: 'worker.attach', workerId: following });
       renderProject();
       hud.refresh();
@@ -3063,8 +3073,6 @@ const PACING_WINDOW_MS = 5000;
 /** GPU time per pass over the overlay's last half second, while something times it. */
 let lastGpuPass: { scene: number | null; hands: number | null } | null = null;
 const warmup = new WarmupWatch();
-/** Set once shader warmup has finished, so a later outline rebuild can compile before the next frame. */
-let shadersWarmed = false;
 const warmupEl = $('warmup');
 let warmupKey = '';
 /** The warm-up line at the bottom of the view: what is costing frame rate for now, and how far through it is. */
@@ -3165,26 +3173,13 @@ const remaster = new Remaster(
 remaster.gi.hideWhileBaking = () => [...office.occupants, teamLines.group, mission.group, vibeFx.group, ...office.vibesSwitch.bakeHidden];
 let remasterSavedAt = 0;
 let remasterSaveTimer = 0;
-/** A new outline effect has empty caches. Compile them before the next frame, for the draw that's on now. */
-function rewarmOutlines() {
-  try {
-    warmOutlines(renderer, (scene, camera) => effect.renderOutline(scene, camera), [
-      { scene, camera, pipeline: remaster.active ? 'float' : upscaler.active ? 'srgb' : 'canvas' },
-      { scene: hands.scene, camera: hands.camera, pipeline: 'canvas' },
-    ]);
-    warmup.seed(renderer.info.programs?.length ?? 0);
-  } catch (err) {
-    console.warn('office: outline shaders failed to compile', err);
-  }
-}
 function applyRemaster() {
   const s = (remasterParams = resolveRemaster(remasterSettings));
   remaster.configure(s);
   const key = s.enabled ? `${s.outlineThickness}|${s.outlineOpacity}` : '1.8|1';
   if (key !== outlineKey) {
     outlineKey = key;
-    effect = s.enabled ? outlineEffect(s.outlineThickness, s.outlineOpacity) : outlineEffect();
-    if (shadersWarmed) rewarmOutlines();
+    effect.setDefaults((s.enabled ? s.outlineThickness : 1.8) / 1000, s.enabled ? s.outlineOpacity : 1);
   }
   effect.enabled = !s.enabled || s.outlines;
   // The classic upscaler stands aside while the Remastered pipeline draws.
@@ -3238,7 +3233,7 @@ function sceneMotion(): SceneMotion {
     !!wandMotion.doing ||
     shotCharge.held ||
     !!me.emoteId ||
-    readingNow() ||
+    (readingNow() && !reduceMotion.matches && !lightboxOpen()) ||
     now < lookedUntil;
   return {
     player: playerBusy,
@@ -3320,7 +3315,6 @@ function drawFrame(dt: number, t: number, frame: { at: number; paced: boolean })
   thud = Math.max(0, thud - dt * 2.5);
   player.jitter = reduceMotion.matches ? 0 : thud;
   player.update(dt);
-  bossLaptop.update(dt, store.screens.get(OFFICE_SHELL_ID));
   // Under an upstairs floor, inside the building, with no ladder or elevator carrying you:
   // there is nowhere down there to be. However you got under the slab (a rebuild that dropped the
   // floor, a spot saved mid-fall), you are put back on top of it rather than left on the street
@@ -3389,7 +3383,11 @@ function drawFrame(dt: number, t: number, frame: { at: number; paced: boolean })
     saveSpot();
   }
 
+  camera.updateMatrixWorld();
+  projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  viewFrustum.setFromProjectionMatrix(projScreenMatrix);
   const camPos = camera.position;
+  bossLaptop.update(dt, store.screens.get(OFFICE_SHELL_ID), Math.hypot(bossSeat.x - camPos.x, bossSeat.z - 1 - camPos.z), !upTop && bossLaptop.screenInView(viewFrustum, camPos));
   let screens = workerScene.updateWorkers(dt, t, camPos);
   const bossGlow = (screenGlows[screens] ??= { pos: new THREE.Vector3(), dir: new THREE.Vector3(), power: 0 });
   bossGlow.power = bossLaptop.glow(bossGlow.pos, bossGlow.dir);
@@ -3759,11 +3757,12 @@ guardLeaving();
 const shadersReady = propsReady
   .then(async () => {
     theRoof();
-    const extras = Object.keys(propManifest()).flatMap((name) => {
+    const extras = DYNAMIC_WARMUP_PROPS.flatMap((name) => {
       const loaded = propScene(name);
       return loaded ? [loaded] : [];
     });
     preparePicking(scene);
+    office.freezeStatics([teamLines.group, mission.group, gallery.group]);
     await warmOfficeShaders({
       renderer,
       outline: (scene, camera) => effect.renderOutline(scene, camera),
@@ -3775,14 +3774,12 @@ const shadersReady = propsReady
       extras,
       pulse: () => loading.stillGoing(),
     });
-    office.freezeStatics([teamLines.group, mission.group, gallery.group]);
     skipHiddenMatrixWorld(office.group);
     if (roof) skipHiddenMatrixWorld(roof.group);
     skipHiddenMatrixWorld(me.root);
     skipHiddenMatrixWorld(confetti.mesh);
     skipHiddenMatrixWorld(teamLines.group);
     for (const { id } of BEANBAGS) skipHiddenMatrixWorld(office.desks.get(id)!.group);
-    shadersWarmed = true;
   })
   .catch((err) => console.warn('office: shader warmup failed', err));
 loading.until([

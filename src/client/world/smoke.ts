@@ -44,12 +44,13 @@ export class Steam {
 
   constructor(at: THREE.Vector3, brightness = 0.025) {
     const pos = new THREE.BufferAttribute(new Float32Array(STEAM * 3), 3).setUsage(THREE.DynamicDrawUsage);
+    const bounds = new THREE.Sphere(new THREE.Vector3(at.x + 3.25, at.y + 3.25, at.z), 10.5);
     const layers = [1.8, 5.2].map((size) => {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', pos);
       geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(STEAM * 3), 3).setUsage(THREE.DynamicDrawUsage));
+      geo.boundingSphere = bounds;
       const p = new THREE.Points(geo, steamMaterial(size));
-      p.frustumCulled = false;
       p.raycast = () => {};
       this.group.add(p);
       return p;

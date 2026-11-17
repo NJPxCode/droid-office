@@ -36,11 +36,17 @@ export interface PropModelsHost {
   readonly roof: Rooftop | null;
 }
 
+/** Legacy manifest entries that are not placed anywhere in the 3D scene. */
+const UNUSED_MANIFEST_PROPS = new Set(['conveyor', 'pr-crate', 'robot-arm']);
+
+/** Props instantiated dynamically after initial scene construction (workers, laptops, sidearms, deferred rack cubes). */
+export const DYNAMIC_WARMUP_PROPS = ['droid-computer', 'droid-team-kit', 'droid-worker', 'macbook-base', 'macbook-lid', 'magnum', 'wand'] as const;
+
 /** Load and install model replacements only after the office scene has been constructed. */
 export function loadOfficeModels(host: PropModelsHost): Promise<void> {
   const { office } = host;
   return loadPropManifest()
-    .then(() => preloadProps(Object.keys(propManifest())))
+    .then(() => preloadProps(Object.keys(propManifest()).filter((name) => !UNUSED_MANIFEST_PROPS.has(name))))
     .then(() => {
       const loungeSofa = propScene('lounge-sofa');
       if (loungeSofa) installLoungeSofa(loungeSofa, office.group);

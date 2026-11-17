@@ -63,6 +63,7 @@ export interface WorkerSceneHost {
   screenGlows: ScreenGlow[];
   sky: Sky;
   readonly vibeFxMoving: boolean;
+  screenVisible?: (laptop: Laptop) => boolean;
   readonly lastWandShip: Map<string, number>;
   wandOut(): boolean;
   noOutline(object: THREE.Object3D): void;
@@ -365,7 +366,8 @@ export function createWorkerScene(host: WorkerSceneHost) {
       workerPos.y += WORKER_HEAD;
       v.model.seenFrom(workerPos.distanceTo(camPos));
       v.model.update(dt, t);
-      v.laptop.update(dt, store.screens.get(id), Math.hypot(desk.x - camPos.x, desk.z - camPos.z));
+      const screenVisible = host.screenVisible ? host.screenVisible(v.laptop) : true;
+      v.laptop.update(dt, store.screens.get(id), Math.hypot(desk.x - camPos.x, desk.z - camPos.z), screenVisible);
       v.spillColor.lerp(v.spillTarget, 1 - Math.exp(-dt / 0.6));
       v.spillPower += (v.spillPowerTarget - v.spillPower) * (1 - Math.exp(-dt / 0.6));
       // A troubled desk's screen light breathes softly like a warm ember.

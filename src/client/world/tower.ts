@@ -144,7 +144,7 @@ function pixelText(text: string, p: number, depth: number): THREE.BufferGeometry
  * orange under its lip. Returns its parts (to merge) and the mouth, where the steam comes from and
  * the beacon goes.
  */
-export function buildStack(night: NightParts): { parts: THREE.Group; mouth: THREE.Vector3 } {
+export function buildStack(night: NightParts, ringMat?: THREE.MeshToonMaterial): { parts: THREE.Group; mouth: THREE.Vector3 } {
   const parts = new THREE.Group();
   const steel = toon('#2a2a2a');
   const black = toon('#121212');
@@ -156,7 +156,7 @@ export function buildStack(night: NightParts): { parts: THREE.Group; mouth: THRE
   for (const y of [3.2, 6.4, 9.2]) parts.add(mesh(new THREE.CylinderGeometry(r * (1 - (y / H) * 0.18) + 0.05, r * (1 - (y / H) * 0.18) + 0.05, 0.16, 20), steel, x, y, z));
   const lipR = r * 0.82 + 0.08;
   parts.add(mesh(new THREE.CylinderGeometry(lipR, lipR, 0.4, 20), steel, x, H - 0.1, z));
-  const ring = bulb(night, '#ee6018', 0.6);
+  const ring = ringMat ?? bulb(night, '#ee6018', 0.6);
   ring.userData.outlineParameters = { visible: false };
   parts.add(mesh(new THREE.CylinderGeometry(lipR + 0.01, lipR + 0.01, 0.06, 20), ring, x, H - 0.36, z));
   // A ladder up the side facing the street.
@@ -171,6 +171,7 @@ export function stackBeacon(mouth: THREE.Vector3): THREE.Mesh {
   const mat = new THREE.MeshBasicMaterial({ color: '#ee6018' });
   mat.toneMapped = false;
   mat.userData.outlineParameters = { visible: false };
+  mat.userData.ownedMaterial = true;
   const on = new THREE.Color('#ef6f2e');
   const off = new THREE.Color('#3a1a08');
   const m = mesh(new THREE.BoxGeometry(0.36, 0.26, 0.36), mat, mouth.x + STACK.r * 0.82 + 0.05, mouth.y + 0.12, mouth.z);
@@ -436,7 +437,7 @@ export function buildTower(colliders: Collider[], night: NightParts): Tower {
     parts.add(mesh(new THREE.BoxGeometry(0.2, 0.16, 0.2), beacon, ELEVATOR.x, y + WALL_HEIGHT + 0.38, hz));
 
     // The stack, and its steam and beacon (which move, so they aren't merged).
-    const stack = buildStack(night);
+    const stack = buildStack(night, beacon);
     stack.parts.position.y = y;
     parts.add(stack.parts);
     const mouth = stack.mouth.clone();
@@ -444,11 +445,21 @@ export function buildTower(colliders: Collider[], night: NightParts): Tower {
     return mouth;
   };
 
+  let lastIndex = -1;
+  let lastCount = -1;
+
   const set = (index: number, count: number) => {
+    if (index === lastIndex && count === lastCount) return;
+    lastIndex = index;
+    lastCount = count;
     for (const o of built) {
       o.removeFromParent();
       o.traverse((m) => {
-        if ((m as THREE.Mesh).isMesh) (m as THREE.Mesh).geometry.dispose();
+        const meshObj = m as THREE.Mesh;
+        if (!meshObj.isMesh) return;
+        meshObj.geometry.dispose();
+        const mat = meshObj.material;
+        if (!Array.isArray(mat) && mat?.userData?.ownedMaterial) mat.dispose();
       });
     }
     for (const s of steam) s.dispose();

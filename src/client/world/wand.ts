@@ -573,6 +573,7 @@ export class TipTrail {
   private next = 0;
   private last: THREE.Vector3 | null = null;
   private live = 0;
+  private hasActive = false;
   private hot = new THREE.Color(ORANGE_HOT);
   private white = new THREE.Color('#ffffff');
 
@@ -609,10 +610,12 @@ export class TipTrail {
       this.vel[j * 3 + 2] = (Math.random() - 0.5) * 0.05;
       this.age[j] = TRAIL_LIFE * (1 - amount) * 0.5;
     }
+    this.hasActive = true;
     this.last = (this.last ?? new THREE.Vector3()).copy(at);
   }
 
   update(dt: number) {
+    if (!this.hasActive && !this.points.visible) return;
     let live = 0;
     for (let j = 0; j < TRAIL_SIZE; j++) {
       if (this.age[j] >= TRAIL_LIFE) {
@@ -638,6 +641,7 @@ export class TipTrail {
       this.points.geometry.attributes.color.needsUpdate = true;
     }
     this.points.visible = live > 0;
+    this.hasActive = live > 0;
   }
 
   /** How many motes are still glowing. */

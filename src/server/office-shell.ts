@@ -58,8 +58,9 @@ export class OfficeShell {
   private spawnedAt = 0;
   private fails = 0;
   private restartTimer?: NodeJS.Timeout;
-  private readonly screenTimer: NodeJS.Timeout;
-  private readonly saveTimer: NodeJS.Timeout;
+  private screenTimer?: NodeJS.Timeout;
+  private keyframeTimer?: NodeJS.Timeout;
+  private saveTimer?: NodeJS.Timeout;
   private readonly statePath: string;
   private readonly scrollPath: string;
   private readonly drops: DropStore;
@@ -73,10 +74,6 @@ export class OfficeShell {
     this.statePath = path.join(dataDir, 'shell.json');
     this.scrollPath = path.join(dataDir, 'shell.ansi');
     this.drops = new DropStore(dataDir);
-    this.screenTimer = setInterval(() => this.flush(), SCREEN_INTERVAL_MS);
-    this.saveTimer = setInterval(() => {
-      if (this.unsaved) this.saveScrollback();
-    }, SAVE_SCROLLBACK_MS);
   }
 
   /** Claims a shell the host kept, or starts one. Call once the host is connected, before it drops unclaimed sessions. */
@@ -106,9 +103,13 @@ export class OfficeShell {
   shutdown(keep: boolean) {
     if (this.closing) return;
     this.closing = true;
-    clearInterval(this.screenTimer);
-    clearInterval(this.saveTimer);
+    clearTimeout(this.screenTimer);
+    clearTimeout(this.keyframeTimer);
+    clearTimeout(this.saveTimer);
     clearTimeout(this.restartTimer);
+    this.screenTimer = undefined;
+    this.keyframeTimer = undefined;
+    this.saveTimer = undefined;
     this.saveScrollback();
     if (keep && this.pty?.id) {
       this.saveState();
@@ -167,7 +168,7 @@ export class OfficeShell {
     } catch {
       // it may have exited between the checks
     }
-    this.screenDirty = true;
+    this.markDirty();
     this.lastLines = [];
     this.saveState();
   }
@@ -212,15 +213,17 @@ export class OfficeShell {
     term.loadAddon(new unicode11.Unicode11Addon() as any);
     term.unicode.activeVersion = '11';
     term.onWriteParsed(() => {
-      this.screenDirty = true;
+      this.markDirty();
     });
     this.term?.dispose();
     this.term = term;
     this.ser = ser;
     this.snapshot = screenSnapshot(term, ser);
     this.lastLines = [];
-    this.screenDirty = true;
     this.needsKeyframe = false;
+    clearTimeout(this.keyframeTimer);
+    this.keyframeTimer = undefined;
+    this.markDirty();
     if (prelude) term.write(prelude);
   }
 
@@ -234,8 +237,8 @@ export class OfficeShell {
     }
     proc.onData((data) => {
       this.term?.write(data);
-      this.screenDirty = true;
-      this.unsaved = true;
+      this.markDirty();
+      this.markUnsaved();
       this.fails = 0;
       if (this.subscribers.size) this.events.data(data, [...this.subscribers]);
     });
@@ -254,13 +257,31 @@ export class OfficeShell {
   /** Writes into the screen and, when someone has the terminal open, to them. */
   private note(text: string) {
     this.term?.write(text);
-    this.screenDirty = true;
-    this.unsaved = true;
+    this.markDirty();
+    this.markUnsaved();
     if (this.subscribers.size) this.events.data(text, [...this.subscribers]);
   }
 
+  private markDirty() {
+    this.screenDirty = true;
+    if (this.closing || this.screenTimer) return;
+    this.screenTimer = setTimeout(() => {
+      this.screenTimer = undefined;
+      this.flush();
+    }, SCREEN_INTERVAL_MS);
+  }
+
+  private markUnsaved() {
+    this.unsaved = true;
+    if (this.closing || this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = undefined;
+      if (this.unsaved) this.saveScrollback();
+    }, SAVE_SCROLLBACK_MS);
+  }
+
   private flush() {
-    if (!this.term) return;
+    if (!this.term || this.closing) return;
     const now = Date.now();
     if (this.needsKeyframe && now - this.keyframeAt > KEYFRAME_MS) {
       this.keyframeAt = now;
@@ -273,7 +294,15 @@ export class OfficeShell {
     const frame = snapshotScreen(this.term, this.lastLines);
     if (frame) {
       if (frame.full) this.keyframeAt = now;
-      if (this.events.screen(frame) === true) this.needsKeyframe = true;
+      if (this.events.screen(frame) === true) {
+        this.needsKeyframe = true;
+        if (!this.keyframeTimer) {
+          this.keyframeTimer = setTimeout(() => {
+            this.keyframeTimer = undefined;
+            this.flush();
+          }, KEYFRAME_MS + 25);
+        }
+      }
     }
   }
 

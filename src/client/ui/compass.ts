@@ -23,6 +23,9 @@ interface Mark {
   dial: HTMLElement;
   who: HTMLElement;
   status: string;
+  x: number;
+  y: number;
+  rot: string;
 }
 
 /**
@@ -41,6 +44,7 @@ export class Compass {
 
   /** Call after rendering, so the camera's matrices are this frame's. */
   update(camera: THREE.Camera, bearings: readonly Bearing[], now: number) {
+    if (bearings.length === 0 && this.marks.size === 0) return;
     if (now - this.measured > 1000) this.measure(now);
     const cx = window.innerWidth / 2;
     const cy = window.innerHeight / 2;
@@ -89,9 +93,19 @@ export class Compass {
     for (const p of placed) {
       seen.add(p.b.id);
       const m = this.mark(p.b);
-      m.el.style.transform = `translate(${Math.round(p.x)}px, ${Math.round(p.y)}px)`;
+      const rx = Math.round(p.x);
+      const ry = Math.round(p.y);
+      if (rx !== m.x || ry !== m.y) {
+        m.x = rx;
+        m.y = ry;
+        m.el.style.transform = `translate(${rx}px, ${ry}px)`;
+      }
       // The pin's point is its bottom-left corner, which sits at 135° before it's turned.
-      m.arrow.style.transform = `rotate(${(p.angle - (3 * Math.PI) / 4).toFixed(3)}rad)`;
+      const rot = (p.angle - (3 * Math.PI) / 4).toFixed(3);
+      if (rot !== m.rot) {
+        m.rot = rot;
+        m.arrow.style.transform = `rotate(${rot}rad)`;
+      }
     }
     for (const [id, m] of this.marks) {
       if (seen.has(id)) continue;
@@ -108,7 +122,7 @@ export class Compass {
       const who = h('span.compass-who');
       const el = h('div.compass-mark', {}, arrow, dial, who);
       this.root.append(el);
-      m = { el, arrow, dial, who, status: '' };
+      m = { el, arrow, dial, who, status: '', x: Number.NaN, y: Number.NaN, rot: '' };
       this.marks.set(b.id, m);
     }
     if (m.status !== b.status) {

@@ -199,8 +199,10 @@ export class PtyHost {
       if (!found && !this.leaving) {
         this.startHost();
         const deadline = Date.now() + 10_000;
+        let waitMs = 10;
         while (!found && !this.leaving && Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 100));
+          await new Promise((r) => setTimeout(r, waitMs));
+          waitMs = Math.min(100, waitMs * 2);
           if (!this.leaving) found = await this.hello();
         }
       }

@@ -18,7 +18,7 @@ import { TeamThread, TeamThreadPaint, teamThreadVisible } from '../team-thread';
 import { ThreadHistory } from '../thread-history';
 import { cloudStarting, threadSnapshotError, threadStarting } from '../thread-startup';
 import { withToken } from '../token';
-import { syncHorizontalScrollCue } from './code-highlight';
+import { applyHorizontalScrollCue, measureHorizontalScrollCue, type HorizontalScrollCueMeasurement } from './code-highlight';
 import { h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
 import { liveFrom, entryAt, entryTook, type LiveTool, type LiveView } from './thread-live-view';
@@ -148,6 +148,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let stopping = false;
   let received = false;
   let watchedWorkerId = '';
+  let attachedWorkerId = '';
   let hasPushed = false;
   let liveView: LiveView | undefined;
   const liveTools = new Map<string, LiveTool>();
@@ -883,9 +884,16 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       const button = text.parentElement?.nextElementSibling?.querySelector<HTMLButtonElement>('.wt-message-more');
       if (button instanceof HTMLButtonElement && !skipped(text)) clamps.push([button, text.classList.contains('clamped') && text.scrollHeight <= text.clientHeight + 1]);
     }
+    const scrollCues: HorizontalScrollCueMeasurement[] = [];
+    for (const frame of within.querySelectorAll<HTMLElement>('.wt-code-scroll')) {
+      if (!skipped(frame)) {
+        const measured = measureHorizontalScrollCue(frame);
+        if (measured) scrollCues.push(measured);
+      }
+    }
     // Measure every row before changing any: a write between reads forces another layout per row.
     for (const [button, hidden] of clamps) if (button.hidden !== hidden) button.hidden = hidden;
-    for (const frame of within.querySelectorAll<HTMLElement>('.wt-code-scroll')) if (!skipped(frame)) syncHorizontalScrollCue(frame);
+    for (const cue of scrollCues) applyHorizontalScrollCue(cue);
   };
   list.addEventListener(
     'contentvisibilityautostatechange',
@@ -1390,6 +1398,28 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     }
   };
 
+  const syncAttach = () => {
+    if (!connected && !net.up) {
+      attachedWorkerId = '';
+      return;
+    }
+    const wantAttach = active && !disposed && !document.hidden;
+    if (!wantAttach) {
+      if (attachedWorkerId) {
+        net.send({ t: 'worker.detach', workerId: attachedWorkerId });
+        attachedWorkerId = '';
+      }
+      return;
+    }
+    if (attachedWorkerId && attachedWorkerId !== worker.id) {
+      net.send({ t: 'worker.detach', workerId: attachedWorkerId });
+      attachedWorkerId = '';
+    }
+    if (attachedWorkerId !== worker.id && net.send({ t: 'worker.attach', workerId: worker.id, stream: false })) {
+      attachedWorkerId = worker.id;
+    }
+  };
+
   const syncTeam = () => {
     team.sync(`${opts.queueKey}:${worker.id}:${worker.sessionId ?? ''}`, worker.id, opts.team?.() ?? []);
     team.enable(teamThreadVisible(active && !disposed, connected, !document.hidden && element.isConnected, teamSection.open));
@@ -1457,9 +1487,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     streamNode.className = streamNode.hidden ? 'wt-stream' : 'wt-entry assistant text wt-stream';
     if (streamNode.hidden) return;
     const thinkingHidden = threadViewPrefs().thinking === 'hidden';
-    const key = JSON.stringify([showStream ? stream : undefined, pendingTools.map((tool) => [tool.name, tool.output, tool.more]), thinkingHidden]);
-    if (streamNode.dataset.liveKey !== key) {
-      streamNode.dataset.liveKey = key;
+    const structureKey = JSON.stringify([showStream ? [stream?.kind, stream?.since] : undefined, pendingTools.map((tool) => [tool.name, tool.output, tool.more]), thinkingHidden]);
+    const textKey = showStream && stream ? stream.text : '';
+    if (streamNode.dataset.liveStructure !== structureKey) {
+      streamNode.dataset.liveStructure = structureKey;
+      streamNode.dataset.liveText = textKey;
       const children: HTMLElement[] = [];
       if (showStream && stream) {
         if (stream.kind === 'thinking') {
@@ -1490,6 +1522,15 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         );
       }
       streamNode.replaceChildren(...children);
+    } else if (streamNode.dataset.liveText !== textKey && showStream && stream) {
+      streamNode.dataset.liveText = textKey;
+      if (stream.kind === 'thinking') {
+        const body = streamNode.querySelector<HTMLElement>('.wt-thinking-text');
+        if (body) body.textContent = stream.text;
+      } else {
+        const copy = streamNode.querySelector<HTMLElement>('.wt-stream-copy');
+        copy?.replaceChildren(...stream.text.split(/\n{2,}/).map((paragraph) => h('p', {}, paragraph)));
+      }
     }
     for (const el of streamNode.querySelectorAll<HTMLElement>('.wt-live-time[data-since]')) {
       const since = Number(el.dataset.since);
@@ -1499,11 +1540,13 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     }
   };
 
+  const rowJson = new WeakMap<object, string>();
   const paintEntries = (older: boolean) => {
     const stick = !received || (!older && !inspecting && atBottom());
     const top = scroll.scrollTop;
     const height = scroll.scrollHeight;
     const want: HTMLElement[] = [];
+    const changedNodes: HTMLElement[] = [];
     const keep = new Set<string>();
     const focused = document.activeElement;
     const focusedDisclosure = focused instanceof HTMLElement && focused.matches('summary') && list.contains(focused) ? focused.parentElement?.dataset.disclosure : undefined;
@@ -1520,7 +1563,12 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       const nextRole = nextRow && 'role' in nextRow ? nextRow.role : 'assistant';
       const turnEnd = row.kind === 'message' && row.role === 'assistant' && nextRole !== 'assistant';
       const streamFlag = isLastRow && row.kind === 'message' && row.role === 'assistant' && isBusy(worker.status);
-      const key = JSON.stringify([row, asking, streamFlag, turnEnd, hasDelegateCard(row) ? rosterKey : '', rowContent(row, loaded), viewKey]);
+      let rowSerialized = rowJson.get(row);
+      if (rowSerialized === undefined) {
+        rowSerialized = JSON.stringify(row);
+        rowJson.set(row, rowSerialized);
+      }
+      const key = `${rowSerialized}|${asking}|${streamFlag}|${turnEnd}|${hasDelegateCard(row) ? rosterKey : ''}|${JSON.stringify(rowContent(row, loaded))}|${viewKey}`;
       let had = nodes.get(row.id);
       if (!had || had.key !== key) {
         const groupPositions = new Map(
@@ -1548,6 +1596,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         });
         had = { key, node, sourceIds: row.kind === 'activity' ? row.sourceIds : [] };
         nodes.set(row.id, had);
+        changedNodes.push(node);
       }
       keep.add(row.id);
       want.push(had.node);
@@ -1564,7 +1613,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       at.remove();
       at = next;
     }
-    updateClamps();
+    for (const node of changedNodes) updateClamps(node);
     if (focusedDisclosure && focused && !focused.isConnected) {
       [...list.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]')]
         .find((el) => el.dataset.disclosure === focusedDisclosure)
@@ -1727,9 +1776,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         watchedWorkerId = '';
         hasPushed = false;
       }
+      if (msg.t === 'welcome' || attachedWorkerId !== ORCHESTRATOR_ID) attachedWorkerId = '';
       team.resetWatches();
       team.clear();
       team.enable(false);
+      syncAttach();
       syncWatch();
       paintTeam();
       return;
@@ -1939,26 +1990,46 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     paintSlash();
     updateControls();
   });
-  const timer = setInterval(() => {
-    if (!active || !connected || document.hidden) return;
-    readTeam();
-    paintQueue();
-    paintLive();
-    refreshMessageTimes(element);
-    // A cloud worker's conversation is a read of its Factory session, which can take a while.
-    if (pending && Date.now() - pending.at > (cloud ? 20_000 : 8000)) {
-      pending = undefined;
-      error = cloud ? 'The office did not return this conversation. Retry, or open it in Factory.' : 'The office did not return this conversation. Retry, or use Raw TTY on an older office.';
-      updateControls();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let lastTimeRefreshAt = 0;
+  const syncTimer = () => {
+    const want = active && !disposed && !document.hidden;
+    if (want && !timer) {
+      timer = setInterval(() => {
+        if (!active || !connected || document.hidden) return;
+        const now = Date.now();
+        readTeam();
+        paintQueue();
+        paintLive();
+        if (now - lastTimeRefreshAt >= 15_000) {
+          lastTimeRefreshAt = now;
+          refreshMessageTimes(element);
+        }
+        // A cloud worker's conversation is a read of its Factory session, which can take a while.
+        if (pending && now - pending.at > (cloud ? 20_000 : 8000)) {
+          pending = undefined;
+          error = cloud ? 'The office did not return this conversation. Retry, or open it in Factory.' : 'The office did not return this conversation. Retry, or use Raw TTY on an older office.';
+          updateControls();
+        }
+        if (!error) read(undefined, received ? RECONCILE_INTERVAL_MS : STARTUP_RETRY_MS);
+      }, 1000);
+    } else if (!want && timer) {
+      clearInterval(timer);
+      timer = undefined;
     }
-    if (!error) read(undefined, received ? RECONCILE_INTERVAL_MS : STARTUP_RETRY_MS);
-  }, 1000);
+  };
 
   const visibility = () => {
+    syncTimer();
+    syncAttach();
     syncWatch();
     paintProgress();
     readTeam();
-    if (!document.hidden && active) read(undefined, 0);
+    if (!document.hidden && active) {
+      lastTimeRefreshAt = Date.now();
+      refreshMessageTimes(element);
+      read(undefined, 0);
+    }
   };
   document.addEventListener('visibilitychange', visibility);
   // Text, font, spacing and width are CSS variables. Fold, tool and thinking choices change how rows are built, and each row's paint key carries them.
@@ -1977,7 +2048,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       const reconnected = online && !connected;
       const workerChanged = next.id !== worker.id;
       const sessionChanged = next.sessionId !== worker.sessionId || workerChanged;
-      if (reconnected && active) net.send({ t: 'worker.attach', workerId: next.id });
       if (sessionChanged) {
         startupReadUntil = threadStarting(worker) || threadStarting(next) ? Infinity : 0;
         history.clear(next.sessionId);
@@ -2001,11 +2071,13 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       connected = online;
       if (!online) {
         watchedWorkerId = '';
+        attachedWorkerId = '';
         hasPushed = false;
         pending = undefined;
         error = '';
         team.resetWatches();
       }
+      syncAttach();
       syncWatch();
       if (received) paintEntries(false);
       updateControls();
@@ -2022,6 +2094,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       }
       active = on;
       pending = undefined;
+      syncTimer();
+      syncAttach();
       syncWatch();
       if (on) {
         const spot = parked;
@@ -2034,20 +2108,18 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
             updateLatest();
           });
         }
-        net.send({ t: 'worker.attach', workerId: worker.id });
         read(undefined, 0);
         loadSlash();
-      } else {
-        net.send({ t: 'worker.detach', workerId: worker.id });
       }
       updateControls();
       readTeam();
     },
     dispose() {
       if (disposed) return;
-      if (active) net.send({ t: 'worker.detach', workerId: worker.id });
       disposed = true;
       active = false;
+      syncTimer();
+      syncAttach();
       syncWatch();
       filesAbort?.abort();
       filesAbort = undefined;
@@ -2056,7 +2128,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       motion.dispose();
       search.dispose();
       settingsUi.dispose();
-      clearInterval(timer);
       document.removeEventListener('visibilitychange', visibility);
       teamSection.removeEventListener('toggle', teamDisclosure, true);
       teamSection.removeEventListener('focusout', teamFocus);

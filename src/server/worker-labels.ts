@@ -17,6 +17,8 @@ interface Tracked {
   identity: string;
   status: WorkerStatus;
   hash?: string;
+  stamp?: string;
+  digest?: string;
   attemptedAt: number;
   retryAt: number;
   failures: number;
@@ -33,7 +35,7 @@ interface Job {
 interface LabelOptions {
   settings: () => WorkerLabelSettings;
   workers: () => LabelWorker[];
-  read: (source: ThreadSession) => Promise<string | undefined>;
+  read: (source: ThreadSession) => Promise<string | { text: string; stamp?: string } | undefined>;
   generate: (input: LabelInput, settings: WorkerLabelSettings, signal: AbortSignal) => Promise<WorkerTask>;
   changed: (state: WorkerLabelState) => void;
   now?: () => number;
@@ -114,9 +116,18 @@ export class WorkerLabels {
         if (isBusy(tracked.status) && !isBusy(worker.status)) tracked.finalUntil = now + 15_000;
         tracked.status = worker.status;
         if (this.running.has(worker.id) || now < tracked.retryAt) continue;
-        const text = await this.options.read(worker);
+        const readResult = await this.options.read(worker);
+        const text = typeof readResult === 'string' ? readResult : readResult?.text;
+        const stamp = typeof readResult === 'object' && readResult ? readResult.stamp : undefined;
         if (!text || this.stopped || revision !== this.revision || this.running.has(worker.id)) continue;
-        const digest = hash(text);
+        let digest: string;
+        if (stamp && stamp === tracked.stamp && tracked.digest) {
+          digest = tracked.digest;
+        } else {
+          digest = hash(text);
+          tracked.stamp = stamp;
+          tracked.digest = digest;
+        }
         if (digest === tracked.hash) {
           this.queue.delete(worker.id);
           continue;

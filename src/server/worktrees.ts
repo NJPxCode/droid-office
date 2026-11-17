@@ -503,6 +503,10 @@ export class Worktrees {
 
   /** The git folder every worktree of this project shares, to tell two checkouts of one repository apart from two repositories. */
   commonDir(): string | undefined {
+    if (!this.ceiling) {
+      const fast = resolveGitDirs(this.dir);
+      if (fast) return real(fast.commonDir);
+    }
     try {
       return real(path.resolve(this.dir, this.gitSync(['rev-parse', '--git-common-dir'])));
     } catch {
@@ -512,6 +516,18 @@ export class Worktrees {
 
   /** The branch the project is on, or undefined when HEAD is detached. */
   currentBranch(): string | undefined {
+    if (!this.ceiling) {
+      const fast = resolveGitDirs(this.dir);
+      if (fast) {
+        try {
+          const head = readFileSync(path.join(fast.gitDir, 'HEAD'), 'utf8').trim();
+          const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+          return ref?.[1] || undefined;
+        } catch {
+          // fall back to git
+        }
+      }
+    }
     try {
       const b = this.gitSync(['rev-parse', '--abbrev-ref', 'HEAD']);
       return b === 'HEAD' ? undefined : b;
@@ -968,5 +984,22 @@ function isDir(p: string): boolean {
     return statSync(p).isDirectory();
   } catch {
     return false;
+  }
+}
+
+function resolveGitDirs(dir: string): { gitDir: string; commonDir: string } | undefined {
+  try {
+    const dotGit = path.join(dir, '.git');
+    const st = statSync(dotGit);
+    if (st.isDirectory()) return { gitDir: dotGit, commonDir: dotGit };
+    if (!st.isFile()) return undefined;
+    const match = /^gitdir:\s*(.+)$/.exec(readFileSync(dotGit, 'utf8').trim());
+    if (!match) return undefined;
+    const gitDir = path.resolve(dir, match[1]);
+    const commonFile = path.join(gitDir, 'commondir');
+    const commonDir = existsSync(commonFile) ? path.resolve(gitDir, readFileSync(commonFile, 'utf8').trim()) : gitDir;
+    return { gitDir, commonDir };
+  } catch {
+    return undefined;
   }
 }

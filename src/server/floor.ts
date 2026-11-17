@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import type { ChangesState, FloorInfo, GhPull, ProjectInfo, ServerMsg, WorkerInfo } from '../shared/protocol.js';
 import { isBusy } from '../shared/status.js';
-import { isCheckout, type FloorDef } from './building.js';
+import { configOrigin, isCheckout, type FloorDef } from './building.js';
 import { excludeFromGit } from './config.js';
 import { isProtectedBaseBranch, readHeadBranch } from './floor-watch.js';
 import { OFFICE_SHELL_ID } from '../shared/office-shell.js';
@@ -164,11 +164,18 @@ export function projectInfo(dir: string, name: string, agentCmd: string, agentAr
       return undefined;
     }
   };
+  let branch: string | undefined;
+  let remote: string | undefined;
+  if (!plain) {
+    const head = readHeadBranch(dir);
+    branch = head.found ? (head.branch ?? 'HEAD') : git(['rev-parse', '--abbrev-ref', 'HEAD']);
+    remote = configOrigin(dir) ?? git(['remote', 'get-url', 'origin']);
+  }
   return {
     name,
     dir,
-    branch: git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    remote: git(['remote', 'get-url', 'origin']),
+    branch,
+    remote,
     forge,
     agentCmd: [agentCmd, ...agentArgs].join(' '),
   };

@@ -528,6 +528,11 @@ function remoteRepo(url: string): string | undefined {
 /** The GitHub or GitLab repository a checkout's origin points at; none for a folder inside someone else's checkout. */
 export function originRepo(dir: string): string | undefined {
   if (!isCheckout(dir)) return undefined;
+  const configured = configOrigin(dir);
+  if (configured) {
+    const parsed = remoteRepo(configured);
+    if (parsed) return parsed;
+  }
   try {
     const url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim();
     return remoteRepo(url);
@@ -537,10 +542,26 @@ export function originRepo(dir: string): string | undefined {
 }
 
 /** The URL of a checkout's origin remote, read from its git config (cheaper than running git for every folder found). */
-function configOrigin(dir: string): string | undefined {
+export function configOrigin(dir: string): string | undefined {
+  let configPath = path.join(dir, '.git', 'config');
+  try {
+    const dotGit = path.join(dir, '.git');
+    if (statSync(dotGit).isFile()) {
+      const pointer = readFileSync(dotGit, 'utf8').trim();
+      const match = /^gitdir:\s*(.+)$/.exec(pointer);
+      if (match) {
+        const gitDir = path.resolve(dir, match[1]);
+        const commonFile = path.join(gitDir, 'commondir');
+        const commonDir = existsSync(commonFile) ? path.resolve(gitDir, readFileSync(commonFile, 'utf8').trim()) : gitDir;
+        configPath = path.join(commonDir, 'config');
+      }
+    }
+  } catch {
+    // fall back to default path
+  }
   let text: string;
   try {
-    text = readFileSync(path.join(dir, '.git', 'config'), 'utf8');
+    text = readFileSync(configPath, 'utf8');
   } catch {
     return undefined;
   }
