@@ -105,20 +105,34 @@ export function parseSha(text: string): string | undefined {
   return word && /^[0-9a-f]{64}$/.test(word) ? word : undefined;
 }
 
+const bundleCache = new WeakMap<Runner, Map<string, { stamp: string; value: { id: string; version: string | null } | undefined }>>();
+
 /** A bundle's id and version, from its Info.plist (plutil reads both the XML and binary forms). */
 export async function readBundle(run: Runner, app: string): Promise<{ id: string; version: string | null } | undefined> {
   const plist = path.join(app, 'Contents', 'Info.plist');
+  let stamp = '';
   try {
-    await access(plist);
+    const info = await stat(plist);
+    stamp = `${info.ino}:${info.size}:${info.mtimeMs}`;
   } catch {
+    bundleCache.get(run)?.delete(plist);
     return undefined;
   }
+  let perRunner = bundleCache.get(run);
+  if (!perRunner) {
+    perRunner = new Map();
+    bundleCache.set(run, perRunner);
+  }
+  const hit = perRunner.get(plist);
+  if (hit?.stamp === stamp) return hit.value;
   const r = await run('plutil', ['-convert', 'json', '-o', '-', plist], { timeoutMs: 10_000 });
   if (r.code !== 0) return undefined;
   try {
     const j = JSON.parse(r.stdout) as Record<string, unknown>;
     if (typeof j.CFBundleIdentifier !== 'string') return undefined;
-    return { id: j.CFBundleIdentifier, version: typeof j.CFBundleShortVersionString === 'string' ? j.CFBundleShortVersionString : null };
+    const value = { id: j.CFBundleIdentifier, version: typeof j.CFBundleShortVersionString === 'string' ? j.CFBundleShortVersionString : null };
+    perRunner.set(plist, { stamp, value });
+    return value;
   } catch {
     return undefined;
   }

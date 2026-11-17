@@ -472,11 +472,19 @@ export async function startServer(cfg: Config) {
     broadcast: (state) => broadcast({ t: 'factory', state }),
     toast: (text, level) => toastAll(text, level),
     hostedWorkers: () => {
-      const models = droidModels.peek() ?? readDroidModels();
+      const activeWorkers: WorkerInfo[] = [];
+      for (const f of floors.values()) {
+        for (const w of f.everyone()) {
+          if (w.kind === 'agent' && (w.status === 'working' || w.status === 'starting')) activeWorkers.push(w);
+        }
+      }
+      for (const w of orchestrator.workers.list()) {
+        if (w.kind === 'agent' && (w.status === 'working' || w.status === 'starting')) activeWorkers.push(w);
+      }
+      if (!activeWorkers.length) return false;
       const settings = readDroidModels();
-      const workers = [...floors.values()].flatMap((f) => f.everyone()).concat(orchestrator.workers.list());
-      return workers.some((w) => {
-        if (w.kind !== 'agent' || (w.status !== 'working' && w.status !== 'starting')) return false;
+      const models = droidModels.peek() ?? settings;
+      return activeWorkers.some((w) => {
         const id = w.activeModel ?? w.model ?? models.defaultModel;
         if (!id) return false;
         const descriptor = settings.models.find((m) => m.id === id && m.custom) ?? models.models.find((m) => m.id === id) ?? { id };
@@ -567,6 +575,7 @@ export async function startServer(cfg: Config) {
     endpointApiKey: (settings) => (sameEndpointOrigin(labelPreferences.get().baseUrl, settings.baseUrl) ? labelPreferences.apiKey() : undefined),
     system: () => officePrompt(prompts, 'office.namer'),
   });
+  let workerLabelsSent = '';
   const workerLabels = new WorkerLabels({
     settings: () => labelPreferences.get(),
     workers: () =>
@@ -588,12 +597,17 @@ export async function startServer(cfg: Config) {
           ];
         }),
       ),
-    read: (source) => labelThreads.readText(source),
+    read: (source) => labelThreads.readTextWithStamp(source),
     generate: (input, settings, signal) => {
       if (setup.state().airgapped && settings.implementation !== 'openai') return Promise.reject(new Error(AIRGAPPED_REASON));
       return labelModel.generate(input, settings, signal);
     },
-    changed: (state) => broadcast({ t: 'workerLabels', state }),
+    changed: (state) => {
+      const next = JSON.stringify(state);
+      if (next === workerLabelsSent) return;
+      workerLabelsSent = next;
+      broadcast({ t: 'workerLabels', state });
+    },
   });
 
   const vibesFloorView = (f: Floor): VibesFloorView => ({
@@ -651,9 +665,13 @@ export async function startServer(cfg: Config) {
     },
   });
   // DroidProxy, and the Claude, ChatGPT and other subscriptions workers run on through it.
+  let subscriptionsSent = '';
   const subscriptions = mountSubscriptions({
     dataDir: cfg.dataDir,
     broadcast: (state) => {
+      const next = JSON.stringify(state);
+      if (next === subscriptionsSent) return;
+      subscriptionsSent = next;
       broadcast({ t: 'subscriptions', state });
       missionChanged();
     },
@@ -663,13 +681,24 @@ export async function startServer(cfg: Config) {
       setup.message('office', { t: 'setup.check' });
       missionChanged();
     },
-    busyModels: () =>
-      [...floors.values()]
-        .flatMap((f) => f.everyone())
-        .concat(orchestrator.workers.list())
-        .filter((w) => w.kind === 'agent' && !w.remote && w.status === 'working')
-        .map((w) => w.activeModel ?? w.model)
-        .filter((model): model is string => Boolean(model)),
+    busyModels: () => {
+      const active: string[] = [];
+      for (const f of floors.values()) {
+        for (const w of f.everyone()) {
+          if (w.kind === 'agent' && !w.remote && w.status === 'working') {
+            const m = w.activeModel ?? w.model;
+            if (m) active.push(m);
+          }
+        }
+      }
+      for (const w of orchestrator.workers.list()) {
+        if (w.kind === 'agent' && !w.remote && w.status === 'working') {
+          const m = w.activeModel ?? w.model;
+          if (m) active.push(m);
+        }
+      }
+      return active;
+    },
   });
   // Artificial Analysis benchmarks for team_models, read once a day with the owner's key.
   const benchmarks = new Benchmarks({ dataDir: cfg.dataDir, broadcast: (state) => broadcast({ t: 'benchmarks', state }), paused: () => Boolean(setup.state().airgapped), decisions: geminiStore });
@@ -1415,6 +1444,12 @@ export async function startServer(cfg: Config) {
       const orch = orchestrator.workers;
       switch (msg.t) {
         case 'worker.attach': {
+          if (msg.stream === false) {
+            if (!orch.open(ORCHESTRATOR_ID, c.id)) return done('The Orchestrator has no terminal yet. Send it a prompt first.');
+            c.attached.add(ORCHESTRATOR_ID);
+            c.stale.delete(ORCHESTRATOR_ID);
+            return done();
+          }
           const snap = orch.attach(ORCHESTRATOR_ID, c.id);
           if (!snap) return done('The Orchestrator has no terminal yet. Send it a prompt first.');
           c.attached.add(ORCHESTRATOR_ID);
@@ -1789,6 +1824,13 @@ export async function startServer(cfg: Config) {
       }
       case 'worker.attach': {
         const wid = str(msg.workerId, 32);
+        if (msg.stream === false) {
+          if (workersOf(wid)?.open(wid, c.id)) {
+            c.attached.add(wid);
+            c.stale.delete(wid);
+          }
+          break;
+        }
         const snap = attachTerminal(wid, c);
         if (snap) {
           c.attached.add(wid);
@@ -2542,6 +2584,12 @@ export async function startServer(cfg: Config) {
     server.once('error', reject);
     server.listen(cfg.port, '127.0.0.1', () => resolve());
   });
+  try {
+    const actualPort = (server.address() as AddressInfo | null)?.port ?? cfg.port;
+    process.send?.({ t: 'office.listening', port: actualPort });
+  } catch {
+    // standalone CLI has no parent IPC channel or it already closed
+  }
   await hotReload.start();
   workerLabels.start();
   const httpsReady = cfg.tailnetHttps ? httpsGateway.start() : Promise.resolve(httpsGateway.state());

@@ -26,7 +26,6 @@ import { SUBAGENT_DEFAULTS } from '../shared/protocol';
 import { ROOF } from '../shared/rooftop';
 import { WORKER_LABEL_DEFAULTS, type WorkerLabelState } from '../shared/worker-labels';
 import { kittyImageSignature } from '../shared/kitty';
-import { decodeScreenBitmap } from './term-kitty';
 import type { ScreenBitmap, ScreenState } from './world/laptop';
 import type { Sidearm } from './world/wand';
 import { randomLook, sanitizeLook, type Look } from '../shared/avatar';
@@ -328,6 +327,8 @@ export class Store {
   /** The last speech bubble said during a visit, for whoever shows it ('visitSay'). */
   lastSay: { visit: string; worker: string; text: string } | null = null;
   private subs = new Map<Topic, Set<(workerId?: string) => void>>();
+  /** Disabled by non-3D companions, which never draw 3D laptop canvases. */
+  decodeBitmaps = true;
 
   /** Screen updates identify the worker, including images that finish decoding after the message. */
   on(topic: Topic, fn: (workerId?: string) => void) {
@@ -583,7 +584,7 @@ export class Store {
           s.placements = msg.placements;
           changed = true;
         }
-        if (msg.images) {
+        if (msg.images && this.decodeBitmaps) {
           const bitmaps = s.bitmaps ?? (s.bitmaps = new Map<number, ScreenBitmap>());
           for (const [rawId, img] of Object.entries(msg.images)) {
             const id = Number(rawId);
@@ -592,7 +593,8 @@ export class Store {
             const wid = msg.workerId;
             const pendingKey = `${wid}:${id}`;
             this.pendingImageSigs.set(pendingKey, sig);
-            decodeScreenBitmap(img)
+            import('./term-kitty')
+              .then(({ decodeScreenBitmap }) => decodeScreenBitmap(img))
               .then((bmp) => {
                 if (!bmp) return;
                 const cur = this.screens.get(wid);

@@ -102,6 +102,28 @@ export function resolveCommand(cmd: string): string | null {
  * ~/.local/bin/droid, which the Mac app's PATH lacks until the owner's shell profile adds it.
  */
 export function resolveAgent(cmd: string): string | null {
+  if (cmd === 'droid' && !WIN) {
+    // Check PATH directly first, then ~/.local/bin/droid before spawning an interactive login shell.
+    if (!cmd.includes('/') && !cmd.includes('\\')) {
+      for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+        if (!dir) continue;
+        const p = path.join(dir, cmd);
+        try {
+          accessSync(p, constants.X_OK);
+          return p;
+        } catch {
+          // keep looking
+        }
+      }
+      const installed = path.join(homedir(), '.local', 'bin', 'droid');
+      try {
+        accessSync(installed, constants.X_OK);
+        return installed;
+      } catch {
+        // fall back to login shell resolution
+      }
+    }
+  }
   const found = resolveCommand(cmd);
   if (found || cmd !== 'droid' || WIN) return found;
   const installed = path.join(homedir(), '.local', 'bin', 'droid');

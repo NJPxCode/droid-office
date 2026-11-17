@@ -167,11 +167,32 @@ export function defaultProjectsDir(): string {
   return suggestedFolder(os.homedir());
 }
 
+function resolveGitCommonDir(dir: string): string | undefined {
+  try {
+    const dotGit = path.join(dir, '.git');
+    let gitDir = dotGit;
+    if (statSync(dotGit).isFile()) {
+      const pointer = readFileSync(dotGit, 'utf8').trim();
+      const match = /^gitdir:\s*(.+)$/.exec(pointer);
+      if (!match) return undefined;
+      gitDir = path.resolve(dir, match[1]);
+    }
+    const commonFile = path.join(gitDir, 'commondir');
+    if (existsSync(commonFile)) {
+      const rel = readFileSync(commonFile, 'utf8').trim();
+      if (rel) return path.resolve(gitDir, rel);
+    }
+    return gitDir;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Keep the office's own data out of git without touching the project's .gitignore. */
 export function excludeFromGit(dir: string) {
   try {
-    const gitDir = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    const exclude = path.resolve(dir, gitDir, 'info', 'exclude');
+    const gitDir = resolveGitCommonDir(dir) ?? path.resolve(dir, execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+    const exclude = path.join(gitDir, 'info', 'exclude');
     const cur = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
     if (!cur.split('\n').some((l) => l.trim() === '.droid-office/' || l.trim() === '.droid-office')) {
       mkdirSync(path.dirname(exclude), { recursive: true });

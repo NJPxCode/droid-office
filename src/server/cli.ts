@@ -1,11 +1,5 @@
 import os from 'node:os';
 import path from 'node:path';
-import { renderUnicodeCompact } from 'uqr';
-import { loadConfig, ensureSelfSigned } from './config.js';
-import { startServer } from './server.js';
-import { tildify } from './building.js';
-import { FACTORY_SKILLS_DIR } from './subagents.js';
-import { COMPANION_PATH } from '../shared/devices.js';
 
 const argv = process.argv.slice(2);
 if (argv[0] === 'prune') {
@@ -21,6 +15,15 @@ if (argv[0] === 'browser') {
   const { browserCommand } = await import('./whiteboard-browser.js');
   process.exit(await browserCommand(argv.slice(1)));
 }
+
+const [{ renderUnicodeCompact }, { loadConfig, ensureSelfSigned }, { startServer }, { tildify }, { FACTORY_SKILLS_DIR }, { COMPANION_PATH }] = await Promise.all([
+  import('uqr'),
+  import('./config.js'),
+  import('./server.js'),
+  import('./building.js'),
+  import('./subagents.js'),
+  import('../shared/devices.js'),
+]);
 
 const cfg = loadConfig(argv);
 cfg.homeFloor = os.homedir();

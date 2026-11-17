@@ -101,14 +101,37 @@ export async function startOffice(o: OfficeOptions): Promise<Office> {
     throw err;
   }
 
+  let wakePoll: (() => void) | undefined;
+  const onChildMsg = (msg: unknown) => {
+    if (msg && typeof msg === 'object' && (msg as { t?: unknown }).t === 'office.listening') wakePoll?.();
+  };
+  child.on('message', onChildMsg);
+
   const deadline = Date.now() + (o.timeoutMs ?? 90_000);
-  while (exitCode === undefined) {
-    if ((await probePort(o.port)) === 'office') break;
-    if (Date.now() > deadline) {
-      child.kill('SIGKILL');
-      throw new Error(`the office didn't open on port ${o.port} in time.\n\n${logTail(o.log)}`);
+  let waitMs = 20;
+  try {
+    while (exitCode === undefined) {
+      if ((await probePort(o.port)) === 'office') break;
+      if (Date.now() > deadline) {
+        child.kill('SIGKILL');
+        throw new Error(`the office didn't open on port ${o.port} in time.\n\n${logTail(o.log)}`);
+      }
+      const sleepMs = Math.min(waitMs, Math.max(10, deadline - Date.now()));
+      waitMs = Math.min(250, waitMs * 2);
+      await new Promise<void>((r) => {
+        const timer = setTimeout(() => {
+          wakePoll = undefined;
+          r();
+        }, sleepMs);
+        wakePoll = () => {
+          clearTimeout(timer);
+          wakePoll = undefined;
+          r();
+        };
+      });
     }
-    await new Promise((r) => setTimeout(r, 250));
+  } finally {
+    child.off('message', onChildMsg);
   }
   if (exitCode !== undefined) throw new Error(`the office stopped as it started (exit ${exitCode ?? 'signal'}).\n\n${logTail(o.log)}`);
 

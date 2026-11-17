@@ -311,12 +311,23 @@ function paintSlab(c: HTMLCanvasElement, p: FloorPalette) {
   }
 }
 
+const slabCanvasCache = new Map<string, HTMLCanvasElement>();
+
+function getSlabCanvas(p: FloorPalette): HTMLCanvasElement {
+  const key = `${p.floor}|${p.floorAlt}|${p.seam}`;
+  let c = slabCanvasCache.get(key);
+  if (!c) {
+    c = document.createElement('canvas');
+    c.width = 512 * TILE_SCALE;
+    c.height = 512 * TILE_SCALE;
+    paintSlab(c, p);
+    slabCanvasCache.set(key, c);
+  }
+  return c;
+}
+
 function floorTexture(width = FLOOR.maxX - FLOOR.minX, depth = FLOOR.maxZ - FLOOR.minZ): THREE.CanvasTexture {
-  const c = document.createElement('canvas');
-  c.width = 512 * TILE_SCALE;
-  c.height = 512 * TILE_SCALE;
-  paintSlab(c, FLOOR_PALETTES[0]);
-  const t = new THREE.CanvasTexture(c);
+  const t = new THREE.CanvasTexture(getSlabCanvas(FLOOR_PALETTES[0]));
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(width / SLAB_TILE, depth / SLAB_TILE);
   t.colorSpace = THREE.SRGBColorSpace;
@@ -1370,11 +1381,16 @@ export function buildOffice(): Office {
   setContactFootprints(contacts);
 
   const setProjectName = (name: string) => elevator.setSign(name);
+  let currentLookKey = `${FLOOR_PALETTES[0].wall}|${FLOOR_PALETTES[0].trim}|${FLOOR_PALETTES[0].floor}|${FLOOR_PALETTES[0].floorAlt}|${FLOOR_PALETTES[0].seam}`;
   const setLook = (p: FloorPalette) => {
+    const key = `${p.wall}|${p.trim}|${p.floor}|${p.floorAlt}|${p.seam}`;
+    if (key === currentLookKey) return;
+    currentLookKey = key;
     looks.wall.color.set(p.wall);
     looks.trim.color.set(p.trim);
+    const canvas = getSlabCanvas(p);
     for (const t of looks.slabs) {
-      paintSlab(t.image as HTMLCanvasElement, p);
+      t.image = canvas;
       t.needsUpdate = true;
     }
   };

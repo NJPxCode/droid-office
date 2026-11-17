@@ -347,8 +347,16 @@ export class ProbeGI {
 
   /** Copies a saved atlas into the grid's. False when it doesn't fit this grid, and it has to be baked instead. */
   private restore(renderer: THREE.WebGLRenderer, grid: LightProbeGridWebGL, saved: SavedBake): boolean {
-    // three.js makes the grid's atlas on its first bake: one probe makes it, and the copy covers that probe too.
-    if (!grid.texture?.isRenderTargetTexture) this.hidden(() => grid.bake(renderer, this.scene, { start: 0, count: 1, ...CAPTURE }));
+    if (!grid.texture?.isRenderTargetTexture) {
+      const internal = grid as LightProbeGridWebGL & { _ensureTextures?: () => void; _renderTarget?: THREE.WebGL3DRenderTarget | null };
+      if (typeof internal._ensureTextures === 'function' && !Object.hasOwn(grid, 'bake')) {
+        internal._ensureTextures();
+        grid.updateBoundingBox();
+        if (internal._renderTarget) renderer.initRenderTarget(internal._renderTarget);
+      } else {
+        this.hidden(() => grid.bake(renderer, this.scene, { start: 0, count: 1, ...CAPTURE }));
+      }
+    }
     const atlas = grid.texture;
     const { width, height, depth } = atlas?.image ?? {};
     if (!atlas || width !== saved.width || height !== saved.height || depth !== saved.depth || saved.data.length !== width * height * depth * 4) return false;

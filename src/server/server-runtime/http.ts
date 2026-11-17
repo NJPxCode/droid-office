@@ -112,7 +112,7 @@ export function createHttpHandler(ctx: HttpContext) {
       // they load openly; the office itself (below) always needs it.
       if (p.startsWith('/assets/')) {
         const file = publicFile(p);
-        if (file) return serveFile(res, file, true);
+        if (file) return serveFile(res, file, true, req);
         res.writeHead(404).end();
         return;
       }
@@ -126,7 +126,7 @@ export function createHttpHandler(ctx: HttpContext) {
       }
       if (p === '/favicon.svg' || p === '/factory-glyph.svg' || p === '/manifest.webmanifest' || p === '/dashboard.webmanifest' || p.startsWith('/icons/') || p.startsWith('/fonts/')) {
         const file = publicFile(p);
-        if (file) return serveFile(res, file, false);
+        if (file) return serveFile(res, file, false, req);
         res.writeHead(404).end();
         return;
       }
@@ -145,7 +145,7 @@ export function createHttpHandler(ctx: HttpContext) {
       if (p === '/dashboard' || p === '/dashboard/' || p === '/dashboard.html') {
         const file = publicFile('/dashboard.html');
         if (!file) return send(res, 503, { error: 'Companion bundle missing. Rebuild or update Droid Office.' });
-        return serveFile(res, file, false);
+        return serveFile(res, file, false, req);
       }
       // A phone pairing: it scanned this start's QR code, so it has the LAN token (or it's on this
       // machine). A device token doesn't pair another device. A web page's cross-origin POST is refused.
@@ -384,9 +384,9 @@ export function createHttpHandler(ctx: HttpContext) {
       }
       // Await the extracted route so resource failures still use this handler's 500 response.
       if (isFloorHttpPath(p, req.method)) return await floorRequest(req, res, p, url, ownRequest, () => !gate.device && ownPage(req));
-      if (p === '/' || p === '/index.html') return serveIndex(res, url.searchParams.get('t'));
+      if (p === '/' || p === '/index.html') return serveIndex(res, url.searchParams.get('t'), req);
       const file = publicFile(p);
-      if (file) return serveFile(res, file, false);
+      if (file) return serveFile(res, file, false, req);
       res.writeHead(404, { 'content-type': 'text/plain' }).end('Not found');
     } catch (err) {
       console.error(err);

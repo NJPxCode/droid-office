@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, type BaseWindow, clipboard, dialog, Menu, type MenuItemConstructorOptions, Notification, shell, type WebContents } from 'electron';
+import { app, type BaseWindow, clipboard, dialog, Menu, type MenuItemConstructorOptions, Notification, powerMonitor, shell, type WebContents } from 'electron';
 import { downloadBrowser } from './browser.js';
 import { createCompanionWindow } from './companion.js';
 import { companionWindowMenu, sendCompanionCommand } from './companion-commands.js';
@@ -338,6 +338,7 @@ async function openOffice() {
       // Another office (a terminal's `npm start`, an earlier app) already answers here: use it rather than start a second one.
       officeUrl = `http://localhost:${port}/`;
     } else {
+      officeEnv = await ensureOfficeEnv();
       const dir = settings.officeDir ?? defaultOfficeDir();
       mkdirSync(logDir, { recursive: true });
       office = await startOffice({
@@ -608,6 +609,30 @@ function trayAction(action: TrayAction) {
   else void quitStoppingWorkers();
 }
 
+let lastBadge = '';
+let trayTimer: ReturnType<typeof setInterval> | undefined;
+let traySuspended = false;
+let trayLocked = false;
+let pendingEnv: Promise<NodeJS.ProcessEnv> | undefined;
+
+function ensureOfficeEnv(): Promise<NodeJS.ProcessEnv> {
+  pendingEnv ??= desktopEnv().then((env) => {
+    officeEnv = env;
+    return env;
+  });
+  return pendingEnv;
+}
+
+function syncTrayTimer() {
+  const paused = quitting || traySuspended || trayLocked;
+  if (paused && trayTimer) {
+    clearInterval(trayTimer);
+    trayTimer = undefined;
+  } else if (!paused && tray && !trayTimer) {
+    trayTimer = setInterval(() => void refreshTray(), TRAY_REFRESH_MS);
+  }
+}
+
 async function refreshTray() {
   if (!tray) return;
   const request = ++trayRequest;
@@ -631,7 +656,11 @@ async function refreshTray() {
   };
   tray.render(view);
   // The Dock icon counts them too while the window is open (the Dock icon is hidden while it's closed).
-  app.dock?.setBadge(trayTitle(view));
+  const badge = trayTitle(view);
+  if (badge !== lastBadge) {
+    lastBadge = badge;
+    app.dock?.setBadge(badge);
+  }
 }
 
 async function restartOffice() {
@@ -725,6 +754,7 @@ if (!isStartupCheck() && !app.requestSingleInstanceLock()) {
   // shutting down and installing an update. None of them is turned into a close to the menu bar.
   app.on('before-quit', (e) => {
     quitting = true;
+    syncTrayTimer();
     updates.stop();
     if (!office) return;
     e.preventDefault();
@@ -749,10 +779,28 @@ if (!isStartupCheck() && !app.requestSingleInstanceLock()) {
       Menu.setApplicationMenu(menu());
       if (!isolated && (await moveToApplications())) return;
       tray = new OfficeTray(trayAction);
+      powerMonitor.on('suspend', () => {
+        traySuspended = true;
+        syncTrayTimer();
+      });
+      powerMonitor.on('resume', () => {
+        traySuspended = false;
+        syncTrayTimer();
+        void refreshTray();
+      });
+      powerMonitor.on('lock-screen', () => {
+        trayLocked = true;
+        syncTrayTimer();
+      });
+      powerMonitor.on('unlock-screen', () => {
+        trayLocked = false;
+        syncTrayTimer();
+        void refreshTray();
+      });
       void refreshTray();
-      setInterval(() => void refreshTray(), TRAY_REFRESH_MS);
+      syncTrayTimer();
       show(page('Opening the office…'));
-      officeEnv = await desktopEnv();
+      const envReady = ensureOfficeEnv();
       if (!isolated && !settings.officeDir) {
         settings = { ...settings, officeDir: await chooseOfficeDir(true) };
         saveSettings(settingsFile, settings);
@@ -760,9 +808,12 @@ if (!isStartupCheck() && !app.requestSingleInstanceLock()) {
       await openOffice();
       starting = false;
       hideDockIfNoWindows();
-      void writeGpuReport();
       mkdirSync(logDir, { recursive: true });
-      if (!isolated) downloadBrowser({ runtime: officeRuntime(process.execPath), cli: path.join(app.getAppPath(), 'bin', 'droid-office.js'), env: officeEnv, log: path.join(logDir, 'browser.log') });
+      if (!isolated) {
+        void envReady.then((env) => {
+          if (!quitting) downloadBrowser({ runtime: officeRuntime(process.execPath), cli: path.join(app.getAppPath(), 'bin', 'droid-office.js'), env, log: path.join(logDir, 'browser.log') });
+        });
+      }
       if (!isolated) updates.start();
     })
     .catch((err: unknown) => {

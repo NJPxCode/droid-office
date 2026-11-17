@@ -20,6 +20,7 @@ export function terminalLogicalLine(buffer: IBuffer, row: number, cols: number):
   while (first > 0 && row - first < 16 && buffer.getLine(first)?.isWrapped) first--;
   let text = '';
   const cells: Position[] = [];
+  const reusableCell = typeof buffer.getNullCell === 'function' ? buffer.getNullCell() : undefined;
   for (let y = first; y < buffer.length && y < first + 16; y++) {
     const line = buffer.getLine(y);
     if (!line || (y > first && !line.isWrapped)) break;
@@ -27,7 +28,7 @@ export function terminalLogicalLine(buffer: IBuffer, row: number, cols: number):
     const length = wrappedNext ? Number.POSITIVE_INFINITY : line.translateToString(true).length;
     let offset = 0;
     for (let x = 0; x < cols && offset < length; x++) {
-      const cell = line.getCell(x);
+      const cell = line.getCell(x, reusableCell);
       if (!cell || cell.getWidth() === 0) continue;
       const chars = cell.getChars() || ' ';
       text += chars;

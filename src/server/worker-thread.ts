@@ -73,6 +73,10 @@ interface CachedSession {
   pages: Map<number, Promise<ThreadPage>>;
   /** The window's rows for one file state and busy flag: polls between changes reuse them. */
   rows?: { key: string; rows: ThreadRow[] };
+  /** Cached edited file paths for one transcript `stamp`. */
+  editedPaths?: { stamp: string; paths: string[] };
+  /** Cached latest page for `before === undefined` when `rows.key` has not changed. */
+  latestPage?: { key: string; page: ThreadPage };
   /** When its Task calls were last matched to their subagents' sessions, and how many were. */
   linked?: { at: number; count: number };
 }
@@ -179,7 +183,8 @@ export class WorkerThreadReader {
   async sessionPaths(source: ThreadSession): Promise<{ file?: string; dir: string; root: string } | undefined> {
     const { sessionId, cwd, transcript } = source;
     if (!SESSION_ID.test(sessionId) || !path.isAbsolute(source.cwd)) return undefined;
-    const file = await this.find(source);
+    const known = this.sessions.get(JSON.stringify([cwd, sessionId, source.since ?? 0]))?.file;
+    const file = known && existsSync(known) ? known : await this.find(source);
     if (file) return { file, dir: path.dirname(file), root: this.root };
     const name = `${sessionId}.jsonl`;
     if (transcript && path.basename(transcript) === name) {
@@ -199,6 +204,15 @@ export class WorkerThreadReader {
     const page = await this.read(source);
     if (page.error) return;
     return this.sessions.get(JSON.stringify([source.cwd, source.sessionId, source.since ?? 0]))?.projection.text;
+  }
+
+  /** Reads the projected visible text together with the underlying file stamp so unchanged callers can skip hashing. */
+  async readTextWithStamp(source: ThreadSession): Promise<{ text: string; stamp?: string } | undefined> {
+    const page = await this.read(source);
+    if (page.error) return;
+    const cached = this.sessions.get(JSON.stringify([source.cwd, source.sessionId, source.since ?? 0]));
+    if (!cached?.projection.text) return undefined;
+    return { text: cached.projection.text, stamp: cached.stamp };
   }
 
   /** `busy` is whether the worker is in a turn: only then can the newest activity still be working. */
@@ -229,9 +243,22 @@ export class WorkerThreadReader {
       if (before === undefined || !state.projection.dropped || before > oldest) {
         if (!this.textOnly) await this.linkChildren(state, sessionId);
         // Edit diffs are numbered from the files as they are now, so the rows change when those do.
-        const files = this.textOnly ? undefined : await this.files.read(cwd, editedFilePaths(state.projection.entries));
+        let files: Awaited<ReturnType<WorkspaceTexts['read']>> | undefined;
+        if (!this.textOnly) {
+          const stampKey = state.stamp ?? '';
+          if (state.editedPaths?.stamp !== stampKey) {
+            state.editedPaths = { stamp: stampKey, paths: editedFilePaths(state.projection.entries) };
+          }
+          files = await this.files.read(cwd, state.editedPaths.paths);
+        }
         const key = `${state.stamp}:${busy}:${files?.key ?? ''}:${state.linked?.count ?? 0}`;
         if (state.rows?.key !== key) state.rows = { key, rows: presentThread(state.projection.entries, busy, { fileText: files?.text }) };
+        if (before === undefined) {
+          if (state.latestPage?.key !== key) {
+            state.latestPage = { key, page: { sessionId, ...this.page(state.projection, undefined, state.rows.rows) } };
+          }
+          return state.latestPage.page;
+        }
         return { sessionId, ...this.page(state.projection, before, state.rows.rows) };
       }
       let page = state.pages.get(before);
@@ -364,7 +391,20 @@ export class WorkerThreadReader {
   }
 
   private empty(since = 0, drops?: string): CachedSession {
-    return { size: 0, position: 0, pending: Buffer.alloc(0), oversized: false, head: Buffer.alloc(0), tail: Buffer.alloc(0), projection: projection(Infinity, since, drops), pages: new Map() };
+    return {
+      size: 0,
+      position: 0,
+      pending: Buffer.alloc(0),
+      oversized: false,
+      head: Buffer.alloc(0),
+      tail: Buffer.alloc(0),
+      projection: projection(Infinity, since, drops),
+      pages: new Map(),
+      rows: undefined,
+      editedPaths: undefined,
+      latestPage: undefined,
+      linked: undefined,
+    };
   }
 
   private async find({ sessionId, cwd, transcript }: ThreadSession): Promise<string | undefined> {

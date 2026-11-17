@@ -555,34 +555,41 @@ class Presenter : public Napi::ObjectWrap<Presenter> {
       }];
     }
 
-    // The display link lives on its own run-loop thread so a busy main thread cannot delay a present.
-    dispatch_semaphore_t ready = dispatch_semaphore_create(0);
-    core->delegate = [DOLinkDelegate new];
-    core->delegate->core = core;
-    core->thread = [[NSThread alloc] initWithBlock:^{
-      @autoreleasepool {
-        NSRunLoop *rl = NSRunLoop.currentRunLoop;
-        raw->runLoop = CFRunLoopGetCurrent();
-        [rl addPort:NSMachPort.port forMode:NSDefaultRunLoopMode];
-        if (!raw->direct) if (@available(macOS 14.0, *)) {
-          CAMetalDisplayLink *link = [[CAMetalDisplayLink alloc] initWithMetalLayer:raw->layer];
-          link.delegate = raw->delegate;
-          link.preferredFrameLatency = latency;
-          link.preferredFrameRateRange = CAFrameRateRangeMake(30, 120, 120);
-          raw->link = link;
-          [link addToRunLoop:rl forMode:NSRunLoopCommonModes];
-          link.paused = YES;
-          raw->linkPaused.store(true);
+    // The display link lives on its own run-loop thread only when `link` mode uses CAMetalDisplayLink.
+    // `direct` and `paced` modes present on Chromium's paint callback and never touch `core->link`.
+    if (!core->direct) {
+      dispatch_semaphore_t ready = dispatch_semaphore_create(0);
+      core->delegate = [DOLinkDelegate new];
+      core->delegate->core = core;
+      core->thread = [[NSThread alloc] initWithBlock:^{
+        @autoreleasepool {
+          NSRunLoop *rl = NSRunLoop.currentRunLoop;
+          raw->runLoop = CFRunLoopGetCurrent();
+          [rl addPort:NSMachPort.port forMode:NSDefaultRunLoopMode];
+          if (@available(macOS 14.0, *)) {
+            CAMetalDisplayLink *link = [[CAMetalDisplayLink alloc] initWithMetalLayer:raw->layer];
+            link.delegate = raw->delegate;
+            link.preferredFrameLatency = latency;
+            link.preferredFrameRateRange = CAFrameRateRangeMake(30, 120, 120);
+            raw->link = link;
+            [link addToRunLoop:rl forMode:NSRunLoopCommonModes];
+            link.paused = YES;
+            raw->linkPaused.store(true);
+          }
+          dispatch_semaphore_signal(ready);
+          while (!raw->closed.load()) {
+            @autoreleasepool {
+              CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0e9, false);
+            }
+          }
+          if (@available(macOS 14.0, *)) [raw->link invalidate];
         }
-        dispatch_semaphore_signal(ready);
-        while (!raw->closed.load()) [rl runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-        if (!raw->direct) if (@available(macOS 14.0, *)) [raw->link invalidate];
-      }
-    }];
-    core->thread.name = @"droid-office.presenter.link";
-    core->thread.qualityOfService = NSQualityOfServiceUserInteractive;
-    [core->thread start];
-    dispatch_semaphore_wait(ready, DISPATCH_TIME_FOREVER);
+      }];
+      core->thread.name = @"droid-office.presenter.link";
+      core->thread.qualityOfService = NSQualityOfServiceUserInteractive;
+      [core->thread start];
+      dispatch_semaphore_wait(ready, DISPATCH_TIME_FOREVER);
+    }
   }
 
   ~Presenter() { Shutdown(); }

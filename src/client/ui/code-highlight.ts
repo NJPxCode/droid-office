@@ -281,15 +281,35 @@ export function attachCopyFeedback(btn: HTMLButtonElement, getText: () => string
   return reset;
 }
 
-/** Updates `.wt-code-scroll` overflow classes and `.wt-code-cue` visibility for a scrollable `<pre>` or table container. */
-export function syncHorizontalScrollCue(frame: HTMLElement): void {
+export interface HorizontalScrollCueMeasurement {
+  frame: HTMLElement;
+  cue: HTMLElement;
+  overflowing: boolean;
+  atEnd: boolean;
+}
+
+/** Reads layout geometry without mutating DOM so callers can measure many blocks before writing. */
+export function measureHorizontalScrollCue(frame: HTMLElement): HorizontalScrollCueMeasurement | null {
   const scroller = frame.querySelector<HTMLElement>('.wt-horizontal-content');
   const cue = frame.querySelector<HTMLElement>('.wt-code-cue');
-  if (!scroller || !cue) return;
-  const overflowing = scroller.scrollWidth > scroller.clientWidth + 1;
-  frame.classList.toggle('overflowing', overflowing);
-  frame.classList.toggle('at-end', scroller.scrollLeft + scroller.clientWidth >= scroller.scrollWidth - 1);
-  cue.hidden = !overflowing;
+  if (!scroller || !cue) return null;
+  const scrollWidth = scroller.scrollWidth;
+  const clientWidth = scroller.clientWidth;
+  const overflowing = scrollWidth > clientWidth + 1;
+  const atEnd = scroller.scrollLeft + clientWidth >= scrollWidth - 1;
+  return { frame, cue, overflowing, atEnd };
+}
+
+export function applyHorizontalScrollCue({ frame, cue, overflowing, atEnd }: HorizontalScrollCueMeasurement): void {
+  if (frame.classList.contains('overflowing') !== overflowing) frame.classList.toggle('overflowing', overflowing);
+  if (frame.classList.contains('at-end') !== atEnd) frame.classList.toggle('at-end', atEnd);
+  if (cue.hidden !== !overflowing) cue.hidden = !overflowing;
+}
+
+/** Updates `.wt-code-scroll` overflow classes and `.wt-code-cue` visibility for a scrollable `<pre>` or table container. */
+export function syncHorizontalScrollCue(frame: HTMLElement): void {
+  const measured = measureHorizontalScrollCue(frame);
+  if (measured) applyHorizontalScrollCue(measured);
 }
 
 /** Builds `.wt-code-block` with language header, accessible Copy button, and horizontally scrollable `<pre>`. */

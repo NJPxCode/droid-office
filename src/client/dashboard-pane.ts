@@ -16,9 +16,8 @@ import { h, STATUS_LABEL, timeAgo, toast } from './ui/dom';
 import { colorDot } from './ui/kit';
 import { icon, type IconName } from './ui/icons';
 import { modelBadgeLabel, modelBadgeNode } from './ui/models';
-import { openForkWorker } from './ui/fork-worker';
 import { mountWorkerThread, type WorkerThread } from './ui/worker-thread';
-import { openQuestionWorkspace, type QuestionDraft, type QuestionReply } from './ui/question-workspace';
+import type { QuestionDraft, QuestionReply, openQuestionWorkspace } from './ui/question-workspace';
 import type { InlineTerminalHandle } from './ui/terminal';
 import type { PaneView } from './dashboard-workspace';
 import { workerTeams } from '../shared/team';
@@ -633,7 +632,20 @@ export function createPane(host: PaneHost, index: number): Pane {
               ),
             ]
           : []),
-      ...(fork !== 'none' ? [btn('Fork', 'fork', !fork, () => openForkWorker(host.net, w.id), '', fork ?? 'Fork this conversation and its files into an independent worker')] : []),
+      ...(fork !== 'none'
+        ? [
+            btn(
+              'Fork',
+              'fork',
+              !fork,
+              () => {
+                void import('./ui/fork-worker').then(({ openForkWorker }) => openForkWorker(host.net, w.id));
+              },
+              '',
+              fork ?? 'Fork this conversation and its files into an independent worker',
+            ),
+          ]
+        : []),
       btn('Send home', 'home', true, () => host.sendHome(w), 'dash-home', 'Send it home'),
     );
   }
@@ -856,21 +868,24 @@ export function createPane(host: PaneHost, index: number): Pane {
             disabled: !live || questionReplying,
             onclick: () => {
               if (questionWorkspace || !qs) return;
-              questionWorkspace = openQuestionWorkspace({
-                name: w.name,
-                state: qs,
-                draft: questionDraft,
-                onDraft: () => host.remember(draftKey(intended, `${w.id}:answer`), questionDraft.text),
-                reply,
-                review: () => {
-                  questionKey = '';
-                  paintQuestion(true);
-                },
-                // A cloud worker has no terminal to fall back on.
-                raw: w.cloud ? undefined : () => host.setView(w.id, 'terminal'),
-                onClose: () => {
-                  questionWorkspace = undefined;
-                },
+              void import('./ui/question-workspace').then(({ openQuestionWorkspace }) => {
+                if (questionWorkspace || !qs) return;
+                questionWorkspace = openQuestionWorkspace({
+                  name: w.name,
+                  state: qs,
+                  draft: questionDraft,
+                  onDraft: () => host.remember(draftKey(intended, `${w.id}:answer`), questionDraft.text),
+                  reply,
+                  review: () => {
+                    questionKey = '';
+                    paintQuestion(true);
+                  },
+                  // A cloud worker has no terminal to fall back on.
+                  raw: w.cloud ? undefined : () => host.setView(w.id, 'terminal'),
+                  onClose: () => {
+                    questionWorkspace = undefined;
+                  },
+                });
               });
             },
           },

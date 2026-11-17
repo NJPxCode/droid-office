@@ -26,26 +26,53 @@ function command(file: string, args: string[], cwd?: string): Promise<string> {
   });
 }
 
-/** One cwd lookup per batch, never per token or mousemove. Failure leaves the launch cwd intact. */
+const liveCwdCache = new Map<number, { at: number; pending: Promise<string | undefined> }>();
+
+/** One cwd lookup per batch, cached briefly per PID so sweeping across terminal rows coalesces into one lookup. */
 export async function liveTerminalCwd(pid: number | undefined): Promise<string | undefined> {
   if (!pid || !Number.isSafeInteger(pid) || pid < 1) return undefined;
-  try {
-    if (process.platform === 'linux') return await readlink(`/proc/${pid}/cwd`);
-    if (process.platform === 'darwin') {
-      const output = await command('/usr/sbin/lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']);
-      return output
-        .split('\n')
-        .find((line) => line.startsWith('n/'))
-        ?.slice(1);
+  const now = Date.now();
+  const hit = liveCwdCache.get(pid);
+  if (hit && now - hit.at < 2000) return hit.pending;
+  const pending = (async (): Promise<string | undefined> => {
+    try {
+      if (process.platform === 'linux') return await readlink(`/proc/${pid}/cwd`);
+      if (process.platform === 'darwin') {
+        const output = await command('/usr/sbin/lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']);
+        return output
+          .split('\n')
+          .find((line) => line.startsWith('n/'))
+          ?.slice(1);
+      }
+    } catch {
+      // The process may have exited between rendering and hovering.
     }
-  } catch {
-    // The process may have exited between rendering and hovering.
+    return undefined;
+  })();
+  if (liveCwdCache.size >= 128) {
+    const oldest = liveCwdCache.keys().next().value;
+    if (oldest !== undefined) liveCwdCache.delete(oldest);
   }
-  return undefined;
+  liveCwdCache.set(pid, { at: now, pending });
+  return pending;
+}
+
+interface TrackedFilesIndex {
+  byBasename: Map<string, string | null>;
+}
+
+function buildTrackedIndex(files: string[]): TrackedFilesIndex {
+  const byBasename = new Map<string, string | null>();
+  for (const entry of files) {
+    const base = path.basename(entry);
+    if (!byBasename.has(base)) byBasename.set(base, entry);
+    else byBasename.set(base, null);
+  }
+  return { byBasename };
 }
 
 export class TerminalPaths {
-  private readonly tracked = new Map<string, { at: number; files: Promise<string[]> }>();
+  private readonly tracked = new Map<string, { at: number; index: Promise<TrackedFilesIndex> }>();
 
   constructor(
     private readonly gitFiles: (cwd: string) => Promise<string[]> = async (cwd) => (await command('git', ['ls-files', '-z', '--cached'], cwd)).split('\0').filter(Boolean),
@@ -53,16 +80,18 @@ export class TerminalPaths {
     private readonly home = homedir(),
   ) {}
 
-  private files(cwd: string): Promise<string[]> {
+  private files(cwd: string): Promise<TrackedFilesIndex> {
     const hit = this.tracked.get(cwd);
-    if (hit && Date.now() - hit.at < 5000) return hit.files;
-    const files = this.gitFiles(cwd).catch(() => []);
+    if (hit && Date.now() - hit.at < 5000) return hit.index;
+    const index = this.gitFiles(cwd)
+      .catch(() => [])
+      .then(buildTrackedIndex);
     if (this.tracked.size >= 64) {
       const oldest = this.tracked.keys().next().value;
       if (oldest !== undefined) this.tracked.delete(oldest);
     }
-    this.tracked.set(cwd, { at: Date.now(), files });
-    return files;
+    this.tracked.set(cwd, { at: Date.now(), index });
+    return index;
   }
 
   /**
@@ -118,9 +147,11 @@ export class TerminalPaths {
         if (!file.includes('/')) {
           // Prefer the worker checkout. An ambiguous basename never chooses an arbitrary file.
           for (const root of roots) {
-            const hits = (await this.files(root)).filter((entry) => path.basename(entry) === file);
-            if (hits.length > 1) return null;
-            if (hits.length === 1) return confirm(path.resolve(root, hits[0]));
+            const { byBasename } = await this.files(root);
+            if (!byBasename.has(file)) continue;
+            const match = byBasename.get(file);
+            if (match === null || match === undefined) return null;
+            return confirm(path.resolve(root, match));
           }
         }
         return null;

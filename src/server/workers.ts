@@ -180,8 +180,10 @@ export interface WorkerEvents {
 
 export class WorkerManager {
   private workers = new Map<string, Worker>();
-  /** Which connections have each worker's terminal open (workerId -> connection IDs). */
+  /** Which connections receive each worker's raw terminal stream (workerId -> connection IDs). */
   private subscribers = new Map<string, Set<string>>();
+  /** Which connections have each worker open in Raw TTY or Thread view (workerId -> connection IDs). */
+  private viewers = new Map<string, Set<string>>();
   private state: WorkerStateStore;
   private trees: Worktrees;
   /** The checkout's branch when the office opened this floor (see the constructor). */
@@ -1128,6 +1130,7 @@ export class WorkerManager {
     if (!w) return false;
     this.workers.delete(id);
     this.subscribers.delete(id);
+    this.viewers.delete(id);
     const proc = w.pty;
     w.pty = undefined;
     for (const entry of w.inFlight) clearTimeout(entry.timer);
@@ -1300,6 +1303,7 @@ export class WorkerManager {
     if (!w) return {};
     this.workers.delete(id);
     this.subscribers.delete(id);
+    this.viewers.delete(id);
     const proc = w.pty;
     w.pty = undefined; // so the exit handler knows this worker is gone and stays quiet
     for (const entry of w.inFlight) clearTimeout(entry.timer);
@@ -1571,6 +1575,16 @@ export class WorkerManager {
     this.resume(w.info.id);
   }
 
+  /** Marks one connection as viewing a worker without streaming its raw terminal (Thread view). */
+  open(id: string, clientId: string): boolean {
+    const w = this.workers.get(id);
+    if (!w) return false;
+    this.unsubscribeStream(id, clientId);
+    this.addViewer(id, clientId);
+    this.acknowledgeOpen(w);
+    return true;
+  }
+
   /** Subscribes one connection to a worker's terminal; opening it acknowledges its wait for attention. */
   attach(id: string, clientId: string): { data: string; cols: number; rows: number; shared: boolean } | undefined {
     const w = this.workers.get(id);
@@ -1580,16 +1594,30 @@ export class WorkerManager {
       subs = new Set();
       this.subscribers.set(id, subs);
     }
-    const shared = [...subs].some((id) => id !== clientId);
+    const shared = [...subs].some((cid) => cid !== clientId);
     subs.add(clientId);
+    this.addViewer(id, clientId);
+    this.acknowledgeOpen(w);
+    const data = w.snapshot ? w.snapshot() : offlineBanner(w.info);
+    return { data, cols: w.info.cols, rows: w.info.rows, shared };
+  }
+
+  private addViewer(id: string, clientId: string) {
+    let seen = this.viewers.get(id);
+    if (!seen) {
+      seen = new Set();
+      this.viewers.set(id, seen);
+    }
+    seen.add(clientId);
+  }
+
+  private acknowledgeOpen(w: Worker) {
     let changed = this.syncOpen(w);
     if (!w.info.acked && w.info.status !== 'needs_input') {
       w.info.acked = true;
       changed = true;
     }
     if (changed) this.emitUpdate(w);
-    const data = w.snapshot ? w.snapshot() : offlineBanner(w.info);
-    return { data, cols: w.info.cols, rows: w.info.rows, shared };
   }
 
   /** Lines of every worker's terminal holding `needle` (a searchKey), newest first, at most `perWorker` each. */
@@ -1620,11 +1648,19 @@ export class WorkerManager {
   }
 
   /** Removes one connection's subscription; empty entries go, so removed workers leave nothing behind. */
-  private unsubscribe(id: string, clientId: string): boolean {
+  private unsubscribeStream(id: string, clientId: string): boolean {
     const subs = this.subscribers.get(id);
     if (!subs?.delete(clientId)) return false;
     if (!subs.size) this.subscribers.delete(id);
     return true;
+  }
+
+  private unsubscribe(id: string, clientId: string): boolean {
+    const hadStream = this.unsubscribeStream(id, clientId);
+    const seen = this.viewers.get(id);
+    const hadViewer = !!seen?.delete(clientId);
+    if (seen && !seen.size) this.viewers.delete(id);
+    return hadStream || hadViewer;
   }
 
   /**
@@ -2289,7 +2325,8 @@ export class WorkerManager {
       w.outputAt = Date.now();
       w.screenDirty = true;
       w.unsaved = true;
-      if (info.open) this.events.data(info.id, data, this.subscriberIds(info.id));
+      const targets = this.subscriberIds(info.id);
+      if (targets.length) this.events.data(info.id, data, targets);
     });
     proc.onExit(({ exitCode, error, lost }) => {
       if (w.pty !== proc || this.workers.get(info.id) !== w) return;
@@ -2309,7 +2346,8 @@ export class WorkerManager {
       const hint = info.kind === 'shell' ? ' — press R to restart' : info.sessionId ? ' — press R to resume' : '';
       const msg = `\r\n\x1b[2m[${info.name} exited with code ${exitCode}${hint}]\x1b[0m\r\n`;
       term.write(msg);
-      if (info.open) this.events.data(info.id, msg, this.subscriberIds(info.id));
+      const targets = this.subscriberIds(info.id);
+      if (targets.length) this.events.data(info.id, msg, targets);
       w.screenDirty = true;
       w.unsaved = true;
       this.emitUpdate(w);
@@ -2360,7 +2398,8 @@ export class WorkerManager {
     w.info.status = 'exited';
     w.info.exitCode = -1;
     w.term?.write(msg);
-    if (w.info.open) this.events.data(w.info.id, msg, this.subscriberIds(w.info.id));
+    const targets = this.subscriberIds(w.info.id);
+    if (targets.length) this.events.data(w.info.id, msg, targets);
     w.screenDirty = true;
     w.unsaved = true;
     this.events.toast(`Could not start ${what}: ${message}`, 'error');
@@ -2422,9 +2461,9 @@ export class WorkerManager {
     return [...(this.subscribers.get(id) ?? [])];
   }
 
-  /** Syncs the public open flag with the subscriptions; says whether it changed. */
+  /** Syncs the public open flag with the open viewers; says whether it changed. */
   private syncOpen(w: Worker): boolean {
-    const open = (this.subscribers.get(w.info.id)?.size ?? 0) > 0;
+    const open = (this.viewers.get(w.info.id)?.size ?? 0) > 0;
     if (w.info.open === open) return false;
     w.info.open = open;
     return true;

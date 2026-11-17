@@ -382,6 +382,8 @@ function pinwheelDecal(): THREE.Mesh {
   return m;
 }
 
+const laptopSphere = new THREE.Sphere();
+
 export class Laptop {
   readonly root = new THREE.Group();
   /** The current terminal display, including after the MacBook GLB replaces the stand-in. */
@@ -399,6 +401,7 @@ export class Laptop {
   private drawnVersion = -1;
   private drawnFonts = -1;
   private paintedAt = 0;
+  private deferredPaint = false;
   private openT = 0;
   private glowDirty = true;
   private glowParent: THREE.Object3D | null = null;
@@ -449,15 +452,22 @@ export class Laptop {
     this.drawnVersion = -2;
   }
 
-  /** `distance` to the camera throttles repaints: far-away laptops refresh rarely. */
-  update(dt: number, screen: ScreenState | undefined, distance = 0) {
+  /** `distance` to the camera throttles repaints: far-away laptops refresh rarely, and off-frustum / rear-facing lids defer GPU uploads until seen. */
+  update(dt: number, screen: ScreenState | undefined, distance = 0, visible = true) {
     this.maybeSwap();
     if (this.openT < 1) this.setLid(Math.min(1, this.openT + dt * 1.6));
     const version = screen ? screen.version : -1;
     const fonts = fontRevision();
+    const dirty = version !== this.drawnVersion || fonts !== this.drawnFonts;
+    if (!dirty) return;
+    if (!visible) {
+      this.deferredPaint = true;
+      return;
+    }
     const now = performance.now();
     const every = distance < 6 ? 150 : distance < 14 ? 600 : 2000;
-    if ((version !== this.drawnVersion || fonts !== this.drawnFonts) && (now - this.paintedAt > every || this.drawnVersion < 0)) {
+    if (this.deferredPaint || now - this.paintedAt > every || this.drawnVersion < 0) {
+      this.deferredPaint = false;
       this.paintedAt = now;
       this.drawnVersion = version;
       this.drawnFonts = fonts;
@@ -467,18 +477,35 @@ export class Laptop {
     }
   }
 
-  /**
-   * Where the screen is and which way it faces, for the light it throws (see Sky.setScreens). Returns
-   * how lit it is, 0–1: nothing until the lid has swung most of the way up.
-   */
-  glow(pos: THREE.Vector3, dir: THREE.Vector3): number {
-    if (this.openT <= 0.6) return 0;
+  private ensureScreenWorld() {
     if (this.glowDirty || this.root.parent !== this.glowParent) {
       this.glowDirty = false;
       this.glowParent = this.root.parent;
       this.lid.localToWorld(this.glowPos.set(0, LID_H / 2, 0.05));
       this.glowDir.set(0, 0, 1).transformDirection(this.lid.matrixWorld);
     }
+  }
+
+  /** True when the open screen faces toward `camPos` and intersects `frustum`. */
+  screenInView(frustum: THREE.Frustum, camPos: THREE.Vector3): boolean {
+    if (this.openT <= 0.05) return false;
+    this.ensureScreenWorld();
+    const dx = camPos.x - this.glowPos.x;
+    const dy = camPos.y - this.glowPos.y;
+    const dz = camPos.z - this.glowPos.z;
+    if (dx * this.glowDir.x + dy * this.glowDir.y + dz * this.glowDir.z <= -0.08) return false;
+    laptopSphere.center.copy(this.glowPos);
+    laptopSphere.radius = 0.85;
+    return frustum.intersectsSphere(laptopSphere);
+  }
+
+  /**
+   * Where the screen is and which way it faces, for the light it throws (see Sky.setScreens). Returns
+   * how lit it is, 0–1: nothing until the lid has swung most of the way up.
+   */
+  glow(pos: THREE.Vector3, dir: THREE.Vector3): number {
+    if (this.openT <= 0.6) return 0;
+    this.ensureScreenWorld();
     pos.copy(this.glowPos);
     dir.copy(this.glowDir);
     return (this.openT - 0.6) / 0.4;

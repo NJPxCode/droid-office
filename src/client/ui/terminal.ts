@@ -63,7 +63,7 @@ async function uploadDrop(workerId: string, f: File): Promise<string> {
   return r.path;
 }
 
-let current: { workerId: string; modal: Modal; find(f: TerminalFind): void } | null = null;
+let current: { workerId: string; modal: Modal; find(f: TerminalFind): void; streams(): boolean } | null = null;
 const threadDrafts = new Map<string, string>();
 const THREAD_VIEW_KEY = 'droid-office.desk-thread-view:';
 
@@ -99,6 +99,11 @@ export function routeTerminalMessage(msg: ServerMsg) {
 /** The worker whose terminal window is open, if any. */
 export function openTerminalFor(): string | null {
   return current?.workerId ?? null;
+}
+
+/** Whether the open desk window is showing Raw TTY rather than Thread view. */
+export function openTerminalStreams(): boolean {
+  return current?.streams() ?? false;
 }
 
 /** The terminal is the front window, not covered by another dialog. */
@@ -535,6 +540,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     current = {
       workerId,
       modal,
+      streams: () => !threadView,
       find: (f) => {
         setThreadView('raw', false);
         if (mirror.ready) jumpTo(f);
@@ -587,6 +593,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
         localStorage.setItem(`${THREAD_VIEW_KEY}${workerId}`, next);
       } catch {}
       if (threadView) {
+        mirror.disconnect();
         thread.activate(true);
         term.options.disableStdin = true;
       } else {
@@ -709,7 +716,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     opened = true;
     ro.observe(host);
     adoptSharedSize = store.worker(workerId)?.open === true;
-    if (!inline || !document.hidden) net.send({ t: 'worker.attach', workerId });
+    if (!threadView && (!inline || !document.hidden)) net.send({ t: 'worker.attach', workerId });
     setTimeout(() => {
       if (alive && inline?.focus !== false && !threadView) term.focus();
     }, 50);
@@ -843,7 +850,8 @@ export function openOfficeShell(net: Net) {
   };
   listeners.add(onMsg);
   // Another window typed and changed the size: follow it, unless this one just sent that size.
-  const unsub = store.on('screens', () => {
+  const unsub = store.on('screens', (changedId) => {
+    if (changedId && changedId !== OFFICE_SHELL_ID) return;
     const s = store.screens.get(OFFICE_SHELL_ID);
     if (!s || !mirror?.ready) return;
     if (s.cols === ptyCols && s.rows === ptyRows) return;
@@ -894,7 +902,7 @@ export function openOfficeShell(net: Net) {
       if (current?.modal === modal) current = null;
     },
   });
-  current = { workerId: OFFICE_SHELL_ID, modal, find: () => {} };
+  current = { workerId: OFFICE_SHELL_ID, modal, find: () => {}, streams: () => true };
   const paintZoom = (px: number) => {
     smaller.toggleAttribute('disabled', px <= TERM_FONT_MIN);
     bigger.toggleAttribute('disabled', px >= TERM_FONT_MAX);

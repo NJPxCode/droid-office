@@ -44,6 +44,7 @@ const cache = new Map<string, Entry>();
 const inFlight = new Map<string, Promise<Entry>>();
 
 let manifest: PropManifest | null = null;
+let manifestPromise: Promise<PropManifest> | null = null;
 let loader: GLTFLoader | null = null;
 
 function draco(): DRACOLoader {
@@ -67,12 +68,19 @@ export function propManifest(): PropManifest {
 /** Loads the manifest. Safe to call more than once; callers await the same promise. */
 export async function loadPropManifest(): Promise<PropManifest> {
   if (manifest) return manifest;
+  if (manifestPromise) return manifestPromise;
   // Releases before the server revalidated /props/ marked this immutable for a year; `no-cache`
   // makes a browser holding one of those copies ask again instead of missing every newer prop.
-  const res = await fetch('/props/manifest.json', { cache: 'no-cache' });
-  if (!res.ok) throw new Error(`props manifest: ${res.status} ${res.statusText}`);
-  manifest = (await res.json()) as PropManifest;
-  return manifest;
+  manifestPromise = fetch('/props/manifest.json', { cache: 'no-cache' })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`props manifest: ${res.status} ${res.statusText}`);
+      manifest = (await res.json()) as PropManifest;
+      return manifest;
+    })
+    .finally(() => {
+      manifestPromise = null;
+    });
+  return manifestPromise;
 }
 
 async function load(name: string): Promise<Entry> {

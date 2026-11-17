@@ -32,6 +32,38 @@ export function mountThreadStatusRow() {
   let rotatedAt = 0;
   let fading = false;
   let fadeTimer = 0;
+  let rotateTimer = 0;
+  let disposed = false;
+
+  const stopTimer = () => {
+    if (rotateTimer) {
+      window.clearTimeout(rotateTimer);
+      rotateTimer = 0;
+    }
+  };
+
+  const scheduleNext = () => {
+    stopTimer();
+    if (disposed || !state.show || state.mode === 'idle' || state.mode === 'compacting' || document.hidden || fading) return;
+    const wait = Math.max(50, STATUS_ROTATE_MS - (Date.now() - rotatedAt));
+    rotateTimer = window.setTimeout(() => {
+      rotateTimer = 0;
+      if (disposed || !state.show || state.mode === 'idle' || state.mode === 'compacting' || document.hidden || fading) return;
+      const now = Date.now();
+      if (now - rotatedAt < STATUS_ROTATE_MS) {
+        scheduleNext();
+        return;
+      }
+      fading = true;
+      phrase.classList.add('changing');
+      fadeTimer = window.setTimeout(() => {
+        fading = false;
+        phrase.classList.remove('changing');
+        rotate(Date.now());
+        scheduleNext();
+      }, STATUS_FADE_MS / 2);
+    }, wait);
+  };
 
   const rotate = (now: number) => {
     const pool = statusPhrases(state.mode);
@@ -44,21 +76,11 @@ export function mountThreadStatusRow() {
     phrase.textContent = pool[index];
     rotatedAt = now;
   };
-  const timer = window.setInterval(() => {
-    const now = Date.now();
-    if (!state.show || state.mode === 'idle' || document.hidden || fading || now - rotatedAt < STATUS_ROTATE_MS) return;
-    if (state.mode === 'compacting') {
-      rotatedAt = now;
-      return;
-    }
-    fading = true;
-    phrase.classList.add('changing');
-    fadeTimer = window.setTimeout(() => {
-      fading = false;
-      phrase.classList.remove('changing');
-      rotate(now);
-    }, STATUS_FADE_MS / 2);
-  }, 100);
+  const onVisibility = () => {
+    if (document.hidden) stopTimer();
+    else scheduleNext();
+  };
+  document.addEventListener('visibilitychange', onVisibility);
 
   return {
     element,
@@ -79,9 +101,12 @@ export function mountThreadStatusRow() {
         phrase.classList.remove('changing');
         rotate(Date.now());
       }
+      scheduleNext();
     },
     dispose() {
-      window.clearInterval(timer);
+      disposed = true;
+      document.removeEventListener('visibilitychange', onVisibility);
+      stopTimer();
       window.clearTimeout(fadeTimer);
       element.hidden = true;
     },

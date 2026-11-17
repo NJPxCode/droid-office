@@ -279,25 +279,18 @@ async function beat(pulse?: () => void) {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-async function compileView(renderer: ShaderCompiler, scene: THREE.Scene, camera: THREE.Camera, outline: WarmOptions['outline'], draw: boolean) {
-  const restore = reveal(scene);
-  try {
-    scene.updateMatrixWorld(true);
-    camera.updateMatrixWorld(true);
-    await renderer.compileAsync(scene, camera);
-    await settle(renderer);
-    // The grid is only gathered by a real draw, and the active combination's uniforms are bound here too.
-    if (draw) {
-      try {
-        renderer.render(scene, camera);
-      } catch (err) {
-        console.warn('office: a shader warmup draw failed', err);
-      }
-    }
-    outline(scene, camera);
-  } finally {
-    restore();
+function queueCompile(pending: Promise<unknown>[], renderer: ShaderCompiler, scene: THREE.Object3D, camera: THREE.Camera) {
+  const job = renderer.compileAsync(scene, camera);
+  job.catch(() => {});
+  pending.push(job);
+}
+
+async function flushCompiles(pending: Promise<unknown>[], renderer: ShaderCompiler) {
+  if (pending.length > 0) {
+    const batch = pending.splice(0, pending.length);
+    await Promise.all(batch);
   }
+  await settle(renderer);
 }
 
 /**
@@ -357,50 +350,113 @@ export async function warmOfficeShaders(opts: WarmOptions): Promise<void> {
       active: { pipeline: opts.pipeline === 'srgb' ? 'canvas' : opts.pipeline, grid: opts.grid ? gridWas : false, lights: wandWas ? 1 : 0 },
     });
     const screenTones = toneWas === THREE.NoToneMapping ? [toneWas] : [THREE.NoToneMapping, toneWas];
-    for (let pass = 0; pass < screenTones.length; pass++) {
-      const tone = screenTones[pass];
-      const lastPass = pass === screenTones.length - 1;
-      for (let i = 0; i < worldCombos.length; i++) {
-        const combo = worldCombos[i];
-        if (!lastPass && combo.pipeline === 'float') continue;
-        world.wandLight.visible = combo.lights > 0;
-        for (let n = 0; n < spares.length; n++) spares[n].visible = n < combo.lights - 1;
-        probe.visible = combo.grid;
-        renderer.toneMapping = combo.pipeline === 'float' ? toneWas : tone;
-        renderer.setRenderTarget(targetFor(targets, combo.pipeline));
-        await compileView(renderer, world.scene, world.camera, opts.outline, combo.grid || (lastPass && i === worldCombos.length - 1));
-        await beat(opts.pulse);
+    const pending: Promise<unknown>[] = [];
+    const outlinedWorld = new Set<string>();
+    const restoreWorld = reveal(world.scene);
+    try {
+      world.scene.updateMatrixWorld(true);
+      world.camera.updateMatrixWorld(true);
+      for (let pass = 0; pass < screenTones.length; pass++) {
+        const tone = screenTones[pass];
+        const lastPass = pass === screenTones.length - 1;
+        for (let i = 0; i < worldCombos.length; i++) {
+          const combo = worldCombos[i];
+          if (!lastPass && combo.pipeline === 'float') continue;
+          const effectiveTone = combo.pipeline === 'float' ? toneWas : tone;
+          const draw = combo.grid || (lastPass && i === worldCombos.length - 1);
+          const outlineKey = `${combo.pipeline}:${effectiveTone}`;
+          const needOutline = !outlinedWorld.has(outlineKey);
+          if (draw || needOutline) await flushCompiles(pending, renderer);
+          world.wandLight.visible = combo.lights > 0;
+          for (let n = 0; n < spares.length; n++) spares[n].visible = n < combo.lights - 1;
+          probe.visible = combo.grid;
+          renderer.toneMapping = effectiveTone;
+          renderer.setRenderTarget(targetFor(targets, combo.pipeline));
+          queueCompile(pending, renderer, world.scene, world.camera);
+          if (draw || needOutline) {
+            await flushCompiles(pending, renderer);
+            // The grid is only gathered by a real draw, and the active combination's uniforms are bound here too.
+            if (draw) {
+              try {
+                renderer.render(world.scene, world.camera);
+              } catch (err) {
+                console.warn('office: a shader warmup draw failed', err);
+              }
+            }
+            if (needOutline) {
+              outlinedWorld.add(outlineKey);
+              opts.outline(world.scene, world.camera);
+            }
+            await beat(opts.pulse);
+          }
+        }
+        await flushCompiles(pending, renderer);
       }
+    } finally {
+      restoreWorld();
     }
 
     hands.scene.add(stand.hands);
     const handCombos = handsCombos(toneWas);
-    for (let i = 0; i < handCombos.length; i++) {
-      const combo = handCombos[i];
-      renderer.toneMapping = combo.toneMapping;
-      handsLight.visible = combo.lights === 1;
-      if (combo.lights === 1) hands.scene.add(handsLight);
-      else handsLight.removeFromParent();
-      renderer.setRenderTarget(targets.screen);
-      await compileView(renderer, hands.scene, hands.camera, opts.outline, i === handCombos.length - 1);
-      await beat(opts.pulse);
+    const outlinedHands = new Set<THREE.ToneMapping>();
+    const restoreHands = reveal(hands.scene);
+    try {
+      hands.scene.updateMatrixWorld(true);
+      hands.camera.updateMatrixWorld(true);
+      for (let i = 0; i < handCombos.length; i++) {
+        const combo = handCombos[i];
+        const draw = i === handCombos.length - 1;
+        const needOutline = !outlinedHands.has(combo.toneMapping);
+        if (draw || needOutline) await flushCompiles(pending, renderer);
+        renderer.toneMapping = combo.toneMapping;
+        handsLight.visible = combo.lights === 1;
+        if (combo.lights === 1) {
+          hands.scene.add(handsLight);
+          handsLight.updateMatrixWorld(true);
+        } else {
+          handsLight.removeFromParent();
+        }
+        renderer.setRenderTarget(targets.screen);
+        queueCompile(pending, renderer, hands.scene, hands.camera);
+        if (draw || needOutline) {
+          await flushCompiles(pending, renderer);
+          if (draw) {
+            try {
+              renderer.render(hands.scene, hands.camera);
+            } catch (err) {
+              console.warn('office: a shader warmup draw failed', err);
+            }
+          }
+          if (needOutline) {
+            outlinedHands.add(combo.toneMapping);
+            opts.outline(hands.scene, hands.camera);
+          }
+          await beat(opts.pulse);
+        }
+      }
+      await flushCompiles(pending, renderer);
+    } finally {
+      restoreHands();
     }
 
-    const passScene = new THREE.Scene();
-    const passCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    const passMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
-    passMesh.frustumCulled = false;
-    passScene.add(passMesh);
-    try {
-      for (const pass of opts.passes ?? []) {
-        passMesh.material = pass.material;
-        renderer.setRenderTarget(targetFor(targets, pass.pipeline));
-        await renderer.compileAsync(passScene, passCamera);
-        await settle(renderer);
+    const passList = opts.passes ?? [];
+    if (passList.length > 0) {
+      const passScene = new THREE.Scene();
+      const passCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      const passMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
+      passMesh.frustumCulled = false;
+      passScene.add(passMesh);
+      try {
+        for (const pass of passList) {
+          passMesh.material = pass.material;
+          renderer.setRenderTarget(targetFor(targets, pass.pipeline));
+          queueCompile(pending, renderer, passScene, passCamera);
+        }
+        await flushCompiles(pending, renderer);
         await beat(opts.pulse);
+      } finally {
+        passMesh.geometry.dispose();
       }
-    } finally {
-      passMesh.geometry.dispose();
     }
   } finally {
     renderer.toneMapping = toneWas;

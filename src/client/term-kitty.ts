@@ -350,6 +350,7 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
   let rafId = 0;
   let disposed = false;
   let scannedLength = 0;
+  let sawPlaceholder = false;
 
   const shellState = (): KittyShellState => ({
     mouseTrackingMode: term.modes.mouseTrackingMode,
@@ -683,6 +684,13 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
 
   const paintOverlay = () => {
     if (disposed || !canvas || !ctx || !screenEl) return;
+    if (!sawPlaceholder && graphics.size === 0 && directPlacements.length === 0 && drawnRects.length === 0) {
+      if (canvas.width !== 0 || canvas.height !== 0) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+      return;
+    }
     const geom = cellGeometry();
     if (!geom) return;
     const extra = extraRows();
@@ -1063,6 +1071,7 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
       clearPlacements();
       clearDecoded();
       scannedLength = 0;
+      sawPlaceholder = false;
       schedulePaint();
       return false;
     }),
@@ -1070,14 +1079,16 @@ export function attachKittyTerminal(term: Terminal, opts: KittyTerminalOptions =
       const buf = term.buffer.active;
       const from = Math.max(0, Math.min(scannedLength - term.rows, buf.baseY));
       if (hideBufferPlaceholders(term, from, buf.length - 1, linePlaceholders)) {
+        sawPlaceholder = true;
         term.refresh(0, term.rows - 1);
       }
       scannedLength = buf.length;
-      schedulePaint();
+      if (sawPlaceholder || graphics.size > 0 || directPlacements.length > 0 || drawnRects.length > 0) {
+        schedulePaint();
+      }
     }),
     // Painted in the frame xterm drew its rows in, so images move with their rows when it scrolls.
     term.onRender(() => paintNow()),
-    term.onScroll(() => schedulePaint()),
     term.onResize(() => schedulePaint()),
   ];
 

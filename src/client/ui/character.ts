@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { OutlineEffect } from 'three/examples/jsm/effects/OutlineEffect.js';
+import { OutlineEffect } from '../outline-effect';
 import { HAIR_COLOR_NAMES, HAIR_COLORS, HAIR_STYLES, SKIN_TONES, randomLook, type Look } from '../../shared/avatar';
 import { AVATAR_COLORS, loadProfile, saveProfile, store, type Profile } from '../state';
 import { isSharedGeometry, Person } from '../world/character';

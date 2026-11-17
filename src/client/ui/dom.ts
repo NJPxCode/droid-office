@@ -67,6 +67,11 @@ export function readingNow(): boolean {
   return stack.some((m) => m.reading);
 }
 
+/** Whether a fullscreen diagram/media lightbox covers the entire viewport. */
+export function lightboxOpen(): boolean {
+  return stack.some((m) => m.backdrop.classList.contains('wt-lightbox-backdrop'));
+}
+
 /** Changes what an open window says you're doing, like the doc you turned to on the bookshelf. */
 export function setDoing(modal: Modal, doing: string | undefined) {
   modal.doing = doing;
