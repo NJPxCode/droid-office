@@ -460,6 +460,7 @@ Inspect, clear or promote pending messages in a worker's daemon queue (`WorkerIn
 | `action` | "list" \| "clear" \| "promote" | no, default `"list"` | `list` inspects pending items; `clear` cancels one item or all; `promote` pulls queued item(s) forward to steer now. |
 | `index` | integer | no | 1-based queued message index from `list` (omit to clear all or promote the top queued item). |
 | `all` | boolean | no | Apply `clear` or `promote` to all pending items (not with `index`). |
+| `id` | string | no | Queued message id from list (daemon requestId). |
 | `urgent` | boolean | no | For `promote` only: interrupt a running turn or blocking command (`interruptSession`) and deliver immediately. |
 
 ### `worker_model`
