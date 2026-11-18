@@ -3754,6 +3754,14 @@ function boot() {
 }
 
 guardLeaving();
+// Opening the audio device can block on the OS. Do it in its own loading task, not in the first
+// key or mouse event (which may open a desk Thread or send its first prompt).
+const audioReady = new Promise<void>((resolve) => {
+  setTimeout(() => {
+    sound.prepare();
+    resolve();
+  }, 0);
+});
 // Prop models, then every shader a session can reach, then the first frame. A compile keeps the cap moving.
 const shadersReady = propsReady
   .then(async () => {
@@ -3784,6 +3792,7 @@ const shadersReady = propsReady
   })
   .catch((err) => console.warn('office: shader warmup failed', err));
 loading.until([
+  { say: 'Preparing office sounds', done: audioReady },
   { say: 'Unpacking the office', done: propsReady },
   { say: 'Compiling shaders', done: shadersReady },
 ]);

@@ -95,6 +95,7 @@ const ALERTS: Record<AlertKind, { freq: number; type: OscillatorType; at: number
 
 export class OfficeSound {
   private ctx: AudioContext | null = null;
+  private preparedCtx: AudioContext | null = null;
   private master!: GainNode;
   /** The room itself; it goes quiet while the tab is hidden. */
   private ambience!: GainNode;
@@ -163,6 +164,16 @@ export class OfficeSound {
     return this.ctx?.state ?? 'locked';
   }
 
+  /** Open the audio device during loading. Playback and the sound graph still start on unlock. */
+  prepare() {
+    if (this.ctx || this.preparedCtx) return;
+    try {
+      this.preparedCtx = new AudioContext();
+    } catch {
+      // Some environments don't have Web Audio or only allow it from an input handler.
+    }
+  }
+
   private unlock() {
     if (this.ctx) {
       if (this.ctx.state === 'suspended') void this.ctx.resume();
@@ -170,12 +181,10 @@ export class OfficeSound {
       if (this.stream?.paused) void this.stream.play().catch(() => {});
       return;
     }
-    let ctx: AudioContext;
-    try {
-      ctx = new AudioContext();
-    } catch {
-      return; // no audio here
-    }
+    this.prepare();
+    const ctx = this.preparedCtx;
+    if (!ctx) return;
+    this.preparedCtx = null;
     this.ctx = ctx;
     this.buf = makeBuffers(ctx);
     // A gentle compressor, so a room full of typing never clips.
