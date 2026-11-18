@@ -3,10 +3,41 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { buildSync } from 'esbuild';
+import { modeFor } from '../src/client/dashboard-pane.js';
+import { ORCHESTRATOR_ID } from '../src/shared/mission-control.js';
+import type { WorkerInfo } from '../src/shared/protocol.js';
 import { browserStatus, closeBrowser, launchBrowser, newIsolatedContext } from '../src/server/whiteboard-browser.js';
 import { FIXTURE } from '../tools/thread-fixture.mjs';
 
 const status = browserStatus();
+
+test('modeFor routes all Droid sessions to thread and shell to terminal or info', () => {
+  const base: WorkerInfo = {
+    id: 'pixel',
+    name: 'Pixel',
+    kind: 'agent',
+    deskId: 'desk-1',
+    color: '#89d9ed',
+    status: 'idle',
+    acked: true,
+    createdBy: 'owner',
+    createdAt: 0,
+    cols: 120,
+    rows: 40,
+    open: false,
+  };
+  assert.equal(modeFor(undefined), 'empty');
+  for (const s of ['starting', 'idle', 'working', 'needs_input', 'done', 'exited', 'offline'] as const) {
+    assert.equal(modeFor({ ...base, status: s }), 'thread');
+    assert.equal(modeFor({ ...base, id: ORCHESTRATOR_ID, status: s }), 'thread');
+    assert.equal(modeFor({ ...base, kind: 'cloud', status: s, cloud: { computerId: 'c1', computerName: 'mac-mini', autonomy: 'high' } }), 'thread');
+  }
+  assert.equal(modeFor({ ...base, remote: { by: 'tailnet' } }), 'info');
+  assert.equal(modeFor({ ...base, kind: 'shell', status: 'idle' }), 'terminal');
+  assert.equal(modeFor({ ...base, kind: 'shell', status: 'working' }), 'terminal');
+  assert.equal(modeFor({ ...base, kind: 'shell', status: 'exited' }), 'info');
+  assert.equal(modeFor({ ...base, kind: 'shell', status: 'offline' }), 'info');
+});
 
 test('empty pane clicks hire in place without swallowing worker picks or allowing offline hires', { skip: status.installed ? false : `Chromium is not installed in ${status.path}` }, async (t) => {
   const browser = await launchBrowser();
@@ -46,10 +77,8 @@ test('empty pane clicks hire in place without swallowing worker picks or allowin
       3,
     );
     document.body.append(pane.el);
-    // Pixel is the existing worker offered by the owner's companion screenshot.
     w.paint = (anyone = true) =>
       pane.update({
-        view: 'terminal',
         focused: true,
         maximized: false,
         canMaximize: false,
@@ -119,7 +148,6 @@ test('only the focused thread pane shows its composer, reclaiming space without 
   await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
   await page.evaluate((captured) => {
     const w = window as any;
-    // Pixel and Byte are the owner's workers; conversation rows use the captured golden session.
     w.workers = ['Pixel', 'Byte'].map((name) => ({ id: name.toLowerCase(), name, color: '#89d9ed', kind: 'agent', status: 'idle', sessionId: 'captured', acked: true }));
     for (const worker of w.workers) w.PaneUI.store.workers.set(worker.id, worker);
     const listeners = new Set<(msg: any) => void>();
@@ -140,9 +168,7 @@ test('only the focused thread pane shows its composer, reclaiming space without 
       },
     };
     w.paint = () =>
-      w.panes.forEach((pane: any, index: number) =>
-        pane.update({ worker: w.workers[index], view: 'thread', focused: index === w.focused, maximized: false, canMaximize: false, covered: false, candidates: [], anyone: true, takeFocus: false }),
-      );
+      w.panes.forEach((pane: any, index: number) => pane.update({ worker: w.workers[index], focused: index === w.focused, maximized: false, canMaximize: false, covered: false, candidates: [], anyone: true, takeFocus: false }));
     const host = {
       net,
       live: () => true,
@@ -169,7 +195,7 @@ test('only the focused thread pane shows its composer, reclaiming space without 
   const first = panes.nth(0);
   const second = panes.nth(1);
   await first.locator('.wt-entry').first().waitFor();
-  // Expand the captured activity so both viewport sizes have enough history to scroll.
+  assert.equal(await page.locator('.dash-pane-views, .dash-pane-flip').count(), 0, 'no Thread/TTY switcher or flip button');
   await first.locator('.wt-list').evaluate((el) => {
     for (const details of el.querySelectorAll('details')) details.open = true;
     for (const trigger of el.querySelectorAll<HTMLButtonElement>('.wt-sg-trigger, .wt-tr-trigger')) if (trigger.hasAttribute('aria-expanded')) trigger.click();
@@ -202,7 +228,6 @@ test('only the focused thread pane shows its composer, reclaiming space without 
   assert.equal(await second.locator('.wt-composer').isVisible(), true);
   assert.ok(Math.abs((await height()) - smallHeight - composerHeight) < 2, 'the entire composer height becomes conversation space');
   assert.ok((await bottomGap()) < 2, 'following latest stays pinned when the composer collapses');
-  // Keyboard entry into history selects the pane, but does not steal focus into its newly shown input.
   await first.locator('.wt-scroll').focus();
   assert.equal(await first.locator('.wt-input').isVisible(), true);
   assert.equal(await first.locator('.wt-scroll').evaluate((el) => document.activeElement === el), true);
@@ -212,7 +237,6 @@ test('only the focused thread pane shows its composer, reclaiming space without 
     const el = document.querySelector('.wt-scroll')!;
     return el.scrollHeight - el.scrollTop - el.clientHeight < 2;
   });
-  // Reading older messages must not be mistaken for following the tail after either resize.
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await first.locator('.wt-scroll').evaluate((el) => {
     el.scrollTop = 40;
@@ -224,12 +248,10 @@ test('only the focused thread pane shows its composer, reclaiming space without 
   await first.locator('.wt-scroll').focus();
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   assert.equal(await first.locator('.wt-scroll').evaluate((el) => el.scrollTop), top);
-  // A hidden composer is absent from keyboard navigation, not merely transparent.
   await second.locator('.dash-pane-head').click();
   await first.locator('.wt-input').evaluate((el: HTMLTextAreaElement) => el.focus());
   assert.equal(await first.locator('.wt-input').evaluate((el) => document.activeElement === el), false);
   assert.equal(await second.locator('.wt-composer').isVisible(), true);
-  // Questions remain visible in unfocused panes, and still suppress the composer on focus.
   await page.evaluate(() => {
     const w = window as any;
     w.workers[0].status = 'needs_input';
@@ -283,7 +305,7 @@ test('only the focused thread pane shows its composer, reclaiming space without 
   assert.deepEqual(errors, []);
 });
 
-test('a pane keeps one answer window open across a questionnaire and closes it when the worker moves on', { skip: status.installed ? false : `Chromium is not installed in ${status.path}` }, async (t) => {
+test('a pane keeps one answer window open across a structured questionnaire and closes it when the worker moves on', { skip: status.installed ? false : `Chromium is not installed in ${status.path}` }, async (t) => {
   const browser = await launchBrowser();
   t.after(closeBrowser);
   const context = await newIsolatedContext(browser, { viewport: { width: 1280, height: 860 } });
@@ -300,12 +322,31 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
     target: 'es2022',
   }).outputFiles[0].text;
   const captured = JSON.parse(readFileSync(FIXTURE, 'utf8')).cases.find((example: { name: string }) => example.name === 'reported_release_turn');
-  // Screens as Droid's AskUser draws them, ending with the captured review.
-  const screens = {
-    first: ['  Ask User', '  Which hypervisor should we use?', '', '  1. UTM', '  2. Parallels', '  Or type your own answer...', '', '  Space/Enter/1-9 Select'],
-    second: ['  Ask User', '  Which Windows licence should we use?', '', '  1. Evaluation', '  2. Retail', '  Or type your own answer...', '', '  Space/Enter/1-9 Select'],
-    third: ['  Ask User', '  How should agents connect?', '', '  1. SSH', '  2. RDP', '  Or type your own answer...', '', '  Space/Enter/1-9 Select'],
-    review: readFileSync(new URL('../android/app/src/test/resources/askuser-1.7.1-review.txt', import.meta.url), 'utf8').split('\n'),
+  const menus = {
+    first: {
+      question: 'Which hypervisor should we use?',
+      choices: [
+        { number: 1, label: 'UTM' },
+        { number: 2, label: 'Parallels' },
+      ],
+      freeText: true,
+    },
+    second: {
+      question: 'Which Windows licence should we use?',
+      choices: [
+        { number: 1, label: 'Evaluation' },
+        { number: 2, label: 'Retail' },
+      ],
+      freeText: true,
+    },
+    third: {
+      question: 'How should agents connect?',
+      choices: [
+        { number: 1, label: 'SSH' },
+        { number: 2, label: 'RDP' },
+      ],
+      freeText: true,
+    },
   };
   await page.setContent('<!doctype html><div id="dashboard"><div class="dash-workspace"></div></div><div id="modal-root"></div>');
   await page.addStyleTag({ content: readFileSync(new URL('../src/client/style.css', import.meta.url), 'utf8') });
@@ -313,9 +354,9 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
   await page.addScriptTag({ content: bundle });
   await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
   await page.evaluate(
-    ({ captured, screens }) => {
+    ({ captured, menus }) => {
       const w = window as any;
-      w.screens = screens;
+      w.menus = menus;
       w.worker = {
         id: 'pixel',
         name: 'Pixel',
@@ -332,13 +373,12 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
             { question: 'How should agents connect?', topic: 'Agent-access', options: ['SSH', 'RDP'], multiSelect: false },
           ],
         },
+        menu: menus.first,
       };
       w.PaneUI.store.workers.set('pixel', w.worker);
       w.show = (name: string | undefined) => {
-        if (name) {
-          const lines = w.screens[name];
-          w.PaneUI.store.screens.set('pixel', { cols: 100, rows: lines.length, lines: lines.map((line: string) => [[line, -1, -1, 0]]) });
-        } else w.PaneUI.store.screens.delete('pixel');
+        w.worker = { ...w.worker, menu: name ? w.menus[name] : undefined };
+        w.PaneUI.store.workers.set('pixel', w.worker);
         w.pane.paintQuestion();
       };
       w.actions = [];
@@ -366,7 +406,6 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
           usable: () => true,
           read: () => '',
           remember() {},
-          setView() {},
           action: async (msg: any) => {
             w.actions.push(msg);
           },
@@ -377,11 +416,10 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
         0,
       );
       document.querySelector('.dash-workspace')!.append(w.pane.el);
-      w.paint = () => w.pane.update({ worker: w.worker, view: 'thread', focused: true, maximized: false, canMaximize: false, covered: false, candidates: [], anyone: true, takeFocus: false });
-      w.show('first');
+      w.paint = () => w.pane.update({ worker: w.worker, focused: true, maximized: false, canMaximize: false, covered: false, candidates: [], anyone: true, takeFocus: false });
       w.paint();
     },
-    { captured, screens },
+    { captured, menus },
   );
   const workspace = page.locator('.question-workspace');
   const question = () => workspace.locator('.qw-question').textContent();
@@ -389,12 +427,13 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
   const show = (name?: string) => page.evaluate((name) => (window as any).show(name), name);
   await page.getByRole('button', { name: 'Answer questions' }).click();
   assert.equal(await question(), 'Which hypervisor should we use?');
-  assert.deepEqual(await states(), ['current', 'upcoming', 'upcoming', 'upcoming']);
+  assert.deepEqual(await states(), ['current', 'upcoming', 'upcoming']);
+  assert.equal(await workspace.getByRole('button', { name: /raw tty/i }).count(), 0);
 
-  // Answered in the terminal before the owner started: the window follows to the next question.
+  // Answered elsewhere before the owner started: the window follows to the next question.
   await show('second');
   assert.equal(await question(), 'Which Windows licence should we use?');
-  assert.deepEqual(await states(), ['done', 'current', 'upcoming', 'upcoming']);
+  assert.deepEqual(await states(), ['done', 'current', 'upcoming']);
   assert.equal(await workspace.getByRole('button', { name: 'Show current question' }).isVisible(), false);
 
   // A started draft is never swapped for another question without the owner's say.
@@ -407,39 +446,32 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
   assert.equal(await workspace.locator('input[value="2"]').isChecked(), false, 'the earlier draft does not carry over');
 
   await workspace.locator('input[value="1"]').check();
-  await workspace.getByRole('button', { name: 'Submit and continue' }).click();
+  await workspace.getByRole('button', { name: 'Submit answer', exact: true }).click();
   await page.waitForFunction(() => (window as any).actions.length === 1);
   const sent = await page.evaluate(() => (window as any).actions[0]);
   assert.equal(sent.t, 'worker.answer');
   assert.equal(sent.choice, 1);
   assert.equal(sent.menu.question, 'How should agents connect?');
-  await page.waitForFunction(() => document.querySelector('.qw-feedback')?.textContent === 'Answer sent. Opening the review…');
-  assert.equal(await workspace.locator('.qw-step').nth(2).locator('.qw-step-answer').textContent(), 'SSH');
-
-  await show('review');
-  assert.equal(await workspace.locator('.qw-question').textContent(), 'Review your answers');
-  assert.deepEqual(await states(), ['done', 'done', 'done', 'current']);
-  await workspace.getByRole('button', { name: 'Submit answers', exact: true }).click();
-  await page.waitForFunction(() => (window as any).actions.length === 2);
-  assert.equal(await page.evaluate(() => (window as any).actions[1].menu.review.length), 6);
+  await page.waitForFunction(() => document.querySelector('.qw-feedback')?.textContent === 'Sent. Pixel is continuing.');
+  assert.equal(await workspace.locator('.qw-step').nth(0).locator('.qw-step-answer').textContent(), 'Answered');
   assert.equal(await workspace.count(), 1, 'one window served the whole questionnaire');
 
   // The worker moves on: the window says so, then closes by itself.
   await page.evaluate(() => {
     const w = window as any;
-    w.worker = { ...w.worker, status: 'working', ask: undefined };
+    w.worker = { ...w.worker, status: 'working', ask: undefined, menu: undefined };
     w.PaneUI.store.workers.set('pixel', w.worker);
-    w.show(undefined);
     w.paint();
   });
   await workspace.waitFor({ state: 'detached', timeout: 6000 });
 
-  // A cloud worker's AskUser has no terminal Review step and no Raw TTY button.
+  // A cloud worker's AskUser uses cloud.menu identically, with no Review step and no Raw TTY button.
   await page.evaluate(() => {
     const w = window as any;
     w.actions.length = 0;
     w.worker = {
       ...w.worker,
+      kind: 'cloud',
       status: 'needs_input',
       ask: {
         kind: 'question',
@@ -466,7 +498,7 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
   });
   await page.getByRole('button', { name: 'Answer questions' }).click();
   assert.deepEqual(await states(), ['current', 'upcoming']);
-  assert.equal(await workspace.getByRole('button', { name: 'Raw TTY' }).count(), 0);
+  assert.equal(await workspace.getByRole('button', { name: /raw tty/i }).count(), 0);
   await workspace.locator('input[value="1"]').check();
   await workspace.getByRole('button', { name: 'Submit and continue' }).click();
   await page.waitForFunction(() => document.querySelector('.qw-feedback')?.textContent === 'Answer sent. Opening question 2 of 2…');

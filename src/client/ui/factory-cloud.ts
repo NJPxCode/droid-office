@@ -8,6 +8,7 @@ import { store } from '../state';
 import { h, openModal, STATUS_LABEL, type Modal } from './dom';
 import { colorDot, groupRow, toggle } from './kit';
 import { modelBadge } from './models';
+import { createQuestionSlot } from './question-slot';
 import { mountWorkerThread } from './worker-thread';
 
 // Cloud workers in the browser (src/server/factory/cloud.ts): the hire dialog's "Runs on" choice and
@@ -192,6 +193,7 @@ export function sendCloudHome(net: Net, w: WorkerInfo) {
 let current: { workerId: string; modal: Modal } | null = null;
 /** What was typed in each cloud worker's window, kept while the page is open. */
 const drafts = new Map<string, string>();
+const questionDrafts = new Map<string, string>();
 
 /**
  * A cloud worker's window: where it runs, its session in Factory's web app, and its Thread
@@ -211,13 +213,23 @@ export function openCloudWindow(net: Net, workerId: string) {
   const closeBtn = h('button.btn.close', { title: 'Close (Esc)', 'aria-label': 'Close' }, '✕');
   const meta = h('div.cloud-meta');
   const error = h('p.cloud-error.note.bad.hidden', { role: 'alert' });
+  const questionSlot = createQuestionSlot({
+    worker: () => store.workers.get(workerId),
+    entries: () => thread.entries(),
+    live: () => net.up,
+    readDraft: (id) => questionDrafts.get(id) ?? '',
+    saveDraft: (id, text) => (text ? questionDrafts.set(id, text) : questionDrafts.delete(id)),
+    send: async (msg) => {
+      const result = await net.request(msg);
+      return result.ok ? undefined : (result.error ?? 'The office refused that.');
+    },
+  });
   const thread = mountWorkerThread(net, {
     worker: info,
-    // A cloud worker never waits on a menu here: nothing to show in the question slot.
-    question: h('div', { hidden: true }),
-    queueKey: `droid-office.cloud-queue:${store.floor ?? ''}:${workerId}`,
+    question: questionSlot.element,
     draft: drafts.get(workerId) ?? '',
     onDraft: (text) => (text ? drafts.set(workerId, text) : drafts.delete(workerId)),
+    onEntries: () => questionSlot.paint(),
     send: async (msg) => {
       const result = await net.request(msg);
       return result.ok ? undefined : (result.error ?? 'The office refused that.');
@@ -238,6 +250,7 @@ export function openCloudWindow(net: Net, workerId: string) {
     error.textContent = w.cloud.error ? `☁ ${w.name} can't work: ${w.cloud.error}. Check again, or send it home and hire another.` : '';
     error.classList.toggle('hidden', !w.cloud.error);
     thread.update(w, net.up);
+    questionSlot.paint();
   };
   closeBtn.addEventListener('click', () => modal.close());
 
@@ -253,6 +266,7 @@ export function openCloudWindow(net: Net, workerId: string) {
       unsubCredits();
       unstatus();
       unwatch();
+      questionSlot.dispose();
       thread.dispose();
       if (current?.modal === modal) current = null;
     },

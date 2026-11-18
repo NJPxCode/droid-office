@@ -5,7 +5,6 @@ import type { WorkerInfo } from '../shared/protocol';
 import { isBusy } from '../shared/status';
 
 export type LayoutMode = 'single' | 'split' | 'triple' | 'grid' | 'five' | 'six' | 'seven' | 'eight';
-export type PaneView = 'thread' | 'terminal';
 /** A pane's box as fractions of the workspace: left, top, width, height. */
 export type Rect = readonly [x: number, y: number, w: number, h: number];
 
@@ -50,8 +49,6 @@ export interface Workspace {
   col: number;
   /** Where the horizontal divider is, as a fraction of the height. */
   row: number;
-  /** Thread or Raw TTY, per worker, including the default chosen when it first opened. */
-  views: Record<string, PaneView>;
 }
 
 export function clampRatio(v: number): number {
@@ -59,7 +56,7 @@ export function clampRatio(v: number): number {
 }
 
 export function emptyWorkspace(layout: LayoutMode = 'triple'): Workspace {
-  return { layout, auto: true, slots: Array(MAX_SLOTS).fill(null), focused: 0, maximized: null, col: 0.5, row: 0.5, views: {} };
+  return { layout, auto: true, slots: Array(MAX_SLOTS).fill(null), focused: 0, maximized: null, col: 0.5, row: 0.5 };
 }
 
 /** Switches layout. A divider the old layout hid starts even, since nobody could have placed it. */
@@ -99,11 +96,6 @@ export function paneOf(ws: Workspace, id: string): number {
 
 export function focusedWorker(ws: Workspace): string | null {
   return ws.slots[ws.focused] ?? null;
-}
-
-/** Changing the default for future workers must not change a worker that's already open. */
-export function workerView(ws: Workspace, id: string, fallback: PaneView): PaneView {
-  return (ws.views[id] ??= fallback);
 }
 
 /** Panes of a `cols`-by-`rows` grid of even boxes, left to right, top to bottom. */
@@ -193,7 +185,7 @@ function panePriority(w: LayoutWorker): number {
   return w.status === 'needs_input' ? 1 : 3;
 }
 
-/** Rebalance without moving surviving panes unnecessarily or losing their focus, views or ratios. */
+/** Rebalance without moving surviving panes unnecessarily or losing their focus or ratios. */
 export function autoLayout(ws: Workspace, workers: readonly LayoutWorker[]): boolean {
   const before = serializeWorkspace(ws);
   const focused = focusedWorker(ws);
@@ -319,7 +311,6 @@ export function prune(ws: Workspace, has: (id: string) => boolean): string[] {
     }
     return id;
   });
-  for (const id of Object.keys(ws.views)) if (!has(id)) delete ws.views[id];
   if (ws.maximized !== null && !ws.slots[ws.maximized]) ws.maximized = null;
   return gone;
 }
@@ -363,7 +354,6 @@ export function parseWorkspace(raw: string | null | undefined): Workspace | unde
   ws.maximized = SLOT_COUNT[layout] > 1 ? (slot(o.maximized) ?? null) : null;
   if (typeof o.col === 'number') ws.col = clampRatio(o.col);
   if (typeof o.row === 'number') ws.row = clampRatio(o.row);
-  if (o.views && typeof o.views === 'object') for (const [id, view] of Object.entries(o.views as Record<string, unknown>)) if (view === 'thread' || view === 'terminal') ws.views[id] = view;
   return ws;
 }
 

@@ -39,11 +39,11 @@ function highlight(text: string, needle: string): (string | HTMLElement)[] {
 export function openSearch(openTerminal: (workerId: string, find: TerminalFind) => void) {
   const input = h('input.input.lg', {
     type: 'text',
-    placeholder: 'Search every terminal…',
+    placeholder: 'Search threads and terminals…',
     maxlength: SEARCH_MAX,
     autocomplete: 'off',
     spellcheck: 'false',
-    'aria-label': 'Search every terminal',
+    'aria-label': 'Search threads and terminals',
   });
   input.value = lastQuery;
   const status = h('p.search-status', { role: 'status' });
@@ -51,7 +51,7 @@ export function openSearch(openTerminal: (workerId: string, find: TerminalFind) 
   const el = h(
     'div.modal.search',
     { role: 'dialog', 'aria-label': 'Search' },
-    windowHeader('Search', "Every worker's terminal on this floor"),
+    windowHeader('Search', "Every worker's thread and terminal on this floor"),
     h('div.search-find', {}, h('span.search-icon', { 'aria-hidden': 'true' }, '🔎'), input),
     h('div.body', {}, status, results),
   );
@@ -90,7 +90,8 @@ export function openSearch(openTerminal: (workerId: string, find: TerminalFind) 
   };
 
   const termRow = (hit: TerminalHit, needle: string) => {
-    const li = h('li.list-row.search-hit.term', { tabindex: 0, role: 'button', title: 'Open the terminal at this line' }, h('code.list-main', {}, ...highlight(hit.text, needle)));
+    const w = store.workers.get(hit.workerId);
+    const li = h('li.list-row.search-hit.term', { tabindex: 0, role: 'button', title: w?.kind === 'shell' ? 'Open the terminal at this line' : 'Open the thread at this match' }, h('code.list-main', {}, ...highlight(hit.text, needle)));
     li.addEventListener('click', () => jump(hit, needle));
     li.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
@@ -109,7 +110,7 @@ export function openSearch(openTerminal: (workerId: string, find: TerminalFind) 
     }
     if (!found) {
       status.textContent = '';
-      results.replaceChildren(emptyState('🔎', 'Search every terminal', "Finds words in every worker's terminal, including what they showed before the office restarted."));
+      results.replaceChildren(emptyState('🔎', 'Search threads and terminals', "Finds words in every worker's conversation and terminal on this floor."));
       return;
     }
     const needle = searchKey(found.q);
@@ -124,7 +125,7 @@ export function openSearch(openTerminal: (workerId: string, find: TerminalFind) 
     const count = [...byWorker.values()].reduce((n, l) => n + l.length, 0);
     if (!count) {
       status.textContent = '';
-      results.replaceChildren(emptyState('🔎', `Nothing in any terminal matches “${found.q.trim()}”`, 'Try fewer or different words.'));
+      results.replaceChildren(emptyState('🔎', `Nothing matches “${found.q.trim()}”`, 'Try fewer or different words.'));
       return;
     }
     status.textContent = `${count} ${count === 1 ? 'line' : 'lines'}, newest first${found.more ? ' (only the newest are shown; add words to narrow it down)' : ''}.`;

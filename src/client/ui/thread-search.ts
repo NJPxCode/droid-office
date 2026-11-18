@@ -8,7 +8,7 @@ import { icon } from './icons';
  */
 export interface ThreadSearch {
   element: HTMLElement;
-  open(): void;
+  open(query?: string): void;
   close(): void;
   readonly isOpen: boolean;
   /** Finds the matches again after the transcript changed, keeping the current one where it can. */
@@ -67,6 +67,7 @@ export function mountThreadSearch(root: () => Element[], reveal: (range: Range) 
   let ranges: Range[] = [];
   let index = 0;
   let open = false;
+  let revealNext = false;
   let timer = 0;
   const input = h('input.wt-search-input', { type: 'search', placeholder: 'Search session', 'aria-label': 'Search chat transcript', spellcheck: 'false', tabindex: -1 });
   const count = h('span.wt-search-count', { 'aria-live': 'polite' }, '0 / 0 results');
@@ -132,18 +133,27 @@ export function mountThreadSearch(root: () => Element[], reveal: (range: Range) 
     get isOpen() {
       return open;
     },
-    open() {
+    open(query?: string) {
       open = true;
+      if (query !== undefined) {
+        input.value = query;
+        revealNext = Boolean(query.trim());
+      }
       element.classList.add('open');
       element.setAttribute('aria-hidden', 'false');
       for (const el of [input, prev, next, close]) el.tabIndex = 0;
       input.focus();
       input.select();
       find(false);
+      if (revealNext && ranges.length) {
+        revealNext = false;
+        reveal(ranges[index]);
+      }
     },
     close() {
       if (!open) return;
       open = false;
+      revealNext = false;
       element.classList.remove('open');
       element.setAttribute('aria-hidden', 'true');
       for (const el of [input, prev, next, close]) el.tabIndex = -1;
@@ -151,7 +161,13 @@ export function mountThreadSearch(root: () => Element[], reveal: (range: Range) 
       paint();
     },
     refresh() {
-      if (open && input.value.trim()) find(true);
+      if (open && input.value.trim()) {
+        find(true);
+        if (revealNext && ranges.length) {
+          revealNext = false;
+          reveal(ranges[index]);
+        }
+      }
     },
     dispose() {
       clearTimeout(timer);

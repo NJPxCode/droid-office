@@ -1197,6 +1197,7 @@ function fixLostWorktree(w: WorkerInfo) {
     workspace: w.repos?.length ? w.worktree.path.replace(/[\\/][^\\/]*$/, '') : undefined,
     others: others.map((o) => o.name),
     openTerminal: isAsleep(w.status) ? undefined : () => openTerminal(net, w.id, () => openWorkerChanges(w.id)),
+    openLabel: w.kind === 'shell' ? 'Open terminal' : 'Open thread',
     rebuild: (all) => {
       toast(all ? `Rebuilding ${others.length + 1} worktrees…` : `Rebuilding ${w.name}'s worktree…`);
       net.send({ t: 'worker.rebuild', workerId: w.id, all });
@@ -1307,7 +1308,7 @@ function goToNextWaiting() {
   else standAtOrchestrator();
   const waiting = waitingInOrder(waitingHere());
   const of = waiting.length > 1 ? ` (${waiting.findIndex((x) => x.id === w.id) + 1} of ${waiting.length})` : '';
-  nextToast = toast(`${w.status === 'needs_input' ? `🙋 ${w.name} needs input` : `✅ ${w.name} is done`}${of}. ${orchestrator ? 'O' : 'E'} opens its terminal`);
+  nextToast = toast(`${w.status === 'needs_input' ? `🙋 ${w.name} needs input` : `✅ ${w.name} is done`}${of}. ${orchestrator ? 'O' : 'E'} opens its ${w.kind === 'shell' ? 'terminal' : 'thread'}`);
 }
 
 /** The waiting worker you're standing at, if any: N skips it while anyone else is waiting. */
@@ -2293,7 +2294,7 @@ function orchestratorHint(): Hint {
   const team = missionTeamLine(mc.orchestrator.team) ?? '';
   return {
     k: ['orch', w.name, phase, doing, team, busy].join('|'),
-    parts: [title(`🛰️ ${w.name} · ${PHASE_WORD[phase]}`), doing ? aside(doing) : '', team ? aside(team) : '', key('E', busy ? 'Steer or queue' : 'Prompt'), started ? key('O', 'Terminal') : '', busy ? key('X', 'Stop') : ''],
+    parts: [title(`🛰️ ${w.name} · ${PHASE_WORD[phase]}`), doing ? aside(doing) : '', team ? aside(team) : '', key('E', busy ? 'Steer or queue' : 'Prompt'), started ? key('O', 'Thread') : '', busy ? key('X', 'Stop') : ''],
   };
 }
 
@@ -2372,7 +2373,7 @@ function deskHint(deskId: string): Hint {
       credits ? h('span.cost', { title: 'Factory credits its Droid session (and its subagents) used' }, credits) : '',
       team ? aside(team) : '',
       doing ? aside(doing) : '',
-      key('E', 'Open terminal'),
+      key('E', shell ? 'Open terminal' : 'Open thread'),
       key('C', 'Changes'),
       isAsleep(w.status) ? key('R', shell ? 'Restart' : 'Resume') : key('P', shell ? 'Run command' : 'Prompt'),
       w.repos?.length ? reposKey(w) : w.pr ? key('O', `PR #${w.pr.number}`) : w.prOpening ? aside('⏳ Opening PR…') : prReady(w) ? key('O', 'Open PR') : '',
