@@ -1,113 +1,51 @@
-import { STATUS_FADE_MS, STATUS_ROTATE_MS, STATUS_TOOLTIP, pickPhrase, statusPhrases, type ThreadStatusMode } from '../../shared/thread-status';
+import { statusElapsed, type ThreadStatus } from '../../shared/thread-status';
 import { h } from './dom';
 
-export interface ThreadStatusRowState {
-  show: boolean;
-  running: boolean;
-  /** Stable accessible copy ("Working…"), separate from the decorative rotating phrase. */
-  label: string;
-  mode: ThreadStatusMode;
-  detail?: string;
-}
-
-/** Factory's status strip, with the office's stable live-region label kept alongside its phrase. */
+/** One announcement per phase; the visible clock updates without announcing every second. */
 export function mountThreadStatusRow() {
-  const label = h('span.wt-progress-label.wt-sr-only');
-  const phrase = h('span.wt-status-phrase', { 'aria-hidden': 'true', title: STATUS_TOOLTIP });
+  const label = h('span.wt-progress-label', { role: 'status' });
+  const elapsed = h('span.wt-progress-elapsed', { 'aria-hidden': 'true', hidden: true });
   const detail = h('span.wt-progress-detail', { hidden: true });
-  const element = h(
-    'div.wt-progress',
-    { hidden: true },
-    h(
-      'div.wt-progress-line',
-      {},
-      h('span.wt-progress-glyph', { 'aria-hidden': 'true' }, h('span'), h('span'), h('span'), h('span')),
-      h('span.wt-progress-status', { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' }, label),
-      phrase,
-      detail,
-    ),
-  );
-  let state: ThreadStatusRowState = { show: false, running: false, label: '', mode: 'idle' };
-  let index = -1;
-  let rotatedAt = 0;
-  let fading = false;
-  let fadeTimer = 0;
-  let rotateTimer = 0;
-  let disposed = false;
+  const element = h('div.wt-progress', { hidden: true }, h('div.wt-progress-line', {}, h('span.wt-progress-glyph', { 'aria-hidden': 'true' }), label, elapsed, detail));
+  let since: number | undefined;
+  let timer = 0;
 
-  const stopTimer = () => {
-    if (rotateTimer) {
-      window.clearTimeout(rotateTimer);
-      rotateTimer = 0;
-    }
+  const tick = () => {
+    window.clearTimeout(timer);
+    timer = 0;
+    elapsed.hidden = since === undefined;
+    if (since === undefined || document.hidden) return;
+    const now = Date.now();
+    const text = `· ${statusElapsed(since, now)}`;
+    if (elapsed.textContent !== text) elapsed.textContent = text;
+    timer = window.setTimeout(tick, 1000 - (Math.max(0, now - since) % 1000));
   };
-
-  const scheduleNext = () => {
-    stopTimer();
-    if (disposed || !state.show || state.mode === 'idle' || state.mode === 'compacting' || document.hidden || fading) return;
-    const wait = Math.max(50, STATUS_ROTATE_MS - (Date.now() - rotatedAt));
-    rotateTimer = window.setTimeout(() => {
-      rotateTimer = 0;
-      if (disposed || !state.show || state.mode === 'idle' || state.mode === 'compacting' || document.hidden || fading) return;
-      const now = Date.now();
-      if (now - rotatedAt < STATUS_ROTATE_MS) {
-        scheduleNext();
-        return;
-      }
-      fading = true;
-      phrase.classList.add('changing');
-      fadeTimer = window.setTimeout(() => {
-        fading = false;
-        phrase.classList.remove('changing');
-        rotate(Date.now());
-        scheduleNext();
-      }, STATUS_FADE_MS / 2);
-    }, wait);
-  };
-
-  const rotate = (now: number) => {
-    const pool = statusPhrases(state.mode);
-    if (!state.show || !pool.length) {
-      phrase.textContent = '';
-      index = -1;
-      return;
-    }
-    index = pickPhrase(pool.length, index);
-    phrase.textContent = pool[index];
-    rotatedAt = now;
-  };
-  const onVisibility = () => {
-    if (document.hidden) stopTimer();
-    else scheduleNext();
-  };
-  document.addEventListener('visibilitychange', onVisibility);
+  document.addEventListener('visibilitychange', tick);
 
   return {
     element,
-    paint(next: ThreadStatusRowState) {
-      const modeChanged = next.mode !== state.mode || next.show !== state.show;
-      state = next;
-      element.hidden = !next.show;
-      element.classList.toggle('running', next.show && next.running);
-      element.dataset.mode = next.mode;
-      if (label.textContent !== next.label) label.textContent = next.label;
-      const text = next.show ? (next.detail ?? '') : '';
-      if (detail.textContent !== text) detail.textContent = text;
-      detail.title = text ? `Latest activity: ${text}` : '';
-      detail.hidden = !text;
-      if (modeChanged) {
-        window.clearTimeout(fadeTimer);
-        fading = false;
-        phrase.classList.remove('changing');
-        rotate(Date.now());
+    paint(status: ThreadStatus | undefined) {
+      element.hidden = !status;
+      element.classList.toggle('running', !!status && !status.waiting);
+      const title = status?.label ?? '';
+      if (label.textContent !== title) {
+        label.textContent = title;
+        label.title = title;
       }
-      scheduleNext();
+      const note = status?.detail ?? '';
+      if (detail.textContent !== note) {
+        detail.textContent = note;
+        detail.title = note;
+      }
+      detail.hidden = !note;
+      if (since !== status?.since) {
+        since = status?.since;
+        tick();
+      }
     },
     dispose() {
-      disposed = true;
-      document.removeEventListener('visibilitychange', onVisibility);
-      stopTimer();
-      window.clearTimeout(fadeTimer);
+      document.removeEventListener('visibilitychange', tick);
+      window.clearTimeout(timer);
       element.hidden = true;
     },
   };

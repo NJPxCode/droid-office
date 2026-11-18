@@ -4,7 +4,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -45,54 +44,37 @@ class ThreadScrollTest {
 }
 
 class ThreadStatusTest {
-    private fun worker(status: String, activity: String? = null) = WorkerInfo(id = "w", status = status, activity = activity)
+    private val working = WorkerInfo(id = "w", status = "working")
+    private val live = ThreadLive(rev = 1, at = 0, status = ThreadLive.Status.Pondering, working = "executing_tool", phaseSince = 80_000)
+    private val tool = ThreadLive.Tool("tool:1", "Execute", 57_000, "running")
+    private val entry = ThreadEntry("tool:1", 1, ThreadRole.Assistant, ThreadKind.Tool, input = """{"command":"npm test"}""")
 
     @Test
-    fun waitingAndRunningWorkerStatesOverrideAnOlderLiveStatus() {
-        for (status in ThreadLive.Status.entries) {
-            val live = ThreadLive(rev = 1, at = 0, status = status, working = "thinking")
-            assertEquals(status.name, ThreadStatus.Mode.Waiting, ThreadStatus.mode(worker("needs_input"), live, streaming = true))
-        }
-        val idle = ThreadLive(rev = 2, at = 0, status = ThreadLive.Status.Idle, working = "idle")
-        assertEquals(ThreadStatus.Mode.Pondering, ThreadStatus.mode(worker("working"), idle, streaming = false))
-        assertEquals(ThreadStatus.Mode.Pondering, ThreadStatus.mode(worker("starting"), idle, streaming = false))
-        assertEquals(ThreadStatus.Mode.Idle, ThreadStatus.mode(worker("idle"), idle, streaming = false))
-        assertEquals(ThreadStatus.Mode.Idle, ThreadStatus.mode(worker("exited"), idle, streaming = false))
+    fun reportsLiveCommandAndElapsedClockWithSkew() {
+        val running = live.copy(tools = listOf(tool))
+        val line = ThreadStatus.line(working, running, listOf(entry), 1000)!!
+        assertEquals("Running: npm test", line.label)
+        assertEquals("42s", ThreadStatus.elapsed(line.since!!, 100_000))
+        assertEquals("Running: Execute", ThreadStatus.line(working, running, emptyList(), 0)?.label)
+        assertEquals("1m 2s", ThreadStatus.elapsed(0, 62_000))
     }
 
     @Test
-    fun theModeComesFromTheOfficesLiveStateFirst() {
-        val live = ThreadLive(rev = 1, at = 0, status = ThreadLive.Status.Responding, working = "streaming_assistant_message")
-        assertEquals(ThreadStatus.Mode.Responding, ThreadStatus.mode(worker("working"), live, streaming = false))
-        assertEquals(ThreadStatus.Mode.Compacting, ThreadStatus.mode(worker("working"), live.copy(status = ThreadLive.Status.Compacting), false))
-        assertEquals(ThreadStatus.Mode.Idle, ThreadStatus.mode(worker("idle"), live.copy(status = ThreadLive.Status.Idle), false))
+    fun reportsCurrentPhaseNotRecordedOutput() {
+        assertEquals("Thinking", ThreadStatus.line(working, live.copy(working = "thinking"), emptyList(), 0)?.label)
+        assertEquals("Writing", ThreadStatus.line(working, live.copy(status = ThreadLive.Status.Responding), emptyList(), 0)?.label)
+        assertEquals("Working…", ThreadStatus.line(working, null, listOf(entry), 0)?.label)
+        assertEquals("Starting worker…", ThreadStatus.line(working.copy(status = "starting"), live, emptyList(), 0)?.label)
+        assertEquals(null, ThreadStatus.line(working.copy(status = "idle"), live, emptyList(), 0))
     }
 
     @Test
-    fun withoutItTheWorkersStatusDecides() {
-        assertEquals(ThreadStatus.Mode.Waiting, ThreadStatus.mode(worker("needs_input"), null, false))
-        assertEquals(ThreadStatus.Mode.Idle, ThreadStatus.mode(worker("idle"), null, false))
-        assertEquals(ThreadStatus.Mode.Compacting, ThreadStatus.mode(worker("working", ThreadStatus.WORKER_COMPACTING), null, false))
-        assertEquals(ThreadStatus.Mode.Responding, ThreadStatus.mode(worker("working"), null, streaming = true))
-        assertEquals(ThreadStatus.Mode.Pondering, ThreadStatus.mode(worker("working"), null, streaming = false))
-    }
-
-    @Test
-    fun phrasesAreFactorysAndNeverRepeatBackToBack() {
-        assertEquals(92, ThreadStatus.PONDERS.size)
-        assertEquals(10, ThreadStatus.RESPONDS.size)
-        assertEquals(77, ThreadStatus.WAITS.size)
-        assertEquals("Following a thread here...", ThreadStatus.PONDERS.first())
-        assertEquals(listOf("Compacting conversation…"), ThreadStatus.phrases(ThreadStatus.Mode.Compacting))
-        val r = java.util.Random(7)
-        var last = -1
-        repeat(500) {
-            val next = ThreadStatus.pick(ThreadStatus.Mode.Responding, last, r::nextInt)
-            assertNotEquals(last, next)
-            assertTrue(next in 0 until 10)
-            last = next
-        }
-        assertEquals(0, ThreadStatus.pick(ThreadStatus.Mode.Compacting, 0) { 0 })
+    fun distinguishesPermissionAndQuestionFromActiveTools() {
+        val running = live.copy(tools = listOf(tool))
+        val permission = ThreadStatus.line(working.copy(status = "needs_input"), running.copy(working = "waiting_for_tool_confirmation"), emptyList(), 0)
+        assertEquals(ThreadStatus.Line("Waiting for you: permission needed", waiting = true), permission)
+        val question = ThreadStatus.line(working, running.copy(status = ThreadLive.Status.Waiting, waiting = ThreadLive.Waiting("question")), emptyList(), 0)
+        assertEquals(ThreadStatus.Line("Waiting for you: answer needed", waiting = true), question)
     }
 }
 

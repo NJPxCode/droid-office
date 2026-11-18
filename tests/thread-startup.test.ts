@@ -257,23 +257,23 @@ test('thread work signal follows worker lifecycle without restarting or announci
   const { page, errors } = await mountThread(t);
   const signal = page.locator('.wt-progress');
   const label = page.locator('.wt-progress-label');
-  const tile = page.locator('.wt-progress-glyph > span').first();
+  const tile = page.locator('.wt-progress-glyph').first();
   const animation = () => tile.evaluate((el) => getComputedStyle(el).animationName);
   assert.equal(await signal.isVisible(), true);
   assert.equal(await label.textContent(), 'Starting worker…');
-  assert.equal(await animation(), 'wt-work-pulse');
+  assert.equal(await animation(), 'wt-status-spin');
   assert.equal(await page.locator('.wt-progress-glyph').getAttribute('aria-hidden'), 'true');
-  assert.equal(await page.locator('.wt-progress-status').getAttribute('aria-live'), 'polite');
+  assert.equal(await label.getAttribute('role'), 'status');
   await page.evaluate(() => {
     const w = window as any;
     w.worker = { ...w.worker, sessionId: 'session', status: 'working' };
     w.thread.update(w.worker, true);
     w.reply();
     w.signal = document.querySelector('.wt-progress');
-    w.animation = document.querySelector('.wt-progress-glyph > span')!.getAnimations()[0];
+    w.animation = document.querySelector('.wt-progress-glyph')!.getAnimations()[0];
     w.mutations = [];
     w.observer = new MutationObserver((changes) => w.mutations.push(...changes));
-    w.observer.observe(document.querySelector('.wt-progress-status'), { childList: true, characterData: true, subtree: true });
+    w.observer.observe(document.querySelector('.wt-progress-label'), { childList: true, characterData: true, subtree: true });
     w.tick();
     w.thread.update(w.worker, true);
     w.reply();
@@ -282,7 +282,7 @@ test('thread work signal follows worker lifecycle without restarting or announci
   assert.equal(
     await page.evaluate(() => {
       const w = window as any;
-      return w.signal === document.querySelector('.wt-progress') && w.animation === document.querySelector('.wt-progress-glyph > span')!.getAnimations()[0] && w.mutations.length === 0;
+      return w.signal === document.querySelector('.wt-progress') && w.animation === document.querySelector('.wt-progress-glyph')!.getAnimations()[0] && w.mutations.length === 0;
     }),
     true,
   );
@@ -291,7 +291,7 @@ test('thread work signal follows worker lifecycle without restarting or announci
   assert.equal(await signal.isVisible(), true);
   assert.equal(await label.textContent(), 'Working…');
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  assert.equal(await animation(), 'wt-work-pulse');
+  assert.equal(await animation(), 'wt-status-spin');
   await page.evaluate(() => {
     const w = window as any;
     w.worker.status = 'needs_input';

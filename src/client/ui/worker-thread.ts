@@ -4,7 +4,7 @@ import type { ClientMsg, ServerMsg, WorkerInfo } from '../../shared/protocol';
 import { copyTurns, nativeCopy, nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
 import { isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
 import { IMAGE_PLACEHOLDER, latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
-import { statusMode, thinkingSeconds, thoughtLabel } from '../../shared/thread-status';
+import { thinkingSeconds, thoughtLabel, threadStatus } from '../../shared/thread-status';
 import { rewindFilesSince } from '../../shared/thread-rewind';
 import { threadPrompts } from '../../shared/thread-turns';
 import { todosFinished } from '../../shared/todos';
@@ -1726,10 +1726,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   // The JSONL isn't a token stream: don't infer "Thinking" or "Generating" from its last entry.
   const paintProgress = () => {
     const show = active && connected && !disposed && !document.hidden && !worker.lost && !error && isBusy(worker.status);
-    const label = !show ? '' : worker.status === 'starting' ? 'Starting worker…' : worker.status === 'needs_input' ? 'Waiting for you' : 'Working…';
     const last = history.rows.at(-1);
     const detail = show && worker.status === 'working' && !history.historical && history.sessionId === worker.sessionId && last?.kind === 'activity' && last.live ? (last.running ?? '') : '';
-    progress.paint({ show, running: show && worker.status !== 'needs_input', label, mode: statusMode(liveView?.status, worker.status), detail: liveView?.label || detail });
+    progress.paint(show ? threadStatus(worker, liveView, history.entries, detail) : undefined);
   };
 
   const updateControls = () => {

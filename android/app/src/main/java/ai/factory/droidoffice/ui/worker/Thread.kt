@@ -455,10 +455,9 @@ internal fun Thread(
                                     )
                                 }
                             }
-                            val assistantStreaming = w.state.busy && (liveStream?.kind == "text" || rows.lastOrNull()?.let { it is ThreadRow.Message && it.role == ThreadRole.Assistant } == true)
-                            val status = ThreadStatus.mode(w, live, assistantStreaming)
-                            if (status != ThreadStatus.Mode.Idle) {
-                                StatusIndicator(status, Modifier.padding(top = 14.dp), detail = live?.label)
+                            val status = ThreadStatus.line(w, live, state.entries, liveClockSkew)
+                            if (status != null) {
+                                StatusIndicator(status, Modifier.padding(top = 14.dp))
                             }
                         }
                     }
