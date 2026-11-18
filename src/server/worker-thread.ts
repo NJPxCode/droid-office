@@ -12,6 +12,8 @@ import { WorkspaceTexts } from './thread-workspace.js';
 
 const PAGE_SIZE = 100;
 const FIELD_CHARS = 12_000;
+// Leaves room for 60k+ replies and thoughts while even worst-case JSON escaping fits a page.
+const ASSISTANT_CHARS = 128 * 1024;
 const RESPONSE_BYTES = 900_000;
 const LINE_BYTES = 4 * 1024 * 1024;
 const CHUNK_BYTES = 64 * 1024;
@@ -90,7 +92,11 @@ function clean(value: unknown, limit = FIELD_CHARS, byOwner = false): string {
     .replace(/data:[^\s"'<>]*;base64,[a-zA-Z0-9+/=\s]+/gi, '[attachment omitted]')
     .replace(/[a-zA-Z0-9+/]{256,}={0,2}/g, '[binary data omitted]')
     .trim();
-  return text.length > limit ? text.slice(0, limit) + TRUNCATED : text;
+  return text.length > limit ? text.slice(0, limit).replace(/[\uD800-\uDBFF]$/, '') + TRUNCATED : text;
+}
+
+function messageText(value: unknown, role: 'user' | 'assistant'): string {
+  return clean(value, role === 'assistant' ? ASSISTANT_CHARS : FIELD_CHARS, role === 'user');
 }
 
 function pretty(value: unknown): string {
@@ -617,7 +623,7 @@ export class WorkerThreadReader {
     }
     if (this.textOnly) return;
     if (typeof message.content === 'string') {
-      await this.text(state, `${id}:text`, role, clean(message.content, FIELD_CHARS, role === 'user'), at);
+      await this.text(state, `${id}:text`, role, messageText(message.content, role), at);
       return;
     }
     if (!Array.isArray(message.content)) return;
@@ -653,9 +659,9 @@ export class WorkerThreadReader {
         const image = imageRef(part, `${offset}.${index}.x`);
         this.add(state, { id: partId, role, kind: 'notice', text: IMAGE_PLACEHOLDER, ...(image ? { images: [image] } : {}), ...when });
       } else if (part.type === 'text') {
-        await this.text(state, partId, role, clean(part.text, FIELD_CHARS, role === 'user'), at);
+        await this.text(state, partId, role, messageText(part.text, role), at);
       } else if (part.type === 'thinking') {
-        const text = clean(part.thinking);
+        const text = clean(part.thinking, ASSISTANT_CHARS);
         // The message is written when the model finishes it: since the record before, it was thinking.
         const took = at !== undefined && before !== undefined && at >= before ? { tookMs: at - before } : {};
         if (text) this.add(state, { id: partId, role, kind: 'thinking', text, ...when, ...took });

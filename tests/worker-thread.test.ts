@@ -609,8 +609,28 @@ test('discovers canonical and fallback session paths through a checkout symlink'
   assert.ok((await new WorkerThreadReader(root).read({ ...source, cwd: root })).error);
 });
 
+test('keeps 60,000+ characters of replies and thoughts in canonical snapshots', async (t) => {
+  const report = `${'A paragraph about the results, with Japanese 日本語 and emoji 🙂.\n'.repeat(1000)}END-OF-REPLY-SENTINEL`;
+  const thought = `${'Consider how the pagination cursor advances.\n'.repeat(1500)}END-OF-THOUGHT`;
+  assert.ok([...report].length > 60_000);
+  assert.ok(thought.length > 60_000);
+  const { reader, source } = await rig(t, [
+    message('string', 'assistant', report),
+    message('blocks', 'assistant', [
+      { type: 'thinking', thinking: thought },
+      { type: 'text', text: report },
+    ]),
+  ]);
+  const page = await reader.read(source);
+  assert.deepEqual(
+    page.entries.map((e) => e.text),
+    [report, thought, report],
+  );
+  assert.equal(page.hasMore, false);
+});
+
 test('bounds field/response/cache sizes and skips oversized complete records without losing later records', async (t) => {
-  const huge = 'A paragraph with spaces and unicode. '.repeat(1500);
+  const huge = 'A paragraph with spaces and unicode. '.repeat(4000);
   const { reader, source, file } = await rig(
     t,
     Array.from({ length: 200 }, (_, i) => text(`m-${i}`, huge)),
