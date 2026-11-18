@@ -1081,7 +1081,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   scroll.addEventListener('wheel', ownerScroll, { passive: true });
   scroll.addEventListener('touchmove', ownerScroll, { passive: true });
   scroll.addEventListener('keydown', (event) => {
-    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) ownerScroll();
+    // Tab counts too: moving focus to a control above scrolls it into view.
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'].includes(event.key)) ownerScroll();
   });
   // A press on the scroll bar itself, held while dragging it.
   scroll.addEventListener('pointerdown', (event) => {
