@@ -68,6 +68,19 @@ export function effortName(effort: string): string {
   return EFFORT_LABEL[effort.toLowerCase()] ?? effort;
 }
 
+/**
+ * What `next` adds to `prev`'s live stream when that is all that changed (rev and clock aside): the
+ * offset it goes on at and the text, for a `thread.stream` append. Undefined when anything else differs.
+ */
+export function streamAppend(prev: ThreadLive, next: ThreadLive): { from: number; text: string } | undefined {
+  const a = prev.stream;
+  const b = next.stream;
+  if (!a || !b || a.kind !== b.kind || a.since !== b.since || b.text.length <= a.text.length || !b.text.startsWith(a.text)) return undefined;
+  const rest = (live: ThreadLive) => JSON.stringify({ ...live, rev: 0, at: 0, stream: undefined });
+  if (rest(prev) !== rest(next)) return undefined;
+  return { from: a.text.length, text: b.text.slice(a.text.length) };
+}
+
 export function textSignature(text: string): string {
   return text
     .normalize('NFKC')

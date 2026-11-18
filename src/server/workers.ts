@@ -183,6 +183,8 @@ export interface WorkerEvents {
   checkout?(branch: string): void;
   /** A worker's tool call finished that may have changed what the office shows (see hook-refresh.ts). */
   tool?(workerId: string, refresh: ToolRefresh): void;
+  /** Daemon thinking or reply text arrived for its live stream (see ThreadLive.stream). */
+  stream?(workerId: string): void;
 }
 
 export class WorkerManager {
@@ -2688,6 +2690,7 @@ export class WorkerManager {
       persist: () => this.persist(),
       syncBranch: (w) => this.syncBranch(w),
       tool: (id, refresh) => this.events.tool?.(id, refresh),
+      streamed: (w) => this.events.stream?.(w.info.id),
       notePrompt: (w, text) => this.notePrompt(w, text),
       setTitle: (w, title) => this.setTitle(w, title),
       beforeStop: (info) => this.beforeStop?.(info),

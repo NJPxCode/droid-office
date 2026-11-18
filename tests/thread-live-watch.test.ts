@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { threadPageDigest, ThreadWatchHub, type ThreadWatchMsg, type WatchedThreadTarget } from '../src/server/thread-watch.js';
 import { WorkerThreadReader } from '../src/server/worker-thread.js';
-import type { ThreadLive } from '../src/shared/thread-live.js';
+import { streamAppend, type ThreadLive } from '../src/shared/thread-live.js';
 
 const waitUntil = async (predicate: () => boolean) => {
   const end = Date.now() + 2500;
@@ -217,4 +217,72 @@ test('enrichPage stamps daemon thinking durations and subagent child links onto 
   hub.notifyWorker('worker');
 
   await waitUntil(() => sent.some((m) => m.t === 'thread.snapshot' && m.entries.some((e) => e.kind === 'thinking' && e.tookMs === 4321) && m.entries.some((e) => e.kind === 'tool' && e.child === 'sub-session-42')));
+});
+
+test('daemon text reaches watchers within the stream coalesce as thread.stream appends, and whole to the rest', async (t) => {
+  const page = { sessionId: 'session-one', entries: [{ id: 'u1', seq: 0, role: 'user' as const, kind: 'text' as const, text: 'Explain' }], hasMore: false };
+  let reads = 0;
+  let text = 'Hash maps ';
+  let rev = 1;
+  let last = '';
+  const sent: { clientId: string; msg: ThreadWatchMsg }[] = [];
+  const hub = new ThreadWatchHub({
+    workerThreads: {
+      read: async () => {
+        reads++;
+        return page;
+      },
+      sessionPaths: async () => undefined,
+      sessionPathsSync: () => undefined,
+      childSession: async () => undefined,
+    },
+    resolveWorker: () => ({ kind: 'local', floorId: null, busy: true, local: { sessionId: page.sessionId, cwd: '/tmp/thread-stream-watch' } }),
+    live: async (_worker, entries) => {
+      if (text !== last) {
+        last = text;
+        rev++;
+      }
+      return { rev, at: 1000 + rev, status: 'responding', working: 'streaming_assistant_message', after: entries.at(-1)?.id, stream: { kind: 'text', text, since: 500 }, tools: [] };
+    },
+    send: (clientId, msg) => sent.push({ clientId, msg }),
+    localCoalesceMs: 1,
+    streamCoalesceMs: 5,
+  });
+  t.after(() => hub.close());
+  hub.watch('web', 'worker', true, undefined, true);
+  hub.watch('old', 'worker', true);
+  await waitUntil(() => sent.filter((s) => s.msg.t === 'thread.live').length === 2);
+  const readsBefore = reads;
+
+  text += 'resolve collisions ';
+  hub.streamChanged('worker');
+  text += 'by chaining ';
+  hub.streamChanged('worker');
+  await waitUntil(() => sent.some((s) => s.clientId === 'web' && s.msg.t === 'thread.stream'));
+  const append = sent.find((s) => s.clientId === 'web' && s.msg.t === 'thread.stream')?.msg;
+  assert.deepEqual(append, { t: 'thread.stream', workerId: 'worker', sessionId: 'session-one', rev: 3, base: 2, from: 10, text: 'resolve collisions by chaining ' });
+  await waitUntil(() => sent.some((s) => s.clientId === 'old' && s.msg.t === 'thread.live' && s.msg.live.rev === 3));
+  assert.equal(reads, readsBefore, 'the stream goes out without reading the conversation again');
+
+  // A client that missed a rev (or watched again) gets the whole live state next.
+  hub.watch('web', 'worker', true, undefined, true);
+  await waitUntil(() => sent.filter((s) => s.clientId === 'web' && s.msg.t === 'thread.live').length === 2);
+  text += 'or probing. ';
+  hub.streamChanged('worker');
+  await waitUntil(() => sent.filter((s) => s.clientId === 'web' && s.msg.t === 'thread.stream').length === 2);
+  const second = sent.filter((s) => s.clientId === 'web' && s.msg.t === 'thread.stream')[1].msg;
+  assert.ok(second.t === 'thread.stream');
+  assert.equal(second.from, 'Hash maps resolve collisions by chaining '.length);
+  assert.equal(second.text, 'or probing. ');
+});
+
+test('streamAppend is only the stream’s new text when nothing else changed', () => {
+  const base: ThreadLive = { rev: 4, at: 10, status: 'responding', working: 'streaming_assistant_message', after: 'u1', stream: { kind: 'text', text: 'Hello ', since: 5 }, tools: [] };
+  assert.deepEqual(streamAppend(base, { ...base, rev: 5, at: 20, stream: { kind: 'text', text: 'Hello world', since: 5 } }), { from: 6, text: 'world' });
+  assert.equal(streamAppend(base, { ...base, rev: 5, stream: { kind: 'text', text: 'Hello', since: 5 } }), undefined, 'shrinking');
+  assert.equal(streamAppend(base, { ...base, rev: 5, stream: { kind: 'text', text: 'Help me', since: 5 } }), undefined, 'rewritten');
+  assert.equal(streamAppend(base, { ...base, rev: 5, stream: { kind: 'thinking', text: 'Hello world', since: 5 } }), undefined, 'another kind');
+  assert.equal(streamAppend(base, { ...base, rev: 5, stream: { kind: 'text', text: 'Hello world', since: 6 } }), undefined, 'another stream');
+  assert.equal(streamAppend(base, { ...base, rev: 5, status: 'working', stream: { kind: 'text', text: 'Hello world', since: 5 } }), undefined, 'status changed too');
+  assert.equal(streamAppend(base, { ...base, rev: 5, stream: undefined }), undefined);
 });

@@ -89,6 +89,8 @@ export interface FloorContext {
   offFloorScreen?(floor: Floor, workerId: string): void;
   /** A local worker's laptop preview changed, so its watched Thread may need a refresh. */
   screenChanged?(workerId: string): void;
+  /** A local worker's live thinking or reply text grew. */
+  streamChanged?(workerId: string): void;
   /** How many owner connections are on this floor right now. */
   connections(floor: Floor): number;
   /** ⚙️ Settings: a worker whose pull request merged goes home by itself. */
@@ -328,6 +330,7 @@ export class Floor {
           if (this.workers.get(workerId)?.status === 'needs_input') ctx.offFloorScreen?.(this, workerId);
           return dropped;
         },
+        stream: (workerId) => ctx.streamChanged?.(workerId),
         toast: (text, level, workerId) => ctx.toast(this, text, level, workerId),
         checkout: (branch) => {
           this.project.branch = branch;

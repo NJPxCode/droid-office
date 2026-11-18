@@ -157,6 +157,8 @@ export interface DaemonNotificationCallbacks {
   persist(): void;
   syncBranch(w: Worker): Promise<void>;
   tool(workerId: string, refresh: ToolRefresh): void;
+  /** Its live stream's text grew. */
+  streamed?(w: Worker): void;
   notePrompt(w: Worker, text: string): void;
   setTitle(w: Worker, title: string): void;
   beforeStop?(info: WorkerInfo): string | undefined;
@@ -235,6 +237,7 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
         cb.clockWork(w.info, 'working', now);
         cb.setStatus(w, 'working');
       }
+      cb.streamed?.(w);
       break;
     }
 
@@ -272,6 +275,7 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
         cb.clockWork(w.info, 'working', now);
         cb.setStatus(w, 'working');
       }
+      cb.streamed?.(w);
       break;
     }
 

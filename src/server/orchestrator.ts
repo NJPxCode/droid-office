@@ -46,6 +46,8 @@ export interface OrchestratorOptions {
   changed(): void;
   data(workerId: string, data: string, connectionIds: string[]): void;
   screen(workerId: string, frame: ScreenFrame): unknown;
+  /** Its live thinking or reply text grew. */
+  stream?(workerId: string): void;
   toast(text: string, level: 'info' | 'warn' | 'error'): void;
 }
 
@@ -92,6 +94,7 @@ export class Orchestrator {
         },
         data: (id, data, ids) => opts.data(id, data, ids),
         screen: (id, frame) => opts.screen(id, frame),
+        stream: (id) => opts.stream?.(id),
         toast: (text, level) => opts.toast(text, level),
       },
       undefined,

@@ -96,6 +96,7 @@ test('daemon notifications track TodoWrite across compaction, clear llm_retry on
       persist: () => calls.push('persist'),
       syncBranch: async () => {},
       tool: (_id, r) => calls.push(`tool:${r.changes ? 'c' : ''}${r.board ? 'b' : ''}`),
+      streamed: () => calls.push('streamed'),
       notePrompt: (_w, text) => calls.push(`prompt:${text}`),
       setTitle: (_w, title) => {
         worker.info.title = title;
@@ -114,6 +115,7 @@ test('daemon notifications track TodoWrite across compaction, clear llm_retry on
   assert.equal(worker.retryState?.detail, 'Retrying the model request (attempt 2)...');
   send({ type: 'assistant_text_delta', messageId: 'm1', blockIndex: 1, textDelta: 'Fixed it.' });
   assert.equal(worker.retryState, undefined, 'progress clears llm_retry');
+  assert.equal(calls.filter((c) => c === 'streamed').length, 2, 'each thinking and reply delta tells the live stream');
 
   // 2. TodoWrite updates worker.info.todos on non-error tool_result and survives session_compacted!
   send({
