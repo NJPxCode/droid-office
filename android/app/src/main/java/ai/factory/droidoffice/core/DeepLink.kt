@@ -5,15 +5,11 @@ import java.net.URLDecoder
 import kotlinx.serialization.Serializable
 
 @Serializable
-enum class WorkerLinkView { Tty, Thread }
-
-@Serializable
 sealed interface DeepLinkTarget {
     @Serializable
     data class Worker(
         val workerId: String,
         val floorId: String? = null,
-        val view: WorkerLinkView = WorkerLinkView.Tty,
     ) : DeepLinkTarget
 
     @Serializable
@@ -137,11 +133,7 @@ object DeepLinks {
         val target: DeepLinkTarget = when (rawKind) {
             "worker" -> {
                 val workerId = validId(rawId) ?: return null
-                val view = when (params["view"]?.firstOrNull()?.lowercase()) {
-                    "thread" -> WorkerLinkView.Thread
-                    else -> WorkerLinkView.Tty
-                }
-                DeepLinkTarget.Worker(workerId = workerId, floorId = floorParam, view = view)
+                DeepLinkTarget.Worker(workerId = workerId, floorId = floorParam)
             }
             "floor" -> {
                 val floorId = validId(rawId) ?: return null
