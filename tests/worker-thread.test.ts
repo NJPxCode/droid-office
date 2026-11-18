@@ -750,6 +750,30 @@ test("the conversation file the worker's hooks named is read first, and only fro
   );
 });
 
+test('a session forked into a worktree is found under its first folder by lastCwd', async (t) => {
+  const { root } = await rig(t);
+  const floor = path.join(root, 'floor');
+  const worktree = path.join(floor, '.droid-office', 'worktrees', 'fork-1');
+  await mkdir(worktree, { recursive: true });
+  const sessionId = 'forked-session';
+  // Header shape from a real daemon fork followed by change_working_directory.
+  const folder = path.join(root, floor.replace(/[^a-zA-Z0-9-]/g, '-'));
+  await mkdir(folder);
+  await writeFile(
+    path.join(folder, `${sessionId}.jsonl`),
+    lines({ type: 'session_start', id: sessionId, title: 'Pixel ⑂', parent: 'source-session', version: 2, cwd: floor, forkedAtMessageId: 'm1', lastCwd: worktree }, text('fork', 'Forked into its worktree')),
+  );
+  const reader = new WorkerThreadReader(root);
+  const page = await reader.read({ sessionId, cwd: worktree });
+  assert.deepEqual(
+    page.entries.map((e) => e.text),
+    ['Forked into its worktree'],
+  );
+  assert.equal((await reader.sessionPaths({ sessionId, cwd: worktree }))?.file, path.join(folder, `${sessionId}.jsonl`));
+  const stranger = await new WorkerThreadReader(root).read({ sessionId, cwd: path.join(root, 'elsewhere') });
+  assert.deepEqual(stranger.entries, []);
+});
+
 test('an Edit deep in a workspace file is numbered from the file as it is now', async (t) => {
   const edit = { file_path: '', old_str: 'value = 1;', new_str: 'value = 2;' };
   const { root, source, file } = await rig(t);

@@ -444,7 +444,11 @@ export class WorkerThreadReader {
         const newline = head.indexOf(10);
         if (newline < 0) continue;
         const start = object(JSON.parse(head.subarray(0, newline).toString('utf8')));
-        if (start.type === 'session_start' && typeof start.cwd === 'string' && (start.cwd === cwd || (await realpath(start.cwd).catch(() => start.cwd)) === canonical)) return file;
+        if (start.type !== 'session_start') continue;
+        // A session moved to another folder (a fork into its worktree) stays filed under its first cwd and records the new one as lastCwd.
+        for (const recorded of [start.cwd, start.lastCwd]) {
+          if (typeof recorded === 'string' && (recorded === cwd || (await realpath(recorded).catch(() => recorded)) === canonical)) return file;
+        }
       } catch {
         // An incomplete header can be retried on the next read.
       } finally {
