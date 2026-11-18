@@ -98,6 +98,30 @@ class ThreadStatusTest {
 
 class ThreadLiveTest {
     @Test
+    fun appendsOnlyToMatchingSessionRevisionAndUtf16Length() {
+        val state = ThreadLiveState()
+        val text = "x".repeat(39_999) + "🚀" + " tail"
+        val live = ThreadLive.of(OfficeJson.parseToJsonElement(
+            """{"rev":5,"at":0,"status":"responding","stream":{"kind":"text","text":"$text"},"tools":[{"name":"Execute","output":"$text"}]}""",
+        ))!!
+        val patch = ServerMsg.ThreadStream("w", "s", 7, 5, text.length, " and new")
+        assertEquals(ThreadLiveState.Append.Resync, state.append(patch))
+        assertTrue(state.receive("s", live))
+        assertEquals(40_000, live.stream?.text?.length)
+        assertTrue(live.tools.single().output!!.endsWith("🚀 tail"))
+        assertEquals(ThreadLiveState.Append.Resync, state.append(patch.copy(base = 6)))
+        assertEquals(ThreadLiveState.Append.Resync, state.append(patch.copy(from = text.length - 1)))
+        assertEquals(ThreadLiveState.Append.Resync, state.append(patch.copy(sessionId = "other")))
+        assertEquals(ThreadLiveState.Append.Applied, state.append(patch))
+        assertEquals(7L, state.live?.rev)
+        assertTrue(state.live?.stream?.text?.endsWith(" tail and new") == true)
+        assertEquals(text.length + patch.text.length, state.live?.stream?.length)
+        assertEquals(ThreadLiveState.Append.Ignore, state.append(patch))
+        assertTrue(state.receive("s", live.copy(rev = 8, stream = null)))
+        assertEquals(ThreadLiveState.Append.Resync, state.append(patch.copy(base = 8, rev = 9)))
+    }
+
+    @Test
     fun liveUpdatesMustMatchTheWorkersCurrentSessionEvenWhenMissing() {
         val state = ThreadLiveState()
         val live = ThreadLive(rev = 5, at = 0, status = ThreadLive.Status.Pondering, working = "thinking")

@@ -70,6 +70,16 @@ class ProtocolTest {
     }
 
     @Test
+    fun decodesStreamAppendsAndOptsInOnlyWhileWatching() {
+        val msg = """{"t":"thread.stream","workerId":"w","sessionId":"s","rev":8,"base":7,"from":3,"text":" done"}"""
+        assertEquals(ServerMsg.ThreadStream("w", "s", 8, 7, 3, " done"), Protocol.decode(msg))
+        assertEquals(ServerMsg.Ignored("thread.stream"), Protocol.decode(msg.replace("\"from\":3", "\"from\":-3")))
+        val watch = Json.parseToJsonElement(ClientMsg.threadWatch("w", true, stream = true)).jsonObject
+        assertEquals("true", watch["stream"]?.jsonPrimitive?.content)
+        assertNull(Json.parseToJsonElement(ClientMsg.threadWatch("w", false, stream = true)).jsonObject["stream"])
+    }
+
+    @Test
     fun writesChildWatchesQueueActionsAndRewinds() {
         val watch = Json.parseToJsonElement(ClientMsg.threadWatch("w1", true, "s2")).jsonObject
         assertEquals("s2", watch.getValue("child").jsonPrimitive.content)

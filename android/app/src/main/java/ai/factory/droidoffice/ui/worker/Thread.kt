@@ -100,6 +100,7 @@ import ai.factory.droidoffice.core.ThreadView
 import ai.factory.droidoffice.core.ToolCards
 import ai.factory.droidoffice.core.WorkerInfo
 import ai.factory.droidoffice.core.WorkerStatus
+import ai.factory.droidoffice.core.committedStream
 import ai.factory.droidoffice.ui.LocalGraph
 import ai.factory.droidoffice.ui.asks.AskCard
 import ai.factory.droidoffice.ui.components.Eyebrow
@@ -184,11 +185,11 @@ internal fun Thread(
     }
     DisposableEffect(feed, connected, visible) {
         if (connected && visible) {
-            connection.send(ClientMsg.threadWatch(w.id, true))
+            connection.watchThread(w.id, true)
         }
         onDispose {
             if (connected && visible) {
-                connection.send(ClientMsg.threadWatch(w.id, false))
+                connection.watchThread(w.id, false)
             }
         }
     }
@@ -314,10 +315,13 @@ internal fun Thread(
     LaunchedEffect(list) {
         // Normally index zero stays pinned just by measuring the reversed list. Reconcile after a
         // restored position or an explicit search. A fling toward the tail can also re-pin here.
+        var wasAway = false
         snapshotFlow { Triple(follow, list.canScrollBackward, searchScroll || state.newerTrimmed || state.entries.isEmpty()) }.collect { (pinned, away, suspended) ->
+            val returned = wasAway && !away
+            wasAway = away
             if (suspended) return@collect
             if (pinned && away) list.requestScrollToItem(0)
-            if (!pinned && !away) follow = true
+            if (!pinned && returned) follow = true
         }
     }
 
@@ -384,8 +388,11 @@ internal fun Thread(
         live.status != ThreadLive.Status.Idle &&
         ((live.after != null && live.after == state.entries.lastOrNull()?.id) || (live.after == null && state.entries.isEmpty()))
     val liveStream = if (liveCurrent) live.stream else null
+    val reveal = rememberThreadReveal(state.sessionId, liveStream, live?.after, live?.at, state.entries)
+    fun canonicalId(shown: RevealedThreadText?): String? = shown?.entryId
+        ?: shown?.takeIf { liveStream == null }?.let { committedStream(state.entries, it.after, it.stream)?.id }
     val pendingTools = if (liveCurrent) live.tools.filter { it.id == null && !ThreadView.isPlanUpdate(it.name) } else emptyList()
-    val liveClockSkew = remember(live?.rev) { live?.let { System.currentTimeMillis() - it.at } ?: 0L }
+    val liveClockSkew = remember(live?.at) { live?.let { System.currentTimeMillis() - it.at } ?: 0L }
 
     Column(modifier.background(ThreadPalette.Bg).tagged(Tags.Worker.THREAD)) {
         if (search) {
@@ -412,9 +419,10 @@ internal fun Thread(
                 item(key = TAIL) {
                     CompositionLocalProvider(LocalRevealDisclosure provides (!follow || searchScroll)) {
                         Column(Modifier.fillMaxWidth().heightIn(min = 1.dp)) {
-                            if (liveStream != null || pendingTools.isNotEmpty()) {
+                            val shown = reveal.value?.takeIf { canonicalId(it) == null }
+                            if (shown != null || pendingTools.isNotEmpty()) {
                                 LiveTail(
-                                    stream = liveStream,
+                                    stream = shown,
                                     tools = pendingTools,
                                     skewMs = liveClockSkew,
                                     open = open,
@@ -467,43 +475,49 @@ internal fun Thread(
                             .animateItem(fadeInSpec = tween(150), fadeOutSpec = tween(100))
                             .then(if (search && matches.getOrNull(searchActive)?.rowId == r.id) Modifier.border(1.dp, ThreadPalette.Accent, RoundedCornerShape(4.dp)) else Modifier),
                     ) {
-                        CompositionLocalProvider(LocalRevealDisclosure provides (!follow || searchScroll)) {
+                        CompositionLocalProvider(
+                            LocalRevealDisclosure provides (!follow || searchScroll),
+                            LocalThreadReveal provides reveal,
+                        ) {
                             ProvidePictures(pictures) {
-                            when (r) {
-                                is ThreadRow.Message -> {
-                                    val all = open[MORE + r.id] == true
-                                    val isStreaming = w.state.busy && i == rows.lastIndex && r.role == ThreadRole.Assistant
-                                    val entry = loaded[r.id]
-                                    val actions = open["msg.actions:" + r.id] == true
-                                    Message(
-                                        w, r, entry?.text.orEmpty(), entry?.images.orEmpty(), all, isStreaming, floorDir,
-                                        at = entry?.at,
-                                        actions = actions,
-                                        offerActions = r.role == ThreadRole.User || ThreadActions.endsReply(rows, i),
-                                        onActions = { flip("msg.actions:" + r.id, actions) },
-                                        onMore = { flip(MORE + r.id, all) },
-                                        onQuote = onQuote,
-                                        onRewind = onRewind?.let { { rewindTarget = r } },
+                                when (r) {
+                                    is ThreadRow.Message -> {
+                                        val all = open[MORE + r.id] == true
+                                        val isStreaming = w.state.busy && i == rows.lastIndex && r.role == ThreadRole.Assistant
+                                        val entry = loaded[r.id]
+                                        val revealed = if (r.role == ThreadRole.Assistant && i == rows.lastIndex) {
+                                            reveal.value?.takeIf { canonicalId(it) == r.id }
+                                        } else null
+                                        val actions = open["msg.actions:" + r.id] == true
+                                        Message(
+                                            w, r, revealed?.text ?: entry?.text.orEmpty(), entry?.images.orEmpty(), all, isStreaming || revealed != null, floorDir,
+                                            at = entry?.at,
+                                            actions = actions,
+                                            offerActions = r.role == ThreadRole.User || ThreadActions.endsReply(rows, i),
+                                            onActions = { flip("msg.actions:" + r.id, actions) },
+                                            onMore = { flip(MORE + r.id, all) },
+                                            onQuote = onQuote,
+                                            onRewind = onRewind?.let { { rewindTarget = r } },
+                                        )
+                                    }
+                                    is ThreadRow.Notice -> Notice(w, r, loaded[r.id])
+                                    is ThreadRow.Activity -> Activity(
+                                        a = r,
+                                        open = open,
+                                        loaded = loaded,
+                                        asking = asking,
+                                        allWorkers = allWorkers,
+                                        deskWorker = data::deskWorker,
+                                        onOpenWorker = onOpenWorker,
+                                        floorDir = floorDir,
+                                        onToggleExploration = ::toggleExploration,
+                                        onFlip = ::flip,
+                                        live = live?.let { snapshot ->
+                                            { id: String -> ToolCards.live(snapshot.tools, id) }
+                                        },
+                                        livePhaseSince = live?.phaseSince,
                                     )
                                 }
-                                is ThreadRow.Notice -> Notice(w, r, loaded[r.id])
-                                is ThreadRow.Activity -> Activity(
-                                    a = r,
-                                    open = open,
-                                    loaded = loaded,
-                                    asking = asking,
-                                    allWorkers = allWorkers,
-                                    deskWorker = data::deskWorker,
-                                    onOpenWorker = onOpenWorker,
-                                    floorDir = floorDir,
-                                    onToggleExploration = ::toggleExploration,
-                                    onFlip = ::flip,
-                                    live = live?.let { snapshot ->
-                                        { id: String -> ToolCards.live(snapshot.tools, id) }
-                                    },
-                                    livePhaseSince = live?.phaseSince,
-                                )
-                            }
                             }
                         }
                     }
@@ -549,7 +563,7 @@ internal fun Thread(
 /** Live streaming thought/text delta and unanchored in-flight tools (`tool.id == null`) before canonical commit. */
 @Composable
 private fun LiveTail(
-    stream: ThreadLive.Stream?,
+    stream: RevealedThreadText?,
     tools: List<ThreadLive.Tool>,
     skewMs: Long,
     open: Map<String, Boolean>,
@@ -558,8 +572,8 @@ private fun LiveTail(
 ) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (stream != null) {
-            if (stream.kind == "thinking") {
-                val key = "live:thinking:${stream.since}"
+            if (stream.stream.kind == "thinking") {
+                val key = "live:thinking:${stream.stream.since}"
                 val isOpen = open[key] ?: true
                 ThinkingBlock(
                     id = key,
@@ -567,12 +581,12 @@ private fun LiveTail(
                     live = true,
                     open = isOpen,
                     onToggle = { onFlip(key, isOpen) },
-                    startedAtMs = stream.since + skewMs,
+                    startedAtMs = stream.stream.since + skewMs,
                 )
             } else {
                 val files = LocalFilePreview.current
                 SelectionContainer {
-                    MarkdownText(stream.text, streaming = true, onOpenPath = files?.let { it::open }, rich = true)
+                    MarkdownText(stream.text, streaming = true, onOpenPath = files?.let { it::open }, rich = true, fadeInBlocks = false)
                 }
             }
         }
@@ -613,7 +627,7 @@ private fun LiveToolRow(tool: ThreadLive.Tool, startedAtMs: Long, index: Int) {
             ) {
                 if (out != null) {
                     Text(
-                        out.take(SHOWN_CHARS),
+                        out.lines().takeLast(12).joinToString("\n").takeLast(SHOWN_CHARS),
                         style = LocalOfficeType.current.monoBody.copy(fontSize = 11.sp, lineHeight = 16.sp, color = ThreadPalette.TextSecondary),
                         maxLines = 12,
                         overflow = TextOverflow.Ellipsis,
@@ -867,7 +881,7 @@ private fun Message(
     } else {
         Column(tag.then(if (offerActions) Modifier.clickable(onClick = onActions) else Modifier)) {
             val files = LocalFilePreview.current
-            SelectionContainer { MarkdownText(text, streaming = streaming, onOpenPath = files?.let { it::open }, rich = true) }
+            SelectionContainer { MarkdownText(text, streaming = streaming, onOpenPath = files?.let { it::open }, rich = true, fadeInBlocks = false) }
             m.turnChanges?.let { TurnChanges(m.id, it, floorDir, Modifier.padding(top = 10.dp)) }
             AnimatedVisibility(actions && offerActions) {
                 ThreadMessageActions(m.id, text, at, user = false, onQuote = onQuote, onRewind = null, modifier = Modifier.tagged(Tags.Worker.threadMessageActions(m.id)))

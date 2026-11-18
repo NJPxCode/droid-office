@@ -579,11 +579,12 @@ private fun ActionRow(a: ThreadModelAction, c: Cards, dense: Boolean) {
 private fun ThoughtRow(t: ThreadBlock.Thought, c: Cards) {
     val isOpen = ThreadView.Open.block(t, c.open)
     val entry = c.loaded[t.id]
+    val revealed = LocalThreadReveal.current?.value?.takeIf { it.entryId == t.id }
     ThinkingBlock(
         id = t.id,
-        text = ThreadView.thought(t, entry),
+        text = revealed?.text ?: ThreadView.thought(t, entry),
         live = t.live,
-        open = isOpen,
+        open = isOpen || (revealed != null && c.open[t.id] != false),
         onToggle = { c.onFlip(t.id, isOpen) },
         tookMs = entry?.tookMs,
         startedAtMs = c.livePhaseSince,
