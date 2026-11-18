@@ -30,8 +30,6 @@ data class ThreadLive(
     val settings: ThreadSessionSettings? = null,
     /** The office-driven rewind in progress, if any. */
     val rewind: Rewind? = null,
-    /** Droid's side chat (/btw) as the terminal shows it, while it is open. */
-    val side: String? = null,
 ) {
     /** Factory's droidStatusIndicator states. */
     enum class Status(val wire: String) {
@@ -100,7 +98,6 @@ data class ThreadLive(
                 waiting = (o["waiting"] as? JsonObject)?.let { Waiting(it.str("kind") ?: "other", it.str("toolId")) },
                 settings = ThreadSessionSettings.of(o["settings"]),
                 rewind = (o["rewind"] as? JsonObject)?.let { r -> r.str("entryId")?.let { Rewind(it, r.long("since") ?: at) } },
-                side = (o["side"] as? JsonObject)?.str("text")?.take(STREAM_CHARS),
             )
         }
 

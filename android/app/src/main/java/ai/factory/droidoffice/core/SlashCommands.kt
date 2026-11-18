@@ -4,15 +4,14 @@ import kotlinx.serialization.Serializable
 
 /**
  * Droid's slash commands and what the Thread view does with each, as on the web
- * (src/shared/slash-commands.ts; tests/slash-commands.test.ts keeps the built-in lists equal). A
- * slash command goes to Droid's input box like any message, so Droid runs it. A built-in one that
- * opens Droid's own dialog sends and then switches to Raw TTY; the rest run without one. Ending the
- * CLI is refused: Send home is how a worker leaves. The worker's skills and custom commands come
- * from its droid (GET /api/agents/droid/commands?worker=) and run as prompts. [Command.midTurn] marks
- * the ones Droid 1.12.1 runs while a turn runs; it refuses the rest or asks to stop the turn.
+ * (src/shared/slash-commands.ts; tests/slash-commands.test.ts keeps the built-in lists equal).
+ * Built-in commands run natively in the Thread or via daemon RPCs; ending the CLI is refused
+ * (Send home is how a worker leaves). The worker's skills and custom commands come from its
+ * droid (GET /api/agents/droid/commands?worker=) and run as prompts. [Command.midTurn] marks
+ * the ones that can be invoked while a turn is running.
  */
 object SlashCommands {
-    enum class Kind { Thread, Tty, Blocked }
+    enum class Kind { Thread, Blocked }
 
     /** Where a command that isn't built in comes from. */
     enum class Source { Skill, Command }
@@ -22,7 +21,7 @@ object SlashCommands {
         val description: String,
         val kind: Kind,
         val aliases: List<String> = emptyList(),
-        /** Droid runs it during a turn (a dialog or setting that leaves the turn running). */
+        /** Runs during an active turn instead of requiring the turn to stop first. */
         val midTurn: Boolean = false,
         val source: Source? = null,
         val argumentHint: String? = null,
@@ -33,46 +32,8 @@ object SlashCommands {
         Command("clear", "Clear the conversation, keeping the model", Kind.Thread),
         Command("new", "Start a fresh session with the default model", Kind.Thread),
         Command("handoff", "Start a new session with a summary of this one", Kind.Thread),
-        Command("fast", "Turn fast mode on for the current model (/fast off to turn it off)", Kind.Thread),
-        Command("favorite", "Pin this session for quick access", Kind.Thread, listOf("pin"), midTurn = true),
-        Command("archive", "Archive the session. Continuing it or restoring it from /sessions brings it back", Kind.Thread),
-        Command("vim", "Turn vim keys on or off in the input box", Kind.Thread),
-        Command("btw", "Ask a side question without adding it to the conversation", Kind.Thread, listOf("side"), midTurn = true),
-        Command("readiness-report", "Generate a readiness report for this repository", Kind.Thread),
-        Command("readiness-fix", "Apply the readiness report’s fixes", Kind.Thread),
-        Command("install-code-review", "Set up Factory code review for this repository", Kind.Thread),
-        Command("model", "Choose the model", Kind.Tty, midTurn = true),
-        Command("settings", "Change Droid’s settings", Kind.Tty, midTurn = true),
-        Command("copy", "Copy a reply, a prompt, a range of turns, the transcript or the session id", Kind.Tty, midTurn = true),
-        Command("tree", "Move around the session’s fork tree", Kind.Tty),
-        Command("rewind-conversation", "Rewind the conversation to an earlier message", Kind.Tty),
-        Command("sessions", "Resume an earlier session", Kind.Tty, listOf("resume"), midTurn = true),
-        Command("share", "Share the session with your organization", Kind.Tty),
-        Command("review", "Run a code review on the current changes", Kind.Tty, midTurn = true),
-        Command("missions", "Open the missions picker", Kind.Tty, listOf("workstreams"), midTurn = true),
-        Command("create-skill", "Create a skill from this conversation", Kind.Tty),
-        Command("mcp", "Manage MCP servers", Kind.Tty, midTurn = true),
-        Command("connectors", "Manage connectors and MCP servers", Kind.Tty, midTurn = true),
-        Command("skills", "Manage skills", Kind.Tty, midTurn = true),
-        Command("droids", "Manage custom droids", Kind.Tty, midTurn = true),
-        Command("commands", "Manage custom slash commands", Kind.Tty, midTurn = true),
-        Command("hooks", "Manage tool hooks", Kind.Tty, midTurn = true),
-        Command("plugins", "Manage plugins and marketplaces", Kind.Tty, midTurn = true),
-        Command("limits", "Manage credit limits and overage", Kind.Tty, midTurn = true),
-        Command("diagnostics", "Open the diagnostics menu", Kind.Tty, midTurn = true),
-        Command("ide", "Manage IDE integration", Kind.Tty),
-        Command("bug", "Report a bug to Factory", Kind.Tty),
-        Command("install-slack-app", "Install the Factory Slack app", Kind.Tty),
-        Command("setup-incident-response", "Set up incident response for a Slack channel", Kind.Tty),
-        Command("statusline", "Set up a custom status line", Kind.Tty),
-        Command("themes", "Choose a color theme", Kind.Tty, midTurn = true),
-        Command("language", "Change the display language", Kind.Tty, midTurn = true),
-        Command("terminal-setup", "Set up keys for multi-line input", Kind.Tty),
-        Command("cd", "Change the session’s working directory", Kind.Tty, listOf("cwd")),
-        Command("account", "Open your Factory account in the browser", Kind.Tty, midTurn = true),
-        Command("billing", "Open Factory billing in the browser", Kind.Tty, midTurn = true),
-        Command("login", "Log in to Factory", Kind.Tty),
-        Command("logout", "Log out of Factory", Kind.Tty),
+        Command("copy", "Copy a reply, a prompt, a range of turns, the transcript or the session id", Kind.Thread, midTurn = true),
+        Command("limits", "Manage credit limits and overage", Kind.Thread, midTurn = true),
         Command("quit", "Ends this worker’s Droid. Use Send home instead", Kind.Blocked, listOf("exit")),
     )
 
@@ -96,8 +57,6 @@ object SlashCommands {
 
     private val NAME = Regex("""^/([^\s/]*)(?=\s|$)""")
     private val TYPING = Regex("""^/([^\s/]*)$""")
-    private val ARGUMENT = Regex("""\s\S""")
-    private val COMMAND = Regex("""^/\S+\s*""")
 
     /** The name a draft starting with `/` asks for, and the command when Droid has it built in; null for a plain message. */
     fun of(draft: String, commands: List<Command> = ALL): Pair<String, Command?>? {
@@ -105,21 +64,19 @@ object SlashCommands {
         return name to commands.firstOrNull { it.name.lowercase() == name || name in it.aliases }
     }
 
-    /** What sending [draft] does: run in the thread, run and open Raw TTY, or nothing. A plain message is [Kind.Thread]. */
+    /** What sending [draft] does: run in the thread, or nothing when blocked. A plain message is [Kind.Thread]. */
     fun kind(draft: String): Kind = of(draft)?.second?.kind ?: Kind.Thread
 
-    /** A bare `/copy` opens the Thread's own copy choices (Droid's /copy menu) instead of the terminal's. */
-    fun nativeCopy(draft: String): Boolean = of(draft)?.second?.name == "copy" && !ARGUMENT.containsMatchIn(draft.trim())
+    /** `/copy` (optionally with a turn count like `/copy 3`) opens the Thread's own copy dialog. */
+    fun nativeCopy(draft: String): Boolean = of(draft)?.second?.name == "copy"
 
-    /** The question a `/btw` (or `/side`) draft asks, or null for any other draft. */
-    fun sideQuestion(draft: String): String? {
-        if (of(draft)?.second?.name != "btw") return null
-        return draft.trim().replace(COMMAND, "")
-    }
+    /** Optional positive turn count passed to `/copy <n>`, defaulting to `"1"`. */
+    fun copyTurns(draft: String): String =
+        draft.trim().substringAfter(' ', "").trim().filter(Char::isDigit).take(4).ifEmpty { "1" }
 
     /**
-     * Why a slash draft can't be sent now, or null when it can: a command that would end the CLI never,
-     * and while a turn runs only those Droid runs mid-turn ([Command.midTurn]).
+     * Why a slash draft can't be sent now, or null when it can: a command that would end the session never,
+     * and while a turn runs only those allowed mid-turn ([Command.midTurn]).
      */
     fun refusal(draft: String, name: String, busy: Boolean, commands: List<Command> = ALL): String? {
         val (typed, command) = of(draft, commands) ?: return null

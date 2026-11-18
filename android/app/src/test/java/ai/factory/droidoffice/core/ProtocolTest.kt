@@ -75,8 +75,9 @@ class ProtocolTest {
         assertEquals("s2", watch.getValue("child").jsonPrimitive.content)
         val read = Json.parseToJsonElement(ClientMsg.threadRead("w1", "r1", 4, "s2")).jsonObject
         assertEquals("s2", read.getValue("child").jsonPrimitive.content)
-        val queue = Json.parseToJsonElement(ClientMsg.queueAction("w1", "delete", 2, "queued", "Later")).jsonObject
+        val queue = Json.parseToJsonElement(ClientMsg.queueAction("w1", "delete", 2, "queued", "Later", id = "req-42")).jsonObject
         assertEquals("worker.queue", queue.getValue("t").jsonPrimitive.content)
+        assertEquals("req-42", queue.getValue("id").jsonPrimitive.content)
         assertEquals(2, queue.getValue("index").jsonPrimitive.content.toInt())
         assertEquals("queued", queue.getValue("group").jsonPrimitive.content)
         val rewind = Json.parseToJsonElement(ClientMsg.rewind("w1", "u1:text", "conversation")).jsonObject
@@ -87,9 +88,6 @@ class ProtocolTest {
         val choose = Json.parseToJsonElement(ClientMsg.rewind("w1", "u1:text", "choose", listOf("src/a.ts"))).jsonObject
         assertEquals("choose", choose.getValue("restore").jsonPrimitive.content)
         assertEquals(listOf("src/a.ts"), choose.getValue("files").jsonArray.map { it.jsonPrimitive.content })
-        val side = Json.parseToJsonElement(ClientMsg.closeSide("w1")).jsonObject
-        assertEquals("worker.side", side.getValue("t").jsonPrimitive.content)
-        assertEquals(true, side.getValue("close").jsonPrimitive.content.toBoolean())
     }
 
     @Test
@@ -98,8 +96,51 @@ class ProtocolTest {
         assertTrue((Protocol.decode(welcome.replace(""""pulls":""", """"threadActions":true,"pulls":""")) as ServerMsg.Welcome).threadActions)
         val rewound = Protocol.decode("""{"t":"worker.rewound","workerId":"w1","entryId":"u1:text","ok":true,"note":"This action was not confirmed"}""") as ServerMsg.WorkerRewound
         assertEquals("This action was not confirmed", rewound.note)
-        val live = Protocol.decode("""{"t":"thread.live","workerId":"w1","sessionId":"s1","live":{"rev":1,"at":1,"status":"idle","side":{"text":"Side answer"}}}""") as ServerMsg.ThreadLiveUpdate
-        assertEquals("Side answer", live.live.side)
+    }
+
+    @Test
+    fun droidWorkersUseThreadWithoutPtyStreamWhileShellsKeepTerminalStream() {
+        val agent = WorkerInfo(id = "w1", kind = "agent")
+        val cloud = WorkerInfo(id = "c1", kind = "cloud")
+        val orchestrator = WorkerInfo(id = ORCHESTRATOR_ID, kind = "agent")
+        val shell = WorkerInfo(id = "s1", kind = "shell")
+
+        assertTrue(agent.usesThread)
+        assertTrue(cloud.usesThread)
+        assertTrue(orchestrator.usesThread)
+        assertFalse(shell.usesThread)
+        assertTrue(shell.isShell)
+
+        val droidAttach = json(ClientMsg.attach("w1", stream = false))
+        assertEquals("worker.attach", droidAttach.getValue("t").jsonPrimitive.content)
+        assertEquals("false", droidAttach.getValue("stream").jsonPrimitive.content)
+
+        val shellAttach = json(ClientMsg.attach("s1", stream = true))
+        assertEquals("worker.attach", shellAttach.getValue("t").jsonPrimitive.content)
+        assertFalse("stream" in shellAttach)
+
+        assertEquals("worker.interrupt", json(ClientMsg.interrupt("w1")).getValue("t").jsonPrimitive.content)
+        assertEquals("orchestrator.interrupt", json(ClientMsg.interrupt(ORCHESTRATOR_ID)).getValue("t").jsonPrimitive.content)
+    }
+
+    @Test
+    fun decodesStructuredWorkerMenuAndQueueState() {
+        val msg = Protocol.decode(
+            """{"t":"worker.update","worker":{"id":"w1","kind":"agent","status":"needs_input",
+               "menu":{"question":"Ship daemon?","choices":[{"number":1,"label":"Yes","description":"Recommended"},{"number":2,"label":"No"}],"freeText":true,"multiSelect":false},
+               "queue":{"count":2,"moreSteering":0,"moreQueued":1,"items":[
+                 {"id":"req-1","index":1,"text":"Steer now","preview":false,"moreLines":0,"source":"droid","delivery":"steering"},
+                 {"id":"req-2","index":1,"text":"After turn","hasImage":true,"preview":false,"moreLines":0,"source":"droid","delivery":"after_turn"}
+               ]}}}""",
+        ) as ServerMsg.WorkerUpdate
+        val w = msg.worker
+        assertEquals("Ship daemon?", Asks.menu(w)?.question)
+        assertEquals(2, w.queue?.count)
+        assertEquals(1, w.queue?.moreQueued)
+        assertTrue(w.queue!!.items[0].isSteering)
+        assertFalse(w.queue.items[1].isSteering)
+        assertEquals("req-2", w.queue.items[1].id)
+        assertTrue(w.queue.items[1].hasImage)
     }
 
     private val welcome = """
@@ -173,10 +214,6 @@ class ProtocolTest {
         fun decode(json: String) = (Protocol.decode("""{"t":"worker.update","worker":$json}""") as ServerMsg.WorkerUpdate).worker
         val q = decode("""{"id":"w1","status":"needs_input","ask":{"kind":"question","questions":[{"question":"Which size?","topic":"Size","options":["Short","Long"],"multiSelect":false}]}}""").ask!!
         assertEquals(listOf(AskedQuestion("Which size?", "Size", listOf("Short", "Long"), false)), q.questions)
-        assertFalse(q.isPermission)
-        val p = decode("""{"id":"w1","ask":{"kind":"permission","tool":"Execute","command":"git push","risk":"medium","sub":true}}""").ask!!
-        assertTrue(p.isPermission)
-        assertTrue(p.sub)
         assertNull(decode("""{"id":"w1"}""").ask)
     }
 

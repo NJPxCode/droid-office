@@ -62,6 +62,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -214,7 +215,7 @@ internal fun ThinkingBlock(
  * Every frame of it runs in the draw phase; only the swap recomposes.
  */
 @Composable
-internal fun StatusIndicator(mode: ThreadStatus.Mode, modifier: Modifier = Modifier) {
+internal fun StatusIndicator(mode: ThreadStatus.Mode, modifier: Modifier = Modifier, detail: String? = null) {
     if (mode == ThreadStatus.Mode.Idle) return
     var index by remember(mode) { mutableIntStateOf(ThreadStatus.pick(mode, -1, Random::nextInt)) }
     val alpha = remember(mode) { Animatable(0f) }
@@ -229,10 +230,11 @@ internal fun StatusIndicator(mode: ThreadStatus.Mode, modifier: Modifier = Modif
         }
     }
     val phrase = ThreadStatus.phrases(mode).getOrElse(index) { "" }
+    val note = detail?.trim()?.takeIf { it.isNotEmpty() && !it.equals(phrase, ignoreCase = true) }
     val sweep = rememberSweep(ThreadStatus.SHIMMER_MS)
     Row(
         modifier.fillMaxWidth().heightIn(min = 28.dp).clearAndSetSemantics {
-            contentDescription = phrase
+            contentDescription = if (note != null) "$phrase, $note" else phrase
             liveRegion = LiveRegionMode.Polite
         }.tagged(Tags.Worker.THREAD_STATUS),
         verticalAlignment = Alignment.CenterVertically,
@@ -245,5 +247,14 @@ internal fun StatusIndicator(mode: ThreadStatus.Mode, modifier: Modifier = Modif
             maxLines = 1,
             modifier = Modifier.graphicsLayer { this.alpha = alpha.value }.shimmer(sweep, ThreadPalette.Text, ThreadPalette.TextSecondary, span = 2f),
         )
+        if (note != null) {
+            Text(
+                " · $note",
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 18.sp, color = ThreadPalette.TextTertiary),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+        }
     }
 }

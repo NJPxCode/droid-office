@@ -23,7 +23,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ai.factory.droidoffice.core.DroidQueue
 import ai.factory.droidoffice.core.Tags
 import ai.factory.droidoffice.core.ThreadQueue
 import ai.factory.droidoffice.ui.components.tagged
@@ -88,7 +87,7 @@ private fun QueueGroup(
             if (item.hasImage) Icon(OfficeIcons.Picture, "Image attached", Modifier.padding(start = 6.dp).size(13.dp), tint = ThreadPalette.TextSecondary)
             if (item.more > 0 || item.preview) Text("…", color = ThreadPalette.TextTertiary, modifier = Modifier.padding(start = 4.dp))
             if (onAction != null) {
-                if (item.group == DroidQueue.Group.Queued) QueueAction(OfficeIcons.ArrowUp, "Send now", Tags.Worker.composerQueuedSendNow(n), connected) { onAction("promote", item) }
+                if (item.group == ThreadQueue.Group.Queued) QueueAction(OfficeIcons.ArrowUp, "Send now", Tags.Worker.composerQueuedSendNow(n), connected) { onAction("promote", item) }
                 QueueAction(OfficeIcons.Trash, "Remove from queue", Tags.Worker.composerQueuedRemove(n), connected) { onAction("delete", item) }
                 if (!item.preview) QueueAction(OfficeIcons.SquarePen, "Edit message", Tags.Worker.composerQueuedEdit(n), connected) { onAction("edit", item) }
             }

@@ -254,7 +254,7 @@ private fun PictureViewer(connection: OfficeConnection, source: PictureSource, i
     FullscreenPictureDialog(picture, image.width, image.height, name, about, index, images.size, onPage, download, onClose)
 }
 
-/** Opens a tapped Raw TTY Kitty image in the shared fullscreen viewer. */
+/** Opens a tapped terminal Kitty image in the shared fullscreen viewer. */
 @Composable
 internal fun KittyPictureViewer(image: PageMsg.Image, about: String?, onClose: () -> Unit) {
     val picture by produceState<ImageBitmap?>(null, image) {
