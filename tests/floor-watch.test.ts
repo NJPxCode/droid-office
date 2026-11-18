@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { once } from 'node:events';
+import { on, once } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -26,6 +26,7 @@ import { WhiteboardStore } from '../src/server/whiteboard.js';
 import { NAMES } from '../src/server/workers.js';
 import { DESKS, nextFreeSeat } from '../src/shared/layout.js';
 import { SUBAGENT_DEFAULTS, type ServerMsg, type SubagentSettings, type WorkerInfo } from '../src/shared/protocol.js';
+import { TestDaemon } from './daemon-fixture.js';
 
 const WEBHOOK_SECRET = 'whsec_floor_watch_test_secret_token';
 
@@ -605,22 +606,6 @@ test('real multi-floor office assigns globally unique names and desks across liv
     }
   });
 
-  // Stub agent script: answers setup/label probes immediately and stays alive for interactive PTY workers.
-  const fakeAgent = path.join(root, 'fake-droid.js');
-  writeFileSync(
-    fakeAgent,
-    [
-      '#!/usr/bin/env node',
-      'const args = process.argv.slice(2);',
-      "if (args[0] === '--version') { console.log('0.249.0'); process.exit(0); }",
-      'if (args[0] === \'doctor\') { console.log(\'{"ok":true,"results":[{"id":"auth.verify","status":"pass","detail":"ok"}]}\'); process.exit(0); }',
-      "if (args.includes('--output-format')) process.exit(0);",
-      'setInterval(() => {}, 10_000);',
-      '',
-    ].join('\n'),
-    { mode: 0o755 },
-  );
-
   const alphaDir = path.join(root, 'alpha');
   const betaDir = path.join(root, 'beta');
   const homeDir = path.join(root, 'home');
@@ -635,10 +620,12 @@ test('real multi-floor office assigns globally unique names and desks across liv
     execFileSync('git', ['commit', '-qm', 'init'], { cwd: repoDir });
   }
 
-  const cfg = loadConfig([alphaDir, '--home', homeDir, '--projects', root, '--agent', fakeAgent, '--weather', 'clear', '--host', '127.0.0.1']);
+  const cfg = loadConfig([alphaDir, '--home', homeDir, '--projects', root, '--agent', path.join(root, 'unused-droid'), '--weather', 'clear', '--host', '127.0.0.1']);
   cfg.port = 0;
   cfg.remoteMcp = false;
-  office = await startServer(cfg);
+  // A PTY stub cannot initialize a daemon session, and an exited worker no longer reserves its
+  // desk on other floors. Keep both sessions live without using the machine's Factory credentials.
+  office = await startServer(cfg, { localDaemon: new TestDaemon(cfg.dataDir) });
 
   const firstFloor = office.owner.floors()[0];
   const wsUrl = `ws://127.0.0.1:${(office.server.address() as AddressInfo).port}/ws?name=Owner&floor=${firstFloor.id}`;
@@ -659,21 +646,30 @@ test('real multi-floor office assigns globally unique names and desks across liv
   assert.ok(alphaFloor && betaFloor);
 
   const grok = makeWorker('remote-grok', 'GrokBot', { remote: true, deskId: '' });
-  // Spawn live agents on alpha and beta with AUTO_DESK: alpha gets Pixel on desk-1, so beta skips both and gets Byte on desk-2!
-  const spawnAlpha = await office.owner.act(grok, { t: 'worker.spawn', deskId: 'auto', kind: 'agent' }, { floor: alphaFloor.id, owner: true });
-  assert.equal(spawnAlpha.error, undefined, JSON.stringify(spawnAlpha));
-  const spawnBeta = await office.owner.act(grok, { t: 'worker.spawn', deskId: 'auto', kind: 'agent' }, { floor: betaFloor.id, owner: true });
-  assert.equal(spawnBeta.error, undefined, JSON.stringify(spawnBeta));
-  await delay(150);
+  const hireLive = async (floor: string, deskId = 'auto') => {
+    // Subscribe before hiring: the daemon may finish initializing before the receipt arrives.
+    const events = on(ws!, 'message', { signal: t.signal });
+    try {
+      const receipt = await office!.owner.act(grok, { t: 'worker.spawn', deskId, kind: 'agent' }, { floor, owner: true });
+      assert.equal(receipt.error, undefined, JSON.stringify(receipt));
+      assert.ok(receipt.workerId);
+      for await (const [raw] of events) {
+        const msg = JSON.parse(String(raw)) as ServerMsg;
+        if (msg.t !== 'building.worker' || msg.floor !== floor || msg.worker.id !== receipt.workerId) continue;
+        assert.notEqual(msg.worker.status, 'exited', msg.worker.activity);
+        if (msg.worker.status === 'idle') {
+          assert.ok(msg.worker.sessionId, 'the worker has a live daemon session');
+          return msg.worker;
+        }
+      }
+      return assert.fail(`Missing live worker update for ${receipt.workerId}`);
+    } finally {
+      await events.return?.();
+    }
+  };
 
-  const wAlpha = office.owner
-    .floors()
-    .find((f) => f.id === alphaFloor.id)!
-    .workers.find((w) => w.id === spawnAlpha.workerId)!;
-  const wBeta = office.owner
-    .floors()
-    .find((f) => f.id === betaFloor.id)!
-    .workers.find((w) => w.id === spawnBeta.workerId)!;
+  const wAlpha = await hireLive(alphaFloor.id);
+  const wBeta = await hireLive(betaFloor.id);
   assert.equal(wAlpha.name, 'Pixel');
   assert.equal(wBeta.name, 'Byte');
   assert.notEqual(wAlpha.deskId, wBeta.deskId, 'live workers on different floors get distinct desks');
@@ -690,10 +686,7 @@ test('real multi-floor office assigns globally unique names and desks across liv
   assert.ok(!fullRoster[0].warnings?.some((msg) => msg.includes('Shares working tree')));
 
   // A desk picked by hand on beta is beta's, even while alpha's live worker sits at the same desk id.
-  const picked = await office.owner.act(grok, { t: 'worker.spawn', deskId: wAlpha.deskId, kind: 'agent' }, { floor: betaFloor.id, owner: true });
-  assert.equal(picked.error, undefined, JSON.stringify(picked));
-  const betaWorkers = () => office!.owner.floors().find((f) => f.id === betaFloor.id)!.workers;
-  const wPicked = betaWorkers().find((w) => w.id === picked.workerId)!;
+  const wPicked = await hireLive(betaFloor.id, wAlpha.deskId);
   assert.equal(wPicked.deskId, wAlpha.deskId, 'the hand-picked desk is honored');
   assert.ok(!['Pixel', 'Byte'].includes(wPicked.name), 'names stay unique across floors');
 
@@ -702,12 +695,7 @@ test('real multi-floor office assigns globally unique names and desks across liv
   assert.equal(again.error, 'That desk is taken');
 
   // An automatic seat on alpha still skips desks live on beta (desk-1 Pixel here, desk-2 Byte there) and takes desk-3.
-  const auto = await office.owner.act(grok, { t: 'worker.spawn', deskId: 'auto', kind: 'agent' }, { floor: alphaFloor.id, owner: true });
-  assert.equal(auto.error, undefined, JSON.stringify(auto));
-  const wAuto = office.owner
-    .floors()
-    .find((f) => f.id === alphaFloor.id)!
-    .workers.find((w) => w.id === auto.workerId)!;
+  const wAuto = await hireLive(alphaFloor.id);
   assert.equal(wAuto.deskId, DESKS.find((d) => ![wAlpha.deskId, wBeta.deskId].includes(d.id))!.id);
   assert.equal(new Set([wAlpha.name, wBeta.name, wPicked.name, wAuto.name]).size, 4, 'every live name is unique across floors');
 });
