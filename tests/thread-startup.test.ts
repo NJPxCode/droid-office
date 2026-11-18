@@ -10,22 +10,6 @@ import type { WorkerInfo } from '../src/shared/protocol.js';
 import { presentThread } from '../src/shared/thread-presentation.js';
 import type { ThreadEntry } from '../src/shared/worker-thread.js';
 
-const worker: WorkerInfo = {
-  id: 'worker',
-  kind: 'agent',
-  deskId: 'desk-1',
-  name: 'Nibble',
-  color: '#ee6018',
-  status: 'starting',
-  acked: false,
-  createdBy: 'owner',
-  createdAt: 0,
-  cols: 80,
-  rows: 24,
-  open: true,
-};
-const missing = 'The local conversation file is not available yet.';
-
 test('worktree setup and CLI boot remain loading until the worker starts', () => {
   assert.equal(threadStarting(worker), true);
   assert.equal(threadStarting({ ...worker, sessionId: 'session' }), true);
@@ -129,6 +113,40 @@ async function mountThread(t: TestContext, mounted: WorkerInfo = worker, floor?:
   );
   return { page, errors };
 }
+test('a failed hire shows the unsent prompt and offers a worker retry, not a transcript retry', { skip: chromium }, async (t) => {
+  const prompt = 'Reply with exactly the retained hire prompt.';
+  const failed = { ...worker, status: 'exited' as const, prompt, activity: 'Failed to start: Timed out connecting to droid daemon' };
+  const { page, errors } = await mountThread(t, failed);
+  assert.match(await page.locator('.wt-empty').innerText(), /Unsent prompt/);
+  assert.equal(await page.locator('.wt-empty .wt-user-text').innerText(), prompt);
+  assert.match(await page.locator('.wt-notice').innerText(), /Timed out connecting to droid daemon/);
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => (window as any).actions), [{ t: 'worker.resume', workerId: 'worker' }]);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.thread.update({ ...w.worker, status: 'working', activity: undefined, sessionId: 'session' }, true);
+  });
+  assert.equal(await page.getByRole('button', { name: 'Retry', exact: true }).isVisible(), false);
+  assert.doesNotMatch((await page.locator('.wt-empty').textContent()) ?? '', /Unsent prompt/);
+  assert.deepEqual(errors, []);
+});
+
+const worker: WorkerInfo = {
+  id: 'worker',
+  kind: 'agent',
+  deskId: 'desk-1',
+  name: 'Nibble',
+  color: '#ee6018',
+  status: 'starting',
+  acked: false,
+  createdBy: 'owner',
+  createdAt: 0,
+  cols: 80,
+  rows: 24,
+  open: true,
+};
+const missing = 'The local conversation file is not available yet.';
+
 test('thread startup animates without premature reads, retries missing files and preserves real errors', { skip: chromium }, async (t) => {
   const { page, errors } = await mountThread(t);
   assert.match(await page.locator('.wt-empty').innerText(), /Starting worker/);

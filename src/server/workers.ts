@@ -34,7 +34,7 @@ import { normalizeRepo } from '../shared/floors.js';
 import { DESK_BY_ID, nextFreeSeat, type DeskDef } from '../shared/layout.js';
 import { officePrompt, type PromptSource } from './prompts.js';
 import { forgeVars, officeSays, placeholders, PROMPTS, withoutReminders, workerMessageVars } from '../shared/prompts.js';
-import { isAsleep, isBusy } from '../shared/status.js';
+import { DAEMON_START_FAILED_PREFIX, daemonStartFailure, isAsleep, isBusy } from '../shared/status.js';
 import { linearTaskOf } from '../shared/linear.js';
 import { fallbackTask } from './tasks.js';
 import { todosFinished } from '../shared/todos.js';
@@ -402,6 +402,7 @@ export class WorkerManager {
             const wasOpen = adopted.openedSessionIds.includes(sid);
             const saved = w.savedDaemon;
             w.savedDaemon = undefined;
+            this.clearDaemonStartFailure(w);
             w.daemonActive = true;
             w.daemonLaunching = false;
             const { isBusy } = applyDaemonSnapshot(w, snap);
@@ -1099,13 +1100,14 @@ export class WorkerManager {
     const modelError = w.info.kind === 'agent' ? this.modelGate?.(w.info.activeModel ?? w.info.model) : undefined;
     if (modelError) return modelError;
     if (this.checkLost(w, true)) return lostMessage(w.info);
+    const failed = daemonStartFailure(w.info);
     clockWork(w.info, 'starting');
     w.info.status = 'starting';
     w.info.exitCode = undefined;
     const prepared = w.info.kind === 'agent' && images?.length ? this.prepareDaemonImages(id, images) : undefined;
     // A graceful restart can happen while initializeSession is still pending.
     // If no daemon session was recorded, the first text was never sent.
-    const interruptedStart = !w.info.sessionId && w.savedDaemon?.status === 'starting' && w.info.prompt !== 'See the attached images' ? w.info.prompt : undefined;
+    const interruptedStart = !w.info.sessionId && !w.pendingFork && !w.pendingPrompts.length && (failed || w.savedDaemon?.status === 'starting') && w.info.prompt !== 'See the attached images' ? w.info.prompt : undefined;
     w.savedDaemon = undefined;
     const rawPrompt = prompt?.trim() || interruptedStart;
     // A subagent with no session to carry on starts over, so it needs telling what it's for again.
@@ -2908,6 +2910,8 @@ export class WorkerManager {
     delete info.queue;
 
     let prompt = initialPrompt;
+    const retrying = w.pendingPrompts.length;
+    const forking = !!w.pendingFork;
     let setupNotice: string | undefined;
     const plan = resumeSessionId ? undefined : w.setupPlan;
     w.setupPlan = undefined;
@@ -3007,7 +3011,7 @@ export class WorkerManager {
 
       if (!current()) return;
       w.daemonLaunching = false;
-      this.persist();
+      this.clearDaemonStartFailure(w);
 
       const buffered = w.pendingPrompts.splice(0);
       if (setupNotice && !prompt && buffered.length > 0) {
@@ -3017,11 +3021,11 @@ export class WorkerManager {
         w.outbox.unshift(setupNotice);
       }
 
-      const toSend: { text: string; images?: LocalImageInput[]; queue: boolean }[] = [];
+      const toSend = buffered;
       if (prompt || initialImages?.length) {
-        toSend.push({ text: prompt ?? '', images: initialImages, queue: false });
+        toSend.splice(forking ? 0 : retrying, 0, { text: prompt ?? '', images: initialImages, queue: false });
       }
-      toSend.push(...buffered);
+      this.persist();
 
       if (toSend.length > 0) {
         clockWork(info, 'working');
@@ -3044,6 +3048,12 @@ export class WorkerManager {
       if (current()) this.emitUpdate(w);
     } catch (err) {
       if (!current()) return;
+      // A failed initialize/load hasn't sent a message. Keep the hire prompt and anything
+      // typed while Droid was starting so Resume hands them to the ready session in order.
+      // A failed fork already keeps its own first prompt in pendingFork.
+      if (!w.pendingFork && (prompt || initialImages?.length)) {
+        w.pendingPrompts.splice(retrying, 0, { text: prompt ?? '', images: initialImages, queue: false });
+      }
       this.daemonStartFailed(w, (err as Error).message);
     }
   }
@@ -3302,15 +3312,19 @@ export class WorkerManager {
     this.persist();
   }
 
+  private clearDaemonStartFailure(w: Worker) {
+    if (w.info.activity?.startsWith(DAEMON_START_FAILED_PREFIX)) w.info.activity = undefined;
+    if (w.info.exitCode === -1) w.info.exitCode = undefined;
+  }
+
   private daemonStartFailed(w: Worker, message: string) {
     const what = this.command(w.info);
     w.daemonActive = false;
     w.daemonLaunching = false;
-    w.pendingPrompts = [];
     clockWork(w.info, 'exited');
     w.info.status = 'exited';
     w.info.exitCode = -1;
-    w.info.activity = truncate(`Failed to start: ${message}`, 80);
+    w.info.activity = truncate(`${DAEMON_START_FAILED_PREFIX}${message}`, 80);
     this.events.toast(`Could not start ${what}: ${message}`, 'error', w.info.id);
     this.emitUpdate(w);
     this.persist();
