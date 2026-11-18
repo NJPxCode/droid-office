@@ -10,49 +10,37 @@ import org.junit.Test
 
 class ThreadScrollTest {
     @Test
-    fun followingBreaksOnAScrollBackOrPastEightyAndResumesWithinSixteen() {
-        assertTrue(ThreadScroll.follows(following = true, back = false, fromBottom = 79f))
-        assertFalse(ThreadScroll.follows(following = true, back = false, fromBottom = 81f))
-        assertFalse(ThreadScroll.follows(following = true, back = true, fromBottom = 2f))
-        assertTrue(ThreadScroll.follows(following = true, back = true, fromBottom = 0.5f))
-        assertFalse(ThreadScroll.follows(following = true, back = false, fromBottom = null))
-        assertFalse(ThreadScroll.follows(following = false, back = false, fromBottom = 17f))
-        assertTrue(ThreadScroll.follows(following = false, back = false, fromBottom = 16f))
+    fun onlyScrollingTowardHistoryUnpinsAndReturningToTailFollowsAgain() {
+        assertTrue(ThreadScroll.afterDrag(following = true, dy = 0f, away = true))
+        assertTrue(ThreadScroll.afterDrag(following = true, dy = -5f, away = true))
+        assertFalse(ThreadScroll.afterDrag(following = true, dy = 2f, away = true))
+        assertTrue(ThreadScroll.afterDrag(following = true, dy = 2f, away = false))
+        assertFalse(ThreadScroll.afterDrag(following = false, dy = -2f, away = true))
+        assertTrue(ThreadScroll.afterDrag(following = false, dy = -2f, away = false))
     }
 
     @Test
-    fun theButtonShowsOnlyPastOneHundredTwentyWhileNotFollowing() {
-        assertFalse(ThreadScroll.showJump(following = true, fromBottom = 500f))
-        assertFalse(ThreadScroll.showJump(following = false, fromBottom = 120f))
-        assertTrue(ThreadScroll.showJump(following = false, fromBottom = 121f))
-        assertTrue(ThreadScroll.showJump(following = false, fromBottom = null))
+    fun theButtonShowsOnlyWhenNotFollowingAndAwayFromTheTail() {
+        assertFalse(ThreadScroll.showJump(following = true, away = true))
+        assertFalse(ThreadScroll.showJump(following = false, away = false))
+        assertTrue(ThreadScroll.showJump(following = false, away = true))
     }
 
     @Test
-    fun smallGrowthGlidesWithAFiftyMillisecondTimeConstant() {
-        assertFalse(ThreadScroll.glides(24f, 600f))
-        assertTrue(ThreadScroll.glides(25f, 600f))
-        assertFalse(ThreadScroll.glides(601f, 600f))
-        assertFalse(ThreadScroll.glides(100f, 600f, reducedMotion = true))
-        // 1 - e^(-16/50) of 100 is about 27.4.
-        assertEquals(27.4f, ThreadScroll.glideStep(100f, 16.0), 0.1f)
-        assertEquals(1f, ThreadScroll.glideStep(3f, 0.0), 0f)
-        assertEquals(2f, ThreadScroll.glideStep(2f, 16.0), 0f)
-        assertEquals(50f, ThreadScroll.glideStep(50f, 10_000.0), 0f)
+    fun earlierPagesKeepTheSameLazyIndexesForTheNewestRows() {
+        assertEquals(1, ThreadScroll.indexOf(100, 99))
+        assertEquals(1, ThreadScroll.indexOf(170, 169))
+        assertEquals(100, ThreadScroll.indexOf(100, 0))
+        assertEquals(100, ThreadScroll.indexOf(170, 70))
+        assertEquals(null, ThreadScroll.indexOf(170, -1))
     }
 
     @Test
-    fun theQuickScrollEasesOutCubically() {
-        assertEquals(0f, ThreadScroll.quick(0f), 0f)
-        assertEquals(0.875f, ThreadScroll.quick(0.5f), 1e-6f)
-        assertEquals(1f, ThreadScroll.quick(2f), 0f)
-        assertEquals(180, ThreadScroll.QUICK_MS)
-    }
-
-    @Test
-    fun theBottomStaysPutWhenTheKeyboardShrinksTheView() {
-        assertEquals(300, ThreadScroll.keepBottom(1200, 900))
-        assertEquals(-300, ThreadScroll.keepBottom(900, 1200))
+    fun visibleHeadOnlyAutoPagesWhileReadingEarlier() {
+        assertFalse(ThreadScroll.autoPage(following = true, searchScroll = false, headVisible = true))
+        assertFalse(ThreadScroll.autoPage(following = false, searchScroll = true, headVisible = true))
+        assertFalse(ThreadScroll.autoPage(following = false, searchScroll = false, headVisible = false))
+        assertTrue(ThreadScroll.autoPage(following = false, searchScroll = false, headVisible = true))
     }
 }
 

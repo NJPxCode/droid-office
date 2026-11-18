@@ -1,13 +1,10 @@
 package ai.factory.droidoffice.ui.worker
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Arrangement
@@ -27,7 +24,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
@@ -43,7 +40,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
@@ -53,10 +50,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.layout
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -109,22 +109,16 @@ import ai.factory.droidoffice.ui.components.tagged
 import ai.factory.droidoffice.ui.theme.LocalOfficeType
 import ai.factory.droidoffice.ui.theme.OfficeIcons
 import ai.factory.droidoffice.ui.theme.ThreadPalette
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 
 private const val LOADING_POLL_MS = 2_000L
 private const val RECONCILE_POLL_MS = 15_000L
 private const val HEAD = "thread.head"
-private const val LIVE_STREAM = "thread.live"
-private const val NEWER = "thread.newer"
-private const val ASK = "thread.ask"
-private const val STATUS = "thread.status"
+private const val TAIL = "thread.tail"
+private val LocalRevealDisclosure = staticCompositionLocalOf { true }
 /** Sticky TodoWrite plan bar open state in the saved open map. */
 private const val PLAN_BAR = "thread.plan.bar"
 internal const val DIFF_FULL = "diff.full:"
@@ -172,7 +166,6 @@ internal fun Thread(
 ) {
     val graph = LocalGraph.current
     val connection = graph.connection
-    val scope = rememberCoroutineScope()
     val data by connection.data.collectAsStateWithLifecycle()
     val effectiveFloor = data.workerFloorId(w.id) ?: data.floorId
     val floorScope = MissionControl.floorScope(effectiveFloor, w.id)
@@ -185,8 +178,9 @@ internal fun Thread(
     val visible = life.isAtLeast(Lifecycle.State.STARTED)
     val effectiveSessionId = sessionIdOverride ?: w.sessionId
 
+    var follow by rememberSaveable(kept) { mutableStateOf(true) }
     LaunchedEffect(feed) {
-        connection.threads.collect { if (feed.receive(it)) state = feed.state }
+        connection.threads.collect { if (feed.receive(it, keepLatest = follow)) state = feed.state }
     }
     DisposableEffect(feed, connected, visible) {
         if (connected && visible) {
@@ -223,8 +217,10 @@ internal fun Thread(
     val menu = remember(w.isShell, w.menu, w.cloud?.menu) { Asks.menu(w) }
     val asking = w.state == WorkerStatus.NeedsInput
     val showAsk = asking && !w.isShell
-    val rows = if (state.support == ThreadSupport.Supported) state.rows else emptyList()
     val loaded = remember(state.entries) { state.entries.associateBy { it.id } }
+    val rows = remember(state.support, state.rows) {
+        if (state.support == ThreadSupport.Supported) ThreadView.transcriptRows(state.rows) else emptyList()
+    }
     LaunchedEffect(state.entries) { onEntries(state.entries) }
 
     var clock by remember(feed) { mutableLongStateOf(0L) }
@@ -248,15 +244,26 @@ internal fun Thread(
     var openSession by rememberSaveable(kept) { mutableStateOf<String?>(null) }
     LaunchedEffect(state.sessionId) {
         val session = state.sessionId ?: return@LaunchedEffect
-        if (openSession != null && openSession != session) open.clear()
+        if (openSession != null && openSession != session) {
+            open.clear()
+            follow = true
+            list.requestScrollToItem(0)
+        }
         openSession = session
     }
-    var follow by rememberSaveable(kept) { mutableStateOf(true) }
-    var inspecting by rememberSaveable(kept) { mutableStateOf(false) }
     val place = rememberSaveable(kept, saver = PlaceSaver) { Place() }
-    var anchor by remember(feed) { mutableStateOf<Pair<String, Int>?>(null) }
-    var autoScrolling by remember(feed) { mutableStateOf(false) }
-    var stuck by remember(feed) { mutableStateOf(false) }
+    // Only consumed user movement can unpin. Remeasurements, composer/IME resizing and programmatic
+    // search or disclosure scrolls are not drags. The fling continues the same gesture.
+    val userScroll = remember(list) {
+        object : NestedScrollConnection {
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && consumed.y != 0f) {
+                    follow = ThreadScroll.afterDrag(follow, consumed.y, list.canScrollBackward)
+                }
+                return Offset.Zero
+            }
+        }
+    }
     var searchQuery by rememberSaveable(kept) { mutableStateOf("") }
     var searchActive by rememberSaveable(kept) { mutableIntStateOf(0) }
     val matches = remember(rows, loaded, searchQuery) {
@@ -265,18 +272,15 @@ internal fun Thread(
     LaunchedEffect(matches.size) {
         if (matches.isEmpty()) searchActive = 0 else searchActive = searchActive.coerceIn(0, matches.lastIndex)
     }
-    LaunchedEffect(search, searchActive, matches.getOrNull(searchActive)?.rowId) {
+    var searchScroll by remember(feed) { mutableStateOf(false) }
+    val targetId = matches.getOrNull(searchActive)?.rowId
+    LaunchedEffect(search, searchActive, targetId) {
+        if (!search) searchScroll = false
         if (!search) return@LaunchedEffect
-        val row = matches.getOrNull(searchActive)?.rowId ?: return@LaunchedEffect
-        val at = rows.indexOfFirst { it.id == row }
-        if (at >= 0) {
-            follow = false
-            autoScrolling = true
-            try {
-                list.animateScrollToItem(at + 1)
-            } finally {
-                autoScrolling = false
-            }
+        val at = targetId?.let { ThreadScroll.indexOf(rows.size, rows.indexOfFirst { row -> row.id == it }) }
+        if (at != null) {
+            searchScroll = true
+            list.animateScrollToItem(at)
         }
     }
     var rewindTarget by remember(feed) { mutableStateOf<ThreadRow.Message?>(null) }
@@ -288,159 +292,60 @@ internal fun Thread(
         }
     }
 
-    val density = LocalDensity.current
-    fun fromBottom(): Float {
-        val info = list.layoutInfo
-        val last = info.visibleItemsInfo.lastOrNull() ?: return Float.MAX_VALUE
-        if (info.totalItemsCount == 0 || last.index != info.totalItemsCount - 1) return Float.MAX_VALUE
-        return with(density) { (last.offset + last.size - info.viewportEndOffset).toDp().value }
-    }
-    LaunchedEffect(list) {
-        snapshotFlow { Triple(list.isScrollInProgress, list.canScrollForward, list.lastScrolledBackward) }.collect { (scrolling, _, back) ->
-            if (scrolling && !autoScrolling) {
-                follow = ThreadScroll.follows(follow, back, fromBottom()) && !inspecting
-            }
-        }
-    }
-    LaunchedEffect(list, rows) {
-        snapshotFlow { list.firstVisibleItemIndex to list.firstVisibleItemScrollOffset }.collect { (index, offset) ->
-            if (place.pending || rows.isEmpty()) return@collect
-            place.key = if (index == 0) null else rows.getOrNull(index - 1)?.id
+    LaunchedEffect(list, rows, state.sessionId) {
+        snapshotFlow {
+            val info = list.layoutInfo
+            val index = list.firstVisibleItemIndex
+            info.visibleItemsInfo.firstOrNull { it.index == index }?.key as? String to list.firstVisibleItemScrollOffset
+        }.collect { (key, offset) ->
+            if (place.pending || rows.isEmpty() || key == null) return@collect
+            place.key = key
             place.offset = offset
             place.session = state.sessionId
         }
     }
     LaunchedEffect(rows) {
         if (!place.pending || rows.isEmpty()) return@LaunchedEffect
-        val key = place.key
-        val at = rows.indexOfFirst { it.id == key }
         place.pending = false
-        if (follow || key == null || at < 0 || (place.session != null && place.session != state.sessionId)) return@LaunchedEffect
-        autoScrolling = true
-        try {
-            list.scrollToItem(at + 1, place.offset)
-        } finally {
-            autoScrolling = false
-        }
+        if (follow || (place.session != null && place.session != state.sessionId)) return@LaunchedEffect
+        val at = ThreadScroll.indexOf(rows.size, rows.indexOfFirst { it.id == place.key })
+        if (at != null) list.requestScrollToItem(at, place.offset)
     }
-    suspend fun toBottom(quick: Boolean = false): Boolean {
-        autoScrolling = true
-        return try {
-            val lastItem = list.layoutInfo.totalItemsCount - 1
-            if (lastItem < 0) return true
-            if (quick) {
-                if (list.layoutInfo.visibleItemsInfo.none { it.index == lastItem }) list.scrollToItem((lastItem - 1).coerceAtLeast(0))
-                if (list.layoutInfo.visibleItemsInfo.none { it.index == lastItem }) list.scrollToItem(lastItem)
-                val remaining = with(density) { fromBottom().dp.toPx() }
-                if (remaining > 0f && remaining.isFinite()) list.animateScrollBy(remaining, tween(ThreadScroll.QUICK_MS, easing = Easing(ThreadScroll::quick)))
-            } else {
-                if (list.layoutInfo.visibleItemsInfo.none { it.index == lastItem }) list.scrollToItem(lastItem)
-                list.scrollBy(100_000f)
-            }
-            true
-        } catch (e: CancellationException) {
-            currentCoroutineContext().ensureActive()
-            false
-        } finally {
-            autoScrolling = false
+    LaunchedEffect(list) {
+        // Normally index zero stays pinned just by measuring the reversed list. Reconcile after a
+        // restored position or an explicit search. A fling toward the tail can also re-pin here.
+        snapshotFlow { Triple(follow, list.canScrollBackward, searchScroll || state.newerTrimmed || state.entries.isEmpty()) }.collect { (pinned, away, suspended) ->
+            if (suspended) return@collect
+            if (pinned && away) list.requestScrollToItem(0)
+            if (!pinned && !away) follow = true
         }
-    }
-    suspend fun glideBottom(): Boolean {
-        autoScrolling = true
-        return try {
-            var previous = withFrameNanos { it }
-            while (list.canScrollForward) {
-                val remaining = with(density) { fromBottom().dp.toPx() }
-                if (remaining <= with(density) { ThreadScroll.SETTLED.dp.toPx() }) break
-                val frame = withFrameNanos { it }
-                val step = ThreadScroll.glideStep(remaining, (frame - previous) / 1_000_000.0)
-                previous = frame
-                list.scrollBy(step)
-            }
-            true
-        } catch (e: CancellationException) {
-            currentCoroutineContext().ensureActive()
-            false
-        } finally {
-            autoScrolling = false
-        }
-    }
-    LaunchedEffect(list, feed) {
-        snapshotFlow { Triple(follow && anchor == null && !state.newerTrimmed && list.canScrollForward, list.isScrollInProgress && !autoScrolling, list.layoutInfo.viewportSize) }
-            .collect { (behind, ownerScrolling, _) ->
-                if (!behind) stuck = false
-                if (!behind || ownerScrolling || autoScrolling) return@collect
-                repeat(3) {
-                    val distance = with(density) { fromBottom().dp.toPx() }
-                    val viewport = list.layoutInfo.viewportSize.height.toFloat()
-                    val done = if (ThreadScroll.glides(distance, viewport)) glideBottom() else toBottom()
-                    if (!done) return@collect
-                    withFrameNanos { }
-                    if (!list.canScrollForward) {
-                        stuck = false
-                        return@collect
-                    }
-                }
-                stuck = true
-            }
-    }
-    LaunchedEffect(list, feed) {
-        var before: Int? = null
-        snapshotFlow { list.layoutInfo.viewportSize.height }.collect { after ->
-            val old = before
-            before = after
-            if (old != null && old != after && !follow && !autoScrolling) list.scrollBy(ThreadScroll.keepBottom(old, after).toFloat())
-        }
-    }
-    LaunchedEffect(state.entries.firstOrNull()?.id, state.loadingEarlier) {
-        val (id, offset) = anchor ?: return@LaunchedEffect
-        if (state.loadingEarlier) return@LaunchedEffect
-        val at = ThreadView.rowOf(rows, id)
-        if (at >= 0) {
-            list.scrollToItem(at + 1)
-            list.scrollBy(-offset.toFloat())
-        }
-        anchor = null
     }
 
-    fun earlier(keepFollowing: Boolean = false) {
+    fun earlier() {
         if (!connected) return
         val (req, before) = feed.earlier(System.currentTimeMillis()) ?: return
-        if (!keepFollowing) {
-            val first = list.layoutInfo.visibleItemsInfo.firstOrNull { it.key != HEAD }
-            val row = rows.firstOrNull { it.id == first?.key } ?: rows.firstOrNull()
-            anchor = row?.let { r -> (r.sourceIds.lastOrNull() ?: r.id) to (first?.takeIf { it.key == r.id }?.offset ?: 0) }
-            follow = false
-        }
         if (!connection.send(ClientMsg.threadRead(w.id, req, before))) feed.unsent(req)
         state = feed.state
     }
 
-    LaunchedEffect(list, state.hasMore, state.loadingEarlier, connected) {
-        if (!state.hasMore || state.loadingEarlier || !connected || rows.isEmpty()) return@LaunchedEffect
-        snapshotFlow { list.layoutInfo.visibleItemsInfo.any { it.key == HEAD } }.collect { atTop ->
-            val ownerScrolling = list.isScrollInProgress && !autoScrolling
-            if (atTop && state.hasMore && !state.loadingEarlier) earlier(keepFollowing = follow && !ownerScrolling)
+    LaunchedEffect(list, connected) {
+        if (!connected) return@LaunchedEffect
+        snapshotFlow { ThreadScroll.autoPage(follow, searchScroll, list.layoutInfo.visibleItemsInfo.any { it.key == HEAD }) }.collect { load ->
+            if (load) earlier()
         }
     }
 
-    fun inspect() {
-        follow = false
-        inspecting = true
-    }
-
     fun resume() {
-        inspecting = false
+        searchScroll = false
         follow = true
-        scope.launch { toBottom(quick = true) }
+        list.requestScrollToItem(0)
     }
 
     fun newer() {
         if (!connected) return
         feed.backToLatest()
         state = feed.state
-        inspecting = false
-        follow = true
+        resume()
         polls++
     }
 
@@ -461,12 +366,10 @@ internal fun Thread(
     fun toggleExploration(seg: ThreadView.Segment.Exploration, defaultOpen: Boolean) {
         val choices = ThreadView.Open.toggleExploration(seg, defaultOpen, open)
         open.putAll(choices)
-        if (choices[seg.key] == true) inspect()
     }
 
     fun flip(key: String, isOpen: Boolean) {
         open[key] = !isOpen
-        if (!isOpen) inspect()
     }
 
     val allWorkers = remember(data) { data.allDeskWorkers }
@@ -481,7 +384,7 @@ internal fun Thread(
         live.status != ThreadLive.Status.Idle &&
         ((live.after != null && live.after == state.entries.lastOrNull()?.id) || (live.after == null && state.entries.isEmpty()))
     val liveStream = if (liveCurrent) live.stream else null
-    val pendingTools = if (liveCurrent) live.tools.filter { it.id == null } else emptyList()
+    val pendingTools = if (liveCurrent) live.tools.filter { it.id == null && !ThreadView.isPlanUpdate(it.name) } else emptyList()
     val liveClockSkew = remember(live?.rev) { live?.let { System.currentTimeMillis() - it.at } ?: 0L }
 
     Column(modifier.background(ThreadPalette.Bg).tagged(Tags.Worker.THREAD)) {
@@ -499,17 +402,73 @@ internal fun Thread(
             val side = maxOf(18.dp, (maxWidth - READING_WIDTH) / 2)
             LazyColumn(
                 state = list,
-                modifier = Modifier.fillMaxSize().tagged(Tags.Worker.THREAD_LIST),
+                reverseLayout = true,
+                verticalArrangement = Arrangement.Top,
+                modifier = Modifier.fillMaxSize().nestedScroll(userScroll).tagged(Tags.Worker.THREAD_LIST),
                 contentPadding = PaddingValues(start = side, end = side, top = 4.dp, bottom = 16.dp),
             ) {
-                item(key = HEAD) { Head(w, state, connected, onEarlier = ::earlier, onRetry = ::retry) }
-                itemsIndexed(rows, key = { _, r -> r.id }, contentType = { _, r -> r::class }) { i, r ->
+                // This key is always index zero. As its content or the rows above it grow, the
+                // same measure lays out the newest content flush to the bottom, with no scroll job.
+                item(key = TAIL) {
+                    CompositionLocalProvider(LocalRevealDisclosure provides (!follow || searchScroll)) {
+                        Column(Modifier.fillMaxWidth().heightIn(min = 1.dp)) {
+                            if (liveStream != null || pendingTools.isNotEmpty()) {
+                                LiveTail(
+                                    stream = liveStream,
+                                    tools = pendingTools,
+                                    skewMs = liveClockSkew,
+                                    open = open,
+                                    onFlip = ::flip,
+                                    modifier = Modifier.padding(top = if (rows.isEmpty()) 8.dp else 14.dp),
+                                )
+                            }
+                            if (state.newerTrimmed) {
+                                Column(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        "Newer messages were let go to make room for older ones.",
+                                        style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center,
+                                    )
+                                    QuietButton("Back to the latest", OfficeIcons.ArrowDown, Tags.Worker.THREAD_NEWER, connected, ::newer, Modifier.padding(top = 8.dp))
+                                }
+                            }
+                            if (showAsk) {
+                                Box(Modifier.padding(top = 12.dp)) {
+                                    AskCard(
+                                        worker = w,
+                                        menu = menu,
+                                        question = remember(w, menu, state.entries) { Asks.question(PendingAsk(w, menu), state.entries) },
+                                        where = null,
+                                        context = null,
+                                        enabled = canAnswer,
+                                        inline = true,
+                                        connected = connected,
+                                        entries = state.entries,
+                                        onOpenThread = null,
+                                    )
+                                }
+                            }
+                            val assistantStreaming = w.state.busy && (liveStream?.kind == "text" || rows.lastOrNull()?.let { it is ThreadRow.Message && it.role == ThreadRole.Assistant } == true)
+                            val status = ThreadStatus.mode(w, live, assistantStreaming)
+                            if (status != ThreadStatus.Mode.Idle) {
+                                StatusIndicator(status, Modifier.padding(top = 14.dp), detail = live?.label)
+                            }
+                        }
+                    }
+                }
+                items(
+                    count = rows.size,
+                    key = { rows[rows.lastIndex - it].id },
+                    contentType = { rows[rows.lastIndex - it]::class },
+                ) { reverseIndex ->
+                    val i = rows.lastIndex - reverseIndex
+                    val r = rows[i]
                     Box(
                         Modifier.padding(top = gap(if (i > 0) rows[i - 1] else null, r))
                             .animateItem(fadeInSpec = tween(150), fadeOutSpec = tween(100))
                             .then(if (search && matches.getOrNull(searchActive)?.rowId == r.id) Modifier.border(1.dp, ThreadPalette.Accent, RoundedCornerShape(4.dp)) else Modifier),
                     ) {
-                        ProvidePictures(pictures) {
+                        CompositionLocalProvider(LocalRevealDisclosure provides (!follow || searchScroll)) {
+                            ProvidePictures(pictures) {
                             when (r) {
                                 is ThreadRow.Message -> {
                                     val all = open[MORE + r.id] == true
@@ -545,54 +504,14 @@ internal fun Thread(
                                     livePhaseSince = live?.phaseSince,
                                 )
                             }
+                            }
                         }
                     }
                 }
-                if (liveStream != null || pendingTools.isNotEmpty()) {
-                    item(key = LIVE_STREAM) {
-                        LiveTail(
-                            stream = liveStream,
-                            tools = pendingTools,
-                            skewMs = liveClockSkew,
-                            open = open,
-                            onFlip = ::flip,
-                            modifier = Modifier.padding(top = if (rows.isEmpty()) 8.dp else 14.dp),
-                        )
-                    }
-                }
-                if (state.newerTrimmed) item(key = NEWER) {
-                    Column(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "Newer messages were let go to make room for older ones.",
-                            style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center,
-                        )
-                        QuietButton("Back to the latest", OfficeIcons.ArrowDown, Tags.Worker.THREAD_NEWER, connected, ::newer, Modifier.padding(top = 8.dp))
-                    }
-                }
-                if (showAsk) item(key = ASK) {
-                    Box(Modifier.padding(top = 12.dp)) {
-                        AskCard(
-                            worker = w,
-                            menu = menu,
-                            question = remember(w, menu, state.entries) { Asks.question(PendingAsk(w, menu), state.entries) },
-                            where = null,
-                            context = null,
-                            enabled = canAnswer,
-                            inline = true,
-                            connected = connected,
-                            entries = state.entries,
-                            onOpenThread = null,
-                        )
-                    }
-                }
-                val assistantStreaming = w.state.busy && (liveStream?.kind == "text" || rows.lastOrNull()?.let { it is ThreadRow.Message && it.role == ThreadRole.Assistant } == true)
-                val status = ThreadStatus.mode(w, live, assistantStreaming)
-                if (status != ThreadStatus.Mode.Idle) item(key = STATUS) {
-                    StatusIndicator(status, Modifier.padding(top = 14.dp), detail = live?.label)
-                }
+                item(key = HEAD) { Head(w, state, connected, onEarlier = ::earlier, onRetry = ::retry) }
             }
             Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().height(8.dp).background(Brush.verticalGradient(listOf(ThreadPalette.Bg, Color.Transparent))))
-            if ((ThreadScroll.showJump(follow, fromBottom()) || stuck) && (rows.isNotEmpty() || liveStream != null) && !state.newerTrimmed) {
+            if (ThreadScroll.showJump(follow, list.canScrollBackward) && !state.newerTrimmed) {
                 Jump(Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp), ::resume)
             }
         }
@@ -714,6 +633,7 @@ internal class Reveal(val modifier: Modifier, val ask: () -> Unit)
 @Composable
 internal fun rememberReveal(): Reveal {
     val requester = remember { BringIntoViewRequester() }
+    val enabled = LocalRevealDisclosure.current
     var asked by remember { mutableIntStateOf(0) }
     LaunchedEffect(asked) {
         if (asked == 0) return@LaunchedEffect
@@ -721,7 +641,7 @@ internal fun rememberReveal(): Reveal {
         withFrameNanos { }
         requester.bringIntoView()
     }
-    return remember(requester) { Reveal(Modifier.bringIntoViewRequester(requester)) { asked++ } }
+    return remember(requester, enabled) { Reveal(Modifier.bringIntoViewRequester(requester)) { if (enabled) asked++ } }
 }
 
 private val OpenSaver = Saver<SnapshotStateMap<String, Boolean>, ArrayList<String>>(

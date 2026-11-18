@@ -38,6 +38,8 @@ One answer workspace walks a whole structured AskUser questionnaire (`1..N`): a 
 
 Typing just `/` offers the complete slash-command list. Swipe through the bounded menu to reach every built-in command, skill and custom command without typing more characters.
 
+Thread follows the newest message without moving away when older pages load. Drag toward earlier messages to pause follow; return to the bottom or tap the down arrow to resume. TodoWrite updates appear only in the plan drawer, not inline in the conversation.
+
 <p>
   <img src="docs/welcome.jpg" alt="The welcome screen with Scan the office's QR code and Paste a join link" width="24%">
   <img src="docs/scan.jpg" alt="The QR scanner with a frame and a torch button" width="24%">
