@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createDecipheriv, createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -46,6 +46,8 @@ const AES_TAG_BYTES = 16;
 const JWT_EXPIRY_SKEW_MS = 60_000;
 
 export interface PersistedDaemonInfo {
+  /** Canonical office state directory, not the OS user's home shared by other offices. */
+  ownerDir: string;
   pid: number;
   port: number;
   droidPath: string;
@@ -507,7 +509,9 @@ function readPersistedDaemonInfo(file: string): PersistedDaemonInfo | null {
   if (!existsSync(file)) return null;
   try {
     const raw = record(JSON.parse(readFileSync(file, 'utf8')));
+    const ownerDir = realpathSync(path.dirname(file));
     if (
+      raw.ownerDir !== ownerDir ||
       typeof raw.pid !== 'number' ||
       !Number.isInteger(raw.pid) ||
       raw.pid <= 0 ||
@@ -521,6 +525,7 @@ function readPersistedDaemonInfo(file: string): PersistedDaemonInfo | null {
       return null;
     }
     return {
+      ownerDir,
       pid: raw.pid,
       port: raw.port,
       droidPath: raw.droidPath,
@@ -1227,6 +1232,8 @@ export class LocalDaemon {
     }
 
     const port = await this.pickPort();
+    mkdirSync(this.opts.dataDir, { recursive: true, mode: 0o700 });
+    const ownerDir = realpathSync(this.opts.dataDir);
     const baseEnv = this.env();
     const daemonEnv: Record<string, string> = {
       ...baseEnv,
@@ -1258,6 +1265,7 @@ export class LocalDaemon {
     if (!child.pid) throw new Error('Failed to spawn detached droid daemon (missing PID)');
 
     const recordInfo: PersistedDaemonInfo = {
+      ownerDir,
       pid: child.pid,
       port,
       droidPath,

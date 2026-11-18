@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Orchestrator, type OrchestratorFloor } from '../src/server/orchestrator.js';
@@ -108,6 +108,26 @@ test('starting the daemon-backed Orchestrator retires only its legacy PTY host',
   assert.equal(floor.hosted, true);
   assert.equal(await new PtyHost(legacyDir, () => {}).stopExisting(), false, 'no host is spawned on a subsequent startup');
   assert.deepEqual(daemon.launches, [], 'the migration does not open a daemon session');
+});
+
+test('orchestrator upgrade does not follow a copied token through a foreign PTY socket symlink', { skip: process.platform === 'win32' }, async (t) => {
+  // Short paths use the on-disk socket; longer ones already hash the office's directory.
+  const dir = mkdtempSync(path.join('/tmp', 'orch-pty-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const foreign = path.join(dir, 'foreign');
+  mkdirSync(foreign);
+  const host = new PtyHost(foreign, () => {});
+  t.after(() => host.stop());
+  assert.equal(await host.connect(), true);
+
+  const local = path.join(dir, 'local');
+  mkdirSync(local);
+  const { orchestrator } = rig(t, local);
+  const stateDir = path.join(orchestrator.cwd, '.droid-office');
+  copyFileSync(path.join(foreign, 'pty-host.json'), path.join(stateDir, 'pty-host.json'));
+  symlinkSync(path.join(foreign, 'pty.sock'), path.join(stateDir, 'pty.sock'));
+  await orchestrator.start();
+  assert.equal(host.hosted, true, 'the foreign office is never displaced by a hello or stopped');
 });
 
 test('the Orchestrator starts on its first prompt, takes the next one in the same session, and stops no turn that isn’t running', async (t) => {

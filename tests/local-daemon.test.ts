@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createCipheriv, randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -452,6 +452,70 @@ test('spawns detached droid daemon without --parent-pid, polls cold start, persi
   const persistedAfterToggle = JSON.parse(readFileSync(statePath, 'utf8'));
   assert.equal(persistedAfterToggle.pid, 4101);
   assert.equal(persistedAfterToggle.airgapped, false);
+});
+
+test('starting or stopping a clone never connects to or signals another office from copied daemon metadata', async (t) => {
+  const owner = makeTempWorkspace(t);
+  const clone = makeTempWorkspace(t);
+  const ownerPort = 52101;
+  const clonePort = 52102;
+  const kill = t.mock.fn();
+  const connect = t.mock.fn();
+  const spawn = t.mock.fn((_cmd, args: string[]) => new FakeChild(args.includes(String(ownerPort)) ? 4101 : 4102));
+  const options = {
+    apiKey: () => 'fk-shared-test-key',
+    resolveDroidPath: () => '/opt/bin/droid',
+    isPidAlive: () => true,
+    killPid: kill,
+    spawnDaemon: spawn,
+    createClient: () => {
+      const client = new FakeDaemonClient();
+      const call = client.connect.bind(client);
+      client.connect = async (url) => {
+        connect(url);
+        await call(url);
+      };
+      return client;
+    },
+  };
+  const first = new LocalDaemon({ ...owner, ...options, pickPort: async () => ownerPort });
+  await first.ensureStarted();
+  first.disconnect();
+  const copied = readFileSync(first.stateFile, 'utf8');
+  const second = new LocalDaemon({ ...clone, ...options, pickPort: async () => clonePort });
+  writeFileSync(second.stateFile, copied);
+  assert.equal(second.info(), null, 'foreign metadata is not visible as a local daemon');
+  await second.ensureStarted();
+  assert.deepEqual(
+    connect.mock.calls.map((c) => c.arguments[0]),
+    [`ws://127.0.0.1:${ownerPort}`, `ws://127.0.0.1:${clonePort}`],
+  );
+  assert.equal(spawn.mock.callCount(), 2, 'clone launches its own daemon despite matching binary and credentials');
+  second.stop();
+  assert.deepEqual(
+    kill.mock.calls.map((c) => c.arguments[0]),
+    [4102],
+  );
+
+  const stopping = new LocalDaemon({ ...clone, ...options });
+  writeFileSync(stopping.stateFile, copied);
+  stopping.stop();
+  assert.deepEqual(
+    kill.mock.calls.map((c) => c.arguments[0]),
+    [4102],
+    'a cold stop does not signal the copied PID',
+  );
+
+  const legacy = new LocalDaemon({ ...owner, ...options });
+  const { ownerDir: _ownerDir, ...unscoped } = JSON.parse(copied);
+  writeFileSync(legacy.stateFile, JSON.stringify(unscoped));
+  assert.equal(legacy.info(), null, 'an unscoped record is not proof of ownership');
+  legacy.stop();
+  assert.deepEqual(
+    kill.mock.calls.map((c) => c.arguments[0]),
+    [4102],
+    'an unscoped PID is never signalled',
+  );
 });
 
 test('SIGTERM disconnect leaves daemon alive for adoption on restart, while SIGINT stop kills daemon PID', async (t) => {
@@ -927,7 +991,7 @@ test('real @factory/droid-sdk createWebSocketDaemonClient wire round-trip over l
   });
 
   writeFileSync(path.join(dataDir, 'setup.json'), JSON.stringify({ onboarded: true, airgapped: true }));
-  writeFileSync(path.join(dataDir, 'droid-daemon.json'), JSON.stringify({ pid: process.pid, port, droidPath: '/opt/bin/droid', airgapped: true, authFingerprint: 'airgapped' }), { mode: 0o600 });
+  writeFileSync(path.join(dataDir, 'droid-daemon.json'), JSON.stringify({ ownerDir: realpathSync(dataDir), pid: process.pid, port, droidPath: '/opt/bin/droid', airgapped: true, authFingerprint: 'airgapped' }), { mode: 0o600 });
 
   const daemon = new LocalDaemon({
     dataDir,

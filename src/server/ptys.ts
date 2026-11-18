@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn as spawnProcess } from 'node:child_process';
-import { closeSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, lstatSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -264,6 +264,12 @@ export class PtyHost {
   /** Retire an authenticated host that already exists, without launching a replacement. */
   async stopExisting(): Promise<boolean> {
     if (process.platform === 'win32') return false;
+    // A copied token is not authority to follow a symlink to another host's socket.
+    try {
+      if (!lstatSync(this.socketPath).isSocket()) return false;
+    } catch {
+      return false;
+    }
     const found = await this.hello();
     if (!found) return false;
     await new Promise<void>((resolve) => {

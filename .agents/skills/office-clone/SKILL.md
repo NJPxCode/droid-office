@@ -24,7 +24,7 @@ Source resolution order: `--office DIR`, `$DROID_OFFICE_HOME`, `officeDir` in `~
 | Per-floor state (decor, jukebox, Whiteboard, team, `linear-floor.json` team/project setup) and Home floor state | `<floor>/.droid-office/`, `~/.droid-office/` |
 | Mac app browser settings (profile, graphics, per-desk models, active floor) | `localStorage` LevelDB (`uv`) |
 
-**Excluded or disarmed so starting the clone cannot resume live sessions or mutate real issues:** `workers.json`, `cloud-workers.json`, `guests.json`, the entire `/orchestrator/` session directory, `remote-workers.json`, `remote-mcp.json`, PTY/hook sockets (`pty.sock`, `pty-host.*`, `hook-port`, `shell.*`), `scrollback/`, `worktrees/`, `drops/`, `images/` and `wiki-run*`; cloned `linear-floor.json` files turn `autopilot.on` off and clear `links`.
+**Excluded or disarmed so starting the clone cannot resume live sessions or mutate real issues:** `workers.json`, `cloud-workers.json`, `guests.json`, the entire `/orchestrator/` session directory, `remote-workers.json`, `remote-mcp.json`, `droid-daemon.json` and `droid-daemon.log`, PTY/hook sockets (`pty.sock`, `pty-host.*`, `hook-port`, `shell.*`), `scrollback/`, `worktrees/`, `drops/`, `images/` and `wiki-run*`; cloned `linear-floor.json` files turn `autopilot.on` off and clear `links`.
 
 **No installed office (`--fresh`):** mutually exclusive with `--office`; creates a local clone of this checkout plus a test `Verifier` profile (`DROID_OFFICE_BROWSERS_PATH` overrides the browser cache). Prefer a real owner clone whenever one exists.
 
@@ -83,12 +83,6 @@ Use real account state (unit-test stubs follow [tests/AGENTS.md](../../../tests/
 
 ## 5. Clean up
 
-Stop the clone server and only the detached `droid-office-ptys` hosts whose sockets live inside `$T` (sockets outside `$T` belong to the owner's live office):
+Use **SIGINT** with the server PID returned when you launched `$T/start.sh`. The server shuts down its own workers, daemon and PTY hosts. SIGTERM is for restarts and intentionally leaves them running. Do not signal a daemon by PID from a log, process title, process search, or listening port; none proves ownership. If the clone server is no longer running, start the same clone again and use SIGINT on that newly launched server.
 
-```bash
-kill <start.sh pid>
-lsof -t "$T"/office/.droid-office/orchestrator/.droid-office/pty.sock "$T"/home/.droid-office/pty.sock "$T"/floors/*/.droid-office/pty.sock 2>/dev/null | xargs kill 2>/dev/null
-rm -rf "$T"
-```
-
-Cleanup is complete when the clone's port is free, no socket under `$T` remains open, `$T` is deleted, and every Factory or GitHub resource created for the check is removed.
+Verify the clone port is free, then delete `$T` and remove any approved Factory or GitHub resources the check created. Never send signals to the owner's live office or another clone.
