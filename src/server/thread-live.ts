@@ -46,7 +46,7 @@ export interface ThreadLiveInputs {
 /** How often a session's settings file is looked at again while it's watched. */
 const SETTINGS_RECHECK_MS = 500;
 const OUTPUT_LINES = 40;
-/** Hooks name the compaction they wait on (worker-runtime/hooks.ts COMPACTING). */
+/** Matches the activity label for conversation compaction (worker-runtime/hooks.ts). */
 const COMPACTING = /compacting/i;
 
 const str = (value: unknown) => (typeof value === 'string' && value ? value : undefined);

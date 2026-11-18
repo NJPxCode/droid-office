@@ -129,9 +129,8 @@ const SAVE_SCROLLBACK_MS = 15_000;
 /** Between a worker's saved scrollback and what it prints after the office restarted. */
 const RESTORED_NOTE = '\x1b[2m──── the office restarted · earlier output above ────\x1b[0m\r\n';
 /**
- * What a worker whose terminal didn't make it through a restart (the machine rebooted, the terminal
- * host was replaced or died) is resumed with when it was in the middle of something, so it carries on
- * by itself instead of waiting at every desk for someone to type "continue".
+ * Sent when a Droid worker resumes a session whose active turn did not survive a restart, so it can
+ * continue without another owner prompt.
  */
 export const CARRY_ON_PROMPT = 'Droid Office notice: restart recovery\nYour turn was interrupted by an office restart. Continue your existing task. If waiting on an answer or permission, ask again.';
 
@@ -190,7 +189,7 @@ export class WorkerManager {
   private workers = new Map<string, Worker>();
   /** Which connections receive each worker's raw terminal stream (workerId -> connection IDs). */
   private subscribers = new Map<string, Set<string>>();
-  /** Which connections have each worker open in Raw TTY or Thread view (workerId -> connection IDs). */
+  /** Which connections have each worker open in a shell terminal or Thread (workerId -> connection IDs). */
   private viewers = new Map<string, Set<string>>();
   private state: WorkerStateStore;
   private trees: Worktrees;
@@ -219,7 +218,7 @@ export class WorkerManager {
   pullList?: () => GhPull[];
   /** Subscriptions: why an agent on this model can't start now (out of quota, say); undefined when it can (docs/subscriptions.md). */
   modelGate?: (model: string | undefined) => string | undefined;
-  /** ⚙️ Settings → Subagents & visits: Droid's built-in Task tool is refused (see hookEntries). Unset: refused. */
+  /** ⚙️ Settings → Subagents & visits: disable Droid's built-in Task tool in daemon sessions. Unset: disabled. */
   denyTask?: () => boolean;
   /**
    * What the office tells a worker whose turn is about to end instead of letting it stop, once: its
@@ -570,8 +569,7 @@ export class WorkerManager {
   }
 
   /**
-   * Read-only conversation identity. Never accepts a caller-supplied path or session: the file is the
-   * one the worker's own hooks named for its session, when they have.
+   * Read-only conversation identity from worker state. Never accepts a caller-supplied path or session.
    */
   threadSession(id: string): { sessionId: string; cwd: string; drops?: string; transcript?: string } | undefined {
     const w = this.workers.get(id);

@@ -313,8 +313,8 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
     if (!workers.shellSetupReport(workerId, token, payload)) return send(res, 401, {});
     return send(res, 200, {});
   });
-  // Workers' terminals outlive a restart of the office (see ptys.ts) with this address in their
-  // environment, so listen where the last office did when that port is free.
+  // Shell PTYs and daemon sessions can outlive an office restart with this callback or MCP address
+  // still configured, so reuse the last port when it is free.
   const hookPortPath = path.join(cfg.dataDir, 'hook-port');
   const listenHooks = (port: number) =>
     new Promise<void>((resolve, reject) => {
@@ -958,8 +958,8 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
   const upgrader = new Upgrader(
     (state) => broadcast({ t: 'upgrade', state }),
     () => {
-      // cli.ts shuts down gracefully, leaving the workers running in their terminal host; systemd
-      // (Restart=always) then starts the new version, which picks them back up.
+      // cli.ts leaves daemon sessions and shell PTYs running on graceful shutdown. Systemd
+      // (Restart=always) starts the new version, which reattaches them.
       process.kill(process.pid, 'SIGTERM');
     },
   );
@@ -1276,7 +1276,7 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
     );
   };
 
-  /** Opens a worker's terminal for `c`. */
+  /** Opens a shell desk's terminal for `c`. */
   const attachTerminal = (wid: string, c: Client) => workersOf(wid)?.attach(wid, c.id);
 
   const handleBoardCommand = createBoardCommands({ floorOf, sendTo, toastFloor });
@@ -2580,7 +2580,7 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
   workerLabels.start();
   const httpsReady = cfg.tailnetHttps ? httpsGateway.start() : Promise.resolve(httpsGateway.state());
 
-  /** With `keep` (a restart), workers' terminals keep running for the next office to pick up. */
+  /** With `keep` (a restart), daemon sessions and shell PTYs stay up for the next office. */
   const shutdown = (keep = false) => {
     threadWatches?.close();
     const labelsStopped = workerLabels.stop();

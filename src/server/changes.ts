@@ -14,7 +14,7 @@ import { checkoutDirty, choosePullBase, pushBranch } from './open-pull.js';
 // finishes (see hook-refresh.ts), and on a timer besides for changes made some other way, and
 // pushes the file list whenever it changes. Diffs of single files are fetched on demand.
 
-/** How often a Droid worker's checkout is looked at: its hooks say when its own tool calls change it. */
+/** How often a Droid worker's checkout is polled; daemon tool notifications also trigger refreshes. */
 const POLL_MS = 10_000;
 /** How often a checkout no hook reports on (a shell's) is looked at. */
 const UNHOOKED_POLL_MS = 2000;
@@ -44,7 +44,7 @@ export interface ChangesTarget {
   prBaseFallback?: string | null;
   openPull?(branch: string): { number: number; url: string } | undefined;
   refreshGitHub?(): void;
-  /** Its worker's hooks report its tool calls (see touched), so the timer can be slow. */
+  /** Daemon notifications report its worker's tool calls (see touched), so the timer can be slow. */
   hooked?: boolean;
 }
 

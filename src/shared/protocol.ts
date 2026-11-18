@@ -136,7 +136,7 @@ export interface WorkerInfo {
   exitCode?: number;
   cols: number;
   rows: number;
-  /** True while any owner connection has its terminal open. */
+  /** True while any owner connection has its Thread or shell terminal open. */
   open: boolean;
   /** Latest line of meaningful activity (e.g. last prompt or tool). */
   activity?: string;
@@ -163,7 +163,7 @@ export interface WorkerInfo {
   task?: WorkerTask;
   /** A /clear boundary for the read-only sign writer, including across Office restarts. */
   taskSince?: number;
-  /** When its terminal last took input (keystrokes or a prompt). */
+  /** When the worker last received input. */
   lastInputAt?: number;
   /**
    * The worker that hired this one as its subagent with the Office MCP's `team_hire` (see server/team.ts),
@@ -206,7 +206,7 @@ export interface AskedQuestion {
   multiSelect: boolean;
 }
 
-/** A worker's pending ask (see WorkerInfo.ask). `sub` is set when a Task subagent in its terminal asks. */
+/** A worker's pending ask (see WorkerInfo.ask). `sub` is set when the ask came from a child session. */
 export type WorkerAsk = { kind: 'question'; questions: AskedQuestion[]; sub?: true } | { kind: 'permission'; tool: string; command?: string; file?: string; risk?: string; summary?: string; sub?: true };
 
 export type QueuedMessageDelivery = 'next_step' | 'steering' | 'after_turn';
@@ -838,17 +838,17 @@ export interface WhiteboardRenderInfo {
   error?: string;
 }
 
-/** A line of a worker's terminal that matched a search. */
+/** A matching line from a worker's conversation or shell terminal. */
 export interface TerminalHit {
   workerId: string;
   /** The line, cut down around the match. */
   text: string;
-  /** Where it is: its row in the worker's terminal, and how many rows that terminal had. */
+  /** Position and total row count in the conversation excerpt or terminal buffer that was searched. */
   row: number;
   rows: number;
 }
 
-/** What GET /api/search answers: matching terminal lines, newest first. */
+/** What GET /api/search answers: matching conversation and shell terminal lines, newest first. */
 export interface SearchResults {
   q: string;
   terminals: TerminalHit[];
@@ -874,7 +874,7 @@ type ClientMessage =
    */
   | { t: 'worker.spawn'; deskId: string; prompt?: string; worktree?: boolean; kind?: WorkerKind; model?: string; effort?: AgentEffort; issue?: number; linear?: string; repos?: string[]; images?: string[]; cloud?: CloudHire }
   | { t: 'worker.resume'; workerId: string }
-  /** Stops the turn a worker is in: Escape in a local agent's terminal, an interrupt of a cloud worker's Factory session. */
+  /** Interrupts a local Droid turn through the daemon or a cloud turn through Factory's Sessions API. */
   | { t: 'worker.interrupt'; workerId: string }
   | { t: 'worker.fork'; workerId: string; prompt?: string }
   /** `deleteSession`: a cloud worker's Factory session is deleted too, not just left on the Factory account. */
@@ -885,17 +885,17 @@ type ClientMessage =
   | { t: 'worker.worktree'; workerId: string }
   /** Puts a lost worker's worktree back and starts it again (see WorkerInfo.lost); `all`: every lost worker on the floor. */
   | { t: 'worker.rebuild'; workerId: string; all?: boolean }
-  /** `stream: false` opens the worker without a raw terminal snapshot or live `term.data` stream (Thread view). */
+  /** `stream: false` opens a Thread. Only shell desks support raw terminal snapshots and live `term.data`. */
   | { t: 'worker.attach'; workerId: string; stream?: boolean }
   | { t: 'worker.detach'; workerId: string }
   /**
    * With `issue`, the prompt hands the worker that GitHub issue, which is taken as for worker.spawn.
-   * With `queue`, an agent's prompt is submitted with Ctrl+Enter instead of Enter, so Droid queues it
-   * behind what it is doing rather than sending it now (a shell gets Enter either way).
+   * With `queue`, a local Droid prompt waits until the end of the current turn (`EndOfLoop`)
+   * instead of steering it (`EndOfTurn`). Shells ignore `queue`.
    */
   | { t: 'worker.prompt'; workerId: string; prompt: string; issue?: number; linear?: string; images?: string[]; queue?: boolean; urgent?: boolean }
-  /** Rechecks the current worker and screen on the server before answering the menu shown to the owner.
-   * Send exactly one of `choice` or `text`. The server rejects neither and both. */
+  /** Rechecks the pending AskUser menu before accepting the answer shown by the client.
+   * Single-select takes `choice` or `text`; multi-select takes `choices` with optional `text`. */
   | { t: 'worker.answer'; workerId: string; menu: Menu; choice?: number; choices?: number[]; text?: string }
   /** Push a worktree worker's branch and open a pull request for it, drafted from its task. */
   | { t: 'worker.pr'; workerId: string }
@@ -906,12 +906,12 @@ type ClientMessage =
   | { t: 'worker.queue'; workerId: string; action: 'promote' | 'delete' | 'clear'; id?: string; index?: number; group?: 'steering' | 'queued'; text?: string }
   /**
    * Rewinds before a user ThreadEntry; restore defaults to conversation only. `choose` restores only
-   * `files` (paths as the Thread knows them) from Droid's "Choose files to restore..." list.
+   * `files` (paths as the Thread knows them) from Droid's rewind checkpoint.
    */
   | { t: 'worker.rewind'; workerId: string; entryId: string; restore?: 'files' | 'conversation' | 'choose'; files?: string[] }
-  /** Changes the session's reasoning effort (an effort id) or model (a model id, with an optional effort) through Droid's Tab key and /model picker. */
+  /** Changes a local Droid session's reasoning effort or model through the daemon's `updateSessionSettings` RPC. */
   | { t: 'worker.setting'; workerId: string; setting: 'effort' | 'model'; value: string; effort?: string }
-  /** Closes Droid's side chat (/btw) when the terminal shows it. */
+  /** Resizes a shell desk's PTY. */
   | { t: 'term.resize'; workerId: string; cols: number; rows: number }
   /** Open the boss monitor's shell (see OFFICE_SHELL_ID). It is not a worker. */
   | { t: 'shell.attach' }
@@ -1084,14 +1084,14 @@ type ClientMessage =
   | { t: 'whiteboard.apply'; floor: string; envelope: OpEnvelope }
   /** Send this connection a fresh snapshot of a floor's Whiteboard, with its epoch for that floor. */
   | { t: 'whiteboard.sync'; floor: string }
-  /** Type the Whiteboard line into a worker's terminal (see shared/whiteboard-ping.ts); answered with `whiteboard.pinged`. */
+  /** Send the Whiteboard prompt to a worker (see shared/whiteboard-ping.ts); answered with `whiteboard.pinged`. */
   | { t: 'whiteboard.ping'; worker: string }
   /** The answer to an `automation.run`: what the command resolved with, or why it rejected. */
   | { t: 'automation.result'; id: string; ok: boolean; value?: unknown; error?: string }
   /**
    * The building's Orchestrator (shared/mission-control.ts), from any floor. A prompt starts or wakes its session;
    * `queue` holds it for after the current turn instead of steering it. Answered with `action.result` when
-   * `requestId` is set. Its terminal, thread and menus use the usual worker messages with ORCHESTRATOR_ID.
+   * `requestId` is set. Its Thread and AskUser menus use the usual worker messages with ORCHESTRATOR_ID.
    */
   | { t: 'orchestrator.prompt'; prompt: string; images?: string[]; queue?: boolean }
   | { t: 'orchestrator.interrupt' }

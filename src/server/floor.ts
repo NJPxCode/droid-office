@@ -79,15 +79,15 @@ export interface FloorContext {
   emit(floor: Floor, msg: ServerMsg, droppable?: boolean): unknown;
   /** To everyone on this floor; `workerId` names the worker it is about, when one is. */
   toast(floor: Floor, text: string, level?: ToastLevel, workerId?: string): void;
-  /** A worker's terminal output, for whoever has that terminal open. */
+  /** A shell desk's terminal output, for whoever has that terminal open. */
   termData(workerId: string, data: string, connectionIds: string[]): void;
   /** What a worker changed, for whoever has its Changes window open. */
   changes(state: ChangesState, clients: string[]): void;
   /** A worker on this floor changed, or left (then just its id). */
   workerChanged(floor: Floor, w: WorkerInfo | string): void;
-  /** A worker needing input updated its terminal screen, so off-floor companions keep its menu live. */
+  /** A worker needing input updated its laptop preview for off-floor companions. */
   offFloorScreen?(floor: Floor, workerId: string): void;
-  /** A local worker repainted: its watched Thread's live output may have moved without a hook. */
+  /** A local worker's laptop preview changed, so its watched Thread may need a refresh. */
   screenChanged?(workerId: string): void;
   /** How many owner connections are on this floor right now. */
   connections(floor: Floor): number;
@@ -217,7 +217,7 @@ export class Floor {
   readonly cloud: CloudWorkers;
   /** The floor's Whiteboard, in its checkout's .droid-office/whiteboard (see whiteboard.ts). */
   readonly whiteboard: WhiteboardStore;
-  /** Settles once the workers whose terminals outlived the last office are picked back up, and the rest woken. */
+  /** Settles after reattaching saved daemon sessions and shell PTYs, and waking the rest. */
   readonly ready: Promise<void>;
   private timer: NodeJS.Timeout;
   /** Pull requests merging, to ring the gong for. */
@@ -742,7 +742,7 @@ export class Floor {
     };
   }
 
-  /** With `keep` (a restart), the workers' terminals keep running for the next office to pick up. */
+  /** With `keep` (a restart), daemon sessions and shell PTYs stay up for the next office. */
   shutdown(keep = false) {
     clearInterval(this.timer);
     clearTimeout(this.landedTimer);

@@ -55,7 +55,7 @@ export interface OwnerOffice {
   floors(): OwnerFloor[];
   /** Mission Control's building agents: no floor, no desk, and never controllable through the Office MCP. */
   mission(): MissionAgent[];
-  /** The end of a worker's terminal, or of a floor's boss shell (OFFICE_SHELL_ID with its floor). */
+  /** Recent worker conversation or shell output, including a floor's boss shell (OFFICE_SHELL_ID). */
   tail(workerId: string, lines: number, floor?: string): string | undefined;
   /** Structured worker telemetry (plan, current/last tool, model cooldown, PR/CI, label provenance). */
   inspect?(workerId: string, floor?: string): Promise<WorkerInspection | undefined> | WorkerInspection | undefined;

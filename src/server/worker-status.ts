@@ -334,7 +334,7 @@ function mapQuotaWindows(usage: ModelUsage | undefined, now: number): WorkerQuot
 }
 
 /**
- * Combines DroidProxy model availability, subscription quota windows, and live terminal retry signals
+ * Combines DroidProxy model availability, subscription quota windows, and live daemon retry signals
  * into one actionable model status with explicit reset countdown and ISO timestamp.
  */
 export function inspectModelStatus(model: string | undefined, availability: ModelAvailability | undefined, usage: ModelUsage | undefined, now: number, retry?: WorkerRetryStatus): WorkerModelCooldown | undefined {
@@ -697,7 +697,7 @@ export function formatForgeLines(forge: Pick<WorkerInspection, 'pr' | 'ci' | 're
   return lines;
 }
 
-/** Multi-line structured header for `office_look` and `worker_log` so leads see real state before raw terminal text. */
+/** Multi-line structured header for `office_look` and `worker_log` before the output tail. */
 export function formatWorkerInspection(s: WorkerInspection, opts?: { includeSteps?: boolean }): string {
   const lines: string[] = [];
   const head = [`State: ${s.state}`, ...(s.model ? [`model ${s.model}${s.effort ? ` (${s.effort})` : ''}`] : []), ...(s.silentForMs !== undefined ? [`last hook ${briefAge(s.silentForMs)} ago (${s.lastActivityAt})`] : [])];

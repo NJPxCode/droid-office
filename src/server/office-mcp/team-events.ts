@@ -255,7 +255,7 @@ export interface QuestionOption {
 /** A question waiting on the lead, as questions_list shows it, like the phone's Asks inbox. */
 export interface OpenQuestion {
   id: string;
-  /** team: asked with team_report. terminal: an AskUser menu on the worker. permission: a permission prompt only the person at the desk can answer. */
+  /** team: asked with team_report. terminal: the existing wire label for AskUser. permission: owner-only. */
   kind: 'team' | 'terminal' | 'permission';
   worker: string;
   name: string;
@@ -452,7 +452,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
             if (!menu && w.ask?.kind !== 'question') return [];
             return [`${w.id}:${w.waitingSince ?? 0}:${menu ? menuHash(menu) : ''}:${w.ask?.kind === 'question' ? JSON.stringify(w.ask.questions) : ''}`];
           });
-        // A terminal question or a settled team counts only when it comes about during the wait: one that was
+        // An AskUser question or a settled team counts only when it comes about during the wait: one that was
         // already so would end every default wait at once. Team questions are news, which since already orders.
         const askedBefore = new Set(asks());
         let busy = !team().every(settled);

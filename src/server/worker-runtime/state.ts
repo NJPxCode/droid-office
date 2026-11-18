@@ -77,23 +77,24 @@ export interface Worker {
   savedDaemon?: { status: WorkerStatus; acked: boolean; waitingSince?: number; outbox?: string[] };
   /** Child sessions reported by the daemon; their events do not update the parent turn. */
   subSessions: Set<string>;
-  /** The latest tool each session started (PreToolUse), and its input, to know which call a permission prompt is about. */
+  /** The latest daemon tool call and input for each session, used to identify the call awaiting input. */
   lastTool: Map<string, { tool: string; input: unknown }>;
   /** Full bounded TodoWrite plan steps alongside WorkerInfo.todos. */
   todoSteps?: TodoItem[];
-  /** Currently executing PreToolUse span, and the latest completed tool span. */
+  /** Current daemon tool span and latest completed span. */
   currentTool?: WorkerToolSpan;
   completedTool?: WorkerToolSpan;
-  /** Currently running tool calls per session (set on PreToolUse, cleared on PostToolUse/Stop). */
+  /** Running tool calls tracked by daemon notifications. */
   activeTool: Map<string, ActiveToolCall>;
-  /** Who raised its needs_input from a hook: the session asking, and the tool it asks about. */
+  /** The daemon session asking for input and the associated tool. */
   asking?: { session: string; tool?: string };
-  /** When its last hook came in, and its terminal last printed something (see reconcile). */
+  /** When the last daemon notification arrived. */
   hookAt: number;
+  /** When the worker last produced output or daemon activity. */
   outputAt: number;
-  /** Its session's conversation file, as its hooks name it (transcript_path). */
+  /** Known transcript path for this session, if any. */
   transcript?: string;
-  /** Office notices for its next tool call or Stop (see notice). */
+  /** Office notices held for an answer or turn completion (see notice). */
   outbox: string[];
   /** When the owner or a visit last requested a daemon interrupt. */
   cancelAt?: number;
@@ -105,7 +106,7 @@ export interface Worker {
   taskEpoch: number;
   /** Its terminal in the host as of the last save, and how it was doing, to pick back up after a restart. */
   saved?: { ptyId: string; status: WorkerStatus; acked: boolean; waitingSince?: number };
-  /** Its process went away mid-turn with the office or the terminal host: its next start carries on (CARRY_ON_PROMPT). */
+  /** Its Droid session lost an active turn: resuming it sends CARRY_ON_PROMPT. */
   interrupted?: boolean;
   /** Output since its scrollback was last saved to disk. */
   unsaved?: boolean;
@@ -115,9 +116,9 @@ export interface Worker {
   rebuilding?: boolean;
   /** Branches present at hire time, per repository; never included in gun dismissal. */
   worktreeOwnership?: Record<string, WorktreeOwnership>;
-  /** The plan its first terminal runs before the agent, to make its new worktree ready (see worktree-setup.ts). */
+  /** Worktree setup plan run in the shell PTY or headlessly before the daemon session starts. */
   setupPlan?: string;
-  /** Its terminal is running that plan; when it finished, so the agent gets its own time to start after it. */
+  /** The worker is still running its worktree setup plan. */
   settingUp?: boolean;
   /** Until the daemon gives the fork its own id, restarts must fork, never resume the source. */
   pendingFork?: { sessionId: string; prompt?: string };

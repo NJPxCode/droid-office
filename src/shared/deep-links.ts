@@ -1,4 +1,4 @@
-// Deep links into Droid Office for Android: a worker's live terminal, a floor, a Whiteboard card,
+// Deep links into Droid Office for Android: a worker's Thread or shell terminal, a floor, a Whiteboard card,
 // or a pending AskUser question. Links come in two forms sharing one path and query shape:
 //   - http(s)://<tailscale-or-lan-host>:<port>/open/<kind>/<id>?... (clickable in any chat app)
 //   - droidoffice://open/<kind>/<id>?...[&u=<office-base>]           (direct Android custom scheme)

@@ -12,7 +12,7 @@ export function isBusy(status: WorkerStatus): boolean {
   return status === 'starting' || status === 'working' || status === 'needs_input';
 }
 
-/** Terminal prompts require the owner, including prompts from subagents. */
+/** Pending questions or permissions require the owner, including those from subagents. */
 export function needsOwnerInput(w: Pick<WorkerInfo, 'status' | 'lead'>): boolean {
   return w.status === 'needs_input';
 }

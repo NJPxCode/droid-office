@@ -165,7 +165,7 @@ export function createWhiteboardRuntime({ floors, prompts, sendTo, warn }: White
       warn(c, `“${press.ping.label || press.name}” didn't reach a worker: ${out.error}`);
     }
   };
-  /** Ping a worker: the Whiteboard line typed into its terminal, as its status allows (see whiteboard-ping.ts). */
+  /** Ping a worker: send the Whiteboard prompt as its status allows (see whiteboard-ping.ts). */
   const pingWorker = (c: Client, id: string) => {
     const pinged = (ok: boolean, rest: { how?: 'type' | 'resume' | 'queue'; error?: string }) => sendTo(c, { t: 'whiteboard.pinged', worker: id, ok, ...rest });
     let floor: Floor | undefined;
@@ -181,7 +181,7 @@ export function createWhiteboardRuntime({ floors, prompts, sendTo, warn }: White
     const can = pingEligibility(info);
     if (!can.ok) return pinged(false, { error: can.reason });
     const text = officePrompt(prompts, 'whiteboard.ping', { floor: floor.def.name });
-    // Mid-turn, its hooks hand the line over with its next tool call; a hook command that can't, gets it queued behind the turn.
+    // Mid-turn, hold an office notice for turn completion; otherwise use the normal prompt queue.
     const err = can.how === 'resume' ? floor.workers.resume(id, text) : can.how === 'queue' && floor.workers.notice(id, text) ? undefined : floor.workers.prompt(id, text, [], can.how === 'queue');
     if (err) return pinged(false, { error: `${info.name}: ${err}` });
     pinged(true, { how: can.how });

@@ -75,7 +75,7 @@ export function createClientTransport({ clients, floors }: TransportContext) {
       c.ws.send(json);
     }
   };
-  /** Sends a worker's full screen to connections not on `floor`, coalescing rapid TUI redraws. */
+  /** Sends a worker's laptop preview to connections not on `floor`, coalescing rapid updates. */
   const broadcastOffFloorScreen = (floor: Floor, workerId: string) => {
     const now = Date.now();
     const entry = offFloorThrottle.get(workerId);

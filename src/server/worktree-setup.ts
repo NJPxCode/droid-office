@@ -6,7 +6,7 @@ import { runAsNode } from './worker-runtime/process.js';
 
 /** A floor's own setup, in its checkout's .droid-office/. */
 const OVERRIDE_FILE = 'worktree-setup.json';
-/** The script a worker's terminal runs before its agent (see SETUP_SCRIPT), in the data dir. */
+/** The setup script run before a shell or daemon session starts in a new worktree (see SETUP_SCRIPT). */
 const SCRIPT_FILE = 'worktree-setup.cjs';
 /** Where the plans for terminals that haven't run theirs yet wait, in the data dir. */
 const PLANS_DIR = 'setup';
@@ -111,7 +111,7 @@ export function copiesFrom(root: string, patterns: string[]): string[] {
   }
 }
 
-/** Writes the plan a worker's terminal runs before its agent; the script deletes it once read. */
+/** Writes the setup plan for a new worktree; the script deletes it once read. */
 export function writePlan(dataDir: string, workerId: string, steps: SetupStep[]): string {
   const dir = path.join(dataDir, PLANS_DIR);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -207,7 +207,7 @@ export function runWorktreeSetup(scriptFile: string, planFile: string, baseEnv: 
 }
 
 /**
- * Runs in a worker's terminal ahead of its agent (or headlessly before a daemon session starts) with
+ * Runs in a shell worker's PTY (or headlessly before a daemon session starts) with
  * the office's own node: for each step of the plan file it's given, copies the checkout's untracked
  * files that match the step's patterns into the worktree (clones where the file system can, never over
  * a file that's there), then runs the step's command there with DROID_OFFICE_ROOT_PATH and

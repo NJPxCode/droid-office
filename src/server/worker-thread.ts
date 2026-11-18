@@ -409,7 +409,7 @@ export class WorkerThreadReader {
 
   private async find({ sessionId, cwd, transcript }: ThreadSession): Promise<string | undefined> {
     const name = `${sessionId}.jsonl`;
-    // Where the worker's own hooks say its conversation is, when that's in the sessions folder.
+    // Prefer a known transcript path when it belongs to this session and is inside the sessions folder.
     if (transcript && path.basename(transcript) === name) {
       const rel = path.relative(this.root, transcript);
       const inside = !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);

@@ -1,6 +1,5 @@
-// Files dropped or pasted into a worker's terminal: the browser sends them to the office, which keeps
-// them on its own machine (see server/drops.ts), and the terminal types where they are, as a terminal
-// does with a file dragged into it. Droid turns a pasted picture's path into an image.
+// The office keeps browser uploads on its own machine (see server/drops.ts). A shell can paste a
+// file's path into its terminal. A local Droid prompt carries pictures as daemon image attachments.
 
 /** The biggest file that can be dropped into a terminal: plenty for a screenshot of a big screen. */
 export const DROP_MAX_BYTES = 25 * 1024 * 1024;

@@ -107,7 +107,7 @@ export interface KittyKeyEvent extends KeyEventLike {
 }
 
 export interface KittyEncodeOpts {
-  /** Fallback `Ctrl+Enter` / `Shift+Enter` CSI u for Droid when `flags === 0`. */
+  /** Legacy `Ctrl+Enter` / `Shift+Enter` CSI u fallback when `flags === 0`. */
   csiEnter?: boolean;
   /** DECSET 1 (`DECCKM`) application cursor mode for unmodified arrow/home/end keys. */
   appCursor?: boolean;

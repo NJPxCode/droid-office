@@ -71,7 +71,7 @@ export interface TeamWorkers {
   queueState?(id: string, now?: number): WorkerQueueState | undefined;
   blockingTool?(id: string, now?: number): BlockingToolState | undefined;
   resume(id: string, prompt?: string, images?: readonly string[]): string | undefined;
-  /** Moves an agent to `model` (`name` is how Droid's /model picker lists it): now in a running session, at its next launch otherwise. */
+  /** Moves an agent to `model` (`name` is the display label): now in a running session, at its next launch otherwise. */
   switchModel?(id: string, model: { id: string; name: string }, effort?: AgentEffort): Promise<{ applied: 'now' | 'next_launch' } | { error: string }>;
   kill(id: string): Promise<{ note?: string; error?: string }>;
   dismiss?(id: string, pruneWorktree: boolean, keepBranch: boolean): Promise<{ note?: string; error?: string }>;
@@ -202,7 +202,7 @@ export interface TeamMember {
   id: string;
   name: string;
   status: WorkerStatus;
-  /** Its status, or blocked_on_question while an asked question or a terminal question waits for an answer. */
+  /** Its status, or blocked_on_question while a team question or an AskUser question waits for an answer. */
   state: TeamState;
   desk: string;
   /** Present when followed via team_watch rather than hired as this caller's subagent. */
