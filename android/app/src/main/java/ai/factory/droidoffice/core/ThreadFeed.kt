@@ -79,6 +79,8 @@ data class ThreadEntry(
     val tookMs: Long? = null,
     /** A Task call's: the subagent session running it. */
     val child: String? = null,
+    /** Reference to the complete tool result when [output] is a tail preview. */
+    val outputRef: String? = null,
 ) {
     companion object {
         /** An entry with no id, no seq, or a role or kind this app doesn't know is skipped rather than guessed at. */
@@ -104,6 +106,7 @@ data class ThreadEntry(
                 doneAt = o.long("doneAt")?.takeIf { it > 0 },
                 tookMs = o.long("tookMs")?.takeIf { it >= 0 },
                 child = o.str("child")?.takeIf { it.isNotEmpty() },
+                outputRef = o.str("outputRef")?.takeIf { it.isNotEmpty() },
             )
         }
 

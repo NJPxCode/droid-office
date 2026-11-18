@@ -18,6 +18,8 @@ export interface ThreadEntry {
   name?: string;
   input?: string;
   output?: string;
+  /** When `output` is a tail preview, the full visible result's id at `/api/thread/output`. */
+  outputRef?: string;
   error?: boolean;
   /** For a tool result, the seq the next entry took when the result was read: later than seq + 1 when other entries came first. */
   resultSeq?: number;

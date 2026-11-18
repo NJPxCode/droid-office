@@ -1,5 +1,7 @@
 package ai.factory.droidoffice.core
 
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -167,5 +169,26 @@ class ThreadLiveTest {
         assertEquals(4200L, e.tookMs)
         assertEquals("c1", e.child)
         assertEquals(null, e.doneAt)
+    }
+
+    @Test
+    fun snapshotPreservesLongRepliesThoughtsAndToolTails() {
+        val full = "A line of prose that should stay intact.\n".repeat(1600) + "END-OF-REPLY-SENTINEL"
+        assertTrue(full.length > 60_000)
+        for (kind in listOf("text", "thinking")) {
+            val entry = ThreadEntry.of(buildJsonObject {
+                put("id", JsonPrimitive("long"))
+                put("seq", JsonPrimitive(1))
+                put("role", JsonPrimitive("assistant"))
+                put("kind", JsonPrimitive(kind))
+                put("text", JsonPrimitive(full))
+            })
+            assertEquals(full, entry?.text)
+        }
+        val tool = ThreadEntry.of(OfficeJson.parseToJsonElement(
+            """{"id":"tool:call","seq":2,"role":"assistant","kind":"tool","output":"[2250 earlier lines hidden]\nFINAL-OUTPUT-LINE","outputRef":"140.0.0123456789abcdef0123456789abcdef"}""",
+        ))!!
+        assertEquals("140.0.0123456789abcdef0123456789abcdef", tool.outputRef)
+        assertEquals("[2250 earlier lines hidden]\nFINAL-OUTPUT-LINE", ThreadView.outputText(tool, pictures = false))
     }
 }

@@ -631,6 +631,7 @@ private fun CommandRow(a: ThreadModelAction, c: Cards, nested: Boolean) {
         } else null,
     ) {
         ToolBox {
+            FullToolOutput(entry)
             val moreKey = "output:" + a.id
             val expanded = c.open[moreKey] == true
             Clamp(OUTPUT_MAX, expanded, onExpand = { c.onFlip(moreKey, false) }, label = "Expand command output", tag = Tags.Worker.threadMore(a.id)) {
@@ -1025,8 +1026,13 @@ private fun ActionDetailsBody(a: ThreadModelAction, entry: ThreadEntry?, modifie
                 val pictures = d.images.isNotEmpty()
                 if (d.recorded) {
                     if (d.output.isNotEmpty() || !pictures) {
-                        Mono(d.result, d.output.ifEmpty { "(empty)" }, if (a.state == ActivityState.Failed) ThreadPalette.Danger else ThreadPalette.TextSecondary)
+                        Mono(
+                            d.result, d.output.ifEmpty { "(empty)" },
+                            if (a.state == ActivityState.Failed) ThreadPalette.Danger else ThreadPalette.TextSecondary,
+                            limit = null,
+                        )
                     }
+                    FullToolOutput(entry)
                     if (pictures) ThreadPictures(d.images, a.title, a.detail, end = false)
                 } else {
                     Text(d.result, style = endStyle())
@@ -1038,14 +1044,14 @@ private fun ActionDetailsBody(a: ThreadModelAction, entry: ThreadEntry?, modifie
 }
 
 @Composable
-private fun Mono(label: String, body: String, color: Color) {
+private fun Mono(label: String, body: String, color: Color, limit: Int? = SHOWN_CHARS) {
     Text(label, style = endStyle())
-    val shown = if (body.length > SHOWN_CHARS) body.take(SHOWN_CHARS) else body
+    val shown = if (limit == null) body else body.take(limit)
     SelectionContainer {
         Text(shown, style = LocalOfficeType.current.monoBody.copy(fontSize = 11.sp, lineHeight = 17.sp, color = color))
     }
     if (shown.length < body.length) {
-        Text("Showing the first $SHOWN_CHARS of ${body.length} characters.", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ToolDetail))
+        Text("Showing the first $limit of ${body.length} characters.", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ToolDetail))
     }
 }
 

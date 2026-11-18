@@ -629,6 +629,60 @@ test('keeps 60,000+ characters of replies and thoughts in canonical snapshots', 
   assert.equal(page.hasMore, false);
 });
 
+test('previews a long tool result from the tail and resolves its full visible text on demand', async (t) => {
+  const log = Array.from({ length: 3000 }, (_, i) => `output line ${i + 1}`);
+  const result = message('result', 'user', [
+    {
+      type: 'tool_result',
+      tool_use_id: 'call',
+      content: [
+        { type: 'text', text: `START-OF-OUTPUT\n<system-reminder>PRIVATE_DATA</system-reminder>\n${log.join('\n')}` },
+        { type: 'text', text: 'FINAL-OUTPUT-LINE' },
+      ],
+    },
+  ]);
+  const { reader, source, file } = await rig(t, [message('execute', 'assistant', [{ type: 'tool_use', id: 'call', name: 'Execute', input: { command: "seq 1 3000 | sed 's/^/output line /'; echo FINAL-OUTPUT-LINE" } }]), result]);
+  const page = await reader.read(source);
+  const { output, outputRef } = page.entries[0];
+  assert.ok(output && outputRef);
+  const [marker, ...tail] = output.split('\n');
+  const full = ['START-OF-OUTPUT', '', ...log, 'FINAL-OUTPUT-LINE'];
+  assert.equal(marker, `[${full.length - tail.length} earlier lines hidden]`);
+  assert.deepEqual(tail, full.slice(-tail.length));
+  assert.equal(tail.at(-1), 'FINAL-OUTPUT-LINE');
+  assert.deepEqual((await reader.toolOutput(source, outputRef))?.split('\n'), full);
+  assert.equal(await reader.toolOutput({ ...source, sessionId: 'unrelated' }, outputRef), undefined);
+  assert.equal(await reader.toolOutput(source, `${outputRef.slice(0, -32)}${'A'.repeat(32)}`), undefined);
+  const raw = await readFile(file, 'utf8');
+  await writeFile(file, raw.replace('"id":"result"', '"id":"result","visibility":"llm_only"'));
+  assert.equal(await reader.toolOutput(source, outputRef), undefined);
+  await writeFile(file, raw.replace('START-OF-OUTPUT', 'OTHER-OUTPUT-LOG'));
+  assert.equal(await reader.toolOutput(source, outputRef), undefined);
+});
+
+test('keeps the ending of an oversized final line and leaves short tool results alone', async (t) => {
+  const finalLine = `${'wrap 🙂 '.repeat(2400)} EXIT-STATUS`;
+  const { reader, source } = await rig(t, [
+    message('tools', 'assistant', [
+      { type: 'tool_use', id: 'long', name: 'Execute', input: {} },
+      { type: 'tool_use', id: 'bare', name: 'Read', input: {} },
+      { type: 'tool_use', id: 'short', name: 'Read', input: {} },
+    ]),
+    message('results', 'user', [
+      { type: 'tool_result', tool_use_id: 'long', content: `start\r\n${finalLine}` },
+      { type: 'tool_result', tool_use_id: 'bare', content: finalLine },
+      { type: 'tool_result', tool_use_id: 'short', content: 'small\noutput' },
+    ]),
+  ]);
+  const [long, bare, short] = (await reader.read(source)).entries;
+  assert.match(long.output!, /^\[1 earlier line hidden; start of last line hidden\]\n/);
+  assert.match(bare.output!, /^\[Start of line hidden\]\n/);
+  assert.match(long.output!, / EXIT-STATUS$/);
+  assert.equal(await reader.toolOutput(source, long.outputRef!), `start\r\n${finalLine}`);
+  assert.equal(short.output, 'small\noutput');
+  assert.equal(short.outputRef, undefined);
+});
+
 test('bounds field/response/cache sizes and skips oversized complete records without losing later records', async (t) => {
   const huge = 'A paragraph with spaces and unicode. '.repeat(4000);
   const { reader, source, file } = await rig(

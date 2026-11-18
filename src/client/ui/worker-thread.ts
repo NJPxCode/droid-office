@@ -94,7 +94,7 @@ function entryDigest(entry: ThreadEntry | undefined): string {
   let digest = digests.get(entry);
   if (digest === undefined) {
     let hash = 2166136261;
-    for (const field of [entry.text, entry.input, entry.output, entry.images?.map((image) => image.id).join()]) {
+    for (const field of [entry.text, entry.input, entry.output, entry.outputRef, entry.images?.map((image) => image.id).join()]) {
       if (field === undefined) continue;
       for (let at = 0; at < field.length; at++) hash = Math.imul(hash ^ field.charCodeAt(at), 16777619);
     }

@@ -572,6 +572,9 @@ object Tags {
         fun threadChangeFull(id: String) = "worker.thread.change.full/$id"
         /** Copies a top-level Command card's shell command. */
         fun threadCommandCopy(id: String) = "worker.thread.command.copy/$id"
+        /** Opens the full result when a tool card only has a preview. */
+        fun threadOutput(id: String) = "worker.thread.output/$id"
+        const val THREAD_OUTPUT_SHEET = "worker.thread.output.sheet"
         /** Opens the delegated subagent's own worker Thread from a Delegation card. */
         fun threadDelegateOpen(id: String) = "worker.thread.delegate.open/$id"
 
