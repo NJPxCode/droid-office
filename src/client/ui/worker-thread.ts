@@ -1788,7 +1788,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     empty.classList.toggle('error', !!error && !history.entries.length);
     if (!history.entries.length) paintEmpty();
     notice.textContent = connected
-      ? error || told || startFailed || (broken && !opts.cloudErrorShown ? `${worker.name} can’t work: ${broken}` : '') || (isAsleep(worker.status) && !opts.promptWakes ? 'Resume this worker to send another message.' : '')
+      ? (startFailed ? told || startFailed : error || told) ||
+        (broken && !opts.cloudErrorShown ? `${worker.name} can’t work: ${broken}` : '') ||
+        (isAsleep(worker.status) && !opts.promptWakes ? 'Resume this worker to send another message.' : '')
       : '';
     // A cloud worker's Resume reads its Factory session again, which is also how one that broke is checked.
     resume.hidden = (!isAsleep(worker.status) || !!opts.promptWakes) && !broken;
