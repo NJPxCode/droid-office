@@ -41,6 +41,7 @@ import type { WhiteboardRenderers } from './whiteboard-render.js';
 import { boardReaders } from './whiteboard-agent.js';
 import { waitingStatus } from './office-status.js';
 import type { BuildingAgents } from './building-agent.js';
+import type { LocalDaemon } from './local-daemon.js';
 
 type ToastLevel = 'info' | 'warn' | 'error';
 
@@ -60,6 +61,7 @@ export interface FloorContext {
   agentCmd: string;
   agentArgs: string[];
   hook: HookEnv;
+  daemon?: LocalDaemon;
   /** The office's worker limit, across every floor. */
   capacity: Capacity;
   /** The office's Jira connection, which every floor's epic goes through. */
@@ -343,6 +345,8 @@ export class Floor {
       ctx.prompts,
       this.plain,
       ctx.building ? { agents: ctx.building, floor: this.id } : undefined,
+      false,
+      ctx.daemon,
     );
     this.branchInfo = { baseBranch: this.workers.baseBranch, selectedBranch: this.workers.selectedBranch };
 
@@ -386,6 +390,7 @@ export class Floor {
     this.workers.pullList = () => this.board.pulls.items;
     this.workers.modelGate = (model) => ctx.modelGate?.(model);
     // Only while subagents can be hired through the Office MCP: the refusal points the worker there.
+    this.workers.officeMcpEnabled = () => ctx.subagents().officeMcp;
     this.workers.denyTask = () => {
       const s = ctx.subagents();
       return s.denyTask && s.on && s.officeMcp;

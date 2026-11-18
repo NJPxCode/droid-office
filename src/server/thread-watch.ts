@@ -21,6 +21,8 @@ export interface ThreadWatchOptions {
   workerThreads: Pick<WorkerThreadReader, 'read' | 'sessionPaths' | 'sessionPathsSync' | 'childSession'>;
   resolveWorker(workerId: string): WatchedThreadTarget | undefined;
   readCloud?(workerId: string): Promise<ThreadPage> | undefined;
+  /** Optional server-side page enrichment (e.g. daemon thinking_text_complete durations and child session links). */
+  enrichPage?(workerId: string, page: ThreadPage, child?: string): ThreadPage;
   send(clientId: string, msg: ThreadWatchMsg): void;
   /** The local worker's live state over the entries just read; the tracker revs only real changes. */
   live?(workerId: string, entries: ThreadPushMsg['entries'], session?: ThreadSession): Promise<ThreadLivePushMsg['live'] | undefined>;
@@ -369,7 +371,8 @@ export class ThreadWatchHub {
         const paths = await this.opts.workerThreads.sessionPaths(target.local);
         if (this.stopped || entry.closed || !entry.clients.size) return;
         if (paths) this.applyPaths(entry, paths);
-        const page = await this.opts.workerThreads.read(target.local, undefined, busy);
+        const rawPage = await this.opts.workerThreads.read(target.local, undefined, busy);
+        const page = this.opts.enrichPage ? this.opts.enrichPage(entry.workerId, rawPage, entry.child) : rawPage;
         if (this.stopped || entry.closed || !entry.clients.size) return;
         const after = await this.targetFor(entry);
         if (!after || sessionKeyOf(after) !== key || after.busy !== busy) {

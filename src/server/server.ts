@@ -62,10 +62,11 @@ import { NO_PIPELINES } from '../shared/pipelines.js';
 import { RenderEngine } from './whiteboard-render.js';
 import { officePrompt } from './prompts.js';
 import { Answers } from './answers.js';
+import { LocalDaemon } from './local-daemon.js';
 import { ThreadWatchHub } from './thread-watch.js';
 import { ThreadLiveTracker } from './thread-live.js';
 import type { DroidSetting } from './worker-settings.js';
-import { WorkerThreadReader } from './worker-thread.js';
+import { WorkerThreadReader, type ThreadPage } from './worker-thread.js';
 import { WorkerLabels } from './worker-labels.js';
 import { LabelModelError, openAiLabel, WorkerLabelModel } from './worker-label-model.js';
 import { WorkerLabelPreferences } from './worker-label-settings.js';
@@ -135,6 +136,32 @@ export function leaveFloorTerminals(c: Pick<Client, 'attached' | 'stale'>) {
   for (const id of c.stale) if (id !== ORCHESTRATOR_ID) c.stale.delete(id);
 }
 
+/** Enriches a local `ThreadPage` with daemon-tracked `thinking_text_complete` durations and subagent session links. */
+function enrichLocalThreadPage(manager: Orchestrator['workers'], wid: string, page: ThreadPage, child?: string): ThreadPage {
+  if (child || !page.entries.length) return page;
+  const durations = manager.thinkingDurations(wid);
+  const children = manager.childSessions(wid);
+  if (!durations?.size && !children?.size) return page;
+  let changed = false;
+  const entries = page.entries.map((entry) => {
+    if (entry.kind === 'thinking' && durations) {
+      const tookMs = durations.get(entry.id);
+      if (tookMs !== undefined && entry.tookMs !== tookMs) {
+        changed = true;
+        return { ...entry, tookMs };
+      }
+    } else if (entry.kind === 'tool' && !entry.child && children && entry.id.startsWith('tool:')) {
+      const subId = children.get(entry.id.slice(5));
+      if (subId) {
+        changed = true;
+        return { ...entry, child: subId };
+      }
+    }
+    return entry;
+  });
+  return changed ? { ...page, entries } : page;
+}
+
 export async function startServer(cfg: Config) {
   const publicDir = findPublicDir();
   const appDir = sourceAppDir();
@@ -181,8 +208,16 @@ export async function startServer(cfg: Config) {
       Date.now(),
     );
   };
+  let isAirgapped = () => Boolean(readSetupFile(cfg.dataDir)?.airgapped);
+  let getFactoryKey: () => string | undefined = () => undefined;
+  const localDaemon = new LocalDaemon({
+    dataDir: cfg.dataDir,
+    agentCmd: () => agentPath ?? cfg.agentCmd,
+    apiKey: () => getFactoryKey(),
+    airgapped: () => isAirgapped(),
+  });
   // And the skills and custom commands it offers as slash commands, in each worker's own folder.
-  const droidCommands = createDroidCommandCatalogue({ command: () => agentPath ?? cfg.agentCmd });
+  const droidCommands = createDroidCommandCatalogue({ command: () => agentPath ?? cfg.agentCmd, daemon: localDaemon });
   const hiddenModels = new HiddenModels(cfg.dataDir);
 
   /** The toasts an external worker's owner action raises, through every callback that action starts. */
@@ -329,13 +364,11 @@ export async function startServer(cfg: Config) {
     });
   };
   const subagents = new Subagents(cfg.dataDir, (state) => {
-    syncOfficeMcp(state.officeMcp);
     broadcast({ t: 'subagents', state });
     missionChanged();
   });
-  syncOfficeMcp(subagents.settings.officeMcp);
-  // Another office that held the shared profile entry may stop: take it over then.
-  setInterval(() => syncOfficeMcp(subagents.settings.officeMcp), 30_000).unref();
+  // Local sessions receive inline Office MCP configs via droid-daemon; clean up any legacy global profile entry once at startup.
+  syncOfficeMcp(false);
 
   // --- Mission Control: the building's agents, with no desk on any floor (docs/mission-control.md) ---
   const orchestrator = new Orchestrator({
@@ -343,6 +376,7 @@ export async function startServer(cfg: Config) {
     agentCmd: cfg.agentCmd,
     agentArgs: cfg.agentArgs,
     hook: { url: hookUrl, token: '' },
+    daemon: localDaemon,
     prompts,
     floors: () => [...floors.values()],
     unready: () => {
@@ -414,7 +448,6 @@ export async function startServer(cfg: Config) {
   };
   orchestrator.workers.setSharedImages(remoteOffice.images);
   const geminiStore = new GeminiDecisionsStore(cfg.dataDir);
-  let isAirgapped = () => false;
   let wakeTelemetryTimer: NodeJS.Timeout | undefined;
   // With the gate off, nothing would ever route a held batch again.
   const flushWakeHolds = () => {
@@ -519,9 +552,14 @@ export async function startServer(cfg: Config) {
       runner: { command: () => agentPath, env: childEnv },
     },
   });
+  getFactoryKey = () => factory.office.key();
   const cloud = factory.cloud!;
   threadWatches = new ThreadWatchHub({
     workerThreads,
+    enrichPage: (workerId, page, child) => {
+      const manager = workersOf(workerId);
+      return manager ? enrichLocalThreadPage(manager, workerId, page, child) : page;
+    },
     resolveWorker: (workerId) => {
       if (workerId === ORCHESTRATOR_ID) {
         if (!orchestrator.info) return undefined;
@@ -645,6 +683,7 @@ export async function startServer(cfg: Config) {
         .map((m) => m.id),
     modeChanged: (on) => {
       factory.setPaused(on);
+      void localDaemon.setAirgapped(on).catch(() => {});
       droidModels.forget();
       workerLabels.settingsChanged();
       officeVibes.syncViewers(!on);
@@ -664,6 +703,7 @@ export async function startServer(cfg: Config) {
       missionChanged();
     },
   });
+  isAirgapped = () => Boolean(setup.state().airgapped);
   // DroidProxy, and the Claude, ChatGPT and other subscriptions workers run on through it.
   let subscriptionsSent = '';
   const subscriptions = mountSubscriptions({
@@ -722,6 +762,7 @@ export async function startServer(cfg: Config) {
     agentCmd: cfg.agentCmd,
     agentArgs: cfg.agentArgs,
     hook: { url: `http://127.0.0.1:${hookPort}`, token: '' },
+    daemon: localDaemon,
     capacity: machine,
     jira,
     linear,
@@ -893,7 +934,6 @@ export async function startServer(cfg: Config) {
   }
 
   /** Everything on a floor, for whoever just arrived there. */
-  isAirgapped = () => Boolean(setup.state().airgapped);
   const floorView = (floor: Floor | undefined): FloorView => ({
     floor: floor?.id ?? null,
     project: floor?.project ?? null,
@@ -1333,17 +1373,20 @@ export async function startServer(cfg: Config) {
       if (!target) return done('No such worker');
       const action = m.action;
       if (action !== 'promote' && action !== 'delete' && action !== 'clear') return stop('Unknown queue action.');
+      const reqId = str(m.id, 128) || undefined;
       const rawIndex = typeof m.index === 'number' && Number.isSafeInteger(m.index) && m.index > 0 ? m.index : undefined;
       const text = str(m.text, 20000) || undefined;
       const group = m.group === 'steering' || m.group === 'queued' ? m.group : undefined;
       const items = target.workers.queueState(target.wid)?.items ?? [];
       let index: number | undefined;
+      let resolvedId: string | undefined;
       if (action !== 'clear') {
         const delivery = group === 'queued' ? 'after_turn' : group === 'steering' ? 'steering' : undefined;
         const pool = delivery ? items.filter((item) => item.source === 'droid' && item.delivery === delivery) : items;
-        let selected = rawIndex !== undefined ? (delivery ? pool[rawIndex - 1] : items.find((item) => item.index === rawIndex)) : undefined;
+        let selected = reqId ? pool.find((item) => item.id === reqId) : rawIndex !== undefined ? (delivery ? pool[rawIndex - 1] : items.find((item) => item.index === rawIndex)) : undefined;
+        if (reqId && !selected && items.length > 0) return stop('That queued message changed. Read the queue again.');
         if (text) {
-          if (!selected && rawIndex === undefined) {
+          if (!selected && rawIndex === undefined && !reqId) {
             const matches = pool.filter((item) => item.text === text);
             if (matches.length === 1) selected = matches[0];
           }
@@ -1352,12 +1395,14 @@ export async function startServer(cfg: Config) {
         if (delivery && (!selected || selected.delivery !== delivery)) {
           return stop('That queued message changed groups. Read the queue again.');
         }
+        resolvedId = selected?.id ?? reqId;
         index = selected?.index ?? (delivery ? undefined : rawIndex);
-        if (index === undefined) return stop('Choose a queued message first.');
+        if (index === undefined && !resolvedId) return stop('Choose a queued message first.');
       }
       defer();
       void (async () => {
-        const result = action === 'promote' ? await target.workers.promoteQueue(target.wid, { index }) : await target.workers.clearQueue(target.wid, action === 'delete' ? index : undefined);
+        const promoteOpts = { ...(index !== undefined ? { index } : {}), ...(resolvedId ? { id: resolvedId } : {}) };
+        const result = action === 'promote' ? await target.workers.promoteQueue(target.wid, promoteOpts) : await target.workers.clearQueue(target.wid, action === 'delete' ? index : undefined, action === 'delete' ? resolvedId : undefined);
         if (result.error) return refuse(result.error);
         done(undefined, target.wid);
       })();
@@ -1371,8 +1416,8 @@ export async function startServer(cfg: Config) {
             .filter(Boolean)
         : [];
       const restore = m.restore === 'files' ? 'files' : m.restore === 'choose' ? { files } : 'conversation';
-      const reply = (ok: boolean, error?: string, text?: string, note?: string) => {
-        const sessionId = target?.workers.threadSession(target.wid)?.sessionId;
+      const reply = (ok: boolean, error?: string, text?: string, note?: string, newSessionId?: string) => {
+        const sessionId = newSessionId ?? target?.workers.threadSession(target.wid)?.sessionId;
         sendTo(c, { t: 'worker.rewound', workerId: target?.wid ?? str(m.workerId, 32), entryId, ok, ...(sessionId ? { sessionId } : {}), ...(text ? { text } : {}), ...(error ? { error } : {}), ...(note ? { note } : {}) });
       };
       if (!target || !entryId) {
@@ -1404,7 +1449,7 @@ export async function startServer(cfg: Config) {
           refuse(error);
           return;
         }
-        reply(true, undefined, point.text, result.note);
+        reply(true, undefined, point.text, result.note, result.sessionId);
         done(undefined, target.wid, result.note);
       })().catch((err: unknown) => {
         const error = `Failed to rewind conversation: ${err instanceof Error ? err.message : String(err)}`;
@@ -1416,16 +1461,16 @@ export async function startServer(cfg: Config) {
       if (!target) return done('No such worker');
       const value = str(m.value, 120);
       const effort = str(m.effort, 40) || undefined;
-      let want: DroidSetting | undefined;
+      let want: DroidSetting | { setting: 'model'; id?: string; name: string; effort?: string } | undefined;
       if (m.setting === 'effort' && /^[a-z]{2,16}$/.test(value)) want = { setting: 'effort', value };
       if (!want && (m.setting !== 'model' || !value)) return stop('Choose a reasoning effort or model.');
       defer();
       void (async () => {
         if (!want) {
           const catalogue = droidModels.peek() ?? (await droidModels.get().catch(() => undefined));
-          const name = catalogue?.models.find((model) => model.id === value)?.displayName;
+          const name = catalogue?.models.find((model) => model.id === value)?.displayName ?? readDroidModels().models.find((model) => model.id === value)?.displayName;
           if (!name) return refuse('That model is not one Droid offers here.');
-          want = { setting: 'model', name, ...(effort ? { effort } : {}) };
+          want = { setting: 'model', id: value, name, ...(effort ? { effort } : {}) };
         }
         const error = await target.workers.setting(target.wid, want);
         threadWatches?.notifyWorker(target.wid);
@@ -1470,20 +1515,8 @@ export async function startServer(cfg: Config) {
           const hasText = typeof msg.text === 'string';
           if (msg.choices !== undefined && !hasChoices) return done('Send checkbox selections as numbered choices.');
           if (hasChoice ? hasChoices || hasText : !hasChoices && !hasText) return done('Send one choice, a checkbox selection, or a typed answer.');
-          defer();
-          void answers
-            .answer(ORCHESTRATOR_ID, msg.menu, hasChoice ? { choice: msg.choice } : { ...(hasChoices ? { choices: msg.choices } : {}), ...(hasText ? { text: str(msg.text, 20000) } : {}) }, {
-              worker: () => orch.get(ORCHESTRATOR_ID),
-              lines: () => orch.screenLines(ORCHESTRATOR_ID),
-              menu: () => orch.screenMenu(ORCHESTRATOR_ID),
-              write: (data) => orch.write(ORCHESTRATOR_ID, data),
-              live: () => c.ws.readyState === WebSocket.OPEN,
-            })
-            .then(
-              (error) => done(error, ORCHESTRATOR_ID),
-              () => done('The answer could not be verified. Check the terminal.'),
-            );
-          return;
+          const replyObj = hasChoice ? { choice: msg.choice } : { ...(hasChoices ? { choices: msg.choices } : {}), ...(hasText ? { text: str(msg.text, 20000) } : {}) };
+          return done(orchestrator.answerQuestion(msg.menu, replyObj), ORCHESTRATOR_ID);
         }
         case 'term.input':
           if (!c.attached.has(ORCHESTRATOR_ID)) return done('Open the Orchestrator first. Nothing was typed.');
@@ -1511,7 +1544,7 @@ export async function startServer(cfg: Config) {
             void (async () => {
               const selected = child ? await workerThreads.childSession(source, child) : source;
               if (!selected) return none('That subagent conversation does not belong to the Orchestrator.');
-              const page = await workerThreads.read(selected, before, busy);
+              const page = enrichLocalThreadPage(orch, ORCHESTRATOR_ID, await workerThreads.read(selected, before, busy), child);
               if (orch.threadSession(ORCHESTRATOR_ID)?.sessionId !== source.sessionId) return none('The Orchestrator’s conversation changed. Read the thread again.');
               if (before === undefined) threadWatches?.seed(ORCHESTRATOR_ID, page, busy, child, c.id);
               sendTo(c, { ...reply, ...page });
@@ -1916,10 +1949,15 @@ export async function startServer(cfg: Config) {
         const hasText = typeof msg.text === 'string';
         if (msg.choices !== undefined && !hasChoices) return done('Send checkbox selections as numbered choices.');
         if (hasChoice ? hasChoices || hasText : !hasChoices && !hasText) return done('Send one choice, a checkbox selection, or a typed answer.');
+        const replyObj = hasChoice ? { choice: msg.choice } : { ...(hasChoices ? { choices: msg.choices } : {}), ...(hasText ? { text: str(msg.text, 20000) } : {}) };
+        if (w.info.kind === 'agent' && !w.floor.workers.screenLines(w.wid)) {
+          done(w.floor.workers.answerQuestion(w.wid, msg.menu, replyObj), w.wid);
+          break;
+        }
         defer();
         const lines = () => w.floor.workers.screenLines(w.wid);
         void answers
-          .answer(w.wid, msg.menu, hasChoice ? { choice: msg.choice } : { ...(hasChoices ? { choices: msg.choices } : {}), ...(hasText ? { text: str(msg.text, 20000) } : {}) }, {
+          .answer(w.wid, msg.menu, replyObj, {
             worker: () => w.floor.workers.get(w.wid),
             lines,
             menu: () => w.floor.workers.screenMenu(w.wid),
@@ -2005,7 +2043,7 @@ export async function startServer(cfg: Config) {
             sendTo(c, { ...reply, entries: [], hasMore: false, error: 'That subagent conversation does not belong to this worker.' });
             return;
           }
-          const page = await workerThreads.read(selected, before, busy);
+          const page = enrichLocalThreadPage(floor.workers, workerId, await workerThreads.read(selected, before, busy), child);
           const current = floor.workers.threadSession(workerId);
           if (floors.get(floor.id) !== floor || current?.sessionId !== source.sessionId || current.cwd !== source.cwd) {
             sendTo(c, { ...reply, entries: [], hasMore: false, error: 'The active floor or worker session changed. Read the thread again.' });
@@ -2044,11 +2082,12 @@ export async function startServer(cfg: Config) {
         break;
       }
       case 'worker.interrupt': {
-        // Droid's own cancel key. A cloud worker's interrupt is answered by factory/cloud.ts above.
+        // Stops a local Droid session's turn via interruptSession. Cloud workers are answered by factory/cloud.ts above.
         const w = worker(msg.workerId);
         if (!w) return done('No such worker');
         if (w.info.kind !== 'agent') return done(`${w.info.name} is a shell: there is no turn to stop`);
-        if (!w.floor.workers.write(w.wid, '\u001b')) return done(`${w.info.name} is not running. Nothing was stopped.`);
+        if (!w.floor.workers.running(w.wid)) return done(`${w.info.name} is not running. Nothing was stopped.`);
+        if (!w.floor.workers.interrupt(w.wid)) return done(`${w.info.name} isn’t in the middle of a turn. Nothing was stopped.`);
         done();
         break;
       }
@@ -2352,6 +2391,9 @@ export async function startServer(cfg: Config) {
       case 'factory.refresh':
       case 'factory.watch':
         factory.message(c.id, who, msg, (reply) => sendTo(c, reply));
+        if ((msg.t === 'factory.connect' || msg.t === 'factory.disconnect') && localDaemon.isConnected()) {
+          void localDaemon.ensureStarted().catch(() => {});
+        }
         break;
       case 'gemini.connect':
         void officeVibes.connect(str(msg.key, 512), who, (reply) => sendTo(c, reply)).catch(() => sendTo(c, { t: 'gemini.setup', ok: false, error: 'Gemini connection check failed.' }));
@@ -2616,6 +2658,8 @@ export async function startServer(cfg: Config) {
     for (const f of floors.values()) f.shutdown(keep);
     floorActivity.flush();
     orchestrator.shutdown(keep);
+    if (keep) localDaemon.disconnect();
+    else localDaemon.stop();
     clearTimeout(missionTimer);
     clearTimeout(wakeTelemetryTimer);
     void renderer?.close();

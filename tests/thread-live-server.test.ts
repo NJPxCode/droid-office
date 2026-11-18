@@ -121,3 +121,109 @@ test('an ExitSpecMode wait attaches to its tool row, and rewind is explicit', as
   assert.deepEqual(rewinding.live.tools, []);
   assert.equal(rewinding.live.waiting, undefined);
 });
+
+test('daemon live stream tracks thinking/text deltas, dedupes landed entries, and links pending vs canonical tools', async () => {
+  const tracker = new ThreadLiveTracker(() => 6000);
+  const prompt = entry('u1:0', { role: 'user', text: 'Run tests' });
+
+  // 1. Thinking delta + unlanded pending tool (no id yet so client renders in pendingTools).
+  const thinkingInputs: ThreadLiveInputs = {
+    ...base(),
+    status: 'working',
+    workingSince: 5000,
+    daemon: {
+      workingState: 'thinking',
+      stream: { kind: 'thinking', messageId: 'm1', blockIndex: 0, since: 5100, text: 'Checking test suite...' },
+      tools: [{ toolUseId: 'call-1', name: 'Execute', input: { command: 'npm test' }, startedAt: 5200, output: 'line 1\nline 2', more: 5, subagentSessionId: 'sub-99' }],
+      settings: { modelId: 'auto', routedModelId: 'claude-opus-4-6', reasoningEffort: 'medium', routedReasoningEffort: 'high', interactionMode: 'auto', autonomyLevel: 'high' },
+    },
+    modelName: (id) => (id === 'claude-opus-4-6' ? 'Opus 4.6' : undefined),
+  };
+  const step1 = await tracker.compute('w', thinkingInputs, [prompt]);
+  assert.equal(step1.live.status, 'pondering');
+  assert.equal(step1.live.working, 'executing_tool');
+  assert.deepEqual(step1.live.stream, { kind: 'thinking', text: 'Checking test suite...', since: 5100 });
+  assert.deepEqual(step1.live.tools, [
+    {
+      name: 'Execute',
+      startedAt: 5200,
+      phase: 'running',
+      input: '{"command":"npm test"}',
+      output: 'line 1\nline 2',
+      more: 5,
+      child: 'sub-99',
+    },
+  ]);
+  assert.deepEqual(step1.live.settings, {
+    model: 'claude-opus-4-6',
+    modelName: 'Opus 4.6',
+    reasoningEffort: 'high',
+    interactionMode: 'auto',
+    autonomyLevel: 'high',
+  });
+
+  // 2. Once tool:call-1 lands in entries, live tool carries canonical id 'tool:call-1'; assistant text delta dedupes once landed.
+  const landedTool = entry('tool:call-1', { kind: 'tool', name: 'Execute', input: '{"command":"npm test"}', at: 5200 });
+  const textInputs: ThreadLiveInputs = {
+    ...thinkingInputs,
+    daemon: {
+      ...thinkingInputs.daemon!,
+      workingState: 'streaming_assistant_message',
+      stream: { kind: 'text', messageId: 'm2', blockIndex: 0, since: 5500, text: 'All tests passed.' },
+    },
+  };
+  const step2 = await tracker.compute('w', textInputs, [prompt, landedTool]);
+  assert.equal(step2.live.tools[0]?.id, 'tool:call-1');
+  assert.equal(step2.live.stream?.text, 'All tests passed.');
+
+  const step3 = await tracker.compute('w', textInputs, [prompt, landedTool, entry('m2:0', { text: 'All tests passed.' })]);
+  assert.equal(step3.live.stream, undefined);
+});
+
+test('daemon llm_retry label surfaces while working, clears at rest, and AskUser sets waiting question state', async () => {
+  const tracker = new ThreadLiveTracker(() => 7000);
+  const retrying = await tracker.compute(
+    'w',
+    {
+      ...base(),
+      status: 'working',
+      daemon: {
+        workingState: 'waiting_for_model',
+        tools: [],
+        retry: { retrying: true, detail: 'Retrying the model request (attempt 2)...' },
+      },
+    },
+    [],
+  );
+  assert.equal(retrying.live.status, 'pondering');
+  assert.equal(retrying.live.label, 'Retrying the model request (attempt 2)...');
+
+  const settled = await tracker.compute(
+    'w',
+    {
+      ...base(),
+      status: 'done',
+      daemon: {
+        workingState: 'idle',
+        tools: [],
+        retry: { retrying: true, detail: 'Retrying the model request (attempt 2)...' },
+      },
+    },
+    [],
+  );
+  assert.equal(settled.live.status, 'idle');
+  assert.equal(settled.live.label, undefined);
+
+  const asking = await tracker.compute(
+    'w',
+    {
+      ...base(),
+      status: 'needs_input',
+      ask: { kind: 'question', questions: [{ question: 'Deploy now?', options: ['Yes', 'No'] }] },
+      daemon: { workingState: 'waiting_for_tool_confirmation', tools: [] },
+    },
+    [],
+  );
+  assert.equal(asking.live.status, 'waiting');
+  assert.deepEqual(asking.live.waiting, { kind: 'question' });
+});

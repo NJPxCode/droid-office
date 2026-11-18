@@ -91,7 +91,7 @@ export function createOwnerOffice({
         if (!w) return undefined;
         const runtime = orchestrator.workers.runtime(ORCHESTRATOR_ID);
         const model = w.activeModel ?? w.model;
-        const terminalRetry = inspectTerminalRetry(runtime?.screenRows, w.status, Boolean(runtime?.currentTool));
+        const terminalRetry = runtime?.retry && !runtime.currentTool ? runtime.retry : inspectTerminalRetry(runtime?.screenRows, w.status, Boolean(runtime?.currentTool));
         if (w.status === 'working' && model && isSubscriptionModel(model) && subscriptions.availability(model)?.state !== 'exhausted' && terminalRetry?.retrying) {
           try {
             await subscriptions.recheck();

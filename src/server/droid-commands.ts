@@ -44,18 +44,38 @@ export const listDroidCommands: DroidCommandLister = async (command, cwd) => {
   return parseDroidCommands(commands, skills);
 };
 
+export interface DroidCommandDaemon {
+  listSlashCommands(sessionId: string): Promise<DroidSlashCommand[]>;
+}
+
 export interface DroidCommandCatalogueOptions {
   /** The droid binary to ask, or how to find it now (it may be installed after the office starts). */
   command?: string | (() => string);
+  /** Shared local daemon, preferred when a worker already has an open session. */
+  daemon?: DroidCommandDaemon;
   lister?: DroidCommandLister;
   now?: () => number;
 }
 
 export interface DroidCommandCatalogue {
   /** The slash commands droid offers in a worker's folder; empty when droid can't say. */
-  get(cwd?: string): Promise<DroidSlashCommand[]>;
+  get(cwd?: string, sessionId?: string): Promise<DroidSlashCommand[]>;
   /** Drops every cached list (Droid was installed or replaced). */
   forget(): void;
+}
+
+function sanitizeDaemonCommands(items: readonly DroidSlashCommand[]): DroidSlashCommand[] {
+  const out: DroidSlashCommand[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    const name = typeof item?.name === 'string' ? item.name.trim() : '';
+    if (!NAME.test(name) || seen.has(name.toLowerCase()) || out.length >= MAX_COMMANDS) continue;
+    if (item.source !== 'command' && item.source !== 'skill') continue;
+    seen.add(name.toLowerCase());
+    const hint = line(item.argumentHint, 80);
+    out.push({ name, description: line(item.description, 300), source: item.source, ...(hint ? { argumentHint: hint } : {}) });
+  }
+  return out;
 }
 
 /**
@@ -64,18 +84,20 @@ export interface DroidCommandCatalogue {
  * when the owner edits them, not while a menu is open.
  */
 export function createDroidCommandCatalogue(options: DroidCommandCatalogueOptions = {}): DroidCommandCatalogue {
-  const { command = 'droid', lister = listDroidCommands, now = Date.now } = options;
+  const { command = 'droid', daemon, lister = listDroidCommands, now = Date.now } = options;
   const cached = new Map<string, { commands: DroidSlashCommand[]; expiresAt: number }>();
   const pending = new Map<string, Promise<DroidSlashCommand[]>>();
   let generation = 0;
   return {
-    get(cwd = homedir()) {
+    get(cwd = homedir(), sessionId) {
       const hit = cached.get(cwd);
       if (hit && now() < hit.expiresAt) return Promise.resolve(hit.commands);
       const running = pending.get(cwd);
       if (running) return running;
       const started = generation;
-      const load = lister(typeof command === 'function' ? command() : command, cwd)
+      const askCli = () => lister(typeof command === 'function' ? command() : command, cwd);
+      const source = sessionId && daemon ? daemon.listSlashCommands(sessionId).then(sanitizeDaemonCommands, askCli) : askCli();
+      const load = source
         .then((commands) => {
           if (started === generation) {
             for (const [key, entry] of cached) if (now() >= entry.expiresAt) cached.delete(key);
