@@ -191,7 +191,9 @@ test('Thread shell wires streaming Markdown, retry detail, thought duration, sea
     },
     { entries, rows: presentThread(entries, true) },
   );
-  // Streaming Markdown renders rich blocks during assistant_text_delta without plain-paragraph jumps.
+  // Streaming Markdown renders rich blocks during assistant_text_delta without plain-paragraph jumps,
+  // once the word-by-word reveal has caught up with the text that arrived.
+  await page.waitForFunction(() => /const x = 1;/.test(document.querySelector<HTMLElement>('.wt-stream-copy .md.wt-md pre')?.innerText ?? ''), null, { timeout: 3000 });
   assert.equal(await page.locator('.wt-stream-copy .md.wt-md strong').textContent(), 'bold');
   assert.equal(await page.locator('.wt-stream-copy .md.wt-md code').first().textContent(), 'inline');
   assert.match(await page.locator('.wt-stream-copy .md.wt-md pre').innerText(), /const x = 1;/);
@@ -229,7 +231,8 @@ test('Thread shell wires streaming Markdown, retry detail, thought duration, sea
     w.receive({ t: 'thread.live', workerId: 'worker-1', sessionId: 'session-1', live: { rev: 2, at: 100_000, status: 'idle', working: 'idle', after: 'a1', tools: [] } });
     w.thread.update({ ...w.worker, status: 'idle' }, true);
   });
-  assert.equal(await page.locator('.wt-stream').isVisible(), false);
+  // A reply whose entry never lands stays held briefly after the turn ends, then clears.
+  await page.locator('.wt-stream').waitFor({ state: 'hidden', timeout: 5000 });
   await page.locator('[data-entry="u1"]').hover();
   await page.getByRole('button', { name: 'Rewind conversation to this message' }).click();
   await page.getByText('Restore all files', { exact: true }).click();

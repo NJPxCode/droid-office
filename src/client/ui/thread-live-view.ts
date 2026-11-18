@@ -94,6 +94,25 @@ export function liveFrom(msg: unknown, workerId: string, sessionId: string | und
   };
 }
 
+/**
+ * [previous] with the `thread.stream` append in [msg] put on its stream, or `'stale'` when it is one
+ * for [workerId] and [sessionId] that doesn't fit what is held (watch again for a whole `thread.live`).
+ * Undefined when [msg] is not one for them.
+ */
+export function liveAppend(msg: unknown, workerId: string, sessionId: string | undefined, previous: LiveView | undefined): LiveView | 'stale' | undefined {
+  const m = obj(msg);
+  if (m?.t !== 'thread.stream' || m.workerId !== workerId || m.sessionId !== sessionId) return undefined;
+  const rev = num(m.rev);
+  const base = num(m.base);
+  const from = num(m.from);
+  const text = str(m.text);
+  if (rev === undefined || base === undefined || from === undefined || text === undefined) return undefined;
+  if (previous && rev <= previous.rev) return undefined;
+  const stream = previous?.stream;
+  if (!previous || !stream || previous.rev !== base || stream.text.length !== from) return 'stale';
+  return { ...previous, rev, stream: { ...stream, text: stream.text + text } };
+}
+
 /** Epoch ms an entry was written, once the office sends it. */
 export const entryAt = (entry: ThreadEntry | undefined): number | undefined => num((entry as { at?: unknown } | undefined)?.at);
 
