@@ -16,7 +16,7 @@ export interface QuestionState {
   ask?: WorkerAsk;
   /** What this client sent for earlier questions of the same questionnaire, by 1-based position. */
   answers?: Readonly<Record<number, string>>;
-  /** Whether the questionnaire ends with Droid's terminal Review screen (cloud workers send on the last question). */
+  /** Whether the questionnaire ends with Droid's terminal Review screen (structured AskUser menus send on the last question). */
   hasReview?: boolean;
   enabled: boolean;
   sending: boolean;
@@ -30,7 +30,7 @@ export type QuestionReply = { choice?: number; choices?: number[]; text?: string
 /** Enter right after the next question appears belongs to the previous one, not to this one. */
 const SETTLE_MS = 400;
 
-function feedbackMessage(state: QuestionState, name: string, hasRaw: boolean, at: number, questionCount: number, following?: QuestionStep): string {
+function feedbackMessage(state: QuestionState, name: string, at: number, questionCount: number, following?: QuestionStep): string {
   if (state.sending) return 'Sending your answer…';
   if (state.answered) {
     if (state.menu.review || !following) return `Sent. ${name} is continuing.`;
@@ -38,9 +38,7 @@ function feedbackMessage(state: QuestionState, name: string, hasRaw: boolean, at
     return `Answer sent. Opening question ${at + 2} of ${questionCount}…`;
   }
   if (!state.connected) return 'Disconnected. Your draft is kept. Nothing will be sent automatically.';
-  if (state.supported === false) {
-    return hasRaw ? 'This office version cannot safely submit checkbox answers. Update the host, or use Raw TTY.' : 'This office version cannot safely submit checkbox answers. Update the host.';
-  }
+  if (state.supported === false) return 'This office version cannot safely submit checkbox answers. Update the host.';
   if (!state.current) return 'This question changed or was answered elsewhere. Review the current question before sending.';
   return 'Your draft stays here if you go back to the thread.';
 }
@@ -49,7 +47,7 @@ function feedbackMessage(state: QuestionState, name: string, hasRaw: boolean, at
  * One scrollable answer surface for a whole questionnaire, with pinned navigation and submit
  * controls. It follows the worker from question to question (update) until the series ends.
  */
-export function openQuestionWorkspace(opts: { name: string; state: QuestionState; draft: QuestionDraft; onDraft(): void; reply(value: QuestionReply, menu: Menu): Promise<void>; review(): void; raw?(): void; onClose(): void }) {
+export function openQuestionWorkspace(opts: { name: string; state: QuestionState; draft: QuestionDraft; onDraft(): void; reply(value: QuestionReply, menu: Menu): Promise<void>; review(): void; onClose(): void }) {
   let state = opts.state;
   let key = '';
   let stepsKey = '';
@@ -65,19 +63,6 @@ export function openQuestionWorkspace(opts: { name: string; state: QuestionState
   const keys = h('span.qw-keys', { 'aria-hidden': 'true' }, '1–9 pick · Enter submits');
   const submit = h('button.btn.accent', { type: 'submit' }, 'Submit answer');
   const review = h('button.btn', { type: 'button', onclick: opts.review, hidden: true }, 'Show current question');
-  const raw = opts.raw
-    ? h(
-        'button.btn.ghost',
-        {
-          type: 'button',
-          onclick: () => {
-            modal.close();
-            opts.raw?.();
-          },
-        },
-        'Raw TTY',
-      )
-    : null;
   const back = h('button.btn.ghost', { type: 'button', onclick: () => modal.close() }, 'Back to thread');
   const form = h(
     'form.modal.question-workspace',
@@ -86,7 +71,7 @@ export function openQuestionWorkspace(opts: { name: string; state: QuestionState
     stepBar,
     body,
     h('div.qw-feedback-row', {}, feedback, review),
-    h('footer', {}, h('div.grow.qw-footer-meta', {}, count, keys, raw), back, submit),
+    h('footer', {}, h('div.grow.qw-footer-meta', {}, count, keys), back, submit),
   );
   const modal = openModal(form, {
     size: 'lg',
@@ -125,7 +110,7 @@ export function openQuestionWorkspace(opts: { name: string; state: QuestionState
   const update = (next: QuestionState) => {
     state = next;
     const display = questionPresentation(state.menu, state.entries, state.ask);
-    const asked = questionSteps(state.menu, display, pendingQuestions(state.entries, state.ask), state.answers, state.hasReview ?? true);
+    const asked = questionSteps(state.menu, display, pendingQuestions(state.entries, state.ask), state.answers, state.hasReview ?? false);
     const questionCount = asked.filter((step) => !step.review).length;
     const at = asked.findIndex((step) => step.state === 'current');
     const following = at >= 0 ? asked[at + 1] : undefined;
@@ -167,11 +152,7 @@ export function openQuestionWorkspace(opts: { name: string; state: QuestionState
             h('span.pill', {}, state.menu.review ? 'Ready to submit' : state.menu.multiSelect ? 'Multiple answers' : 'One answer'),
           ),
           h('h3.qw-question', { id: 'qw-question', tabindex: -1 }, display.question),
-          h(
-            'p.qw-instructions',
-            { id: 'qw-instructions' },
-            state.menu.review ? (opts.raw ? 'Check your answers, then submit them to the worker. To edit them, open Raw TTY.' : 'Check your answers, then submit them to the worker.') : `${instructions}. Nothing is sent until you submit.`,
-          ),
+          h('p.qw-instructions', { id: 'qw-instructions' }, state.menu.review ? 'Check your answers, then submit them to the worker.' : `${instructions}. Nothing is sent until you submit.`),
           state.menu.review
             ? pairs.length && pairs.every((pair) => pair.question)
               ? h('dl.qw-review', {}, ...pairs.map((pair) => h('div.qw-review-row', {}, h('dt', {}, pair.question), h('dd', {}, pair.answer || 'No answer'))))
@@ -203,7 +184,7 @@ export function openQuestionWorkspace(opts: { name: string; state: QuestionState
                 }),
               ),
           menuTakesText(state.menu) ? h('div.field.qw-own-answer', {}, h('label', {}, state.menu.multiSelect ? 'Add an answer' : 'Your own answer'), text) : null,
-          !display.complete ? h('p.qw-source-note', {}, opts.raw ? 'Showing the terminal’s readable text. If anything is missing, open Raw TTY.' : 'Showing the question’s readable text.') : null,
+          !display.complete ? h('p.qw-source-note', {}, 'Showing the question’s readable text.') : null,
         ),
       );
       body.scrollTop = 0;
@@ -217,7 +198,7 @@ export function openQuestionWorkspace(opts: { name: string; state: QuestionState
         });
     }
     for (const input of body.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea')) input.disabled = locked();
-    feedback.textContent = feedbackMessage(state, opts.name, Boolean(opts.raw), at, questionCount, following);
+    feedback.textContent = feedbackMessage(state, opts.name, at, questionCount, following);
     review.hidden = state.current || state.sending || state.answered || !state.connected;
     submit.textContent = state.sending ? 'Sending…' : state.menu.review ? 'Submit answers' : following ? 'Submit and continue' : 'Submit answer';
     updateSelection();

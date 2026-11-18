@@ -4,11 +4,10 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { buildSync } from 'esbuild';
 import { browserStatus, closeBrowser, launchBrowser, newIsolatedContext } from '../src/server/whiteboard-browser.js';
-import { readMenu, type Menu } from '../src/shared/asks.js';
+import type { Menu } from '../src/shared/asks.js';
 import type { WorkerAsk } from '../src/shared/protocol.js';
 import type { ThreadEntry } from '../src/shared/worker-thread.js';
 
-// Text transcribed from the owner's two question screenshots, including the terminal's cuts.
 const question = 'What design direction should the web and Android companions follow?';
 const options = [
   'Dense operations console: compact rows, dense hierarchy, strong keyboard support',
@@ -16,27 +15,27 @@ const options = [
   'Attention-first dashboard: summaries and prioritized action cards',
   'Propose a balanced design and show me mockups before implementation',
 ];
-const single = readMenu([
-  '  companions follow?',
-  '',
-  '  1. Dense operations console: compact rows,',
-  '  2. Conversation-first: agent sidebar and clean chat',
-  '  3. Attention-first dashboard: summaries and',
-  '  4. Propose a balanced design and show me',
-  '  Or type your own answer...',
-  '',
-  '  Space/Enter/1-9 Select',
-])!;
-const multiple = readMenu([
-  '  What does managing agents simultaneously primarily mean to you?',
-  '  1. [ ] Persistent roster with live status while working in one conversation',
-  '  2. [x] Several conversations or terminals visible side by side on larger screens',
-  '  3. [ ] Select multiple agents to send instructions, stop, resume, or dismiss',
-  '  4. [ ] One attention inbox for questions, approvals, failures, and finished work',
-  '  [ ] Or type your own answer...',
-  '  Submit',
-  '  Space/Enter/1-9 Toggle',
-])!;
+const single: Menu = {
+  question: 'companions follow?',
+  choices: [
+    { number: 1, label: 'Dense operations console: compact rows,' },
+    { number: 2, label: 'Conversation-first: agent sidebar and clean chat' },
+    { number: 3, label: 'Attention-first dashboard: summaries and' },
+    { number: 4, label: 'Propose a balanced design and show me' },
+  ],
+  freeText: true,
+};
+const multiple: Menu = {
+  question: 'What does managing agents simultaneously primarily mean to you?',
+  choices: [
+    { number: 1, label: 'Persistent roster with live status while working in one conversation', selected: false },
+    { number: 2, label: 'Several conversations or terminals visible side by side on larger screens', selected: true },
+    { number: 3, label: 'Select multiple agents to send instructions, stop, resume, or dismiss', selected: false },
+    { number: 4, label: 'One attention inbox for questions, approvals, failures, and finished work', selected: false },
+  ],
+  freeText: true,
+  multiSelect: true,
+};
 const entries: ThreadEntry[] = [
   { id: 'ask', seq: 1, role: 'assistant', kind: 'tool', name: 'AskUser', input: JSON.stringify({ questionnaire: `1. [question] ${question}\n[topic] Design direction\n${options.map((option) => `[option] ${option}`).join('\n')}` }) },
 ];
@@ -68,7 +67,6 @@ test('answer workspace: full text, explicit selection, responsive scrolling and 
             state: w.state,
             draft: w.draft,
             onDraft() {},
-            raw() {},
             async reply(value: unknown, menu: Menu) {
               w.replies.push({ value, menu });
             },
@@ -96,6 +94,7 @@ test('answer workspace: full text, explicit selection, responsive scrolling and 
     const page = await pageFor(single, width, height, entries);
     assert.equal(await page.locator('.qw-question').textContent(), question);
     assert.deepEqual(await page.locator('.qw-choice-copy').allTextContents(), options);
+    assert.equal(await page.getByRole('button', { name: /raw tty/i }).count(), 0);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
     if (width <= 600) {
       const dialog = await page.locator('.question-workspace').boundingBox();
@@ -124,18 +123,14 @@ test('answer workspace: full text, explicit selection, responsive scrolling and 
     assert.deepEqual(await page.evaluate(() => (window as any).replies.map((reply: any) => reply.value)), [{ choice: 1 }]);
   }
   const capturedQuestion = "Install the analytics plugin on example.com for droid-office? It's free token-usage analytics across your agent sessions.";
-  const capturedMenu = readMenu([
-    '  Ask User',
-    '',
-    "  Install the analytics plugin on example.com for droid-office? It's free token-usage analytics",
-    '  across your agent sessions.',
-    '',
-    '  1. Yes, install it',
-    '  2. No, skip',
-    '  Or type your own answer...',
-    '',
-    '  Space/Enter/1-9 Select',
-  ])!;
+  const capturedMenu: Menu = {
+    question: capturedQuestion,
+    choices: [
+      { number: 1, label: 'Yes, install it' },
+      { number: 2, label: 'No, skip' },
+    ],
+    freeText: true,
+  };
   for (const [width, height] of [
     [1440, 900],
     [1024, 700],
@@ -205,39 +200,13 @@ test('answer workspace: full text, explicit selection, responsive scrolling and 
   await page.getByRole('button', { name: 'Submit answer', exact: true }).click();
   assert.equal(await page.evaluate(() => (window as any).replies.at(-1).menu.question), single.question);
   assert.deepEqual(await page.evaluate(() => (window as any).replies.at(-1).value), { choice: 3 });
-  const review = readMenu(readFileSync(new URL('../android/app/src/test/resources/askuser-1.7.1-review.txt', import.meta.url), 'utf8').split('\n'))!;
-  for (const [width, height] of [
-    [1440, 900],
-    [1024, 700],
-    [390, 844],
-  ]) {
-    const final = await pageFor(review, width, height);
-    assert.deepEqual(await final.locator('.qw-review dt').allTextContents(), ['Which hypervisor should we use?', 'Which Windows licence should we use?', 'How should agents connect?']);
-    assert.deepEqual(await final.locator('.qw-review dd').allTextContents(), ['UTM', 'Evaluation', 'SSH']);
-    assert.equal(await final.locator('input, textarea').count(), 0);
-    assert.equal(await final.evaluate(() => (window as any).replies.length), 0, 'opening review never submits');
-    const submit = final.getByRole('button', { name: 'Submit answers', exact: true });
-    assert.equal(await submit.isEnabled(), true);
-    await final.evaluate(() => {
-      const w = window as any;
-      w.dialog.update({ ...w.state, enabled: false, current: false });
-    });
-    assert.equal(await submit.isDisabled(), true, 'changed review blocks submission');
-    await final.evaluate(() => {
-      const w = window as any;
-      w.dialog.update(w.state);
-    });
-    await submit.click();
-    assert.deepEqual(await final.evaluate(() => (window as any).replies.map((reply: any) => reply.value)), [{ choice: 1 }]);
-  }
 });
 
-test('answer workspace: one window walks a whole questionnaire, by pointer or keyboard', { skip: status.installed ? false : `Chromium is not installed in ${status.path}` }, async (t) => {
+test('answer workspace: one window walks a structured questionnaire without a terminal review step', { skip: status.installed ? false : `Chromium is not installed in ${status.path}` }, async (t) => {
   const browser = await launchBrowser();
   t.after(closeBrowser);
   const bundle = buildSync({ entryPoints: [fileURLToPath(new URL('../src/client/ui/question-workspace.ts', import.meta.url))], bundle: true, format: 'iife', globalName: 'QuestionUI', write: false, target: 'es2022' }).outputFiles[0].text;
   const css = readFileSync(new URL('../src/client/style.css', import.meta.url), 'utf8');
-  // The questionnaire behind the captured review screen, as Droid's hook reports it.
   const ask: WorkerAsk = {
     kind: 'question',
     questions: [
@@ -246,10 +215,32 @@ test('answer workspace: one window walks a whole questionnaire, by pointer or ke
       { question: 'How should agents connect?', topic: 'Agent-access', options: ['SSH', 'RDP'], multiSelect: false },
     ],
   };
-  const first = readMenu(['  Which hypervisor should we use?', '', '  1. UTM', '  2. Parallels', '  Or type your own answer...', '', '  Space/Enter/1-9 Select'])!;
-  const second = readMenu(['  Which Windows licence should we use?', '  1. [ ] Evaluation', '  2. [ ] Pro', '  3. [ ] Enterprise', '  [ ] Or type your own answer...', '  Submit', '  Space/Enter/1-9 Toggle'])!;
-  const third = readMenu(['  How should agents connect?', '', '  1. SSH', '  2. RDP', '  Or type your own answer...', '', '  Space/Enter/1-9 Select'])!;
-  const review = readMenu(readFileSync(new URL('../android/app/src/test/resources/askuser-1.7.1-review.txt', import.meta.url), 'utf8').split('\n'))!;
+  const first: Menu = {
+    question: 'Which hypervisor should we use?',
+    choices: [
+      { number: 1, label: 'UTM' },
+      { number: 2, label: 'Parallels' },
+    ],
+    freeText: true,
+  };
+  const second: Menu = {
+    question: 'Which Windows licence should we use?',
+    choices: [
+      { number: 1, label: 'Evaluation', selected: false },
+      { number: 2, label: 'Pro', selected: false },
+      { number: 3, label: 'Enterprise', selected: false },
+    ],
+    freeText: true,
+    multiSelect: true,
+  };
+  const third: Menu = {
+    question: 'How should agents connect?',
+    choices: [
+      { number: 1, label: 'SSH' },
+      { number: 2, label: 'RDP' },
+    ],
+    freeText: true,
+  };
   for (const [width, height] of [
     [1024, 700],
     [390, 844],
@@ -273,7 +264,6 @@ test('answer workspace: one window walks a whole questionnaire, by pointer or ke
           state: w.state,
           draft: w.draft,
           onDraft() {},
-          raw() {},
           review() {},
           async reply(value: unknown) {
             w.replies.push(value);
@@ -282,7 +272,6 @@ test('answer workspace: one window walks a whole questionnaire, by pointer or ke
             w.closes++;
           },
         });
-        // What the dashboard pane does once an answer lands, then when the worker shows its next menu.
         w.sent = (answers: Record<number, string>) => {
           w.state = { ...w.state, answers, answered: true, enabled: false };
           w.dialog.update(w.state);
@@ -299,11 +288,11 @@ test('answer workspace: one window walks a whole questionnaire, by pointer or ke
     const steps = () => page.locator('.qw-step').evaluateAll((nodes) => nodes.map((node) => [node.querySelector('.qw-step-label')?.textContent, node.getAttribute('data-state'), node.querySelector('.qw-step-answer')?.textContent ?? null]));
     const replies = () => page.evaluate(() => (window as any).replies);
     assert.equal(await page.locator('.qw-steps').isVisible(), true);
+    assert.equal(await page.getByRole('button', { name: /raw tty/i }).count(), 0);
     assert.deepEqual(await steps(), [
       ['Hypervisor', 'current', 'Now'],
       ['Windows-licence', 'upcoming', null],
       ['Agent-access', 'upcoming', null],
-      ['Review', 'upcoming', null],
     ]);
     assert.equal(await page.locator('.qw-question-meta .eyebrow').textContent(), 'Question 1 of 3');
     await page.waitForFunction(() => (document.activeElement as HTMLInputElement | null)?.value === '1');
@@ -320,7 +309,6 @@ test('answer workspace: one window walks a whole questionnaire, by pointer or ke
       ['Hypervisor', 'done', 'Parallels'],
       ['Windows-licence', 'current', 'Now'],
       ['Agent-access', 'upcoming', null],
-      ['Review', 'upcoming', null],
     ]);
     assert.equal(await page.locator('.qw-feedback').textContent(), 'Answer sent. Opening question 2 of 3…');
     assert.equal(await page.getByRole('button', { name: 'Submit and continue' }).isDisabled(), true);
@@ -342,28 +330,11 @@ test('answer workspace: one window walks a whole questionnaire, by pointer or ke
     await page.evaluate((menu) => (window as any).next(menu), third);
     assert.deepEqual(
       (await steps()).map((step) => step[1]),
-      ['done', 'done', 'current', 'upcoming'],
+      ['done', 'done', 'current'],
     );
     assert.equal(await page.locator('.qw-step').nth(1).locator('.qw-step-answer').textContent(), 'Evaluation, Enterprise');
     await page.locator('input[value="1"]').check();
-    await page.getByRole('button', { name: 'Submit and continue' }).click();
-    assert.deepEqual((await replies()).at(-1), { choice: 1 });
-    await page.evaluate(() => (window as any).sent({ 1: 'Parallels', 2: 'Evaluation, Enterprise', 3: 'SSH' }));
-    assert.equal(await page.locator('.qw-feedback').textContent(), 'Answer sent. Opening the review…');
-
-    // The review lists the terminal's own summary; Enter on its heading does not submit.
-    await page.evaluate((menu) => (window as any).next(menu), review);
-    assert.deepEqual(await steps(), [
-      ['Hypervisor', 'done', 'UTM'],
-      ['Windows-licence', 'done', 'Evaluation'],
-      ['Agent-access', 'done', 'SSH'],
-      ['Review', 'current', 'Now'],
-    ]);
-    await page.waitForFunction(() => document.activeElement?.id === 'qw-question');
-    await page.waitForTimeout(450);
-    await page.keyboard.press('Enter');
-    assert.equal((await replies()).length, 3);
-    await page.getByRole('button', { name: 'Submit answers', exact: true }).click();
+    await page.getByRole('button', { name: 'Submit answer', exact: true }).click();
     assert.deepEqual((await replies()).at(-1), { choice: 1 });
     await page.evaluate(() => (window as any).sent({ 1: 'Parallels', 2: 'Evaluation, Enterprise', 3: 'SSH' }));
     assert.equal(await page.locator('.qw-feedback').textContent(), 'Sent. Pixel is continuing.');

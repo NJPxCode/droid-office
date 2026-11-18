@@ -17,7 +17,6 @@ export interface LiveSettings {
   model?: string;
   modelName?: string;
   reasoningEffort?: string;
-  interactionMode?: string;
 }
 
 export interface LiveView {
@@ -35,8 +34,6 @@ export interface LiveView {
   tools: LiveTool[];
   waiting?: { kind: string; toolId?: string };
   settings?: LiveSettings;
-  /** Droid's side chat (/btw) as the terminal shows it, while it is open. */
-  side?: { text: string };
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
@@ -50,7 +47,6 @@ function settingsOf(raw: unknown): LiveSettings | undefined {
     model: str(s.model),
     modelName: str(s.modelName),
     reasoningEffort: str(s.reasoningEffort),
-    interactionMode: str(s.interactionMode),
   };
 }
 
@@ -72,7 +68,6 @@ export function liveFrom(msg: unknown, workerId: string, sessionId: string | und
   const streamKind = stream?.kind === 'thinking' || stream?.kind === 'text' ? stream.kind : undefined;
   const streamText = str(stream?.text);
   const waiting = obj(live.waiting);
-  const sideText = str(obj(live.side)?.text);
   const tools = Array.isArray(live.tools)
     ? live.tools.flatMap((raw): LiveTool[] => {
         const t = obj(raw);
@@ -96,7 +91,6 @@ export function liveFrom(msg: unknown, workerId: string, sessionId: string | und
     tools,
     ...(waiting ? { waiting: { kind: str(waiting.kind) ?? 'other', toolId: str(waiting.toolId) } } : {}),
     settings: settingsOf(live.settings),
-    ...(sideText !== undefined ? { side: { text: sideText } } : {}),
   };
 }
 
