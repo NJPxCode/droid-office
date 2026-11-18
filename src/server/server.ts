@@ -209,6 +209,7 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
   };
   let isAirgapped = () => Boolean(readSetupFile(cfg.dataDir)?.airgapped);
   let getFactoryKey: () => string | undefined = () => undefined;
+  let factoryKeyChanged = () => {};
   const localDaemon =
     options.localDaemon ??
     new LocalDaemon({
@@ -493,7 +494,10 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
   const factory = mountFactory({
     paused: readSetupFile(cfg.dataDir)?.airgapped,
     dataDir: cfg.dataDir,
-    broadcast: (state) => broadcast({ t: 'factory', state }),
+    broadcast: (state) => {
+      broadcast({ t: 'factory', state });
+      factoryKeyChanged();
+    },
     toast: (text, level) => toastAll(text, level),
     hostedWorkers: () => {
       const activeWorkers: WorkerInfo[] = [];
@@ -667,6 +671,7 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
   const setup = mountSetup({
     dataDir: cfg.dataDir,
     agentCmd: cfg.agentCmd,
+    apiKey: () => getFactoryKey(),
     customModels: () =>
       readDroidModels()
         .models.filter((m) => m.custom && !cannotRun(subscriptions.availability(m.id)))
@@ -694,6 +699,13 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
     },
   });
   isAirgapped = () => Boolean(setup.state().airgapped);
+  let checkedKey = getFactoryKey();
+  factoryKeyChanged = () => {
+    const key = getFactoryKey();
+    if (key === checkedKey) return;
+    checkedKey = key;
+    setup.message('office', { t: 'setup.check' });
+  };
   // DroidProxy, and the Claude, ChatGPT and other subscriptions workers run on through it.
   let subscriptionsSent = '';
   const subscriptions = mountSubscriptions({

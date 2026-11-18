@@ -64,6 +64,19 @@ const DOCTOR_OUT = JSON.stringify({
   ],
 });
 
+/** droid 1.14.0 with an empty HOME and FACTORY_API_KEY set: the key passes auth and skips the WorkOS probe. */
+const DOCTOR_KEY = JSON.stringify({
+  generatedAt: '2026-11-18T17:14:37.994Z',
+  timeoutMs: 10000,
+  ok: true,
+  results: [
+    { id: 'env.info', category: 'environment', label: 'Droid environment', status: 'pass', detail: 'v1.14.0 on darwin arm64 (bun 1.4.4)' },
+    { id: 'auth.credentials', category: 'auth', label: 'Credential storage read', status: 'pass', detail: 'using FACTORY_API_KEY (overrides any stored login session)', durationMs: 0 },
+    { id: 'auth.workosRefresh', category: 'auth', label: 'WorkOS token refresh endpoint', status: 'skip', detail: 'Skipped because FACTORY_API_KEY auth does not use WorkOS.' },
+    { id: 'auth.verify', category: 'auth', label: 'Auth verification', status: 'pass', detail: 'authenticated to Factory via FACTORY_API_KEY environment variable', durationMs: 435 },
+  ],
+});
+
 test('doctor: signed in names the account; signed out is a warn on auth.verify', () => {
   assert.deepEqual(parseDoctor(DOCTOR_IN), { signedIn: true, account: 'o***@example.com' });
   assert.deepEqual(parseDoctor(DOCTOR_OUT), { signedIn: false, account: null });
@@ -416,4 +429,27 @@ test('stopping setup while its initial Droid probe is in flight does not recreat
 
   assert.equal(existsSync(dataDir), false, 'stopped setup never recreates dataDir');
   assert.deepEqual(toasts, []);
+});
+
+test("the office's Factory API key counts as signed in, as the daemon runs workers with it", async (t) => {
+  let key: string | undefined = ' fk-test ';
+  const seen: (string | undefined)[] = [];
+  const run: Runner = async (_cmd, args, o) => {
+    if (args[0] === '--version') return { code: 0, stdout: '1.14.0\n', stderr: '' };
+    if (args[0] === 'doctor') {
+      seen.push(o?.env?.FACTORY_API_KEY);
+      return { code: 0, stdout: o?.env?.FACTORY_API_KEY === 'fk-test' ? DOCTOR_KEY : DOCTOR_OUT, stderr: '' };
+    }
+    return { code: 1, stdout: '', stderr: 'unexpected' };
+  };
+  const o = office(t, { extra: { run, apiKey: () => key } });
+  await until(() => o.last().droid.signedIn === true && o.last().droid.busy === null);
+  assert.equal(droidReady(o.last()), true);
+  assert.equal(o.last().droid.account, null);
+
+  key = undefined;
+  o.setup.message('office', { t: 'setup.check' });
+  await until(() => o.last().droid.signedIn === false && o.last().droid.busy === null);
+  assert.equal(droidReady(o.last()), false);
+  assert.deepEqual(seen.slice(-2), ['fk-test', undefined]);
 });
