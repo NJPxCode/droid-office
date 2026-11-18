@@ -141,10 +141,17 @@ export interface WorkerInfo {
   /** Latest line of meaningful activity (e.g. last prompt or tool). */
   activity?: string;
   /**
-   * What it is waiting on the owner for, from its hooks: the whole AskUser questionnaire, or the tool
-   * call a permission prompt is about. Set while it needs input; the answer still goes into its terminal.
+   * What it is waiting on the owner for: the whole AskUser questionnaire, or the tool call a
+   * permission prompt is about.
    */
   ask?: WorkerAsk;
+  /**
+   * The waiting AskUser question to answer next, as a menu `worker.answer` takes, while the
+   * office holds that AskUser from its local or cloud daemon. Not saved.
+   */
+  menu?: Menu;
+  /** Pending steering and after-turn messages held for this worker's session. */
+  queue?: WorkerQueueState;
   /** What its latest tool call is, for the worker to act out while it works. */
   action?: WorkerAction;
   /**
@@ -201,6 +208,32 @@ export interface AskedQuestion {
 
 /** A worker's pending ask (see WorkerInfo.ask). `sub` is set when a Task subagent in its terminal asks. */
 export type WorkerAsk = { kind: 'question'; questions: AskedQuestion[]; sub?: true } | { kind: 'permission'; tool: string; command?: string; file?: string; risk?: string; summary?: string; sub?: true };
+
+export type QueuedMessageDelivery = 'next_step' | 'steering' | 'after_turn';
+export type QueuedMessageSource = 'outbox' | 'droid';
+
+export interface QueuedMessageItem {
+  /** Daemon requestId when backed by droid-daemon (`resolveQueuedUserMessage`). */
+  id?: string;
+  /** 1-based position across all pending messages on this worker. */
+  index: number;
+  text: string;
+  /** True when the queued message carries image attachments. */
+  hasImage?: boolean;
+  /** True when only a single-line preview is known. */
+  preview: boolean;
+  moreLines: number;
+  source: QueuedMessageSource;
+  /** next_step: office outbox; steering: EndOfTurn; after_turn: EndOfLoop. */
+  delivery: QueuedMessageDelivery;
+}
+
+export interface WorkerQueueState {
+  count: number;
+  items: QueuedMessageItem[];
+  moreSteering: number;
+  moreQueued: number;
+}
 
 /** The glyph a team wears beside its accent color, so two teams never differ by color alone. */
 export type TeamEmblem = 'chevron' | 'star' | 'diamond' | 'bolt' | 'ring' | 'cross' | 'hex' | 'triangle';
@@ -869,8 +902,8 @@ type ClientMessage =
   | { t: 'term.input'; workerId: string; data: string }
   | { t: 'thread.read'; workerId: string; request: string; before?: number; child?: string }
   | { t: 'thread.watch'; workerId: string; on: boolean; child?: string }
-  /** Drives Droid's pending-message review: a 1-based index, optionally checked by group and text. */
-  | { t: 'worker.queue'; workerId: string; action: 'promote' | 'delete' | 'clear'; index?: number; group?: 'steering' | 'queued'; text?: string }
+  /** Drives Droid's pending-message queue: by daemon `id` (`requestId`) or 1-based `index`, optionally checked by group and text. */
+  | { t: 'worker.queue'; workerId: string; action: 'promote' | 'delete' | 'clear'; id?: string; index?: number; group?: 'steering' | 'queued'; text?: string }
   /**
    * Rewinds before a user ThreadEntry; restore defaults to conversation only. `choose` restores only
    * `files` (paths as the Thread knows them) from Droid's "Choose files to restore..." list.
