@@ -1,7 +1,7 @@
 import { stat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { WorkerAsk, WorkerStatus } from '../shared/protocol.js';
-import { liveStatus, textSignature, type ThreadLive, type ThreadLiveTool, type ThreadLiveWorking, type ThreadSessionSettings } from '../shared/thread-live.js';
+import { liveStatus, outputTail, textSignature, type ThreadLive, type ThreadLiveTool, type ThreadLiveWorking, type ThreadSessionSettings } from '../shared/thread-live.js';
 import type { ThreadEntry } from '../shared/worker-thread.js';
 import type { ActiveToolCall } from './worker-queue.js';
 
@@ -45,7 +45,6 @@ export interface ThreadLiveInputs {
 
 /** How often a session's settings file is looked at again while it's watched. */
 const SETTINGS_RECHECK_MS = 500;
-const OUTPUT_LINES = 40;
 /** Matches the activity label for conversation compaction (worker-runtime/hooks.ts). */
 const COMPACTING = /compacting/i;
 
@@ -194,12 +193,7 @@ export class ThreadLiveTracker {
         startedAt: dt?.startedAt ?? entry.at ?? this.now(),
         phase: 'running',
       };
-      if (dt?.output !== undefined) {
-        const lines = dt.output.split('\n');
-        tool.output = lines.slice(-OUTPUT_LINES).join('\n');
-        const more = dt.more ?? (lines.length > OUTPUT_LINES ? lines.length - OUTPUT_LINES : undefined);
-        if (more !== undefined && more > 0) tool.more = more;
-      }
+      if (dt?.output !== undefined) Object.assign(tool, outputTail(dt.output, dt.more));
       out.push(tool);
     }
     for (const dt of daemon.tools ?? []) {
@@ -213,12 +207,7 @@ export class ThreadLiveTracker {
         phase: 'running',
         ...(dt.session ? { session: dt.session } : {}),
       };
-      if (dt.output !== undefined) {
-        const lines = dt.output.split('\n');
-        tool.output = lines.slice(-OUTPUT_LINES).join('\n');
-        const more = dt.more ?? (lines.length > OUTPUT_LINES ? lines.length - OUTPUT_LINES : undefined);
-        if (more !== undefined && more > 0) tool.more = more;
-      }
+      if (dt.output !== undefined) Object.assign(tool, outputTail(dt.output, dt.more));
       out.push(tool);
     }
     return out;

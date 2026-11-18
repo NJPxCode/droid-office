@@ -117,6 +117,15 @@ test('daemon notifications track TodoWrite across compaction, clear llm_retry on
   assert.equal(worker.retryState, undefined, 'progress clears llm_retry');
   assert.equal(calls.filter((c) => c === 'streamed').length, 2, 'each thinking and reply delta tells the live stream');
 
+  // A running command keeps far more than a screenful of its latest output.
+  const progress = Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n');
+  send({ type: 'tool_progress_update', toolUseId: 'run-1', toolName: 'Execute', update: { output: progress } });
+  const running = worker.liveTools.get('run-1');
+  assert.equal(running?.output?.split('\n').length, 400);
+  assert.ok(running?.output?.startsWith('line 101\n') && running.output.endsWith('\nline 500'));
+  assert.equal(running?.more, 100);
+  worker.liveTools.delete('run-1');
+
   // 2. TodoWrite updates worker.info.todos on non-error tool_result and survives session_compacted!
   send({
     type: 'tool_call',

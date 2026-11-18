@@ -21,6 +21,7 @@ import { withToken } from '../token';
 import { applyHorizontalScrollCue, measureHorizontalScrollCue, type HorizontalScrollCueMeasurement } from './code-highlight';
 import { claimEscape, h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
+import { followsTail, keepAtTail } from './thread-live-output';
 import { liveAppend, liveFrom, entryAt, entryTook, type LiveTool, type LiveView } from './thread-live-view';
 import { openThreadCopy } from './thread-copy';
 import { mountThreadSettings } from './thread-settings';
@@ -1627,29 +1628,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     liveMd = undefined;
   };
 
-  /** The live thinking block follows its own newest line until the owner scrolls back up inside it. */
-  const thinkingTail = (body: HTMLElement) => {
-    let ownerAt = -Infinity;
-    const owner = () => {
-      ownerAt = performance.now();
-    };
-    body.addEventListener('wheel', owner, { passive: true });
-    body.addEventListener('touchmove', owner, { passive: true });
-    body.addEventListener('pointerdown', owner);
-    let last = 0;
-    body.addEventListener('scroll', () => {
-      const delta = body.scrollTop - last;
-      last = body.scrollTop;
-      const distance = body.scrollHeight - body.scrollTop - body.clientHeight;
-      if (performance.now() - ownerAt < 400 && delta < -1 && distance > 1) body.dataset.tail = 'off';
-      else if (distance <= 8) delete body.dataset.tail;
-    });
-    return body;
-  };
-  const followThinking = (body: HTMLElement) => {
-    if (body.dataset.tail !== 'off') body.scrollTop = body.scrollHeight;
-  };
-
   type ShownStream = { kind: 'thinking' | 'text'; text: string; since: number; after: string };
   /**
    * A stream that ended before its entry landed in the transcript (the daemon writes a message once it
@@ -1750,7 +1728,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
               // Marked as the office's own opening so the toggle it fires doesn't read as the owner inspecting it.
               { open: !thinkingHidden, 'data-expected-open': String(!thinkingHidden), class: thinkingHidden ? 'is-textless' : '' },
               h('summary', {}, h('span.wt-thought-label.wt-shimmer', {}, 'Thinking'), time, chevron()),
-              thinkingHidden ? null : thinkingTail(h('div.wt-thinking-text', {}, shown)),
+              thinkingHidden ? null : followsTail(h('div.wt-thinking-text', {}, shown)),
             ),
           );
         } else {
@@ -1773,7 +1751,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       streamNode.replaceChildren(...children);
       updateClamps(streamNode);
       const body = streamNode.querySelector<HTMLElement>('.wt-live-thinking .wt-thinking-text');
-      if (body) followThinking(body);
+      if (body) keepAtTail(body);
     } else if (grew && stream) {
       liveText = shown;
       if (stream.kind === 'thinking') {
@@ -1783,7 +1761,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
           const node = body.firstChild;
           if (node instanceof Text && body.childNodes.length === 1 && shown.startsWith(node.data)) node.appendData(shown.slice(node.data.length));
           else body.textContent = shown;
-          followThinking(body);
+          keepAtTail(body);
         }
       } else {
         const copy = streamNode.querySelector<HTMLElement>('.wt-stream-copy');

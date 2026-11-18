@@ -7,6 +7,7 @@ import { highlightLine } from './code-highlight';
 import { h, openModal } from './dom';
 import { icon } from './icons';
 import { windowHeader } from './kit';
+import { followsTail, keepAtTail } from './thread-live-output';
 import { firstDiffTargetLine, pairIntralineSpans, renderDiffLineCode, renderToolCodeSection, resolveDelegatedWorkerId, toWorkspaceRelPath, type ThreadCardRenderContext } from './thread-diff-view';
 import { summaryGroup, toolRow, type ToolRowState } from './thread-tool-row';
 import { toolGlyph, type ToolGlyph } from './thread-tool-icons';
@@ -36,8 +37,6 @@ export interface ThreadActivityContext extends ThreadCardRenderContext {
 
 /** Factory folds an Execute body to this many lines (`ceil(200 / (13 * 1.55)) + 1`) until expanded. */
 const COMMAND_CLAMP_LINES = 11;
-/** After this long a running command says it can be opened to watch it. */
-const PROGRESS_HINT_MS = 15_000;
 const EXIT_OK = /\n?\[Process exited with code 0\]\s*$/;
 const COPY_RESET_MS = 2000;
 
@@ -154,7 +153,9 @@ function commandBody(action: ThreadModelAction, entry: ThreadEntry | undefined, 
   const output = commandOutput(action, entry, live, !!images);
   const pre = h('pre.wt-cmd-out', { 'data-command': command, ...(working ? { 'data-live-tool': action.id } : {}) });
   const count = fillCommand(pre, command, output, working, live?.more);
-  const clamp = h('div.wt-cmd-clamp', { class: count > COMMAND_CLAMP_LINES ? 'is-clamped' : '' }, pre);
+  // A running command's output is a scrolling box that follows its newest line rather than a fold.
+  const clamp = h('div.wt-cmd-clamp', { class: working ? 'is-live' : count > COMMAND_CLAMP_LINES ? 'is-clamped' : '' }, working ? followsTail(pre) : pre);
+  if (working) requestAnimationFrame(() => keepAtTail(pre));
   const expand = h('button.wt-cmd-expand', { type: 'button', 'aria-label': 'Expand command output' }, toolGlyph('chevronDown', 12));
   expand.addEventListener('click', () => {
     clamp.classList.remove('is-clamped');
@@ -171,7 +172,8 @@ export function refreshLiveOutput(root: ParentNode, live: (id: string) => Thread
     const view = live(pre.dataset.liveTool ?? '');
     if (view?.output === undefined) continue;
     const count = fillCommand(pre, pre.dataset.command ?? '', view.output.replace(EXIT_OK, '').replace(/\s+$/, ''), true, view.more);
-    pre.parentElement?.classList.toggle('is-clamped', count > COMMAND_CLAMP_LINES && !pre.parentElement.dataset.expanded);
+    if (pre.parentElement?.classList.contains('is-live')) keepAtTail(pre);
+    else pre.parentElement?.classList.toggle('is-clamped', count > COMMAND_CLAMP_LINES && !pre.parentElement.dataset.expanded);
   }
 }
 
@@ -180,23 +182,12 @@ function executeRow(action: ThreadModelAction, entry: ThreadEntry | undefined, c
   const live = ctx.live?.(action.id);
   const state = rowState(action, rowLive, live);
   const images = entry ? ctx.pictures(entry, action.title, command, ctx.owner) : null;
-  let hint: HTMLElement | null = null;
-  // `at` arrives with the live Thread layer (ThreadEntry.at); older offices don't send it.
-  const started = live?.startedAt ?? entry?.at;
-  if (state === 'working' && started !== undefined) {
-    hint = h('span.wt-tr-hint', { hidden: true }, 'Click to see progress');
-    const show = () => {
-      if (hint) hint.hidden = false;
-    };
-    const wait = PROGRESS_HINT_MS - (Date.now() - started);
-    if (wait <= 0) show();
-    else setTimeout(show, wait);
-  }
   return toolRow({
     id: action.id,
     scope: ctx.owner.id,
     toggles: ctx.userToggles,
-    open: !!ctx.toolsOpen,
+    // A running command shows its output without a click.
+    open: !!ctx.toolsOpen || state === 'working',
     onLayoutChange: ctx.onLayoutChange,
     icon: 'terminal',
     verb: nested ? 'Ran' : '',
@@ -205,7 +196,6 @@ function executeRow(action: ThreadModelAction, entry: ThreadEntry | undefined, c
     state,
     failedLabel: action.failedLabel ?? 'Command failed',
     hideFailedWhenOpen: true,
-    inlineSubtitle: hint,
     dense: nested,
     headerEnd: copyButton(() => `$ ${command}\n${commandOutput(action, entry, ctx.live?.(action.id), !!images)}`.trimEnd()),
     body: () => commandBody(action, entry, ctx, images),

@@ -286,7 +286,8 @@ test('live tool output and nested reading positions survive canonical updates, a
 
   const command: ThreadEntry = { id: 'tool:cmd', seq: 71, role: 'assistant', kind: 'tool', name: 'Execute', input: JSON.stringify({ command: 'npm test', summary: 'Run checks' }) };
   await push([...entries, command]);
-  await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').click();
+  // A running command opens on its own.
+  assert.equal(await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').getAttribute('aria-expanded'), 'true');
   await page.evaluate(() => {
     (window as any).receive({
       t: 'thread.live',
@@ -297,7 +298,9 @@ test('live tool output and nested reading positions survive canonical updates, a
   });
   assert.match(await page.locator('.wt-cmd-out').innerText(), /Live output before JSONL result/);
   await push([...entries, { ...command, output: 'Canonical final result' }, { id: 'compaction:done', seq: 72, role: 'system', kind: 'notice', name: 'compaction', text: 'Conversation compacted' }], false);
-  assert.equal(await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').getAttribute('aria-expanded'), 'true');
+  // Once it finishes it folds away like a finished live group, and opens again on a click.
+  assert.equal(await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').getAttribute('aria-expanded'), 'false');
+  await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').click();
   await page.locator('.wt-cmd-out').scrollIntoViewIfNeeded();
   assert.match(await page.locator('.wt-cmd-out').innerText(), /Canonical final result/);
   assert.doesNotMatch(await page.locator('.wt-cmd-out').innerText(), /Live output/);
@@ -602,6 +605,61 @@ test('opens live Factory groups, folds repeats and subagents, and expands long c
   await page.evaluate(() => (window as any).thread.dispose());
   assert.deepEqual(errors, []);
 });
+test('a running command shows its output without a click, follows its newest line, and keeps far more than 40 lines', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountV3Thread(t);
+  const command: ThreadEntry = { id: 'tool:run', seq: 1, role: 'assistant', kind: 'tool', name: 'Execute', input: JSON.stringify({ command: 'npm test', summary: 'Run tests' }) };
+  await page.evaluate(
+    ({ entries, rows }) => {
+      (window as any).receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+    },
+    { entries: [command], rows: presentThread([command], true) },
+  );
+  const live = (rev: number, lines: number) =>
+    page.evaluate(
+      ({ rev, lines }) => {
+        const output = Array.from({ length: lines }, (_, i) => `line ${i + 1}`).join('\n');
+        (window as any).receive({
+          t: 'thread.live',
+          workerId: 'worker-1',
+          sessionId: 'session-1',
+          live: { rev, at: Date.now(), status: 'responding', working: 'executing_tool', after: 'tool:run', tools: [{ id: 'tool:run', name: 'Execute', phase: 'running', startedAt: Date.now(), output }] },
+        });
+      },
+      { rev, lines },
+    );
+  await live(1, 120);
+  const row = page.locator('.wt-tr[data-disclosure="tool:run"]');
+  assert.equal(await row.locator('.wt-tr-trigger').getAttribute('aria-expanded'), 'true', 'open without a click');
+  assert.equal(await row.locator('.wt-tr-hint').count(), 0, 'no "Click to see progress" hint');
+  const pre = row.locator('.wt-cmd-out');
+  await page.waitForFunction(() => {
+    const el = document.querySelector<HTMLElement>('.wt-tr[data-disclosure="tool:run"] .wt-cmd-out');
+    return !!el && el.scrollHeight > el.clientHeight && el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
+  });
+  assert.equal(await row.locator('.wt-cmd-clamp').evaluate((el) => el.classList.contains('is-live') && !el.classList.contains('is-clamped')), true);
+  assert.equal(await row.locator('.wt-cmd-row').count(), 121, 'all 120 lines plus the command');
+
+  // New output arrives: the box follows it.
+  await live(2, 200);
+  const tail = () => pre.evaluate((el) => ({ distance: el.scrollHeight - el.scrollTop - el.clientHeight, last: el.lastElementChild?.textContent }));
+  assert.deepEqual(await tail(), { distance: 0, last: 'line 200' });
+
+  // The owner scrolls up inside it: it stays there while more arrives, then follows again from the end.
+  const box = await pre.boundingBox();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.wheel(0, -200);
+  await page.waitForFunction(() => document.querySelector<HTMLElement>('.wt-tr[data-disclosure="tool:run"] .wt-cmd-out')?.dataset.tail === 'off');
+  await live(3, 260);
+  assert.ok((await tail()).distance > 100, 'stays where the owner scrolled');
+  await pre.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await page.waitForFunction(() => document.querySelector<HTMLElement>('.wt-tr[data-disclosure="tool:run"] .wt-cmd-out')?.dataset.tail === undefined);
+  await live(4, 300);
+  assert.deepEqual(await tail(), { distance: 0, last: 'line 300' });
+  assert.deepEqual(errors, []);
+});
+
 test('renders rich Markdown replies, sticky collapsible Plan Bar, @file workspace autocomplete, and responsive viewports without overflow', { skip: chromium }, async (t) => {
   const { page, errors } = await mountV3Thread(t);
 

@@ -87,3 +87,24 @@ export function textSignature(text: string): string {
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, '');
 }
+
+/** A running tool's output keeps this many of its latest lines, within OUTPUT_CHARS. */
+const OUTPUT_LINES = 400;
+const OUTPUT_CHARS = 24_000;
+
+/** The latest lines of a running tool's output, and how many earlier lines that leaves out. */
+export function outputTail(output: string, more?: number): { output: string; more?: number } {
+  const lines = output.split('\n');
+  let keep = Math.min(lines.length, OUTPUT_LINES);
+  let chars = 0;
+  for (let i = lines.length - 1; i >= lines.length - keep; i--) {
+    chars += lines[i].length + 1;
+    if (chars > OUTPUT_CHARS) {
+      keep = Math.max(1, lines.length - 1 - i);
+      break;
+    }
+  }
+  const kept = lines.slice(-keep).join('\n');
+  const left = (more ?? 0) + lines.length - keep;
+  return { output: kept.length > OUTPUT_CHARS ? kept.slice(-OUTPUT_CHARS) : kept, ...(left > 0 ? { more: left } : {}) };
+}

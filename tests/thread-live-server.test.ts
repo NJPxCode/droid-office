@@ -4,7 +4,25 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { readSessionSettings, ThreadLiveTracker, type ThreadLiveInputs } from '../src/server/thread-live.js';
+import { outputTail } from '../src/shared/thread-live.js';
 import type { ThreadEntry } from '../src/shared/worker-thread.js';
+
+test('outputTail keeps the latest 400 lines within 24,000 characters and counts what it leaves out', () => {
+  const lines = (n: number, width = 5) => Array.from({ length: n }, (_, i) => `${i}`.padStart(width, '0'));
+  assert.deepEqual(outputTail('a\nb'), { output: 'a\nb' });
+  assert.deepEqual(outputTail('a\nb', 3), { output: 'a\nb', more: 3 });
+  const many = outputTail(lines(1000).join('\n'));
+  assert.equal(many.output.split('\n').length, 400);
+  assert.ok(many.output.endsWith('00999'));
+  assert.equal(many.more, 600);
+  const wide = outputTail(lines(300, 199).join('\n'));
+  assert.ok(wide.output.length <= 24_000);
+  assert.equal(wide.output.split('\n').length, 120);
+  assert.equal(wide.more, 180);
+  const huge = outputTail('x'.repeat(30_000));
+  assert.equal(huge.output.length, 24_000);
+  assert.equal(huge.more, undefined);
+});
 
 const entry = (id: string, extra: Partial<ThreadEntry> = {}): ThreadEntry => ({ id, role: 'assistant', kind: 'text', text: 'Earlier', seq: 0, ...extra });
 const base = (): ThreadLiveInputs => ({ sessionId: 'session', status: 'idle', activeTool: new Map() });

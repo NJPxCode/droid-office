@@ -5,7 +5,7 @@ import { FAILS_TO_DESPAIR, outputFailed, toolAction } from '../../shared/actions
 import { officeSays, withoutReminders } from '../../shared/prompts.js';
 import { todoItems, todoProgress } from '../../shared/todos.js';
 import { searchKey, snippet } from '../../shared/search.js';
-import type { ThreadLiveWorking, ThreadSessionSettings } from '../../shared/thread-live.js';
+import { outputTail, type ThreadLiveWorking, type ThreadSessionSettings } from '../../shared/thread-live.js';
 import { record } from '../factory/cloud-stream-messages.js';
 import { buildDaemonQueueState, parseDaemonQueueList } from '../worker-queue.js';
 import type { Worker } from './state.js';
@@ -357,9 +357,9 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
       }
       const rawOut = typeof update.fullOutput === 'string' ? update.fullOutput : typeof update.output === 'string' ? update.output : typeof update.text === 'string' ? update.text : undefined;
       if (rawOut !== undefined) {
-        const lines = rawOut.replace(/\r/g, '').split('\n');
-        lt.output = lines.slice(-40).join('\n');
-        lt.more = lines.length > 40 ? lines.length - 40 : undefined;
+        const tail = outputTail(rawOut.replace(/\r/g, ''));
+        lt.output = tail.output;
+        lt.more = tail.more;
       }
       break;
     }
