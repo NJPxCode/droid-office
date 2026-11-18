@@ -1334,7 +1334,11 @@ export class WorkerManager {
 
   /** Starts every worker that isn't running: nobody should be found asleep at their desk. */
   wakeAll() {
-    for (const w of this.workers.values()) if (!this.running(w.info.id) && !w.info.remote && !this.asleep?.(w.info)) this.resume(w.info.id);
+    for (const w of this.workers.values()) {
+      // Opening or reconnecting a view shouldn't consume an unsent prompt's Retry action.
+      if (w.pendingPrompts.length && daemonStartFailure(w.info)) continue;
+      if (!this.running(w.info.id) && !w.info.remote && !this.asleep?.(w.info)) this.resume(w.info.id);
+    }
   }
 
   /** Keeps a file dropped or pasted into a worker's terminal on this machine; where it is, for the terminal to type. */

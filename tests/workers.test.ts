@@ -34,6 +34,8 @@ test('retry after a daemon start timeout sends the hire prompt and buffered foll
   assert.match(worker.activity ?? '', /^Failed to start: Timed out connecting/);
   assert.equal(worker.prompt, prompt);
   assert.deepEqual(f.daemon.messages, []);
+  workers.wakeAll();
+  assert.equal(worker.status, 'exited', 'reopening the floor leaves Retry available');
 
   f.daemon.beforeInitialize = undefined;
   assert.equal(workers.resume(worker.id), undefined);
