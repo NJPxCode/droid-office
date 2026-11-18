@@ -21,7 +21,7 @@ import { withToken } from '../token';
 import { applyHorizontalScrollCue, measureHorizontalScrollCue, type HorizontalScrollCueMeasurement } from './code-highlight';
 import { claimEscape, h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
-import { followsTail, keepAtTail } from './thread-live-output';
+import { carrySelection, followsTail, keepAtTail } from './thread-live-output';
 import { liveAppend, liveFrom, entryAt, entryTook, type LiveTool, type LiveView } from './thread-live-view';
 import { openThreadCopy } from './thread-copy';
 import { mountThreadSettings } from './thread-settings';
@@ -1696,7 +1696,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       if (!stream) reveal.reset();
     }
     if (!showStream) revealAt = 0;
-    streamNode.hidden = !showStream && !thoughts.length && !pendingTools.length;
+    const hide = !showStream && !thoughts.length && !pendingTools.length;
+    // The owner's selection in a reply that just landed moves onto the recorded entry.
+    if (hide && !streamNode.hidden) carrySelection(streamNode.querySelector('.wt-stream-copy'), () => [...list.querySelectorAll<HTMLElement>('.wt-entry:not(.wt-stream)')].slice(-6));
+    streamNode.hidden = hide;
     streamNode.className = streamNode.hidden ? 'wt-stream' : 'wt-entry assistant text wt-stream';
     if (streamNode.hidden) return;
     const shown = stream ? stream.text.slice(0, reveal.advance(key, stream.text, dt, { join: revealJoin, ended })) : '';

@@ -1145,12 +1145,28 @@ test('a live reply keeps its finished paragraphs in place, so a selection in the
       still: getSelection()!.toString(),
       same: (now as any).marked === true && now.isConnected,
       shown: document.querySelector('.wt-stream .wt-stream-copy')!.textContent!.replace(/\s+/g, ' ').trim(),
+      text,
     };
   });
   assert.equal(result.selected, 'The first paragraph is finished and the owner selects it.');
   assert.equal(result.still, result.selected, 'the selection survives the updates');
   assert.ok(result.same, 'the finished paragraph is the same element after later updates');
   assert.match(result.shown, /And a closing line\.$/);
+
+  // The reply lands in the transcript: the selection moves onto the recorded entry.
+  const landed = [...longEntries(), { id: 'm30', seq: 30, role: 'assistant', kind: 'text', text: result.text }] as ThreadEntry[];
+  const after = await page.evaluate(
+    async ({ entries, rows }) => {
+      const w = window as any;
+      w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+      w.receive({ t: 'thread.live', workerId: 'worker-1', sessionId: 'session-1', live: { rev: 99, at: Date.now(), status: 'responding', working: 'streaming_assistant_message', after: 'm30', tools: [] } });
+      await w.frames(3);
+      const selection = getSelection()!;
+      return { text: selection.toString(), inEntry: !!selection.anchorNode?.parentElement?.closest('[data-entry="m30"]'), streamHidden: document.querySelector<HTMLElement>('.wt-stream')!.hidden };
+    },
+    { entries: landed, rows: presentThread(landed, true) },
+  );
+  assert.deepEqual(after, { text: result.selected, inEntry: true, streamHidden: true });
   assert.deepEqual(errors, []);
 });
 test('live thinking follows its own tail and the bottom, ends as a finished thought until its entry lands, and only the owner scrolling up lets go', { skip: chromium }, async (t) => {
