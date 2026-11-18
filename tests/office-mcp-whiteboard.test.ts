@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import Ajv from 'ajv';
-import { Answers } from '../src/server/answers.js';
 import { closedUnionAt, createOfficeMcp, OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER, type OfficeMcpFloor } from '../src/server/office-mcp/index.js';
 import { Team, type TeamWorkers } from '../src/server/team.js';
 import { Visits } from '../src/server/visits.js';
@@ -86,12 +85,12 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
     setTask() {},
   };
   const team = new Team(workers, { dataDir: dir, dir, git: true, settings: () => settings, toast() {} });
-  const visits = new Visits({ ...workers, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {} });
+  const visits = new Visits({ ...workers, cancelTurn: () => false }, { on: () => settings.visits, emit() {} });
   const renderer = new Renderer();
   const store = new WhiteboardStore(dir, { renderer, readers: () => [OWNER, ...people.map((person) => person.id)] });
   store.start();
   const floor: OfficeMcpFloor = { id: 'floor', name: 'Main', dir, workers, team, visits, whiteboard: store };
-  const mcp = createOfficeMcp({ answers: new Answers(), settings: () => settings, floor: (id) => (workers.get(id) ? floor : undefined) });
+  const mcp = createOfficeMcp({ settings: () => settings, floor: (id) => (workers.get(id) ? floor : undefined) });
   let disconnected: (() => void) | undefined;
   const http = createServer((req, res) => {
     void mcp.handle(req, res);

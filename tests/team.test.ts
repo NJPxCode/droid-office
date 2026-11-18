@@ -1445,10 +1445,10 @@ test('a lead switches its subagent’s model with the words it would type after 
   assert.equal(proxy.body.effort, 'high');
   r.answer({ applied: 'next_launch' });
   assert.equal((await r.call('lead', { action: 'switch_model', worker: 'Pixel', model: 'opus' })).body.applied, 'next_launch');
-  r.answer({ error: 'Droid has a dialog open. Close it in Raw TTY first.' });
+  r.answer({ error: 'The local Droid daemon is disconnected.' });
   const refused = await r.call('lead', { action: 'switch_model', worker: 'Pixel', model: 'opus' });
   assert.equal(refused.status, 409);
-  assert.equal(refused.body.error, 'Pixel: Droid has a dialog open. Close it in Raw TTY first.');
+  assert.equal(refused.body.error, 'Pixel: The local Droid daemon is disconnected.');
 });
 
 test('switching a model checks the worker, the words, the effort and the office’s allowlist before touching the terminal', async (t) => {

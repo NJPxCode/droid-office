@@ -9,7 +9,6 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { Answers } from '../src/server/answers.js';
 import type { GrokWebhookPayload } from '../src/server/grok-webhook.js';
 import { createOfficeMcp, OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER, type OfficeMcpFloor } from '../src/server/office-mcp/index.js';
 import type { OwnerFloor, OwnerOffice, OwnerReply } from '../src/server/office-mcp/owner.js';
@@ -105,7 +104,7 @@ test('overlapping webhook runs read payload-scoped office_inbox items, see acked
   };
 
   const team = new Team(workers, { dataDir: dir, dir, git: false, settings: () => settings, toast() {}, now: () => now });
-  const visits = new Visits({ ...workers, tell: () => undefined, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {}, now: () => now });
+  const visits = new Visits({ ...workers, tell: () => undefined, cancelTurn: () => false }, { on: () => settings.visits, emit() {}, now: () => now });
   const whiteboard = new WhiteboardStore(dir);
   t.after(() => {
     team.stop();
@@ -129,7 +128,6 @@ test('overlapping webhook runs read payload-scoped office_inbox items, see acked
   const hostname = 'office.example.ts.net';
   const localFloor: OfficeMcpFloor = { ...floor, name: floor.def.name };
   const localMcp = createOfficeMcp({
-    answers: new Answers(),
     remote: office,
     floor: (id) => (people.has(id) ? localFloor : undefined),
     settings: () => settings,
@@ -141,7 +139,6 @@ test('overlapping webhook runs read payload-scoped office_inbox items, see acked
   const remoteOrigin = await listen(
     t,
     remoteMcpListener({
-      answers: new Answers(),
       remote: office,
       remoteTransport: { hostname: () => hostname, owner: () => undefined },
       floor: (id) => (people.has(id) ? localFloor : undefined),
@@ -364,7 +361,7 @@ test('worker_diff and team_review succeed after worker dismissal across kept wor
   };
 
   let team = new Team(workers, { dataDir, dir, git: true, settings: () => settings, toast() {} });
-  const visits = new Visits({ ...workers, tell: () => undefined, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {} });
+  const visits = new Visits({ ...workers, tell: () => undefined, cancelTurn: () => false }, { on: () => settings.visits, emit() {} });
   const whiteboard = new WhiteboardStore(dataDir);
   t.after(() => {
     team.stop();
@@ -379,7 +376,6 @@ test('worker_diff and team_review succeed after worker dismissal across kept wor
   const hostname = 'office.example.ts.net';
 
   const localMcp = createOfficeMcp({
-    answers: new Answers(),
     remote: office,
     floor: (id) => (people.has(id) ? makeFloor() : undefined),
     settings: () => settings,
@@ -391,7 +387,6 @@ test('worker_diff and team_review succeed after worker dismissal across kept wor
   const remoteOrigin = await listen(
     t,
     remoteMcpListener({
-      answers: new Answers(),
       remote: office,
       remoteTransport: { hostname: () => hostname, owner: () => undefined },
       floor: (id) => (people.has(id) ? makeFloor() : undefined),
@@ -538,7 +533,7 @@ test('team_wait caps single-call hold under MCP client timeouts instead of faili
     setTask() {},
   };
   const team = new Team(workers, { dataDir: dir, dir, git: false, settings: () => settings, toast() {} });
-  const visits = new Visits({ ...workers, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => false, emit() {} });
+  const visits = new Visits({ ...workers, cancelTurn: () => false }, { on: () => false, emit() {} });
   const whiteboard = new WhiteboardStore(dir);
   t.after(() => {
     team.stop();
@@ -549,7 +544,6 @@ test('team_wait caps single-call hold under MCP client timeouts instead of faili
   const floor: OfficeMcpFloor = { id: 'floor', name: 'Floor', dir, workers, team, visits, whiteboard };
   // Configure a 60ms server hold cap while the client sets a 400ms request timeout and passes timeoutSec: 240!
   const mcp = createOfficeMcp({
-    answers: new Answers(),
     settings: () => settings,
     floor: (id) => (people.has(id) ? floor : undefined),
     waitHoldMaxMs: 60,
@@ -629,7 +623,7 @@ test('worker-targeting MCP tools consistently accept worker, workerId, and name 
   };
 
   const team = new Team(workers, { dataDir: dir, dir, git: false, settings: () => settings, toast() {} });
-  const visits = new Visits({ ...workers, tell: workers.prompt, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {} });
+  const visits = new Visits({ ...workers, tell: workers.prompt, cancelTurn: () => false }, { on: () => settings.visits, emit() {} });
   const whiteboard = new WhiteboardStore(dir);
   t.after(() => {
     team.stop();
@@ -660,7 +654,6 @@ test('worker-targeting MCP tools consistently accept worker, workerId, and name 
   const remoteOrigin = await listen(
     t,
     remoteMcpListener({
-      answers: new Answers(),
       owner,
       remote: office,
       remoteTransport: { hostname: () => hostname, owner: () => undefined },
@@ -669,7 +662,6 @@ test('worker-targeting MCP tools consistently accept worker, workerId, and name 
     }),
   );
   const localMcp = createOfficeMcp({
-    answers: new Answers(),
     floor: (id) => (people.has(id) ? floor : undefined),
     settings: () => settings,
   });
@@ -798,7 +790,7 @@ test('team_hire structured task makes repo optional and works seamlessly on both
       setTask() {},
     };
     const team = new Team(workers, { dataDir: floorDir, dir: floorDir, git: isGit, settings: () => settings, toast() {} });
-    const visits = new Visits({ ...workers, tell: () => undefined, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => false, emit() {} });
+    const visits = new Visits({ ...workers, tell: () => undefined, cancelTurn: () => false }, { on: () => false, emit() {} });
     const whiteboard = new WhiteboardStore(floorDir);
     t.after(() => {
       team.stop();
@@ -816,7 +808,6 @@ test('team_hire structured task makes repo optional and works seamlessly on both
   const hostname = 'office.example.ts.net';
 
   const localMcp = createOfficeMcp({
-    answers: new Answers(),
     remote: office,
     floor: (id) => (plainPeople.has(id) ? plainFloor : gitPeople.has(id) ? gitFloor : undefined),
     settings: () => settings,
@@ -828,7 +819,6 @@ test('team_hire structured task makes repo optional and works seamlessly on both
   const remoteOrigin = await listen(
     t,
     remoteMcpListener({
-      answers: new Answers(),
       remote: office,
       remoteTransport: { hostname: () => hostname, owner: () => undefined },
       floor: (id) => (plainPeople.has(id) ? plainFloor : gitPeople.has(id) ? gitFloor : undefined),
