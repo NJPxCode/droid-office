@@ -351,7 +351,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
     {
       name: 'team_message',
       description:
-        'Choose exactly one target: worker, workers, or all: true. Send course corrections, contract updates or rebase instructions (plus optional uploaded image ids in images). Default queue: false steers during the running turn (next step via hook or Enter); queue: true queues via Ctrl+Enter for after the turn ends; urgent: true interrupts a running turn or blocking command via Escape and delivers immediately. Inspect per-recipient errors and blocking warnings. Never message workers at permission prompts.',
+        'Choose exactly one target: worker, workers, or all: true. Send course corrections, contract updates or rebase instructions (plus optional uploaded image ids in images). Default queue: false steers during the running turn; queue: true queues for after the turn ends; urgent: true interrupts a running turn or blocking command and delivers immediately. Inspect per-recipient errors and blocking warnings. Never message workers at permission prompts.',
       inputSchema: z
         .strictObject({
           worker: worker.optional(),
@@ -360,8 +360,8 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
           text,
           images: attachImagesSchema,
           floor: floorArg,
-          queue: z.boolean().default(false).describe('Default false: steer now during the running turn; true queues via Ctrl+Enter for after the turn ends.'),
-          urgent: z.boolean().optional().describe('True: interrupt a running turn or blocking command via Escape and deliver immediately (not with queue: true).'),
+          queue: z.boolean().default(false).describe('Default false: steer now during the running turn; true queues for after the turn ends.'),
+          urgent: z.boolean().optional().describe('True: interrupt a running turn or blocking command and deliver immediately (not with queue: true).'),
         })
         .refine((a) => !(a.queue && a.urgent), 'Choose either queue: true (after turn) or urgent: true (interrupt and steer now), not both.'),
       annotations: changesState,

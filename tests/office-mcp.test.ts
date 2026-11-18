@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { z } from 'zod';
-import { Answers } from '../src/server/answers.js';
 import {
   createOfficeMcp,
   OFFICE_MCP_OFFICE_HEADER,
@@ -62,7 +61,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }, probes = 
     setTask() {},
   };
   const team = new Team(workers, { dataDir: dir, dir, git: true, settings: () => settings, toast() {} });
-  const visits = new Visits({ ...workers, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {} });
+  const visits = new Visits({ ...workers, cancelTurn: () => false }, { on: () => settings.visits, emit() {} });
   const whiteboard = new WhiteboardStore(dir);
   const floor: OfficeMcpFloor = { id: 'floor', name: 'Test floor', dir, workers, team, visits, whiteboard };
   let office: ReturnType<typeof createOfficeMcp> | undefined;
@@ -73,7 +72,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }, probes = 
   http.listen(0, '127.0.0.1');
   await once(http, 'listening');
   const origin = `http://127.0.0.1:${(http.address() as AddressInfo).port}`;
-  office = createOfficeMcp({ answers: new Answers(), hookUrl: origin, settings: () => settings, floor: (id) => (people.has(id) ? floor : undefined), orchestrator });
+  office = createOfficeMcp({ hookUrl: origin, settings: () => settings, floor: (id) => (people.has(id) ? floor : undefined), orchestrator });
   if (probes) {
     for (const [name, access] of Object.entries({ test_hire: officeAccess.mayHire, test_team: officeAccess.team, test_report: officeAccess.subagent, test_visit: officeAccess.visits })) {
       office.tool({ name, description: 'Permission probe', inputSchema: z.object({}) }, access, () => officeResult('allowed'));
@@ -582,50 +581,53 @@ test('Office MCP defaults on and survives old clients and persisted settings', (
   assert.equal(settings.settings.officeMcp, false, 'an older client does not turn MCP back on');
 });
 
-test('the Droid profile merges only office-owned config and removes it when off', async (t) => {
+test('syncOfficeMcpConnection never writes ~/.factory/mcp.json and removes stale office-owned entries unless a peer office answers', async (t) => {
   const dir = temporary(t);
   const file = path.join(dir, '.factory', 'mcp.json');
   mkdirSync(path.dirname(file));
   const other = { type: 'http', url: 'https://example.com/mcp', headers: { 'x-test': 'kept' } };
   writeFileSync(file, JSON.stringify({ custom: 'kept', mcpServers: { other } }));
   const dead = async () => false;
+  const before = readFileSync(file, 'utf8');
   assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:1234', true, dead), undefined);
-  const read = () => JSON.parse(readFileSync(file, 'utf8'));
-  const config = read();
-  assert.equal(config.custom, 'kept');
-  assert.deepEqual(config.mcpServers.other, other);
-  assert.deepEqual(config.mcpServers['droid-office'], {
+  assert.equal(readFileSync(file, 'utf8'), before, 'daemon workers never write ~/.factory/mcp.json even when on is true');
+  assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:1234', false, dead), undefined);
+  assert.equal(readFileSync(file, 'utf8'), before);
+
+  // Legacy entry written by an older release on another port: kept while that peer office still answers, cleaned up once it is gone.
+  const legacyEntry = {
     type: 'http',
     url: 'http://127.0.0.1:1234/office/mcp',
     oauth: false,
     headers: { Authorization: `Bearer \${DROID_OFFICE_HOOK_TOKEN}`, [OFFICE_MCP_WORKER_HEADER]: `\${DROID_OFFICE_WORKER_ID}`, [OFFICE_MCP_OFFICE_HEADER]: `\${DROID_OFFICE_HOOK_URL}` },
-  });
-  const before = readFileSync(file, 'utf8');
-  assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:1234', true, dead), undefined);
-  assert.equal(readFileSync(file, 'utf8'), before);
-  // Another office that still answers keeps the entry, and routes this office's workers here.
+  };
+  writeFileSync(file, JSON.stringify({ custom: 'kept', mcpServers: { other, 'droid-office': legacyEntry } }));
+  const withLegacy = readFileSync(file, 'utf8');
+  const read = () => JSON.parse(readFileSync(file, 'utf8'));
   const probed: string[] = [];
   const alive = async (url: string) => {
     probed.push(url);
     return true;
   };
-  assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:5678', true, alive), undefined);
-  assert.deepEqual(probed, ['http://127.0.0.1:1234/office/mcp']);
-  assert.equal(readFileSync(file, 'utf8'), before);
   assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:5678', false, alive), undefined);
-  assert.equal(readFileSync(file, 'utf8'), before, "turning Office MCP off elsewhere leaves this office's entry");
-  // Once that office is gone, the next one takes the entry over.
-  assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:5678', true, dead), undefined);
-  assert.equal(read().mcpServers['droid-office'].url, 'http://127.0.0.1:5678/office/mcp');
+  assert.deepEqual(probed, ['http://127.0.0.1:1234/office/mcp']);
+  assert.equal(readFileSync(file, 'utf8'), withLegacy, 'a live peer office keeps its legacy entry');
+
   assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:5678', false, dead), undefined);
   assert.deepEqual(read(), { custom: 'kept', mcpServers: { other } });
-  // An entry written before routing existed is replaced even if its office still answers.
+
+  // A legacy entry pointing at this office's own port (including pre-routing entries without x-droid-office-url) is removed immediately without probing.
   writeFileSync(
     file,
-    JSON.stringify({ mcpServers: { 'droid-office': { type: 'http', url: 'http://127.0.0.1:1234/office/mcp', headers: { Authorization: `Bearer \${DROID_OFFICE_HOOK_TOKEN}`, [OFFICE_MCP_WORKER_HEADER]: `\${DROID_OFFICE_WORKER_ID}` } } } }),
+    JSON.stringify({
+      custom: 'kept',
+      mcpServers: { other, 'droid-office': { type: 'http', url: 'http://127.0.0.1:5678/office/mcp', headers: { Authorization: `Bearer \${DROID_OFFICE_HOOK_TOKEN}`, [OFFICE_MCP_WORKER_HEADER]: `\${DROID_OFFICE_WORKER_ID}` } } },
+    }),
   );
-  assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:5678', true, alive), undefined);
-  assert.equal(read().mcpServers['droid-office'].url, 'http://127.0.0.1:5678/office/mcp');
+  probed.length = 0;
+  assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:5678', false, alive), undefined);
+  assert.deepEqual(probed, []);
+  assert.deepEqual(read(), { custom: 'kept', mcpServers: { other } });
 });
 
 test('profile creation, absent config and malformed or foreign entries do not clobber user files', async (t) => {
@@ -635,6 +637,8 @@ test('profile creation, absent config and malformed or foreign entries do not cl
   assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:1234', false), undefined);
   assert.equal(existsSync(file), false);
   assert.equal(await syncOfficeMcpConnection(file, 'http://127.0.0.1:1234', true), undefined);
+  assert.equal(existsSync(file), false);
+  mkdirSync(path.dirname(file), { recursive: true });
   for (const content of ['{broken', '[]', '{"mcpServers":[]}', JSON.stringify({ mcpServers: { 'droid-office': { type: 'stdio', command: 'my-server' } } })]) {
     writeFileSync(file, content);
     assert.match((await syncOfficeMcpConnection(file, 'http://127.0.0.1:1234', true)) ?? '', /unchanged/);
@@ -644,5 +648,5 @@ test('profile creation, absent config and malformed or foreign entries do not cl
   }
   const blocked = path.join(dir, 'file');
   writeFileSync(blocked, 'not a folder');
-  assert.match((await syncOfficeMcpConnection(path.join(blocked, 'mcp.json'), 'http://127.0.0.1:1234', true)) ?? '', /could not/);
+  assert.match((await syncOfficeMcpConnection(path.join(blocked, 'mcp.json'), 'http://127.0.0.1:1234', false)) ?? '', /could not/);
 });

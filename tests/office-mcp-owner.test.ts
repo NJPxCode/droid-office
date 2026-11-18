@@ -6,7 +6,7 @@ import { createServer, request } from 'node:http';
 import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AddressInfo } from 'node:net';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
@@ -25,7 +25,7 @@ import { loadConfig } from '../src/server/config.js';
 import { startServer } from '../src/server/server.js';
 import { SUBAGENT_DEFAULTS, type ServerMsg, type WorkerInfo } from '../src/shared/protocol.js';
 import { DESKS } from '../src/shared/layout.js';
-import { readMenu } from '../src/shared/asks.js';
+import type { Menu } from '../src/shared/asks.js';
 
 const proxyFetch: typeof fetch = async (input, init) => {
   const req = new Request(input, init);
@@ -392,12 +392,62 @@ test('every retained owner tool has a strict self-contained schema', async (t) =
   for (const entry of OWNER_TOOLS) assert.doesNotThrow(() => z.toJSONSchema(entry.inputSchema, { io: 'input' }));
 });
 
-test('office_worker_answer forwards the exact captured review snapshot', async (t) => {
+test('office_worker_answer forwards structured AskUser menus and auto-resolves open menus on local and cloud workers', async (t) => {
   const r = await remoteRig(t);
-  const menu = readMenu(readFileSync(new URL('../android/app/src/test/resources/askuser-1.7.1-review.txt', import.meta.url), 'utf8').split('\n'))!;
-  const result = await r.call('office_worker_answer', { workerId: 'pixel', menu, choice: 1 });
-  assert.equal(result.error, false);
+  const menu: Menu = {
+    question: 'Which hypervisor should we use?',
+    choices: [
+      { number: 1, label: 'UTM', description: 'Apple Virtualization wrapper' },
+      { number: 2, label: 'Tart', description: 'CLI macOS VMs' },
+    ],
+    freeText: true,
+  };
+  const explicit = await r.call('office_worker_answer', { workerId: 'pixel', menu, choice: 1 });
+  assert.equal(explicit.error, false);
   assert.deepEqual(r.calls.at(-1), { by: 'Grok', floor: 'f-api', msg: { t: 'worker.answer', workerId: 'pixel', menu, choice: 1 } });
+
+  // Omitting menu resolves the worker's current structured menu (or cloud.menu), and refuses missing menus or permission prompts.
+  const baseFloors = r.owner.floors();
+  const apiFloor = baseFloors.find((f) => f.id === 'f-api')!;
+  const pixel = apiFloor.workers.find((w) => w.id === 'pixel')!;
+  const cloudMenu: Menu = {
+    question: 'Select target environments',
+    multiSelect: true,
+    choices: [
+      { number: 1, label: 'Staging' },
+      { number: 2, label: 'Production' },
+    ],
+    freeText: false,
+  };
+  const nimbus = worker('nimbus', 'Nimbus', {
+    kind: 'cloud',
+    deskId: 'desk-7',
+    status: 'needs_input',
+    cloud: { computerId: 'comp-1', sessionUrl: 'https://app.factory.ai/sessions/s1', menu: cloudMenu },
+  });
+  apiFloor.workers.push(nimbus);
+  r.owner.floors = () => baseFloors;
+
+  assert.equal((await r.call('office_worker_answer', { workerId: 'pixel', choice: 1 })).error, true, 'no open menu yet');
+  pixel.status = 'needs_input';
+  pixel.ask = { kind: 'permission', tool: 'Execute', command: 'rm -rf dist' };
+  const permRefused = await r.call('office_worker_answer', { workerId: 'pixel', choice: 1 });
+  assert.equal(permRefused.error, true);
+  assert.match(permRefused.text, /permission prompt/);
+
+  pixel.ask = { kind: 'question', questions: [{ question: menu.question!, options: ['UTM', 'Tart'], multiSelect: false }] };
+  pixel.menu = menu;
+  const autoLocal = await r.call('office_worker_answer', { workerId: 'pixel', choice: 2 });
+  assert.equal(autoLocal.error, false, autoLocal.text);
+  assert.deepEqual(r.calls.at(-1), { by: 'Grok', floor: 'f-api', msg: { t: 'worker.answer', workerId: 'pixel', menu, choice: 2 } });
+
+  const autoCloud = await r.call('office_worker_answer', { workerId: 'nimbus', choices: [1, 2] });
+  assert.equal(autoCloud.error, false, autoCloud.text);
+  assert.deepEqual(r.calls.at(-1), { by: 'Grok', floor: 'f-api', msg: { t: 'worker.answer', workerId: 'nimbus', menu: cloudMenu, choices: [1, 2] } });
+
+  const rosterRes = await r.call('office_roster', { floor: 'api' });
+  assert.match(rosterRes.text, /Question: Which hypervisor should we use\?/);
+  assert.match(rosterRes.text, /Question: Select target environments/);
 });
 
 test('focused tools resolve names, bind target floors and generate internal request ids', async (t) => {

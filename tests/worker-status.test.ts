@@ -7,7 +7,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { Answers } from '../src/server/answers.js';
 import { webhookWorkerFromMember } from '../src/server/grok-webhook.js';
 import { createOfficeMcp, OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER, type OfficeMcpFloor } from '../src/server/office-mcp/index.js';
 import type { roster, OwnerOffice } from '../src/server/office-mcp/owner.js';
@@ -25,8 +24,8 @@ import {
   formatTaskTag,
   formatWorkerInspection,
   inspectModelStatus,
-  inspectTerminalRetry,
   inspectWorkerForge,
+  inspectWorkerRetry,
   modelPlanName,
   shortIso,
   summarizeProviderQuotas,
@@ -88,9 +87,12 @@ test('todoItems parses PreToolUse numbered lists and PostToolUse structured arra
   assert.deepEqual(todoItems({}), []);
 });
 
-test('terminal retry and model cooldown helpers distinguish real 429 cooldowns from tool output and thinking', () => {
-  // Active retry banner in Droid TUI when no tool is running.
-  const retry = inspectTerminalRetry(['Thinking...', 'Retrying the model request (attempt 3/5)...', '─────────────────'], 'working', false);
+test('structured daemon retry and model cooldown helpers distinguish active retries from tool runs and terminal model errors', () => {
+  const workingWorker = makeWorker('w-retry', { status: 'working' });
+  const doneWorker = makeWorker('w-done', { status: 'done' });
+
+  // Active structured llm_retry from LocalDaemon when no tool is running.
+  const retry = inspectWorkerRetry(workingWorker, { retry: { retrying: true, attempt: 3, maxAttempts: 5, detail: 'Retrying the model request (attempt 3/5)...' } });
   assert.deepEqual(retry, {
     retrying: true,
     attempt: 3,
@@ -98,18 +100,64 @@ test('terminal retry and model cooldown helpers distinguish real 429 cooldowns f
     detail: 'Retrying the model request (attempt 3/5)...',
   });
 
-  // Ignored when a tool is currently executing (e.g. grepping source files that contain the phrase).
-  assert.equal(inspectTerminalRetry(['Retrying the model request (attempt 2)...'], 'working', true), undefined);
-  assert.equal(inspectTerminalRetry(['Retrying the model request (attempt 2)...'], 'done', false), undefined);
+  // Ignored when a tool is currently executing or the worker already settled without an error.
+  assert.equal(
+    inspectWorkerRetry(workingWorker, {
+      currentTool: { name: 'Execute', summary: 'Running rg', at: NOW - 1_000 },
+      retry: { retrying: true, attempt: 2 },
+    }),
+    undefined,
+  );
+  assert.equal(inspectWorkerRetry(doneWorker, { retry: { retrying: true, attempt: 2 } }), undefined);
 
-  // Proxy 429 model_cooldown payload & exhausted terminal banners.
-  const proxyCooldown = inspectTerminalRetry(['{"error":{"code":"model_cooldown","message":"All credentials for model gpt-6.1-sol are cooling down","reset_time":"57m26s"}}'], 'working', false);
+  // Activity-line fallback while working without a tool.
+  const activityRetry = inspectWorkerRetry(makeWorker('w-act', { status: 'working', activity: 'Retrying the model request (attempt 2/4)...' }), undefined);
+  assert.deepEqual(activityRetry, {
+    retrying: true,
+    attempt: 2,
+    maxAttempts: 4,
+    detail: 'Retrying the model request (attempt 2/4)...',
+  });
+
+  // Structured model cooldown / exhausted error from daemon.
+  const proxyCooldown = inspectWorkerRetry(workingWorker, {
+    retry: { retrying: false, error: 'All credentials for model gpt-6.1-sol are cooling down (reset_time 57m26s)' },
+  });
   assert.equal(proxyCooldown?.retrying, false);
   assert.match(proxyCooldown!.detail, /cooling down/i);
 
-  const terminalExhausted = inspectTerminalRetry(['Usage is exhausted for the model request.'], 'done', false);
+  const terminalExhausted = inspectWorkerRetry(doneWorker, {
+    retry: { retrying: false, detail: 'Usage is exhausted for the model request.' },
+  });
   assert.equal(terminalExhausted?.retrying, false);
   assert.match(terminalExhausted!.detail, /Usage is exhausted for the model request/);
+
+  // Structured AskUser menu and WorkerInfo.queue surface on buildWorkerInspection.
+  const menuInsp = buildWorkerInspection({
+    worker: makeWorker('w-ask', {
+      status: 'needs_input',
+      ask: { kind: 'question', questions: [{ question: 'Pick DB?', options: ['SQLite', 'Postgres'], multiSelect: false }] },
+      menu: {
+        question: 'Pick DB?',
+        choices: [
+          { number: 1, label: 'SQLite' },
+          { number: 2, label: 'Postgres' },
+        ],
+        freeText: false,
+      },
+      queue: {
+        count: 1,
+        items: [{ id: 'q-1', index: 1, text: 'After answering, check migrations', preview: false, moreLines: 0, source: 'droid', delivery: 'after_turn' }],
+        moreSteering: 0,
+        moreQueued: 0,
+      },
+    }),
+    now: NOW,
+  });
+  assert.equal(menuInsp.state, 'blocked_on_question');
+  assert.equal(menuInsp.menu?.question, 'Pick DB?');
+  assert.equal(menuInsp.queued?.terminal, 1);
+  assert.match(formatWorkerInspection(menuInsp), /Question: Pick DB\?/);
 
   const resetAt = NOW + 57 * 60_000;
   const exhaustedAvail: ModelAvailability = { state: 'exhausted', until: resetAt, window: '5-hour' };
@@ -364,7 +412,7 @@ test('MCP end-to-end: office_look, worker_log, team_status, office_roster, team_
         lastOutputAt: NOW - 2_000,
         queuedMessages: ['Remember to keep webhook payloads untouched'],
         queuedNotices: 1,
-        screenRows: ['● Thinking through edge cases in office_look...', 'Retrying the model request (attempt 4)...', '──────────────────────────────────────────'],
+        retry: { retrying: true, attempt: 4, detail: 'Retrying the model request (attempt 4)...' },
       },
     ],
     [
@@ -543,7 +591,6 @@ test('MCP end-to-end: office_look, worker_log, team_status, office_roster, team_
 
   const mcp = createOfficeMcp({
     hookUrl: 'http://127.0.0.1:0',
-    answers: new Answers(),
     settings: () => settings,
     floor: () => floorObj,
     remote: remoteOffice,

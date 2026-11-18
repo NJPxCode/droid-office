@@ -1,20 +1,19 @@
 import { z } from 'zod';
-import type { WorkerInfo } from '../../shared/protocol.js';
-import type { WorkerManager } from '../workers.js';
-import { formatBlockingSteerWarning, formatBlockingSummary, type BlockingToolState, type QueuedMessageItem, type WorkerQueueState } from '../worker-queue.js';
+import type { QueuedMessageItem, WorkerInfo, WorkerQueueState } from '../../shared/protocol.js';
+import { formatBlockingSteerWarning, formatBlockingSummary, type BlockingToolState } from '../worker-queue.js';
 import { floorNamed } from '../remote-office.js';
 import { findMissionAgent, findWorker, hasOwnerAccess, missionControlRefusal } from './owner.js';
 import { floorArg } from './team-events.js';
-import { officeAccess, officeError, officeResult, ownFloor, type OfficeMcpCaller, type OfficeMcpDeps, type OfficeMcpServer } from './index.js';
+import { officeAccess, officeError, officeResult, ownFloor, type OfficeMcpCaller, type OfficeMcpDeps, type OfficeMcpServer, type OfficeMcpWorkers } from './index.js';
 
-export type QueueCapableWorkers = Pick<WorkerManager, 'get' | 'list'> & Partial<Pick<WorkerManager, 'queueState' | 'clearQueue' | 'promoteQueue' | 'blockingTool'>>;
+export type QueueCapableWorkers = Pick<OfficeMcpWorkers, 'get' | 'list' | 'queueState' | 'manageQueue' | 'clearQueue' | 'promoteQueue' | 'blockingTool'>;
 
 const changesState = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 
 function deliveryLabel(d: QueuedMessageItem['delivery']): string {
   if (d === 'after_turn') return 'after turn (queued)';
   if (d === 'steering') return 'mid-turn steer';
-  return 'next step (hook)';
+  return 'next step';
 }
 
 function formatQueueListText(w: WorkerInfo, state: WorkerQueueState, blocking?: BlockingToolState): string {
@@ -26,8 +25,9 @@ function formatQueueListText(w: WorkerInfo, state: WorkerQueueState, blocking?: 
     for (const item of state.items) {
       const meta = [deliveryLabel(item.delivery), item.source, ...(item.preview ? ['preview'] : [])].join(', ');
       const extra = item.moreLines ? ` (+${item.moreLines} more line${item.moreLines === 1 ? '' : 's'})` : '';
+      const idPart = item.id ? ` (${item.id})` : '';
       const indented = item.text.replace(/\n/g, '\n    ');
-      lines.push(`  #${item.index} [${meta}]: ${indented}${extra}`);
+      lines.push(`  #${item.index}${idPart} [${meta}]: ${indented}${extra}`);
     }
     if (state.moreSteering) lines.push(`  +${state.moreSteering} more steering item${state.moreSteering === 1 ? '' : 's'}`);
     if (state.moreQueued) lines.push(`  +${state.moreQueued} more queued item${state.moreQueued === 1 ? '' : 's'}`);
@@ -111,26 +111,31 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
     {
       name: 'worker_queue',
       description:
-        'Inspect, clear, or promote pending messages on a worker (both hook outbox notices and Ctrl+Enter after-turn queue). action: "list" reads pending items and any active blocking command; "clear" cancels one item (index) or all; "promote" pulls queued message(s) forward to steer now (or pass urgent: true to interrupt a running turn/blocking command via Escape and deliver immediately).',
+        'Inspect, delete, clear, or promote pending messages on a worker (mid-turn steers and after-turn queued messages). action: "list" reads pending items and any active blocking command; "delete" removes one item by id or index; "clear" cancels one item (id/index) or all; "promote" pulls queued message(s) forward to steer now (or pass urgent: true to interrupt a running turn/blocking command and deliver immediately).',
       inputSchema: z.strictObject({
         worker: z.string().trim().min(1).max(200).describe('Worker name or id.'),
         floor: floorArg,
-        action: z.enum(['list', 'clear', 'promote']).default('list').describe('list (default), clear, or promote.'),
-        index: z.number().int().min(1).max(200).optional().describe('1-based item index from list (omit to clear all or promote top queued item).'),
-        all: z.boolean().optional().describe('Clear or promote all pending items (not with index).'),
-        urgent: z.boolean().optional().describe('Promote only: interrupt running turn/blocking command via Escape and deliver immediately.'),
+        action: z.enum(['list', 'clear', 'delete', 'promote']).default('list').describe('list (default), delete, clear, or promote.'),
+        id: z.string().trim().min(1).max(200).optional().describe('Queued message id from list (daemon requestId).'),
+        index: z.number().int().min(1).max(200).optional().describe('1-based item index from list (omit on clear to clear all, or on promote to promote top queued item).'),
+        all: z.boolean().optional().describe('Clear or promote all pending items (not with id or index).'),
+        urgent: z.boolean().optional().describe('Promote only: interrupt running turn/blocking command and deliver immediately.'),
       }),
       annotations: changesState,
     },
     officeAccess.team,
     async (args, caller) => {
       if (args.floor && !caller.building) return officeError('Floor workers manage only their own floor');
-      if (args.index !== undefined && args.all === true) return officeError('Choose index or all: true, not both.');
-      if (args.action === 'list' && (args.index !== undefined || args.all !== undefined || args.urgent !== undefined)) {
-        return officeError('index, all, and urgent are only for clear or promote, not list.');
+      const itemId = args.id;
+      if ((args.index !== undefined || itemId !== undefined) && args.all === true) return officeError('Choose an item (id or index) or all: true, not both.');
+      if (args.action === 'list' && (args.index !== undefined || itemId !== undefined || args.all !== undefined || args.urgent !== undefined)) {
+        return officeError('id, index, all, and urgent are only for delete, clear, or promote, not list.');
       }
-      if (args.action === 'clear' && args.urgent !== undefined) {
-        return officeError('urgent is only for action "promote", not "clear".');
+      if ((args.action === 'clear' || args.action === 'delete') && args.urgent !== undefined) {
+        return officeError(`urgent is only for action "promote", not "${args.action}".`);
+      }
+      if (args.action === 'delete' && args.index === undefined && itemId === undefined) {
+        return officeError('action "delete" requires id or index; use action "clear" to clear all queued messages.');
       }
 
       const target = resolveTarget(caller, deps, args.worker, args.floor);
@@ -140,10 +145,12 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
       if (worker.cloud || worker.remote) return officeError(`${worker.name} runs remotely and has no local message queue.`);
 
       const empty: WorkerQueueState = { count: 0, items: [], moreSteering: 0, moreQueued: 0 };
+      const readQueue = (): WorkerQueueState | undefined => workers.queueState?.(worker.id) ?? (workers.get(worker.id) ?? worker).queue;
 
       if (args.action === 'list') {
-        if (!workers.queueState) return officeError(`Queue controls are unavailable on floor ${floorId}.`);
-        const state = workers.queueState(worker.id) ?? empty;
+        const snapshot = readQueue();
+        if (!workers.queueState && snapshot === undefined) return officeError(`Queue controls are unavailable on floor ${floorId}.`);
+        const state = snapshot ?? empty;
         const blocking = workers.blockingTool?.(worker.id);
         return officeResult(formatQueueListText(worker, state, blocking), {
           worker: { id: worker.id, name: worker.name, floor: floorId, status: worker.status },
@@ -152,9 +159,42 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
         });
       }
 
-      if (args.action === 'clear') {
-        if (!workers.clearQueue) return officeError(`Queue controls are unavailable on floor ${floorId}.`);
-        const res = await workers.clearQueue(worker.id, args.index);
+      let resolvedIndex = args.index;
+      if (itemId !== undefined) {
+        const current = readQueue() ?? empty;
+        const hit = current.items.find((it) => it.id === itemId);
+        if (!hit) {
+          const errText = `No queued message "${itemId}" on ${worker.name} (queue has ${current.count}).`;
+          return {
+            isError: true,
+            content: [{ type: 'text', text: errText }],
+            structuredContent: {
+              code: 'queue_error',
+              hint: errText,
+              worker: { id: worker.id, name: worker.name, floor: floorId, status: worker.status },
+              stillPending: current.count > 0,
+              remaining: current,
+            },
+          };
+        }
+        if (resolvedIndex !== undefined && resolvedIndex !== hit.index) {
+          return officeError(`Queued message "${itemId}" is at index ${hit.index}, not index ${resolvedIndex}.`);
+        }
+        resolvedIndex = hit.index;
+      }
+
+      if (args.action === 'clear' || args.action === 'delete') {
+        if (!workers.clearQueue && !workers.manageQueue) return officeError(`Queue controls are unavailable on floor ${floorId}.`);
+        const before = readQueue() ?? empty;
+        const res = workers.clearQueue
+          ? await workers.clearQueue(worker.id, resolvedIndex, itemId)
+          : await (async () => {
+              const out = await workers.manageQueue!(worker.id, args.action === 'delete' ? 'delete' : 'clear', { id: itemId, index: resolvedIndex });
+              const err = typeof out === 'string' ? out : out?.error;
+              const remaining = readQueue() ?? empty;
+              const cleared = err ? [] : resolvedIndex !== undefined ? before.items.filter((it) => it.index === resolvedIndex) : before.items;
+              return { ...(err ? { error: err } : {}), cleared, remaining };
+            })();
         if (res.error) {
           const stillPending = res.remaining.count > 0;
           return {
@@ -177,8 +217,17 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
         });
       }
 
-      if (!workers.promoteQueue) return officeError(`Queue controls are unavailable on floor ${floorId}.`);
-      const res = await workers.promoteQueue(worker.id, { index: args.index, all: args.all, urgent: args.urgent });
+      if (!workers.promoteQueue && !workers.manageQueue) return officeError(`Queue controls are unavailable on floor ${floorId}.`);
+      const beforePromote = readQueue() ?? empty;
+      const res = workers.promoteQueue
+        ? await workers.promoteQueue(worker.id, { ...(itemId ? { id: itemId } : {}), index: resolvedIndex, all: args.all, urgent: args.urgent })
+        : await (async () => {
+            const target = resolvedIndex !== undefined ? beforePromote.items.find((it) => it.index === resolvedIndex) : (beforePromote.items.find((it) => it.delivery === 'after_turn') ?? beforePromote.items[0]);
+            const out = await workers.manageQueue!(worker.id, 'promote', { id: itemId ?? target?.id, index: resolvedIndex ?? target?.index });
+            const err = typeof out === 'string' ? out : out?.error;
+            const remaining = readQueue() ?? empty;
+            return { ...(err ? { error: err } : {}), promoted: err || !target ? [] : [target], delivery: 'steering' as const, stillPending: remaining.count > 0, remaining };
+          })();
       if (res.error) {
         const stillPending = res.stillPending ?? res.remaining.count > 0;
         return {

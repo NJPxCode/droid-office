@@ -1,23 +1,22 @@
-// Independent workers visiting each other's desks on one floor: the roster, reading a terminal,
+// Independent workers visiting each other's desks on one floor: the roster, reading recent output,
 // telling, asking and handing off work. The Office MCP calls this service directly.
 // Only workers with no lead take part: a subagent is never on the
 // roster, can't visit and can't be visited, so a lead's team stays its own (see team.ts). Where a
 // visitor stands, the way it walks and how long that takes are shared/visits.ts, so the office times
 // each phase by the same walk the browser shows.
 //
-// What a visitor says is typed into the host's session one message at a time, as soon as the
-// visitor arrives: a normal message goes in with plain Enter, which steers a host that's mid-turn
-// (droid reads it once its current tool call finishes) and is the next prompt for one at rest. An
-// urgent message to a mid-turn host gets one Escape first, which cancels droid's turn, and goes in
-// as a new prompt once it stops. A message that can't go in while the visitor stands there (a
-// dialog is showing, the host needs the owner, someone just typed) waits in the host's queue.
+// What a visitor says goes into the host's session one message at a time, as soon as the visitor
+// arrives: a normal message steers a host that's mid-turn (Droid reads it once its current tool call
+// finishes) and is the next prompt for one at rest. An urgent message to a mid-turn host interrupts
+// Droid's turn first, and goes in as a new prompt once it stops. A message that can't go in while
+// the visitor stands there (an AskUser question is open, the host needs the owner, someone just sent
+// input) waits in the host's queue.
 // Asks walk home after delivery like tells; replies arrive later as queued session deliveries.
 // Visits and open questions aren't kept on disk: a restart ends them.
 
 import { randomBytes } from 'node:crypto';
 import { DESK_BY_ID } from '../shared/layout.js';
 import type { ServerMsg, WorkerInfo } from '../shared/protocol.js';
-import type { DroidScreen } from './droid-screen.js';
 import { isAsleep, isBusy } from '../shared/status.js';
 import { type Visit, type VisitKind, type VisitPhase, VISIT_KINDS, visitRoute, visitWalkMs } from '../shared/visits.js';
 import { officePrompt, type PromptSource } from './prompts.js';
@@ -28,15 +27,15 @@ export interface VisitWorkers {
   list(): WorkerInfo[];
   get(id: string): WorkerInfo | undefined;
   tail(id: string, lines: number): string | undefined;
-  /** Types `text` in and submits it with Enter. */
+  /** Sends `text` into the worker's session. */
   prompt(id: string, text: string): string | undefined;
-  /** Mid-turn, through its hooks rather than typed in (see WorkerManager.tell). */
+  /** Mid-turn steer into the worker's session (see WorkerManager.tell). */
   tell?(id: string, text: string): string | undefined;
   resume(id: string, text: string): string | undefined;
-  /** Sends one Escape to cancel the agent's turn, only if it's mid-turn on screen; says whether it did. */
+  /** Interrupts the agent's running turn; says whether it did. */
   cancelTurn(id: string): boolean;
-  /** What the agent's screen shows now. */
-  turnScreen(id: string): DroidScreen | undefined;
+  /** @deprecated Legacy pre-daemon PTY hook kept optional for HEAD floor.ts compat. */
+  turnScreen?(id: string): 'busy' | 'asking' | 'idle' | undefined;
 }
 
 export interface VisitOptions {
@@ -586,32 +585,29 @@ export class Visits {
     }
   }
 
-  /** Whether a local host's terminal can't take `note` yet; may stop its turn for an urgent one. */
+  /** Whether a local host's session can't take `note` yet; may interrupt its turn for an urgent one. */
   private mustWait(hostId: string, host: WorkerInfo, note: Note, now: number): boolean {
     const last = this.last.get(hostId);
     if (last && now - last.at < GAP_MS) return true;
     // The last message's turn hasn't started (or ended): a normal one waits for it.
     if (!note.urgent && last && !last.sawWork && now - last.at < SETTLE_MS) return true;
-    // Typed into lately by someone (not by the last message from here): they may be mid-sentence.
+    // Input arrived lately from someone else (not from the last message here): let them finish.
     if (host.lastInputAt !== undefined && now - host.lastInputAt < TYPING_MS && !(last && host.lastInputAt <= last.at + 1000)) return true;
-    // A dialog the status hasn't caught up with: Enter would answer it, even if the last status was done.
-    if (this.workers.turnScreen(hostId) === 'asking') return true;
+    // A waiting AskUser questionnaire or permission prompt is the owner's/lead's to answer first.
+    if (host.menu || host.cloud?.menu || host.ask || this.workers.turnScreen?.(hostId) === 'asking') return true;
     switch (host.status) {
       case 'starting':
       case 'needs_input':
-        // A permission prompt is the owner's to answer: even an urgent message waits for it.
         return true;
       case 'working':
-        // A normal message steers the running turn: plain Enter puts it in front of droid now,
-        // and droid reads it once its current tool call finishes. Only an urgent one stops it.
+        // A normal message steers the running turn once the current tool call finishes; only an urgent one interrupts it.
         if (!note.urgent) return false;
         if (note.interruptedAt === undefined) {
           note.interruptedAt = now;
-          // The status can lag the screen: a turn that has just ended on screen gets no key at all.
-          if (this.workers.cancelTurn(hostId)) return true;
+          return this.workers.cancelTurn(hostId);
         }
-        // Stopped on screen before its status catches up (the Stop hook and the screen settle take seconds).
-        return this.workers.turnScreen(hostId) !== 'idle' && now - note.interruptedAt < URGENT_WAIT_MS;
+        if (this.workers.turnScreen && this.workers.turnScreen(hostId) === 'idle') return false;
+        return now - note.interruptedAt < URGENT_WAIT_MS;
     }
     return false;
   }

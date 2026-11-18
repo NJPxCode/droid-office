@@ -15,10 +15,10 @@ import {
   WebStandardStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import type { SubagentSettings, WorkerInfo } from '../../shared/protocol.js';
+import type { Menu } from '../../shared/asks.js';
+import type { QueuedMessageItem, SubagentSettings, WorkerInfo, WorkerQueueState } from '../../shared/protocol.js';
 import { ORCHESTRATOR_ID } from '../../shared/mission-control.js';
 import type { Team, TeamViews } from '../team.js';
-import type { Answers } from '../answers.js';
 import type { Visits } from '../visits.js';
 import type { WhiteboardStore } from '../whiteboard.js';
 import type { WorkerManager } from '../workers.js';
@@ -47,13 +47,40 @@ const PROBE_HEADER = 'x-droid-office-mcp';
 /** Not passed on when relaying another office's response. */
 const HOP_HEADERS = ['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding'];
 
+export interface OfficeMcpWorkers extends Pick<WorkerManager, 'authenticate' | 'get' | 'list'>, Partial<Pick<WorkerManager, 'queueState' | 'blockingTool' | 'stagedPicture'>> {
+  answerQuestion?(id: string, reply: { menu?: Menu; choice?: number; choices?: number[]; text?: string }): Promise<{ error?: string } | string | undefined> | { error?: string } | string | undefined;
+  manageQueue?(
+    id: string,
+    action: 'promote' | 'delete' | 'clear',
+    opts?: { id?: string; index?: number; group?: 'steering' | 'queued'; text?: string },
+  ): Promise<{ error?: string } | string | undefined> | { error?: string } | string | undefined;
+  clearQueue?(id: string, index?: number, itemId?: string): Promise<{ cleared: QueuedMessageItem[]; remaining: WorkerQueueState; error?: string }> | { cleared: QueuedMessageItem[]; remaining: WorkerQueueState; error?: string };
+  promoteQueue?(
+    id: string,
+    opts?: { id?: string; index?: number; all?: boolean; urgent?: boolean },
+  ):
+    | Promise<{
+        error?: string;
+        promoted: QueuedMessageItem[];
+        delivery?: 'steering' | 'next_step' | 'interrupted' | 'sent' | 'already_delivered';
+        stillPending?: boolean;
+        remaining: WorkerQueueState;
+      }>
+    | {
+        error?: string;
+        promoted: QueuedMessageItem[];
+        delivery?: 'steering' | 'next_step' | 'interrupted' | 'sent' | 'already_delivered';
+        stillPending?: boolean;
+        remaining: WorkerQueueState;
+      };
+}
+
 /** A floor worker's own floor, the only one its tools see. Building agents reach every floor through `remote` and `owner`. */
 export interface OfficeMcpFloor {
   id: string;
   name: string;
   dir: string;
-  /** Without the screen methods, questions_list shows no terminal questions. */
-  workers: Pick<WorkerManager, 'authenticate' | 'get' | 'list'> & Partial<Pick<WorkerManager, 'screenLines' | 'screenMenu' | 'write' | 'queueState' | 'clearQueue' | 'promoteQueue' | 'blockingTool' | 'stagedPicture'>>;
+  workers: OfficeMcpWorkers;
   team: Pick<Team, 'handle' | 'cannotHire' | 'hasNews' | TeamViews> & Partial<Pick<Team, 'wakeContext'>>;
   visits: Pick<Visits, 'handle' | 'cannotVisit'>;
   whiteboard: WhiteboardStore;
@@ -84,8 +111,8 @@ export interface OfficeMcpDeps {
   deepLinkBase?: () => string | undefined;
   settings(): SubagentSettings;
   floor(workerId: string): OfficeMcpFloor | undefined;
-  /** The office's one answer queue for terminal questions, shared with the phone's Asks so two answers never race. */
-  answers: Pick<Answers, 'answer'>;
+  /** @deprecated Legacy pre-daemon compatibility slot; unused. */
+  answers?: unknown;
   /** The office's Linear workspace: the linear_* tools are listed only while it's connected. */
   linear?: LinearOffice;
   /** The inter-agent noise gate for lead_notify updates and visit tells (docs/office-mcp.md#inter-agent-noise-gate). */
@@ -537,42 +564,30 @@ export async function officeAnswers(url: string): Promise<boolean> {
   }
 }
 
-function officeConnection(hookUrl: string) {
-  return {
-    type: 'http',
-    url: new URL(OFFICE_MCP_PATH, hookUrl).href,
-    oauth: false,
-    headers: {
-      Authorization: `Bearer \${DROID_OFFICE_HOOK_TOKEN}`,
-      [OFFICE_MCP_WORKER_HEADER]: `\${DROID_OFFICE_WORKER_ID}`,
-      [OFFICE_MCP_OFFICE_HEADER]: `\${DROID_OFFICE_HOOK_URL}`,
-    },
-  };
-}
-
 function ownedConnection(value: unknown): boolean {
   if (!record(value) || value.type !== 'http' || !record(value.headers)) return false;
   return value.headers.Authorization === `Bearer \${DROID_OFFICE_HOOK_TOKEN}` && value.headers[OFFICE_MCP_WORKER_HEADER] === `\${DROID_OFFICE_WORKER_ID}`;
 }
 
 /**
- * Droid has one user profile, so every office on this machine shares one entry. Another live office
- * that routes by worker office keeps it; this office claims it when that office is gone, and
- * removes it only while it points here.
+ * Local daemon workers receive their Office MCP connection inline per session, so the office never writes
+ * `~/.factory/mcp.json`. Startup runs one cleanup pass (`on === false`) to remove any stale office-owned
+ * `${DROID_OFFICE_HOOK_TOKEN}` entry left by an older release, unless another live local office still uses it.
  */
-export async function syncOfficeMcpConnection(file: string | undefined, hookUrl: string, on: boolean, answers: (url: string) => Promise<boolean> = officeAnswers): Promise<string | undefined> {
+export async function syncOfficeMcpConnection(file: string | undefined, hookUrl: string, _on = false, answers: (url: string) => Promise<boolean> = officeAnswers): Promise<string | undefined> {
   let peer: string | undefined;
-  const first = applyOfficeMcpConnection(file, hookUrl, on, (url) => {
+  const first = applyOfficeMcpCleanup(file, hookUrl, (url) => {
     peer = url;
     return true;
   });
   if (!peer) return first;
   const alive = await answers(peer);
-  return applyOfficeMcpConnection(file, hookUrl, on, (url) => alive && url === peer);
+  if (alive) return first;
+  return applyOfficeMcpCleanup(file, hookUrl, (url) => url !== peer);
 }
 
-/** Merge only our entry; unset file disables profile writes in tests and isolated office clones. */
-function applyOfficeMcpConnection(file: string | undefined, hookUrl: string, on: boolean, keepPeer: (url: string) => boolean): string | undefined {
+/** Remove only our legacy entry; unset file disables profile touches in tests and isolated office clones. */
+function applyOfficeMcpCleanup(file: string | undefined, hookUrl: string, keepPeer: (url: string) => boolean): string | undefined {
   if (!file) return undefined;
   let current: Record<string, unknown>;
   try {
@@ -580,28 +595,22 @@ function applyOfficeMcpConnection(file: string | undefined, hookUrl: string, on:
     if (!record(raw) || (raw.mcpServers !== undefined && !record(raw.mcpServers))) return `Office MCP left ${file} unchanged: expected an MCP configuration object.`;
     current = raw;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return `Office MCP could not read ${file}; it was left unchanged.`;
-    if (!on) return undefined;
-    current = {};
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    return `Office MCP could not read ${file}; it was left unchanged.`;
   }
   const servers = (current.mcpServers ?? {}) as Record<string, unknown>;
   const existing = servers['droid-office'];
-  if (existing !== undefined && !ownedConnection(existing)) return `Office MCP left the existing droid-office entry in ${file} unchanged because it was not written by the office.`;
-  const next = officeConnection(hookUrl);
-  const elsewhere = record(existing) && typeof existing.url === 'string' && existing.url !== next.url ? existing.url : undefined;
-  if (on) {
-    if (JSON.stringify(existing) === JSON.stringify(next)) return undefined;
-    const routes = record(existing) && record(existing.headers) && existing.headers[OFFICE_MCP_OFFICE_HEADER] === next.headers[OFFICE_MCP_OFFICE_HEADER];
-    if (elsewhere && routes && keepPeer(elsewhere)) return undefined;
-    servers['droid-office'] = next;
-  } else {
-    if (existing === undefined || elsewhere) return undefined;
-    delete servers['droid-office'];
-  }
+  if (existing === undefined) return undefined;
+  if (!ownedConnection(existing)) return `Office MCP left the existing droid-office entry in ${file} unchanged because it was not written by the office.`;
+  const ownUrl = new URL(OFFICE_MCP_PATH, hookUrl).href;
+  const elsewhere = record(existing) && typeof existing.url === 'string' && existing.url !== ownUrl ? existing.url : undefined;
+  if (elsewhere && keepPeer(elsewhere)) return undefined;
+  const nextServers = { ...servers };
+  delete nextServers['droid-office'];
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(temporary, `${JSON.stringify({ ...current, mcpServers: servers }, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(temporary, `${JSON.stringify({ ...current, mcpServers: nextServers }, null, 2)}\n`, { mode: 0o600 });
     renameSync(temporary, file);
   } catch {
     return `Office MCP could not update ${file}. Check that its folder is writable.`;
