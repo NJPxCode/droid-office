@@ -3,14 +3,26 @@ import type headless from '@xterm/headless';
 import type serialize from '@xterm/addon-serialize';
 import type { WorkerAsk, WorkerInfo, WorkerStatus } from '../../shared/protocol.js';
 import { stripKittyPlaceholders } from '../../shared/kitty.js';
-import type { ActiveToolCall, SentPendingMessage } from '../worker-queue.js';
+import type { ActiveToolCall, DaemonQueuedEntry, SentPendingMessage } from '../worker-queue.js';
 import type { WorktreeOwnership } from '../worktrees.js';
-import type { WorkerToolSpan } from '../worker-status.js';
+import type { WorkerRetryStatus, WorkerToolSpan } from '../worker-status.js';
 import type { Pty } from '../ptys.js';
 import type { DroidScreen } from '../droid-screen.js';
 import type { TodoItem } from '../../shared/todos.js';
+import { CloudStreamMessages } from '../factory/cloud-stream-messages.js';
+import type { CloudAsk } from '../factory/cloud-ask.js';
+import type { LocalImageInput } from '../local-daemon.js';
+import type { ScreenFrame } from '../screen-frame.js';
+import type { ThreadLiveWorking, ThreadSessionSettings } from '../../shared/thread-live.js';
+import type { DaemonLiveToolInput } from '../thread-live.js';
 
 type HeadlessTerminal = InstanceType<typeof headless.Terminal>;
+
+export interface BufferedDaemonPrompt {
+  text: string;
+  images?: LocalImageInput[];
+  queue: boolean;
+}
 
 export interface Worker {
   info: WorkerInfo;
@@ -27,6 +39,46 @@ export interface Worker {
   termSeq: number;
   screenParse?: { term: HeadlessTerminal; seq: number; state: DroidScreen | undefined };
   hookToken: string;
+  /** True while this agent's session is live or starting on the local droid-daemon. */
+  daemonActive: boolean;
+  /** True while worktree setup or initialize/load/fork RPC is still completing. */
+  daemonLaunching: boolean;
+  /** Bumped on halt/kill/clear/new/handoff/rewind to discard stale async completions. */
+  daemonGeneration: number;
+  /** Cancels headless worktree-setup.cjs if the worker stops before setup finishes. */
+  setupAbort?: AbortController;
+  /** Prompts submitted while daemonLaunching is true, flushed in order once the session is ready. */
+  pendingPrompts: BufferedDaemonPrompt[];
+  /** Streamed/hydrated messages for 4 Hz 3D laptop screens, tail() and search(). */
+  messages: CloudStreamMessages;
+  /** Latest 3D screen frame painted from cloudScreen(messages.slice(-20)). */
+  screenFrame?: ScreenFrame;
+  /** Current daemon working phase (`droid_working_state_changed` + delta transitions). */
+  workingState: ThreadLiveWorking;
+  /** Active streaming thinking/assistant block before create_message lands. */
+  liveStream?: { kind: 'thinking' | 'text'; text: string; since: number; messageId?: string; blockIndex?: number };
+  /** Start times of active thinking blocks (`${messageId}:${blockIndex}` -> epoch ms). */
+  thinkingStartedAt: Map<string, number>;
+  /** Completed thinking durations (`${messageId}:${blockIndex}` -> durationMs) from `thinking_text_complete`. */
+  thinkingDurations: Map<string, number>;
+  /** Running tool calls reported by `tool_call` / `tool_progress_update`. */
+  liveTools: Map<string, DaemonLiveToolInput & { input?: unknown }>;
+  /** Child subagent session links (`tool:${toolUseId}` -> `childSessionId`). */
+  childSessions: Map<string, string>;
+  /** Effective session settings from `initializeSession`, `loadSession`, and `settings_updated`. */
+  liveSettings?: ThreadSessionSettings;
+  /** Structured retry/error state from `llm_retry` / `error`, cleared on next progress event. */
+  retryState?: WorkerRetryStatus;
+  /** Pending `AskUser` questionnaire and partial answers collected so far. */
+  askState?: { ask: CloudAsk; answers: string[] };
+  /** Structured daemon queue (`EndOfTurn` steering + `EndOfLoop` after-turn). */
+  daemonQueue: DaemonQueuedEntry[];
+  /** True while `compactSession` (`/compress`, `/compact`, `/handoff`) is in flight. */
+  compacting?: boolean;
+  /** Prevents `beforeStop` from re-nudging endlessly on consecutive turns without a user prompt. */
+  stopNudged?: boolean;
+  /** Saved daemon session state across a graceful Office restart (`keep = true`). */
+  savedDaemon?: { status: WorkerStatus; acked: boolean; waitingSince?: number; outbox?: string[] };
   /** Droid never reported SessionStart: it's stuck on a login or hooks screen. */
   bootBlocked?: boolean;
   /** The first message for this run of its droid, typed in once droid can take it (see launch), and when the run started. */
@@ -123,6 +175,17 @@ export function newWorker(info: WorkerInfo, hookToken = randomBytes(16).toString
     needsKeyframe: false,
     termSeq: 0,
     hookToken,
+    daemonActive: false,
+    daemonLaunching: false,
+    daemonGeneration: 0,
+    pendingPrompts: [],
+    messages: new CloudStreamMessages(),
+    workingState: 'idle',
+    thinkingStartedAt: new Map(),
+    thinkingDurations: new Map(),
+    liveTools: new Map(),
+    childSessions: new Map(),
+    daemonQueue: [],
     failStreak: 0,
     taskEpoch: 0,
     subSessions: new Set(),

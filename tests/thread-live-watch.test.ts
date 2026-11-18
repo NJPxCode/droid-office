@@ -161,3 +161,67 @@ test('one client seeding after a session change never suppresses the push to oth
 
   await waitUntil(() => sent.some((s) => s.client === 'android' && s.msg.t === 'thread.snapshot' && s.msg.sessionId === 's2'));
 });
+
+test('enrichPage stamps daemon thinking durations and subagent child links onto watched snapshots', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'office-enrich-watch-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cwd = path.join(root, 'project');
+  const dir = path.join(root, cwd.replace(/[^a-zA-Z0-9-]/g, '-'));
+  await mkdir(dir, { recursive: true });
+  const sessionId = 'session-enrich';
+  await writeFile(
+    path.join(dir, `${sessionId}.jsonl`),
+    `${[
+      JSON.stringify({ type: 'session_start', id: sessionId, cwd }),
+      JSON.stringify({
+        type: 'message',
+        id: 'msg-1',
+        timestamp: '2026-11-17T10:00:00.000Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'Deep thought' },
+            { type: 'tool_use', id: 'call-sub', name: 'Task', input: { description: 'Check' } },
+          ],
+        },
+      }),
+    ].join('\n')}\n`,
+  );
+
+  const durations = new Map<string, number>();
+  const children = new Map<string, string>();
+  const sent: ThreadWatchMsg[] = [];
+  const hub = new ThreadWatchHub({
+    workerThreads: new WorkerThreadReader(root),
+    resolveWorker: () => ({ kind: 'local', floorId: null, busy: true, local: { sessionId, cwd } }),
+    enrichPage: (_wid, page, child) => {
+      if (child) return page;
+      return {
+        ...page,
+        entries: page.entries.map((e) => {
+          if (e.kind === 'thinking' && durations.has(e.id)) return { ...e, tookMs: durations.get(e.id) };
+          if (e.kind === 'tool' && e.id === 'tool:call-sub' && children.has('call-sub')) return { ...e, child: children.get('call-sub') };
+          return e;
+        }),
+      };
+    },
+    send: (_client, msg) => sent.push(msg),
+    localCoalesceMs: 10,
+  });
+  t.after(() => hub.close());
+
+  hub.watch('client', 'worker', true);
+  await waitUntil(() => sent.some((m) => m.t === 'thread.snapshot'));
+  durations.set('msg-1:0', 4321);
+  children.set('call-sub', 'sub-session-42');
+  hub.notifyWorker('worker');
+
+  await waitUntil(() =>
+    sent.some(
+      (m) =>
+        m.t === 'thread.snapshot' &&
+        m.entries.some((e) => e.kind === 'thinking' && e.tookMs === 4321) &&
+        m.entries.some((e) => e.kind === 'tool' && e.child === 'sub-session-42'),
+    ),
+  );
+});

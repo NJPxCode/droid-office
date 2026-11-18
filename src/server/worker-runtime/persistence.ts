@@ -41,11 +41,13 @@ export class WorkerStateStore {
     if (state.closing && !state.onShutdown) return;
     const saved = [...workers]
       .filter((w) => !w.info.remote)
-      .map(({ info, hookToken, pty, bootBlocked, stopAt, interrupted, worktreeOwnership, launchPrompt, pendingFork, outbox }) => ({
+      .map(({ info, hookToken, pty, daemonActive, bootBlocked, stopAt, interrupted, worktreeOwnership, launchPrompt, pendingFork, outbox }) => ({
         id: info.id,
         kind: info.kind,
         model: info.model,
         effort: info.effort,
+        activeModel: info.activeModel,
+        activeEffort: info.activeEffort,
         deskId: info.deskId,
         name: info.name,
         color: info.color,
@@ -66,15 +68,15 @@ export class WorkerStateStore {
         pr: info.pr,
         lead: info.lead,
         team: info.team,
-        // A terminal still running in the host, to pick back up after a restart. Its hooks keep the token.
+        // A session still running in droid-daemon or the PTY host keeps its Office MCP bearer token across restarts.
         hookToken,
-        // Its first message, while its droid hasn't taken it yet: the next office types it in at SessionStart.
-        // Notices it was promised and hasn't been handed yet, which the next office hands over instead.
-        // The question or permission prompt it waits on, so a terminal picked back up can still be answered from the hooks' account of it.
+        // A shell still running in the PTY host, to pick back up after a restart.
         pty: pty?.id
           ? { id: pty.id, status: info.status, acked: info.acked, waitingSince: info.waitingSince, ...(info.status === 'needs_input' && info.ask ? { ask: info.ask } : {}), launchPrompt, ...(outbox.length ? { outbox } : {}) }
           : undefined,
-        // In the middle of something: if its terminal doesn't make it through a restart, it carries on after.
+        // A daemon agent session kept running across a graceful restart (`keep = true`).
+        daemon: !state.stopping && daemonActive && info.kind === 'agent' ? { status: info.status, acked: info.acked, waitingSince: info.waitingSince, ...(outbox.length ? { outbox } : {}) } : undefined,
+        // In the middle of something: if its daemon or terminal doesn't make it through a restart, it carries on after.
         midTurn: !state.stopping && (!!interrupted || midTurn({ info, bootBlocked, stopAt })),
       }));
     try {
@@ -90,6 +92,7 @@ export class WorkerStateStore {
       const saved = JSON.parse(readFileSync(this.statePath, 'utf8')) as (Partial<WorkerInfo> & {
         hookToken?: unknown;
         pty?: any;
+        daemon?: any;
         midTurn?: unknown;
         worktreeOwnership?: Record<string, WorktreeOwnership>;
         pendingFork?: Worker['pendingFork'];
@@ -107,6 +110,8 @@ export class WorkerStateStore {
           kind: shell ? 'shell' : 'agent',
           model: shell ? undefined : restoredModel(s.model),
           effort: shell ? undefined : isAgentEffort(s.effort) ? s.effort : undefined,
+          ...(!shell && restoredModel(s.activeModel) ? { activeModel: restoredModel(s.activeModel) } : {}),
+          ...(!shell && isAgentEffort(s.activeEffort) ? { activeEffort: s.activeEffort } : {}),
           deskId: s.deskId,
           name: s.name ?? 'Worker',
           color: s.color ?? this.context.color,
@@ -136,7 +141,7 @@ export class WorkerStateStore {
         w.worktreeOwnership = s.worktreeOwnership;
         if (!info.sessionId && typeof s.pendingFork?.sessionId === 'string') w.pendingFork = { sessionId: s.pendingFork.sessionId, prompt: typeof s.pendingFork.prompt === 'string' ? s.pendingFork.prompt : undefined };
         w.screenDirty = false;
-        if (typeof s.pty?.id === 'string') {
+        if (shell && typeof s.pty?.id === 'string') {
           const status: WorkerStatus = RUNNING.has(s.pty.status) ? s.pty.status : 'idle';
           const launch = s.pty.launchPrompt;
           w.saved = {
@@ -148,10 +153,18 @@ export class WorkerStateStore {
             launchPrompt: typeof launch?.text === 'string' && launch.text && typeof launch.at === 'number' ? { text: launch.text, at: launch.at } : undefined,
             outbox: Array.isArray(s.pty.outbox) ? s.pty.outbox.filter((n: unknown): n is string => typeof n === 'string' && !!n) : undefined,
           };
+        } else if (!shell && (s.daemon || s.pty)) {
+          const d = s.daemon ?? s.pty;
+          const status: WorkerStatus = RUNNING.has(d?.status) ? d.status : 'idle';
+          w.savedDaemon = {
+            status,
+            acked: d?.acked !== false,
+            waitingSince: typeof d?.waitingSince === 'number' ? d.waitingSince : undefined,
+            outbox: Array.isArray(d?.outbox) ? d.outbox.filter((n: unknown): n is string => typeof n === 'string' && !!n) : undefined,
+          };
         }
-        // Mid-turn as the office went down: cut off, unless its terminal is picked back up still
-        // running (adopt). An office from before midTurn only said so for a terminal in the host.
-        w.interrupted = typeof s.midTurn === 'boolean' ? s.midTurn : s.pty?.status === 'working' || s.pty?.status === 'needs_input';
+        // Mid-turn as the office went down: cut off, unless its daemon session is picked back up still open.
+        w.interrupted = typeof s.midTurn === 'boolean' ? s.midTurn : s.daemon?.status === 'working' || s.daemon?.status === 'needs_input' || s.pty?.status === 'working' || s.pty?.status === 'needs_input';
         workers.set(info.id, w);
       }
       // A lead that didn't come back, or is a subagent itself, leads nobody.

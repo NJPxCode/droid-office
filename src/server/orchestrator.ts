@@ -1,15 +1,16 @@
-// The Orchestrator: the building agent the office launches and owns, one Droid session in a PTY with no desk,
+// The Orchestrator: the building agent the office launches and owns, one Droid daemon session with no desk,
 // in the office's own .droid-office/orchestrator/ folder (docs/mission-control.md). It signs in to the Office
-// MCP on the loopback hook listener with its terminal's hook token and gets the building agents' surface.
+// MCP on the loopback hook listener with its session's hook token and gets the building agents' surface.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import type { Menu } from '../shared/asks.js';
 import { DEFAULT_ORCHESTRATOR_SETTINGS, ORCHESTRATOR_COLOR, ORCHESTRATOR_ID, ORCHESTRATOR_NAME, type MissionAgent, type OrchestratorBlock, type OrchestratorSettings, type OrchestratorState } from '../shared/mission-control.js';
 import { AGENT_EFFORTS, type AgentChoice, type WorkerInfo } from '../shared/protocol.js';
-import { isAsleep } from '../shared/status.js';
 import type { ScreenFrame } from './screen-frame.js';
 import { missionTeam } from './building-agent.js';
-import { BUILDING_TOOLS } from './office-mcp/index.js';
+import type { AskReply } from './factory/cloud-ask.js';
+import type { LocalDaemon } from './local-daemon.js';
 import { officePrompt, type PromptSource } from './prompts.js';
 import { floorHint } from '../shared/prompts.js';
 import type { Team } from './team.js';
@@ -19,13 +20,6 @@ import { WorkerManager, type HookEnv } from './workers.js';
 const ORCHESTRATOR_FILE = 'orchestrator.json';
 /** Its folder in the office's own `.droid-office/`: where its session runs, never a checkout. */
 const ORCHESTRATOR_DIR = 'orchestrator';
-/**
- * The building agents' Office MCP tools, by the two names Droid gives a tool of the `droid-office` server
- * (`droid-office___team_hire`, `mcp__droid-office__team_hire`). The Orchestrator calls these without Droid's
- * permission prompt: nobody sits at its terminal to approve a hire. Every other tool keeps its prompt.
- */
-const ORCHESTRATOR_ALLOWED_TOOLS = `^(droid-office___|mcp__droid-office__)(${[...BUILDING_TOOLS].join('|')})$`;
-const ALLOWED = 'The Orchestrator works through the Office MCP: its own tools there need no approval.';
 
 /** One open floor, as the Orchestrator's team spans them. */
 export interface OrchestratorFloor {
@@ -41,6 +35,7 @@ export interface OrchestratorOptions {
   agentCmd: string;
   agentArgs: string[];
   hook: HookEnv;
+  daemon?: LocalDaemon;
   prompts?: PromptSource;
   floors(): OrchestratorFloor[];
   /** Why no agent can start now (Droid missing or signed out, or the Office MCP off), and the Settings pane that fixes it. */
@@ -74,8 +69,6 @@ export class Orchestrator {
   private settings: OrchestratorSettings;
   private readonly file: string;
   private lastStatus?: WorkerInfo['status'];
-  /** A new model or effort waits for its turn to end before its session restarts on it. */
-  private restartAtRest = false;
   /** The floor hint its conversation last got: the next prompt names a floor only when it differs. */
   private hint?: string;
 
@@ -107,9 +100,10 @@ export class Orchestrator {
       true,
       undefined,
       true,
+      opts.daemon,
     );
     this.workers.systemPrompt = (info) => officePrompt(opts.prompts, 'orchestrator.system', { name: info.name, folder: this.cwd });
-    this.workers.allowTools = { matcher: ORCHESTRATOR_ALLOWED_TOOLS, reason: ALLOWED };
+    this.workers.officeMcpEnabled = () => true;
     this.workers.asleep = () => !this.settings.on;
     this.workers.modelGate = (model) => opts.modelGate?.(model);
     // Its team's news it hasn't been woken for, on every floor, instead of stopping.
@@ -192,10 +186,16 @@ export class Orchestrator {
     if (!this.settings.on) return 'The Orchestrator is off. Turn it on in ⚙️ Settings → Orchestrator.';
     const blocked = this.blocked();
     if (blocked) return blocked.why;
-    const hint = floor ? floorHint(floor) : undefined;
+    const trimmed = text.trim();
+    const isSlash = !images?.length && /^\/([a-z0-9_-]+)(?:\s+|$)/i.test(trimmed);
+    const resetsConversation = isSlash && /^\/(clear|new)(?:\s+|$)/i.test(trimmed);
+    const hint = !isSlash && floor ? floorHint(floor) : undefined;
     const give = hint !== undefined && hint !== this.hint;
     const error = this.send(give ? `${text}\n\n${hint}` : text, images, queue);
-    if (!error && give) this.hint = hint;
+    if (!error) {
+      if (resetsConversation) this.hint = undefined;
+      else if (give) this.hint = hint;
+    }
     return error;
   }
 
@@ -226,9 +226,12 @@ export class Orchestrator {
     return this.workers.cancelTurn(ORCHESTRATOR_ID);
   }
 
-  /** New conversation: its session and terminal go, and its team stays its own. */
+  answerQuestion(menu: Menu, reply: AskReply): string | undefined {
+    return this.workers.answerQuestion(ORCHESTRATOR_ID, menu, reply);
+  }
+
+  /** New conversation: its session goes, and its team stays its own. */
   reset() {
-    this.restartAtRest = false;
     this.hint = undefined;
     this.workers.forget(ORCHESTRATOR_ID);
     this.opts.changed();
@@ -253,12 +256,13 @@ export class Orchestrator {
       // it still applies until the office restarts
     }
     if (!saved.on) {
-      this.restartAtRest = false;
       this.workers.halt(ORCHESTRATOR_ID);
-    } else if (!before.on && this.info && !this.running()) this.workers.resume(ORCHESTRATOR_ID);
-    else if (chosen && this.running()) {
-      this.restartAtRest = true;
-      this.restartIfRested();
+    } else if (!before.on && this.info && !this.running()) {
+      this.workers.resume(ORCHESTRATOR_ID);
+    } else if (chosen && this.running()) {
+      const { model, effort } = this.choice();
+      if (model) void this.workers.setting(ORCHESTRATOR_ID, { setting: 'model', id: model, name: model, ...(effort ? { effort } : {}) });
+      else if (effort) void this.workers.setting(ORCHESTRATOR_ID, { setting: 'effort', value: effort });
     }
     this.opts.changed();
     return undefined;
@@ -279,22 +283,11 @@ export class Orchestrator {
   private updated(w: WorkerInfo) {
     const was = this.lastStatus;
     this.lastStatus = w.status;
-    // A session that ended launches on the new model by itself; restarting that one too would drop its prompt.
-    if (isAsleep(w.status)) this.restartAtRest = false;
     const rested = (w.status === 'done' || w.status === 'idle') && was !== w.status && was !== 'done' && was !== 'idle';
     if (rested) {
       // A floor wakes a lead of its own when it comes to rest; it has to be told this one did.
       for (const f of this.opts.floors()) f.team.leadRested(ORCHESTRATOR_ID);
-      this.restartIfRested();
     }
     this.opts.changed();
-  }
-
-  private restartIfRested() {
-    const info = this.info;
-    if (!this.restartAtRest || !info || (info.status !== 'done' && info.status !== 'idle')) return;
-    this.restartAtRest = false;
-    this.workers.halt(ORCHESTRATOR_ID);
-    this.workers.resume(ORCHESTRATOR_ID);
   }
 }

@@ -21,14 +21,18 @@ interface LaunchSettingsContext {
 export class WorkerLaunchSettings {
   private droidHooks: Record<string, unknown[]> = {};
   private droidSettingsPath: string;
+  private hooksPrepared = false;
   constructor(
     private dataDir: string,
     private context: LaunchSettingsContext,
   ) {
     this.droidSettingsPath = path.join(dataDir, 'droid-hooks.json');
-    this.writeHookSettings();
+    // Clean up legacy PTY hook files from pre-daemon runs.
+    rmSync(this.droidSettingsPath, { force: true });
+    rmSync(path.join(dataDir, 'hook.cjs'), { force: true });
   }
   private writeHookSettings() {
+    this.hooksPrepared = true;
     // Minimal VPS images sometimes lack curl; the office's own node binary is always there. It also
     // keeps what couldn't be delivered (spool), which curl can't do within a size cap.
     const nodeHook = path.join(this.dataDir, 'hook.cjs');
@@ -74,7 +78,8 @@ export class WorkerLaunchSettings {
    * untouched. Rewritten on every launch, so a resume pins the same model again.
    */
   droidSettings(info: WorkerInfo): string {
-    this.writeDroidSettings();
+    if (!this.hooksPrepared) this.writeHookSettings();
+    else this.writeDroidSettings();
     if (info.model === undefined && info.effort === undefined) return this.droidSettingsPath;
     const file = path.join(this.dataDir, `droid-${info.id}.json`);
     const sessionDefaultSettings: Record<string, string> = {};
@@ -84,15 +89,13 @@ export class WorkerLaunchSettings {
     return file;
   }
 
-  /**
-   * Writes the worker.system prompt for `info` into the data dir and returns the file, or nothing when
-   * the prompt is empty or can't be written (the worker then starts without it). Rewritten on every
-   * launch, so a resume picks up the prompt as it is now.
-   */
-  systemPromptFile(info: WorkerInfo): string | undefined {
-    const file = path.join(this.dataDir, `system-${info.id}.md`);
+  /** Pure system prompt string passed directly to `LocalDaemon.initializeSession({ workerSystemPrompt })`. */
+  systemPromptText(info: WorkerInfo): string | undefined {
     const systemPrompt = this.context.systemPrompt();
-    if (systemPrompt) return this.writeSystem(file, systemPrompt(info));
+    if (systemPrompt) {
+      const custom = systemPrompt(info)?.trim();
+      return custom || undefined;
+    }
     // A plain folder has no branches to keep in sync.
     const branchPolicy = this.context.plain ? '' : workerBranchPolicy(this.context.trees.baseBranch() ?? this.context.trees.currentBranch(), this.context.trees.branchFile);
     const template = this.context.prompts?.text('worker.system') ?? PROMPTS['worker.system'].text;
@@ -118,7 +121,16 @@ export class WorkerLaunchSettings {
       const files = info.worktree ? 'Your files are a private snapshot in your own worktree.' : 'You share this floor’s folder with the original worker. Files are not copied or isolated; coordinate before editing the same files.';
       text += `\n\nYou are ${info.name}, an independent fork of ${info.forkedFrom.name}'s conversation. ${files} The original may keep working. You are not the original worker or its subagent: use your own worker id and do not act on its terminal, worktree or team.`;
     }
-    return this.writeSystem(file, text);
+    return text?.trim() || undefined;
+  }
+
+  /**
+   * Writes the worker.system prompt for `info` into the data dir and returns the file, or nothing when
+   * the prompt is empty or can't be written (the worker then starts without it).
+   */
+  systemPromptFile(info: WorkerInfo): string | undefined {
+    const file = path.join(this.dataDir, `system-${info.id}.md`);
+    return this.writeSystem(file, this.systemPromptText(info));
   }
 
   private writeSystem(file: string, text: string | undefined): string | undefined {

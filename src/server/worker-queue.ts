@@ -1,27 +1,59 @@
 import { CLEAR_DROID_QUEUE, DELETE_DROID_QUEUE_ITEM, DROID_QUEUE_DOWN, DROID_QUEUE_UP, REVIEW_DROID_QUEUE, readDroidPending, showsAs, type DroidPendingGroup, type DroidPendingSnapshot } from '../shared/droid-queue.js';
 import { QUEUE_GRACE_MS } from '../shared/thread-queue.js';
-import type { WorkerStatus } from '../shared/protocol.js';
+import type { QueuedMessageDelivery, QueuedMessageItem, QueuedMessageSource, WorkerQueueState, WorkerStatus } from '../shared/protocol.js';
 
-export type QueuedMessageDelivery = 'next_step' | 'steering' | 'after_turn';
-export type QueuedMessageSource = 'outbox' | 'droid';
+export type { QueuedMessageDelivery, QueuedMessageItem, QueuedMessageSource, WorkerQueueState };
 
-export interface QueuedMessageItem {
-  /** 1-based position across all pending messages on this worker. */
-  index: number;
+export interface DaemonQueuedEntry {
+  requestId: string;
   text: string;
-  /** True when only Droid's single-line screen preview is known. */
-  preview: boolean;
-  moreLines: number;
-  source: QueuedMessageSource;
-  /** next_step: office hook outbox; steering: Droid Enter-steer; after_turn: Droid Ctrl+Enter queue. */
-  delivery: QueuedMessageDelivery;
+  queuePlacement: 'end_of_turn' | 'end_of_loop';
+  hasImage?: boolean;
 }
 
-export interface WorkerQueueState {
-  count: number;
-  items: QueuedMessageItem[];
-  moreSteering: number;
-  moreQueued: number;
+export function parseDaemonQueueList(raw: unknown): DaemonQueuedEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DaemonQueuedEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const r = entry as Record<string, unknown>;
+    const requestId = typeof r.requestId === 'string' && r.requestId ? r.requestId : typeof r.id === 'string' && r.id ? r.id : '';
+    if (!requestId) continue;
+    const text = typeof r.text === 'string' ? r.text : '';
+    const queuePlacement = r.queuePlacement === 'end_of_loop' ? 'end_of_loop' : 'end_of_turn';
+    const hasImage = (typeof r.imageCount === 'number' && r.imageCount > 0) || (Array.isArray(r.images) && r.images.length > 0) || (Array.isArray(r.imagePaths) && r.imagePaths.length > 0);
+    out.push({ requestId, text, queuePlacement, ...(hasImage ? { hasImage: true } : {}) });
+  }
+  return out;
+}
+
+export function buildDaemonQueueState(entries: readonly DaemonQueuedEntry[], held: readonly string[] = []): WorkerQueueState {
+  const items: QueuedMessageItem[] = [];
+  for (const text of held) {
+    items.push({
+      index: items.length + 1,
+      text,
+      preview: false,
+      moreLines: 0,
+      source: 'outbox',
+      delivery: 'next_step',
+    });
+  }
+  const steering = entries.filter((e) => e.queuePlacement === 'end_of_turn');
+  const afterTurn = entries.filter((e) => e.queuePlacement === 'end_of_loop');
+  for (const entry of [...steering, ...afterTurn]) {
+    items.push({
+      id: entry.requestId,
+      index: items.length + 1,
+      text: entry.text,
+      ...(entry.hasImage ? { hasImage: true } : {}),
+      preview: false,
+      moreLines: 0,
+      source: 'droid',
+      delivery: entry.queuePlacement === 'end_of_loop' ? 'after_turn' : 'steering',
+    });
+  }
+  return { count: items.length, items, moreSteering: 0, moreQueued: 0 };
 }
 
 export interface BlockingToolState {
