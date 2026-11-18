@@ -105,6 +105,8 @@ adb shell "am start -a android.intent.action.VIEW -d 'droidoffice://pair?v=1&nam
 
 ## Drive it with adb
 
+Long tool results retain the final lines. **Show full output** (`worker.thread.output/<id>`) fetches the complete visible result into a scrollable sheet (`worker.thread.output.sheet`).
+
 Thread image galleries expose `worker.thread.image_viewer.previous`, `.next` and `.count`; `.download` saves the original bytes through Android's document picker. Markdown previews load a higher-resolution picture when opened, and shell terminal Kitty images use the same viewer. Mermaid actions offer **Download as SVG** (`worker.thread.diagram.download`) and **Share SVG** (`worker.thread.diagram.share`), which shares an actual SVG file with a temporary read grant. The diagram zoom readout follows WebView's actual scale, including pinch gestures.
 
 The Thread composer is one row (attach, draft, Queue, Stop and Send). Autonomy is managed automatically by the office (`skipPermissionsUnsafe: true` / auto-approval), with zero permission prompts, mode pickers or Raw TTY fallbacks in the Thread. An office that does not announce `threadActions` gets no rewind or queue actions.

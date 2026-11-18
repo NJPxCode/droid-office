@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { open, readFile, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
@@ -12,11 +13,15 @@ import { WorkspaceTexts } from './thread-workspace.js';
 
 const PAGE_SIZE = 100;
 const FIELD_CHARS = 12_000;
+// Leaves room for 60k+ replies and thoughts while even worst-case JSON escaping fits a page.
+const ASSISTANT_CHARS = 128 * 1024;
+const TOOL_OUTPUT_CHARS = 12_000;
 const RESPONSE_BYTES = 900_000;
 const LINE_BYTES = 4 * 1024 * 1024;
 const CHUNK_BYTES = 64 * 1024;
 const TRUNCATED = '\n[… truncated]';
 const SESSION_ID = /^[a-zA-Z0-9-]{1,160}$/;
+const OUTPUT_ID = /^(\d{1,15})\.(\d{1,4})\.([0-9a-f]{32})$/;
 
 /** An office notice as the Thread shows it. */
 function officeNotice(text: string): string {
@@ -84,13 +89,21 @@ interface CachedSession {
 const object = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 
 /** Only printable content is projected; transport metadata is never serialized. */
-function clean(value: unknown, limit = FIELD_CHARS, byOwner = false): string {
+function printable(value: unknown, byOwner = false): string {
   if (typeof value !== 'string') return '';
-  const text = hideOfficeText(value, byOwner)
+  return hideOfficeText(value, byOwner)
     .replace(/data:[^\s"'<>]*;base64,[a-zA-Z0-9+/=\s]+/gi, '[attachment omitted]')
     .replace(/[a-zA-Z0-9+/]{256,}={0,2}/g, '[binary data omitted]')
     .trim();
-  return text.length > limit ? text.slice(0, limit) + TRUNCATED : text;
+}
+
+function clean(value: unknown, limit = FIELD_CHARS, byOwner = false): string {
+  const text = printable(value, byOwner);
+  return text.length > limit ? text.slice(0, limit).replace(/[\uD800-\uDBFF]$/, '') + TRUNCATED : text;
+}
+
+function messageText(value: unknown, role: 'user' | 'assistant'): string {
+  return clean(value, role === 'assistant' ? ASSISTANT_CHARS : FIELD_CHARS, role === 'user');
 }
 
 function pretty(value: unknown): string {
@@ -107,18 +120,48 @@ function pretty(value: unknown): string {
   );
 }
 
-function contentText(content: unknown): string {
-  if (typeof content === 'string') return clean(content);
+function contentText(content: unknown, limit = FIELD_CHARS): string {
+  if (typeof content === 'string') return clean(content, limit);
   if (!Array.isArray(content)) return '';
   return clean(
     content
       .slice(0, 1024)
       .map((part) => {
         const p = object(part);
-        return p.type === 'text' ? clean(p.text) : p.type === 'image' ? IMAGE_PLACEHOLDER : '';
+        return p.type === 'text' ? clean(p.text, limit) : p.type === 'image' ? IMAGE_PLACEHOLDER : '';
       })
       .filter(Boolean)
       .join('\n'),
+    limit,
+  );
+}
+
+function outputPreview(output: string): string {
+  if (output.length <= TOOL_OUTPUT_CHARS) return output;
+  const cut = output.length - TOOL_OUTPUT_CHARS;
+  // Keep complete lines unless the final line alone is oversized. In that case keep its ending.
+  const boundary = output[cut - 1] === '\n' ? cut : output.indexOf('\n', cut) + 1;
+  const start = boundary || cut;
+  let hidden = 0;
+  for (let at = output.indexOf('\n'); at >= 0 && at < start; at = output.indexOf('\n', at + 1)) hidden++;
+  const lines = hidden ? `${hidden} earlier ${hidden === 1 ? 'line' : 'lines'} hidden` : '';
+  const partial = boundary ? '' : lines ? '; start of last line hidden' : 'Start of line hidden';
+  return `[${lines}${partial}]\n${output.slice(start).replace(/^[\uDC00-\uDFFF]/, '')}`;
+}
+
+function outputHash(toolId: string, output: string): string {
+  return createHash('sha256')
+    .update(JSON.stringify([toolId, output]))
+    .digest('hex')
+    .slice(0, 32);
+}
+
+function visibleMessage(row: Record<string, unknown>, message: Record<string, unknown>): boolean {
+  return (
+    (message.role === 'user' || message.role === 'assistant') &&
+    ![message, row].some((item) => Object.keys(item).some((key) => key.startsWith('hook'))) &&
+    [message.visibility, row.visibility].every((visibility) => visibility === undefined || visibility === 'both' || visibility === 'user_only') &&
+    (!message.userMessageSource || message.userMessageSource === 'cli_tui')
   );
 }
 
@@ -594,8 +637,7 @@ export class WorkerThreadReader {
       if (!this.textOnly) this.officeHook(state, id, message);
       return;
     }
-    if ([message.visibility, row.visibility].some((visibility) => visibility !== undefined && visibility !== 'both' && visibility !== 'user_only')) return;
-    if (message.userMessageSource && message.userMessageSource !== 'cli_tui') return;
+    if (!visibleMessage(row, message)) return;
     // Slash skills append a separate CLI acknowledgement, not another owner prompt.
     if (message.role === 'user' && message.visibility === 'user_only' && /^Skill "[^"\r\n]+" activated$/.test(contentText(message.content))) return;
     const role = message.role;
@@ -617,7 +659,7 @@ export class WorkerThreadReader {
     }
     if (this.textOnly) return;
     if (typeof message.content === 'string') {
-      await this.text(state, `${id}:text`, role, clean(message.content, FIELD_CHARS, role === 'user'), at);
+      await this.text(state, `${id}:text`, role, messageText(message.content, role), at);
       return;
     }
     if (!Array.isArray(message.content)) return;
@@ -629,7 +671,10 @@ export class WorkerThreadReader {
         const tool = state.tools.get(`tool:${toolId}`);
         if (!tool) continue;
         state.bytes -= entryBytes(tool);
-        tool.output = pictureStandIn(part.content) ? IMAGE_PLACEHOLDER : contentText(part.content);
+        const output = pictureStandIn(part.content) ? IMAGE_PLACEHOLDER : contentText(part.content, Infinity);
+        tool.output = outputPreview(output);
+        if (output.length > TOOL_OUTPUT_CHARS) tool.outputRef = `${offset}.${index}.${outputHash(toolId, output)}`;
+        else delete tool.outputRef;
         tool.error = part.is_error === true;
         const images = Array.isArray(part.content)
           ? part.content
@@ -653,9 +698,9 @@ export class WorkerThreadReader {
         const image = imageRef(part, `${offset}.${index}.x`);
         this.add(state, { id: partId, role, kind: 'notice', text: IMAGE_PLACEHOLDER, ...(image ? { images: [image] } : {}), ...when });
       } else if (part.type === 'text') {
-        await this.text(state, partId, role, clean(part.text, FIELD_CHARS, role === 'user'), at);
+        await this.text(state, partId, role, messageText(part.text, role), at);
       } else if (part.type === 'thinking') {
-        const text = clean(part.thinking);
+        const text = clean(part.thinking, ASSISTANT_CHARS);
         // The message is written when the model finishes it: since the record before, it was thinking.
         const took = at !== undefined && before !== undefined && at >= before ? { tookMs: at - before } : {};
         if (text) this.add(state, { id: partId, role, kind: 'thinking', text, ...when, ...took });
@@ -726,7 +771,29 @@ export class WorkerThreadReader {
    */
   async image(source: ThreadSession, id: string): Promise<{ type: ThreadImage['type']; body: Buffer } | undefined> {
     const address = imageAddress(id);
-    if (!address || !SESSION_ID.test(source.sessionId) || !path.isAbsolute(source.cwd)) return undefined;
+    if (!address) return undefined;
+    return imageAt(await this.recordAt(source, address.offset), address);
+  }
+
+  /** Full sanitized tool result, read from the session only on demand, never kept in the window. */
+  async toolOutput(source: ThreadSession, id: string): Promise<string | undefined> {
+    const address = OUTPUT_ID.exec(id);
+    if (!address) return undefined;
+    const row = object(await this.recordAt(source, Number(address[1])));
+    if (row.type !== 'message') return undefined;
+    const message = object(row.message);
+    if (!visibleMessage(row, message) || !Array.isArray(message.content)) return undefined;
+    const index = Number(address[2]);
+    if (index >= 1024) return undefined;
+    const part = object(message.content[index]);
+    if (part.type !== 'tool_result' || pictureStandIn(part.content)) return undefined;
+    const output = contentText(part.content, Infinity);
+    const toolId = clean(part.tool_use_id, 160);
+    return toolId && output.length > TOOL_OUTPUT_CHARS && outputHash(toolId, output) === address[3] ? output : undefined;
+  }
+
+  private async recordAt(source: ThreadSession, offset: number): Promise<unknown> {
+    if (!SESSION_ID.test(source.sessionId) || !path.isAbsolute(source.cwd)) return undefined;
     const key = JSON.stringify([source.cwd, source.sessionId, source.since ?? 0]);
     const file = this.sessions.get(key)?.file ?? (await this.find(source));
     if (!file) return undefined;
@@ -735,15 +802,15 @@ export class WorkerThreadReader {
     try {
       const parts: Buffer[] = [];
       let length = 0;
-      for (let at = address.offset; length <= LINE_BYTES; ) {
-        const chunk = await this.bytes(handle, at, 256 * 1024);
+      for (let at = offset; length <= LINE_BYTES; ) {
+        const chunk = await this.bytes(handle, at, Math.min(CHUNK_BYTES, LINE_BYTES + 1 - length));
         if (!chunk.length) return undefined;
         const newline = chunk.indexOf(10);
         parts.push(newline < 0 ? chunk : chunk.subarray(0, newline));
         length += chunk.length;
         if (newline >= 0) {
           try {
-            return imageAt(JSON.parse(Buffer.concat(parts).toString('utf8')), address);
+            return JSON.parse(Buffer.concat(parts).toString('utf8'));
           } catch {
             return undefined;
           }
