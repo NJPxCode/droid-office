@@ -17,7 +17,7 @@ export interface RemoteFloor {
   id: string;
   def: { name: string };
   dir: string;
-  workers: Pick<WorkerManager, 'get' | 'list' | 'authenticate' | 'releaseLead'> & Partial<Pick<WorkerManager, 'screenLines' | 'screenMenu' | 'write'>>;
+  workers: Pick<WorkerManager, 'get' | 'list' | 'authenticate' | 'releaseLead'>;
   team: Pick<Team, 'handle' | 'inbox' | 'onWorkerGone' | 'cannotHire' | 'hasNews' | 'leadRested' | TeamViews> & Partial<Pick<Team, 'formerMatches' | 'eventBySeq'>>;
   visits: Pick<Visits, 'handle' | 'onWorkerGone' | 'cannotVisit'>;
   whiteboard: WhiteboardStore;

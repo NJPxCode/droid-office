@@ -432,8 +432,9 @@ export interface LostWorktreeOptions {
   workspace?: string;
   /** The other workers on the floor whose worktrees were deleted too. */
   others: string[];
-  /** Its process is still running, in the deleted folder: its terminal is there to look at. */
+  /** Its session or process is still running, in the deleted folder: open its thread or terminal. */
   openTerminal?: () => void;
+  openLabel?: string;
   /** Puts the folder back, for `all` the others' too. */
   rebuild(all: boolean): void;
   sendHome(): void;
@@ -456,7 +457,7 @@ export function lostWorktreeDialog(opts: LostWorktreeOptions) {
   const one = h('button.btn.primary', { type: 'button' }, 'Rebuild worktree');
   const all = others.length ? h('button.btn', { type: 'button' }, `Rebuild all ${others.length + 1}`) : null;
   const home = h('button.btn.danger', { type: 'button' }, 'Send home…');
-  const look = opts.openTerminal ? h('button.btn', { type: 'button' }, 'Open terminal') : null;
+  const look = opts.openTerminal ? h('button.btn', { type: 'button' }, opts.openLabel ?? 'Open terminal') : null;
   const el = h(
     'div.modal.lost-worktree',
     { role: 'alertdialog', 'aria-label': title },

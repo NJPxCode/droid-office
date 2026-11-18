@@ -92,7 +92,7 @@ export interface QuestionDisplay {
 }
 
 /**
- * The card for the menu on screen. The hook's pending ask (WorkerInfo.ask) has the exact text; the
+ * The card for the pending menu. WorkerInfo.ask has the exact text from the daemon; the
  * Thread's pending tool call is the fallback for an office that doesn't send one. Every numbered
  * option is matched in order: ambiguous or mismatching questions cannot relabel an answer.
  */
@@ -163,8 +163,8 @@ function stepLabel(question: AskedQuestion): string {
 }
 
 /**
- * Where the menu on screen sits in its questionnaire, for a step bar: one step per question, plus
- * Droid's final terminal review when `hasReview` is true. Empty for a lone question, or when the
+ * Where the pending menu sits in its questionnaire: one step per question, plus a review step
+ * for legacy menus when `hasReview` is true. Empty for a lone question, or when the
  * menu matches no single question. `answers` holds what this client sent, by 1-based position.
  */
 export function questionSteps(menu: Menu, display: QuestionDisplay, all: readonly AskedQuestion[], answers: Readonly<Record<number, string>> = {}, hasReview = true): QuestionStep[] {

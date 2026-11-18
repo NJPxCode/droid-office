@@ -35,6 +35,7 @@ export interface WakeLeadView {
   building?: boolean;
   status?: string;
   task?: string;
+  activity?: string;
   steps?: { content: string; status: string }[];
   tail?: string;
 }
@@ -250,6 +251,7 @@ export function buildWakeRequest(p: WakePacket, chatter: ChatterStats, secrets: 
     '## What the lead waits on',
     `Lead "${quote(lead.name)}" (${lead.building ? 'building lead whose team spans every open floor' : 'floor lead'}), status ${lead.status ?? 'unknown'} (${resting ? 'resting: delivering wakes it for a new turn' : 'mid-turn: it reads news at its next status check'}).`,
     ...(lead.task ? [`Lead task: ${clip(lead.task, TASK_MAX)}`] : []),
+    ...(lead.activity ? [`Lead activity: ${clip(lead.activity, 240)}`] : []),
     ...(lead.steps?.length ? ['Lead plan (TodoWrite):', ...lead.steps.slice(0, STEPS_MAX).map((s) => `  [${s.status}] ${clip(s.content, 140)}`)] : []),
     ...(lead.tail?.trim()
       ? [

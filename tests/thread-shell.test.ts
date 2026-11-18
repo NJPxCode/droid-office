@@ -55,7 +55,7 @@ test('message times match Factory narrow formatting at past and future boundarie
   }
 });
 
-test('thread.live parsing replaces only newer views and reads settings and timings', () => {
+test('thread.live parsing replaces only newer views and strips autonomy, mode and side-chat metadata', () => {
   const msg = {
     t: 'thread.live',
     workerId: 'w1',
@@ -65,20 +65,23 @@ test('thread.live parsing replaces only newer views and reads settings and timin
       at: 9000,
       status: 'responding',
       working: 'streaming_assistant_message',
+      label: 'Retrying the model request (attempt 2)...',
       after: 'a1',
       stream: { kind: 'text', text: 'draft', since: 8000 },
       tools: [{ id: 'tool:1', name: 'Execute', startedAt: 7000, phase: 'running', output: 'ok' }],
       settings: { modelName: 'Opus 5.5', reasoningEffort: 'high', autonomyLevel: 'medium', interactionMode: 'spec' },
+      side: { text: 'ignored' },
     },
   };
   const view = liveFrom(msg, 'w1', 's1', undefined, 10_000);
   assert.equal(view?.skew, 1000);
+  assert.equal(view?.label, 'Retrying the model request (attempt 2)...');
   assert.equal(view?.stream?.text, 'draft');
   assert.equal(view?.tools[0]?.id, 'tool:1');
   assert.equal(view?.settings?.modelName, 'Opus 5.5');
   assert.equal('autonomyLevel' in view!.settings!, false, 'companion settings ignore autonomy metadata');
-  assert.equal(view?.side, undefined);
-  assert.equal(liveFrom({ ...msg, live: { ...msg.live, rev: 3, side: { text: 'Q and A' } } }, 'w1', 's1', view, 11_000)?.side?.text, 'Q and A');
+  assert.equal('interactionMode' in view!.settings!, false, 'companion settings ignore interaction mode metadata');
+  assert.equal('side' in view!, false, 'side chat is absent from daemon live state');
   assert.equal(liveFrom(msg, 'w1', 's1', view, 11_000), undefined);
   assert.equal(liveFrom({ ...msg, workerId: 'other' }, 'w1', 's1', undefined), undefined);
   assert.equal(liveFrom({ ...msg, sessionId: undefined }, 'w1', 's1', undefined), undefined, 'unbound live state cannot replace a known session');
@@ -137,7 +140,6 @@ async function mountShell(t: TestContext) {
     w.thread = w.ThreadUI.mountWorkerThread(net, {
       worker: mounted,
       question: document.createElement('div'),
-      queueKey: 'shell-test',
       draft: '',
       onDraft() {},
       send: async (msg: any) => {
@@ -149,7 +151,6 @@ async function mountShell(t: TestContext) {
           });
         return undefined;
       },
-      raw() {},
       floor: 'floor-1',
     });
     document.body.append(w.thread.element);
@@ -160,11 +161,12 @@ async function mountShell(t: TestContext) {
   return { page, errors };
 }
 
-test('Thread shell wires live output, search, rewind, prompt history and queue actions', { skip: chromium }, async (t) => {
+test('Thread shell wires streaming Markdown, retry detail, thought duration, search, rewind session swap, stop turn and structured queue', { skip: chromium }, async (t) => {
   const { page, errors } = await mountShell(t);
   const entries = [
     { id: 'u1', seq: 1, role: 'user', kind: 'text', text: 'hello uniqueNeedle', at: 90_000 },
-    { id: 'a1', seq: 2, role: 'assistant', kind: 'text', text: 'A recorded reply', at: 95_000 },
+    { id: 'th1', seq: 2, role: 'assistant', kind: 'thinking', text: 'Checking invariants', at: 92_000 },
+    { id: 'a1', seq: 3, role: 'assistant', kind: 'text', text: 'A recorded reply', at: 95_000 },
   ] as ThreadEntry[];
   await page.evaluate(
     ({ entries, rows }) => {
@@ -179,8 +181,9 @@ test('Thread shell wires live output, search, rewind, prompt history and queue a
           at: 100_000,
           status: 'responding',
           working: 'streaming_assistant_message',
+          label: 'Retrying the model request (attempt 2)...',
           after: 'a1',
-          stream: { kind: 'text', text: 'streaming draft', since: 99_000 },
+          stream: { kind: 'text', text: 'Here is **bold** and `inline`:\n\n```ts\nconst x = 1;\n```', since: 99_000 },
           tools: [{ name: 'Execute', startedAt: 98_000, phase: 'running', output: 'partial output' }],
           settings: { modelName: 'Opus 5.5', reasoningEffort: 'high', autonomyLevel: 'high', interactionMode: 'spec' },
         },
@@ -188,11 +191,32 @@ test('Thread shell wires live output, search, rewind, prompt history and queue a
     },
     { entries, rows: presentThread(entries, true) },
   );
-  assert.equal(await page.locator('.wt-stream-copy').textContent(), 'streaming draft');
+  // Streaming Markdown renders rich blocks during assistant_text_delta without plain-paragraph jumps.
+  assert.equal(await page.locator('.wt-stream-copy .md.wt-md strong').textContent(), 'bold');
+  assert.equal(await page.locator('.wt-stream-copy .md.wt-md code').first().textContent(), 'inline');
+  assert.match(await page.locator('.wt-stream-copy .md.wt-md pre').innerText(), /const x = 1;/);
+  assert.equal(await page.locator('.wt-progress-detail').textContent(), 'Retrying the model request (attempt 2)...');
   assert.match(await page.locator('.wt-live-tool').innerText(), /partial output/);
   assert.match(await page.locator('.wt-model').innerText(), /Opus 5.5/);
-  assert.equal(await page.locator('.wt-mode').isVisible(), true);
+  assert.equal(await page.locator('.wt-mode, .wt-side').count(), 0);
+  assert.equal(await page.getByRole('button', { name: /raw tty/i }).count(), 0);
   assert.equal(await page.locator('.wt-autonomy, [aria-label*="autonomy" i], [title*="autonomy" i]').count(), 0, 'Thread exposes no autonomy display or control');
+
+  // Completing thinking_text_complete updates tookMs in place and repaints "Thought for 12s".
+  assert.equal(await page.locator('.wt-thinking .wt-thought-label').first().textContent(), 'Thought');
+  const timedEntries = [entries[0], { ...entries[1], tookMs: 12_000 }, entries[2]] as ThreadEntry[];
+  await page.evaluate(
+    ({ entries, rows }) => {
+      (window as any).receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+    },
+    { entries: timedEntries, rows: presentThread(timedEntries, true) },
+  );
+  assert.equal(await page.locator('.wt-thinking .wt-thought-label').first().textContent(), 'Thought for 12s');
+
+  // Stop turn sends worker.interrupt and never writes Escape to term.input.
+  await page.getByRole('button', { name: 'Stop turn' }).click();
+  await page.waitForFunction(() => (window as any).actions.some((msg: any) => msg.t === 'worker.interrupt'));
+  assert.equal(await page.evaluate(() => (window as any).sent.some((msg: any) => msg.t === 'term.input')), false);
 
   await page.locator('.wt-scroll').press('Control+f');
   await page.locator('.wt-search-input').fill('uniqueNeedle');
@@ -212,20 +236,25 @@ test('Thread shell wires live output, search, rewind, prompt history and queue a
   await page.getByRole('button', { name: 'Rewind', exact: true }).click();
   await page.waitForFunction(() => (window as any).actions.some((msg: any) => msg.t === 'worker.rewind'));
   assert.equal(await page.evaluate(() => (window as any).actions.find((msg: any) => msg.t === 'worker.rewind').restore), 'files');
-  await page.evaluate(() => (window as any).receive({ t: 'worker.rewound', workerId: 'worker-1', entryId: 'u1', ok: true, text: 'hello uniqueNeedle' }));
+
+  // Rewind swaps to rewound.sessionId immediately so the new session's snapshot isn't dropped before worker.update.
+  await page.evaluate(() => (window as any).receive({ t: 'worker.rewound', workerId: 'worker-1', entryId: 'u1', ok: true, text: 'hello uniqueNeedle', sessionId: 'session-2' }));
   assert.equal(await page.locator('.wt-input').inputValue(), 'hello uniqueNeedle', 'the rewound prompt returns to the composer');
   await page.locator('.wt-input').fill('');
 
-  // The successful rewind cleared the transcript; put the entries back for recent prompts and the queue.
+  const rewoundEntries = [{ id: 'u2', seq: 1, role: 'user', kind: 'text', text: 'hello uniqueNeedle', at: 101_000 }] as ThreadEntry[];
   await page.evaluate(
     ({ entries, rows }) => {
       const w = window as any;
       const request = w.sent.filter((msg: any) => msg.t === 'thread.read').at(-1).request;
-      w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
-      w.thread.update({ ...w.worker, status: 'working' }, true);
+      w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request, sessionId: 'session-2', entries, hasMore: false, presentation: { version: 1, rows } });
+      w.worker = { ...w.worker, sessionId: 'session-2', status: 'working' };
+      w.thread.update(w.worker, true);
     },
-    { entries, rows: presentThread(entries, true) },
+    { entries: rewoundEntries, rows: presentThread(rewoundEntries, true) },
   );
+  assert.equal(await page.locator('[data-entry="u2"]').count(), 1, 'snapshot for rewound sessionId renders immediately');
+
   await page.locator('.wt-input').fill('half typed');
   await page.locator('.wt-input').press('ArrowUp');
   assert.equal(await page.locator('.wt-input').inputValue(), 'hello uniqueNeedle', 'Up recalls the last prompt in place');
@@ -233,20 +262,48 @@ test('Thread shell wires live output, search, rewind, prompt history and queue a
   assert.equal(await page.locator('.wt-input').inputValue(), 'hello uniqueNeedle', 'the oldest prompt stays put');
   await page.locator('.wt-input').press('ArrowDown');
   assert.equal(await page.locator('.wt-input').inputValue(), 'half typed', 'Down returns to the draft');
-  await page.locator('.wt-input').fill('queue this follow-up');
-  await page.locator('.wt-input').press('Control+Enter');
-  assert.match(await page.locator('.wt-queued').innerText(), /Queued messages/);
-  assert.match(await page.locator('.wt-queued').innerText(), /queue this follow-up/);
-  await page.locator('[data-queued]').hover();
+  await page.locator('.wt-input').fill('');
+
+  // Structured WorkerInfo.queue renders Steering above Queued and forwards daemon requestId on promote/edit/clear.
+  await page.evaluate(() => {
+    const w = window as any;
+    w.worker = {
+      ...w.worker,
+      status: 'working',
+      queue: {
+        count: 2,
+        moreSteering: 0,
+        moreQueued: 0,
+        items: [
+          { id: 'req-s1', index: 1, text: 'steer next step', preview: false, moreLines: 0, source: 'droid', delivery: 'next_step' },
+          { id: 'req-q1', index: 2, text: 'queue this follow-up', preview: false, moreLines: 0, source: 'droid', delivery: 'after_turn' },
+        ],
+      },
+    };
+    w.thread.update(w.worker, true);
+  });
+  const headings = await page.locator('.wt-queue-heading > span').allTextContents();
+  assert.deepEqual(headings, ['Steering messages', 'Queued messages']);
+  assert.equal(await page.locator('.wt-queued-foot').textContent(), '2 messages queued');
+  assert.equal(await page.locator('[data-queued="steer:req-s1"] button[aria-label="Send now"]').count(), 0, 'steering items have no Send now button');
+  await page.locator('[data-queued="queued:req-q1"]').hover();
   await page.getByRole('button', { name: 'Send now', exact: true }).click();
   await page.waitForFunction(() => (window as any).actions.some((msg: any) => msg.t === 'worker.queue' && msg.action === 'promote'));
   assert.deepEqual(
     await page.evaluate(() => {
       const msg = (window as any).actions.findLast((action: any) => action.t === 'worker.queue');
-      return { action: msg.action, index: msg.index, group: msg.group, text: msg.text };
+      return { action: msg.action, id: msg.id, index: msg.index, group: msg.group, text: msg.text };
     }),
-    { action: 'promote', index: 1, group: 'queued', text: 'queue this follow-up' },
+    { action: 'promote', id: 'req-q1', index: 2, group: 'queued', text: 'queue this follow-up' },
   );
+
+  await page.locator('[data-queued="queued:req-q1"] button[aria-label="Edit message"]').click();
+  await page.waitForFunction(() => (window as any).actions.some((msg: any) => msg.t === 'worker.queue' && msg.action === 'delete'));
+  assert.equal(await page.locator('.wt-input').inputValue(), 'queue this follow-up', 'editing deletes from daemon queue and prefills composer');
+  assert.equal(await page.evaluate(() => (window as any).actions.findLast((action: any) => action.t === 'worker.queue').id), 'req-q1');
+
+  await page.getByRole('button', { name: 'Clear all', exact: true }).click();
+  await page.waitForFunction(() => (window as any).actions.some((msg: any) => msg.t === 'worker.queue' && msg.action === 'clear'));
   assert.deepEqual(errors, []);
   await page.evaluate(() => (window as any).thread.dispose());
 });
@@ -303,7 +360,8 @@ test('the model chip changes the model and reasoning effort through worker.setti
       live: { rev: 1, at: 100_000, status: 'idle', working: 'idle', tools: [], settings: { model: 'opus-5-5', modelName: 'Opus 5.5', reasoningEffort: 'high', autonomyLevel: 'low', interactionMode: 'auto' } },
     });
   });
-  assert.equal(await page.locator('.wt-mode').isVisible(), false, 'Normal mode shows no mark');
+  assert.equal(await page.locator('.wt-mode').count(), 0);
+  assert.doesNotMatch((await page.locator('.wt-model').getAttribute('title')) ?? '', /\/model|Tab/);
   await page.locator('.wt-model').click();
   await page.getByRole('menuitemradio', { name: 'Sonnet 5.5' }).waitFor();
   assert.equal(await page.getByRole('menuitemradio', { name: 'High' }).getAttribute('aria-checked'), 'true');
@@ -361,7 +419,7 @@ test('rewind can restore only the files the owner picks', { skip: chromium }, as
   await page.evaluate(() => (window as any).thread.dispose());
 });
 
-test('slash commands: /copy opens the copy menu, mid-turn ones send and the side chat closes', { skip: chromium }, async (t) => {
+test('slash commands: /copy opens the copy menu, /new waits for idle, /quit is blocked and /btw is absent', { skip: chromium }, async (t) => {
   const { page, errors } = await mountShell(t);
   const entries = [
     { id: 'u1', seq: 1, role: 'user', kind: 'text', text: 'first prompt' },
@@ -375,12 +433,24 @@ test('slash commands: /copy opens the copy menu, mid-turn ones send and the side
     },
     { entries, rows: presentThread(entries, false) },
   );
+  await page.locator('.wt-input').fill('/');
+  assert.equal(await page.locator('.wt-slash-name', { hasText: '/btw' }).count(), 0);
   await page.locator('.wt-input').fill('/copy');
   await page.locator('.wt-input').press('Enter');
   const copy = page.getByRole('dialog', { name: 'Copy' });
   for (const choice of ['Last assistant response', 'Last user prompt', 'Current session ID', 'Full conversation transcript', 'Select range']) assert.equal(await copy.getByRole('button', { name: choice }).count(), 1, choice);
   await copy.getByRole('button', { name: 'Cancel' }).click();
   assert.equal(await page.evaluate(() => (window as any).actions.some((msg: any) => msg.t === 'worker.prompt')), false, '/copy stays in the Thread');
+
+  await page.locator('.wt-input').fill('/quit');
+  await page.locator('.wt-input').press('Enter');
+  assert.match(
+    await page
+      .locator('.wt-send-hint, .wt-feedback')
+      .allInnerTexts()
+      .then((all) => all.join(' ')),
+    /would end Pixel’s Droid/,
+  );
 
   await page.evaluate(() => (window as any).thread.update({ ...(window as any).worker, status: 'working' }, true));
   await page.locator('.wt-input').fill('/new');
@@ -392,18 +462,11 @@ test('slash commands: /copy opens the copy menu, mid-turn ones send and the side
       .then((all) => all.join(' ')),
     /\/new runs once Pixel finishes this turn/,
   );
-  await page.locator('.wt-input').fill('/btw what is this repo?');
-  await page.locator('.wt-input').press('Enter');
-  await page.waitForFunction(() => (window as any).actions.some((msg: any) => msg.t === 'worker.prompt' && msg.prompt === '/btw what is this repo?'));
 
-  await page.evaluate(() =>
-    (window as any).receive({ t: 'thread.live', workerId: 'worker-1', sessionId: 'session-1', live: { rev: 5, at: 100_000, status: 'pondering', working: 'thinking', tools: [], side: { text: 'what is this repo?\n\nAn office.' } } }),
-  );
-  const side = page.getByRole('region', { name: 'Side chat' });
-  assert.match(await side.innerText(), /An office\./);
-  await page.locator('.wt-input').press('Escape');
-  await page.waitForFunction(() => (window as any).actions.some((msg: any) => msg.t === 'worker.side'));
-  assert.equal(await page.evaluate(() => (window as any).actions.some((msg: any) => msg.t === 'worker.interrupt')), false, 'Esc closes the side chat, not the turn');
+  await page.evaluate(() => (window as any).thread.update({ ...(window as any).worker, status: 'idle' }, true));
+  await page.locator('.wt-input').fill('/new');
+  await page.locator('.wt-input').press('Enter');
+  await page.waitForFunction(() => (window as any).actions.some((msg: any) => msg.t === 'worker.prompt' && msg.prompt === '/new'));
   assert.deepEqual(errors, []);
   await page.evaluate(() => (window as any).thread.dispose());
 });

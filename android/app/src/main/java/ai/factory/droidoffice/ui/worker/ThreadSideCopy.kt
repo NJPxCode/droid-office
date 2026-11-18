@@ -1,28 +1,14 @@
 package ai.factory.droidoffice.ui.worker
 
 import android.content.ClipData
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,7 +24,6 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import ai.factory.droidoffice.core.Tags
 import ai.factory.droidoffice.core.ThreadEntry
 import ai.factory.droidoffice.core.ThreadTurns
@@ -47,44 +32,13 @@ import ai.factory.droidoffice.ui.components.tagged
 import ai.factory.droidoffice.ui.theme.ThreadPalette
 import kotlinx.coroutines.launch
 
-/** Droid's side chat (/btw) over the composer while the terminal shows it: its question and answer, and a close. */
-@Composable
-internal fun ThreadSideChat(text: String, onClose: (() -> Unit)?) {
-    val shape = RoundedCornerShape(4.dp)
-    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
-        Column(
-            Modifier.widthIn(max = READING_WIDTH + 20.dp).fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 8.dp)
-                .background(ThreadPalette.Surface, shape).border(1.dp, ThreadPalette.InputBorder, shape).padding(start = 12.dp, bottom = 10.dp)
-                .tagged(Tags.Worker.THREAD_SIDE),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Side chat", style = MaterialTheme.typography.bodyMedium.copy(color = ThreadPalette.Text))
-                Text(
-                    "Ask a follow-up with /btw",
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = ThreadPalette.TextTertiary),
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f).padding(start = 8.dp),
-                )
-                if (onClose != null) IconButton(onClick = onClose, modifier = Modifier.tagged(Tags.Worker.THREAD_SIDE_CLOSE)) {
-                    Icon(Icons.Default.Close, "Close side chat", Modifier.size(16.dp), tint = ThreadPalette.TextSecondary)
-                }
-            }
-            Text(
-                text.ifBlank { "Thinking…" },
-                style = MaterialTheme.typography.bodyMedium.copy(color = ThreadPalette.Text),
-                modifier = Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()).padding(end = 12.dp),
-            )
-        }
-    }
-}
-
 /** Droid's /copy menu: a reply, a prompt, the session id, the transcript or the last turns, to the clipboard. */
 @Composable
-internal fun ThreadCopyDialog(entries: List<ThreadEntry>, sessionId: String?, onDismiss: () -> Unit) {
+internal fun ThreadCopyDialog(entries: List<ThreadEntry>, sessionId: String?, initialTurns: String = "1", onDismiss: () -> Unit) {
     val clipboard = LocalClipboard.current
     val snackbar = LocalSnackbar.current
     val scope = rememberCoroutineScope()
-    var turns by remember { mutableStateOf("1") }
+    var turns by remember(initialTurns) { mutableStateOf(initialTurns.filter(Char::isDigit).take(4).ifEmpty { "1" }) }
     fun pick(choice: ThreadTurns.Copy) {
         val text = ThreadTurns.copyText(entries, choice, sessionId, turns.toIntOrNull() ?: 1)
         scope.launch {

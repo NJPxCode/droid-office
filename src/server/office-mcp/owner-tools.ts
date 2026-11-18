@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import type { Menu } from '../../shared/asks.js';
 import { ORCHESTRATOR_ID } from '../../shared/mission-control.js';
 import type { ClientMsg } from '../../shared/protocol.js';
 import { AUTO_DESK } from '../../shared/protocol.js';
@@ -14,9 +15,11 @@ import { withImageOrigin } from './team-events.js';
 type WireInput<A extends OwnerAction> = Omit<Extract<ClientMsg, { t: A }>, 't' | 'request' | 'requestId' | 'requestFloor' | 'floor'>;
 type Input<A extends OwnerAction> = (A extends 'worker.prompt'
   ? Omit<WireInput<A>, 'workerId' | 'prompt'> & { worker?: string; workerId?: string; name?: string; prompt?: string; text?: string }
-  : 'workerId' extends keyof WireInput<A>
-    ? Omit<WireInput<A>, 'workerId'> & { worker?: string; workerId?: string; name?: string }
-    : WireInput<A>) & { floor?: string };
+  : A extends 'worker.answer'
+    ? Omit<WireInput<A>, 'workerId' | 'menu'> & { worker?: string; workerId?: string; name?: string; menu?: Menu }
+    : 'workerId' extends keyof WireInput<A>
+      ? Omit<WireInput<A>, 'workerId'> & { worker?: string; workerId?: string; name?: string }
+      : WireInput<A>) & { floor?: string };
 type Scope = 'floor' | 'worker';
 type Effect = 'read' | 'write' | 'delete';
 
@@ -66,7 +69,7 @@ export const OWNER_TOOLS = [
   tool(
     'worker.prompt',
     'office_worker_prompt',
-    'Prompt or steer an independent floor worker (check office_look first; for subagents use team_message; never prompt a worker at a permission prompt). Accepts worker (or workerId/name) and prompt (or text). Default queue: false steers during a running turn; queue: true waits for turn end; urgent: true interrupts via Escape and delivers immediately.',
+    'Prompt or steer an independent floor worker (check office_look first; for subagents use team_message; never prompt a worker at a permission prompt). Accepts worker (or workerId/name) and prompt (or text). Default queue: false steers during a running turn; queue: true waits for turn end; urgent: true interrupts the running turn and delivers immediately.',
     z
       .strictObject({
         ...worker,
@@ -74,8 +77,8 @@ export const OWNER_TOOLS = [
         text: text.min(1).optional().describe('Alias for prompt.'),
         issue: number.optional(),
         images: images.optional(),
-        queue: z.boolean().default(false).describe('Default false: steer during the running turn; true queues via Ctrl+Enter for after the turn ends.'),
-        urgent: z.boolean().optional().describe('True: interrupt a running turn or blocking command via Escape and deliver immediately (not with queue: true).'),
+        queue: z.boolean().default(false).describe('Default false: steer during the running turn; true queues for after the turn ends.'),
+        urgent: z.boolean().optional().describe('True: interrupt a running turn or blocking command and deliver immediately (not with queue: true).'),
       })
       .refine(hasWorker, WORKER_TARGET_ERROR)
       .refine((a) => resolvePromptText(a) !== undefined, PROMPT_TEXT_ERROR)
@@ -87,11 +90,11 @@ export const OWNER_TOOLS = [
   tool(
     'worker.answer',
     'office_worker_answer',
-    'Answer an independent floor worker’s AskUser menu using its exact screen snapshot (for subagents use question_answer; never for permission prompts).',
+    'Answer an independent local or cloud worker’s open AskUser menu (for subagents use question_answer; never for permission prompts). Omit menu to answer the worker’s current open question, or pass menu to verify it has not changed.',
     z
       .strictObject({
         ...worker,
-        menu,
+        menu: menu.optional().describe('Optional AskUser menu snapshot to match; omit to use the worker’s current open menu.'),
         choice: number.optional().describe('Single option number.'),
         choices: z.array(number).optional().describe('Checkbox option numbers.'),
         text: text.optional().describe('Typed answer.'),
@@ -135,6 +138,14 @@ export function registerOwnerTools(server: OfficeMcpServer, owner: OwnerOffice, 
         } else {
           if (entry.action === 'worker.prompt' && found.worker.cloud && args.urgent === true) {
             return officeError(`${found.worker.name} is a cloud worker: call office_worker_interrupt first, then office_worker_prompt.`);
+          }
+          if (entry.action === 'worker.answer' && args.menu === undefined) {
+            if (found.worker.ask?.kind === 'permission') {
+              return officeError(`${found.worker.name} is at a permission prompt; only the owner can answer permission prompts at its desk.`);
+            }
+            const currentMenu = found.worker.menu ?? found.worker.cloud?.menu;
+            if (!currentMenu) return officeError(`${found.worker.name} has no open AskUser question right now.`);
+            args.menu = currentMenu;
           }
           args.workerId = found.worker.id;
           floor = found.floor.id;

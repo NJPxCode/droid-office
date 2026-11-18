@@ -1,13 +1,14 @@
 import { z } from 'zod';
+import type { Menu } from '../../shared/asks.js';
 import { DESK_BY_ID } from '../../shared/layout.js';
 import { ORCHESTRATOR_ID, type MissionAgent } from '../../shared/mission-control.js';
 import { OFFICE_SHELL_ID } from '../../shared/office-shell.js';
-import type { ClientMsg, ServerMsg, WorkerInfo, WorktreeState } from '../../shared/protocol.js';
+import type { ClientMsg, ServerMsg, WorkerInfo, WorkerQueueState, WorktreeState } from '../../shared/protocol.js';
 import type { ThreadEntry } from '../../shared/worker-thread.js';
 import { analyzeCheckoutSafety, workerLocation } from '../floor-watch.js';
 import type { StoredImageMeta } from '../office-images.js';
 import { buildWorkerInspection, describeTaskLabel, formatTaskTag, formatWorkerInspection, type WorkerInspection, type WorkerTaskLabel } from '../worker-status.js';
-import { formatBlockingSummary, formatQueueBrief, type BlockingToolState, type WorkerQueueState } from '../worker-queue.js';
+import { formatBlockingSummary, formatQueueBrief, type BlockingToolState } from '../worker-queue.js';
 import { floorDeepLink, mcpDeepLinkBase, workerDeepLink } from './deep-links.js';
 import { officeError, officeResult, type OfficeMcpAccess, type OfficeMcpCaller, type OfficeMcpDeps, type OfficeMcpServer } from './index.js';
 import { floorRef, resolveWorkerTarget, WORKER_TARGET_ERROR, workerTarget } from './owner-schemas.js';
@@ -54,7 +55,7 @@ export interface OwnerOffice {
   floors(): OwnerFloor[];
   /** Mission Control's building agents: no floor, no desk, and never controllable through the Office MCP. */
   mission(): MissionAgent[];
-  /** The end of a worker's terminal, or of a floor's boss shell (OFFICE_SHELL_ID with its floor). */
+  /** Recent worker conversation or shell output, including a floor's boss shell (OFFICE_SHELL_ID). */
   tail(workerId: string, lines: number, floor?: string): string | undefined;
   /** Structured worker telemetry (plan, current/last tool, model cooldown, PR/CI, label provenance). */
   inspect?(workerId: string, floor?: string): Promise<WorkerInspection | undefined> | WorkerInspection | undefined;
@@ -115,6 +116,7 @@ export interface RosterWorker {
   warnings?: string[];
   worktree?: { branch: string };
   pr?: { number: number; url: string };
+  menu?: Menu;
   queuedMessages?: WorkerQueueState;
   blockingTool?: BlockingToolState;
   deepLink?: string;
@@ -168,6 +170,8 @@ export function roster(
             const effort = w.activeEffort ?? w.effort;
             const taskLabel = describeTaskLabel(w, labelsOn);
             const meta = metaFor?.(w.id);
+            const queue = meta?.queuedMessages ?? w.queue;
+            const activeMenu = w.status === 'needs_input' && w.ask?.kind !== 'permission' ? (w.menu ?? w.cloud?.menu) : undefined;
             const loc = workerLocation(w, f);
             const warnings = perWorker.get(w.id);
             const watching = f.watchedBy?.(caller, w.id) && w.lead !== caller ? (true as const) : undefined;
@@ -198,7 +202,8 @@ export function roster(
               ...(warnings?.length ? { warnings } : {}),
               ...(w.worktree ? { worktree: { branch: w.worktree.branch } } : {}),
               ...(w.pr ? { pr: w.pr } : {}),
-              ...(meta?.queuedMessages?.count ? { queuedMessages: meta.queuedMessages } : {}),
+              ...(activeMenu ? { menu: activeMenu } : {}),
+              ...(queue?.count ? { queuedMessages: queue } : {}),
               ...(meta?.blockingTool ? { blockingTool: meta.blockingTool } : {}),
             };
           }),
@@ -237,6 +242,7 @@ function rosterLine(w: RosterWorker): string {
     `  ${w.name} (${w.id})${tags.length ? ` [${tags.join(', ')}]` : ''}, ${w.desk}, ${w.status}${w.model ? `, ${w.model}${w.effort ? ` ${w.effort}` : ''}` : ''}`,
     ...(w.task || w.title ? [`    Task: ${w.task ?? w.title}${formatTaskTag(w.taskLabel)}`] : []),
     ...(w.activity ? [`    Doing: ${w.activity}`] : []),
+    ...(w.menu ? [`    Question: ${w.menu.question ?? w.menu.choices.map((c) => `${c.number}. ${c.label}`).join(' / ')}`] : []),
     ...(w.blockingTool ? [`    Blocking command: ${formatBlockingSummary(w.blockingTool)}`] : []),
     ...(queueBrief ? [`    ${queueBrief}`] : []),
     ...(w.cwd ? [`    Directory: ${w.cwd}${w.sharedCheckout ? ' (shared checkout, no worktree)' : ''}`] : []),
@@ -253,6 +259,7 @@ function missionLine(agent: MissionAgent, caller: string, labelsOn = true): stri
     `  ${w.name} (${w.id}) [${tags.join(', ')}], Mission Control, ${w.status}${w.model ? `, ${w.model}${w.effort ? ` ${w.effort}` : ''}` : ''}`,
     ...(w.task ? [`    Task: ${w.task.name}${formatTaskTag(taskLabel)}`] : []),
     ...(w.activity ? [`    Doing: ${w.activity}`] : []),
+    ...(w.status === 'needs_input' && w.ask?.kind !== 'permission' && w.menu ? [`    Question: ${w.menu.question ?? w.menu.choices.map((c) => `${c.number}. ${c.label}`).join(' / ')}`] : []),
     ...(agent.team.length ? [`    Team: ${agent.team.map((m) => `${m.name} on ${m.floorName} (${m.status})`).join(', ')}`] : []),
   ].join('\n');
 }
@@ -322,7 +329,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
     if (direct) return direct;
     const f = deps.floor(workerId);
     if (!f) return undefined;
-    const queue = f.workers.queueState?.(workerId);
+    const queue = f.workers.queueState?.(workerId) ?? f.workers.get(workerId)?.queue;
     const blocking = f.workers.blockingTool?.(workerId);
     if (!queue?.count && !blocking) return undefined;
     return { ...(queue?.count ? { queuedMessages: queue } : {}), ...(blocking ? { blockingTool: blocking } : {}) };

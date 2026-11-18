@@ -518,7 +518,7 @@ data class ThreadPresentation(val version: Int, val rows: List<ThreadRow>) {
     }
 }
 
-/** Whether the office's presentation can be shown: when it can't, the thread says why and offers Raw TTY. */
+/** Whether the office's presentation can be shown: when it can't, the thread says why. */
 enum class ThreadSupport(
     /** The state's heading, or null when the Thread can be read. */
     val title: String?,
@@ -526,9 +526,9 @@ enum class ThreadSupport(
 ) {
     Supported(null, null),
     /** No presentation at all: the office predates it. */
-    OlderOffice("Update Droid Office", "Update Droid Office on your computer to read this Thread here. Raw TTY still works."),
+    OlderOffice("Update Droid Office", "Update Droid Office on your computer to read this Thread here."),
     /** A presentation version this app doesn't know. */
-    NewerOffice("Update the app", "Update the app to read this Thread. Raw TTY still works.");
+    NewerOffice("Update the app", "Update the app to read this Thread.");
 
     companion object {
         fun of(p: ThreadPresentation?): ThreadSupport = when {

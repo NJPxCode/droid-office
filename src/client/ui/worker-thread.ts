@@ -1,12 +1,10 @@
-import { readDroidPending } from '../../shared/droid-queue';
 import { ORCHESTRATOR_ID } from '../../shared/mission-control';
 import { PROMPT_MAX } from '../../shared/prompts';
 import type { ClientMsg, ServerMsg, WorkerInfo } from '../../shared/protocol';
-import { nativeCopy, nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
+import { copyTurns, nativeCopy, nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
 import { isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
-import { latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
+import { IMAGE_PLACEHOLDER, latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
 import { statusMode, thinkingSeconds, thoughtLabel } from '../../shared/thread-status';
-import { ThreadQueue } from '../../shared/thread-queue';
 import { rewindFilesSince } from '../../shared/thread-rewind';
 import { threadPrompts } from '../../shared/thread-turns';
 import { todosFinished } from '../../shared/todos';
@@ -19,7 +17,7 @@ import { ThreadHistory } from '../thread-history';
 import { cloudStarting, threadSnapshotError, threadStarting } from '../thread-startup';
 import { withToken } from '../token';
 import { applyHorizontalScrollCue, measureHorizontalScrollCue, type HorizontalScrollCueMeasurement } from './code-highlight';
-import { h, STATUS_LABEL } from './dom';
+import { claimEscape, h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
 import { liveFrom, entryAt, entryTook, type LiveTool, type LiveView } from './thread-live-view';
 import { openThreadCopy } from './thread-copy';
@@ -46,6 +44,7 @@ export interface WorkerThread {
   entries(): readonly ThreadEntry[];
   update(worker: WorkerInfo, connected: boolean): void;
   activate(active: boolean): void;
+  search(query: string): void;
   /** Takes pictures dropped on `zone` too, marking `mark` while they're over it. */
   dropZone(zone: HTMLElement, mark?: HTMLElement): void;
   dispose(): void;
@@ -54,16 +53,12 @@ export interface WorkerThread {
 export interface ThreadOptions {
   worker: WorkerInfo;
   question: HTMLElement;
-  queueKey: string;
+  queueKey?: string;
   draft: string;
   onDraft(text: string): void;
   send(msg: ClientMsg): Promise<string | undefined>;
-  /** Opens the worker's terminal. A cloud worker has none. */
-  raw?(): void;
   /** The window around the thread already shows a cloud worker's `cloud.error`. */
   cloudErrorShown?: boolean;
-  /** The worker's terminal as text, one string per row, or undefined before it has drawn one. */
-  screen?(): readonly string[] | undefined;
   onEntries?(): void;
   /** Current floor only; return no workers once the mounted floor is no longer current. */
   team?(): readonly WorkerInfo[];
@@ -80,8 +75,6 @@ export interface ThreadOptions {
   /** Why the worker can't take a message now, shown in place of the composer with `blockedAction` beside it. */
   blocked?(): string | undefined;
   blockedAction?: HTMLElement;
-  /** Stop asks the office to stop the turn (`worker.interrupt`) instead of typing Esc into the terminal. */
-  interrupt?: boolean;
   /** A prompt starts the worker from rest: the composer stays open while it's asleep, with no Resume. */
   promptWakes?: boolean;
 }
@@ -105,7 +98,7 @@ function entryDigest(entry: ThreadEntry | undefined): string {
       if (field === undefined) continue;
       for (let at = 0; at < field.length; at++) hash = Math.imul(hash ^ field.charCodeAt(at), 16777619);
     }
-    digest = `${hash}:${entry.error ? 1 : 0}`;
+    digest = `${hash}:${entry.error ? 1 : 0}:${entryTook(entry) ?? ''}`;
     digests.set(entry, digest);
   }
   return digest;
@@ -116,8 +109,6 @@ const rowContent = (row: ThreadRow, loaded: ReadonlyMap<string, ThreadEntry>) =>
   (row.kind === 'activity' ? row.blocks.flatMap((block) => (block.kind === 'thought' ? [block.id] : block.actions.map((item) => item.id))) : [row.id]).map((id) => entryDigest(loaded.get(id)));
 
 const hasDelegateCard = (row: ThreadRow) => row.kind === 'activity' && row.blocks.some((b) => b.kind === 'tools' && b.card === 'delegate');
-
-const localQueues = new Map<string, ThreadQueue>();
 
 const shortcut = (key: string, label: string) => h('span.wt-shortcut', {}, h('span.key', {}, key), label);
 
@@ -130,16 +121,13 @@ interface WorkspaceFilesCache {
 }
 
 /**
- * A worker's conversation: a local session's JSONL, or a cloud worker's Factory session, which the
- * office projects into the same entries. It uses the existing worker actions, never a second Droid.
- * A cloud worker has no terminal here: no Raw TTY, slash commands or screen to read its queue from,
- * Stop interrupts its session, and Factory holds a message sent during a turn until the turn is over.
+ * A Droid session's conversation: a local daemon session's JSONL + live notifications, or a cloud
+ * worker's Factory session, projected into the same entries and controls.
  */
 export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let worker = opts.worker;
   const cloud = !!worker.cloud;
-  const screen = cloud ? undefined : opts.screen;
-  const fallback = cloud ? 'open it in Factory' : 'open Raw TTY';
+  const errorHint = cloud ? 'Retry below, or open it in Factory.' : 'Retry below.';
   let connected = false;
   let active = false;
   let disposed = false;
@@ -149,8 +137,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let received = false;
   let watchedWorkerId = '';
   let attachedWorkerId = '';
+  let rewoundFromSessionId: string | undefined;
   let hasPushed = false;
   let liveView: LiveView | undefined;
+  let liveStreamKey = '';
   const liveTools = new Map<string, LiveTool>();
   let paintedOnce = false;
   const floorDirs = new Map<string, string>();
@@ -162,11 +152,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let pending: { request: string; before?: number; at: number } | undefined;
   let lastReadAt = 0;
   const history = new ThreadHistory();
-  let savedQueue: unknown;
-  try {
-    savedQueue = JSON.parse(sessionStorage.getItem(opts.queueKey) ?? 'null');
-  } catch {}
-  const queued = localQueues.get(opts.queueKey) ?? new ThreadQueue(savedQueue);
+  let cloudQueueSeq = 0;
+  let cloudQueueSession = worker.sessionId;
+  let cloudQueueMaxSeq = -1;
+  const cloudConsumed = new Set<string>();
+  let cloudPending: { id: number; text: string; hasImage: boolean; after: number }[] = [];
 
   const resolveFloorDir = (): string | undefined => {
     if (!opts.floor) return undefined;
@@ -254,67 +244,136 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     latest.title = label;
   };
   let queueKey = '';
-  // Keys go straight to the attached terminal, as Raw TTY types them: an office before term.input
-  // confirmations would answer a confirmed send with a refusal after typing the keys anyway.
-  const typeKeys = (data: string) => net.send({ t: 'term.input', workerId: worker.id, data });
   let queueActionBusy = false;
-  const queueAction = async (action: 'promote' | 'delete' | 'clear', item?: { index: number; group: 'steering' | 'queued'; text?: string }) => {
+  interface QueueRowView {
+    key: string;
+    id?: string;
+    index: number;
+    group: 'steering' | 'queued';
+    text: string;
+    hasImage: boolean;
+    preview: boolean;
+    more: number;
+  }
+  const syncCloudQueue = () => {
+    if (!cloud) return;
+    if (worker.sessionId && cloudQueueSession && worker.sessionId !== cloudQueueSession) {
+      cloudPending = [];
+      cloudConsumed.clear();
+      cloudQueueMaxSeq = -1;
+    }
+    if (worker.sessionId) cloudQueueSession = worker.sessionId;
+    for (const entry of history.entries) cloudQueueMaxSeq = Math.max(cloudQueueMaxSeq, entry.seq);
+    for (const entry of [...history.entries].sort((a, b) => a.seq - b.seq)) {
+      if (entry.role !== 'user' || cloudConsumed.has(entry.id)) continue;
+      const at = cloudPending.findIndex(
+        (item) =>
+          entry.seq > item.after &&
+          (item.text
+            ? entry.kind === 'text' && entry.text?.trim() === item.text
+            : item.hasImage && ((entry.kind === 'notice' && entry.text === IMAGE_PLACEHOLDER) || (entry.kind === 'text' && !entry.text?.trim() && !!entry.images?.length))),
+      );
+      if (at >= 0) {
+        cloudPending.splice(at, 1);
+        cloudConsumed.add(entry.id);
+      }
+    }
+    if (!cloudPending.length) cloudConsumed.clear();
+  };
+  const queueAction = async (action: 'promote' | 'delete' | 'clear', item?: { id?: string; index: number; group: 'steering' | 'queued'; text?: string }) => {
     if (queueActionBusy || !connected || cloud) return '';
     queueActionBusy = true;
     updateControls();
-    const msg = {
+    const msg: ClientMsg = {
       t: 'worker.queue',
-      id: worker.id,
       workerId: worker.id,
       action,
-      ...(item ? { index: item.index, group: item.group, ...(item.text ? { text: item.text } : {}) } : {}),
-    } as unknown as ClientMsg;
+      ...(item
+        ? {
+            ...(item.id ? { id: item.id } : {}),
+            index: item.index,
+            group: item.group,
+            ...(item.text ? { text: item.text } : {}),
+          }
+        : {}),
+    };
     const why = await opts.send(msg);
     queueActionBusy = false;
-    if (!why && action === 'clear') queued.clear();
     told = why ?? '';
     queueKey = '';
     updateControls();
     return why;
   };
   const clearQueue = () => void queueAction('clear');
-  // Droid's steering and queued lists are the truth; our receipts fill in text the narrow TUI cut short.
+  // Structured `worker.queue` from droid-daemon: Steering messages above Queued messages.
   const paintQueue = () => {
-    queued.sync(worker.sessionId, history.entries);
-    const rows = screen?.();
-    const pending = rows ? readDroidPending(rows) : undefined;
-    const steering = (pending?.items.filter((row) => row.group === 'steering') ?? []).map((row, i) => ({
-      message: { key: `steer:${i}:${row.text}`, text: row.text, hasImage: false, preview: row.cut || row.more > 0, more: row.more },
-      group: 'steering' as const,
-      index: i + 1,
-    }));
-    const shownQueued = queued.shown(pending ? pending.items.filter((row) => row.group === 'queued') : undefined).map((message, i) => ({
-      message,
-      group: 'queued' as const,
-      index: i + 1,
-    }));
-    if (queued.pending.length) localQueues.set(opts.queueKey, queued);
-    else localQueues.delete(opts.queueKey);
-    try {
-      if (queued.pending.length) sessionStorage.setItem(opts.queueKey, JSON.stringify(queued));
-      else sessionStorage.removeItem(opts.queueKey);
-    } catch {}
-    const items = [...steering, ...shownQueued];
-    const canClear = connected && !cloud && items.length > 0;
-    const key = JSON.stringify([items, canClear, queueActionBusy]);
+    let steering: QueueRowView[] = [];
+    let queuedRows: QueueRowView[] = [];
+    let moreSteering = 0;
+    let moreQueued = 0;
+    let total = 0;
+    if (cloud) {
+      syncCloudQueue();
+      queuedRows = cloudPending.map((item, i) => ({
+        key: `cloud:${item.id}`,
+        index: i + 1,
+        group: 'queued',
+        text: item.text,
+        hasImage: item.hasImage,
+        preview: false,
+        more: 0,
+      }));
+      total = queuedRows.length;
+    } else if (worker.queue) {
+      const serverItems = worker.queue.items ?? [];
+      steering = serverItems
+        .filter((item) => item.delivery !== 'after_turn')
+        .map((item, i) => ({
+          key: item.id ? `steer:${item.id}` : `steer:${i}:${item.text}`,
+          id: item.id,
+          index: item.index > 0 ? item.index : i + 1,
+          group: 'steering',
+          text: item.text,
+          hasImage: Boolean(item.hasImage),
+          preview: item.preview || item.moreLines > 0,
+          more: item.moreLines,
+        }));
+      queuedRows = serverItems
+        .filter((item) => item.delivery === 'after_turn')
+        .map((item, i) => ({
+          key: item.id ? `queued:${item.id}` : `queued:${i}:${item.text}`,
+          id: item.id,
+          index: item.index > 0 ? item.index : i + 1,
+          group: 'queued',
+          text: item.text,
+          hasImage: Boolean(item.hasImage),
+          preview: item.preview || item.moreLines > 0,
+          more: item.moreLines,
+        }));
+      moreSteering = worker.queue.moreSteering ?? 0;
+      moreQueued = worker.queue.moreQueued ?? 0;
+      total = Math.max(worker.queue.count ?? 0, steering.length + queuedRows.length + moreSteering + moreQueued);
+    }
+    const hasSteering = steering.length > 0 || moreSteering > 0;
+    const hasQueued = queuedRows.length > 0 || moreQueued > 0;
+    const canClear = connected && !cloud && total > 0;
+    const key = JSON.stringify([steering, queuedRows, moreSteering, moreQueued, total, canClear, queueActionBusy]);
     if (key === queueKey) return;
     queueKey = key;
-    queuedBox.hidden = !items.length;
-    const section = (group: 'steering' | 'queued', title: string, clear: boolean) => {
-      const rowsInGroup = items.filter((item) => item.group === group);
-      if (!rowsInGroup.length) return null;
+    queuedBox.hidden = total <= 0;
+    if (total <= 0) {
+      queuedBox.replaceChildren();
+      return;
+    }
+    const section = (group: 'steering' | 'queued', rowsInGroup: QueueRowView[], moreCount: number, title: string, clear: boolean) => {
+      if (!rowsInGroup.length && moreCount <= 0) return null;
       return h(
         'section.wt-queue-group',
         { 'aria-label': title },
         h('div.wt-queue-heading', {}, h('span', {}, title), clear && canClear ? h('button.wt-queue-clear', { type: 'button', title: 'Clear all pending messages', disabled: queueActionBusy, onclick: clearQueue }, 'Clear all') : null),
-        ...rowsInGroup.map(({ message, index }) => {
-          const more = message.more > 0 ? `${message.more} more line${message.more === 1 ? '' : 's'}` : message.preview ? 'Shortened' : message.hasImage && message.text ? 'Image attached' : '';
-          const target = { index, group, ...(message.preview ? {} : { text: message.text }) };
+        ...rowsInGroup.map((row) => {
+          const more = row.more > 0 ? `${row.more} more line${row.more === 1 ? '' : 's'}` : row.preview ? 'Shortened' : row.hasImage && row.text ? 'Image attached' : '';
+          const target = { ...(row.id ? { id: row.id } : {}), index: row.index, group, ...(row.preview ? {} : { text: row.text }) };
           const action = (label: string, glyph: 'arrowUp' | 'x' | 'file', onclick: () => void) => h('button.wt-queue-action', { type: 'button', 'aria-label': label, title: label, disabled: queueActionBusy, onclick }, icon(glyph, 12));
           const actions = cloud
             ? null
@@ -322,11 +381,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
                 'div.wt-queue-actions',
                 {},
                 group === 'queued' ? action('Send now', 'arrowUp', () => void queueAction('promote', target)) : null,
-                !message.preview
+                !row.preview
                   ? action('Edit message', 'file', () => {
                       void queueAction('delete', target).then((why) => {
                         if (why) return;
-                        input.value = message.text;
+                        input.value = row.text;
                         edited();
                         input.focus();
                       });
@@ -334,15 +393,16 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
                   : null,
                 action('Remove from queue', 'x', () => void queueAction('delete', target)),
               );
-          return h('div.wt-entry.user.wt-queued-message', { 'data-queued': message.key }, h('div.wt-queue-line', {}, h('div.wt-user-text', {}, message.text || 'Image attached'), actions), more ? h('div.wt-queued-more', {}, more) : null);
+          return h('div.wt-entry.user.wt-queued-message', { 'data-queued': row.key }, h('div.wt-queue-line', {}, h('div.wt-user-text', {}, row.text || 'Image attached'), actions), more ? h('div.wt-queued-more', {}, more) : null);
         }),
+        moreCount > 0 ? h('div.wt-queued-more', {}, `+${moreCount} more`) : null,
       );
     };
     queuedBox.replaceChildren(
       ...[
-        section('steering', 'Steering messages', true),
-        section('queued', 'Queued messages', !items.some((item) => item.group === 'steering')),
-        h('div.wt-queued-foot', {}, h('span', {}, `${items.length} message${items.length === 1 ? '' : 's'} queued`)),
+        hasSteering ? section('steering', steering, moreSteering, 'Steering messages', true) : null,
+        hasQueued ? section('queued', queuedRows, moreQueued, 'Queued messages', !hasSteering) : null,
+        h('div.wt-queued-foot', {}, h('span', {}, `${total} message${total === 1 ? '' : 's'} queued`)),
       ].filter((node): node is HTMLElement => !!node),
     );
   };
@@ -359,7 +419,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     },
     'Retry',
   );
-  const raw = opts.raw && !cloud ? h('button.btn.sm', { type: 'button', onclick: opts.raw }, 'Open Raw TTY') : null;
   const resume = h(
     'button.btn.wt-resume',
     {
@@ -668,9 +727,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
           },
           h('span.wt-slash-name', {}, `/${command.name}`),
           h('span.wt-slash-desc', { title: command.argumentHint ? `${command.description}\n/${command.name} ${command.argumentHint}` : command.description }, command.description),
-          command.kind === 'tty' && !nativeLimits(`/${command.name}`, store.factory.connection.connected && !store.factory.connection.rejected)
-            ? h('span.wt-slash-tag', { title: 'Opens one of Droid’s dialogs, in Raw TTY' }, 'Raw TTY')
-            : null,
           command.source ? h('span.wt-slash-tag', { title: command.source === 'skill' ? 'One of this worker’s skills' : 'A custom command' }, command.source === 'skill' ? 'Skill' : 'Command') : null,
         ),
       ),
@@ -790,28 +846,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       updateControls();
     },
   });
-  const paintSettings = () => settingsUi.paint(liveView?.settings, !cloud && connected && worker.kind === 'agent');
-  // Droid's side chat (/btw): its question and answer, over the composer until it is closed.
-  const sideText = h('div.wt-side-text');
-  const sideClose = h('button.btn.icon.sm.ghost', { type: 'button', 'aria-label': 'Close side chat', title: 'Close side chat  Esc', onclick: () => void closeSide() }, icon('x', 14));
-  const sidePanel = h(
-    'section.wt-side',
-    { 'aria-label': 'Side chat', hidden: true },
-    h('header.wt-side-head', {}, h('b', {}, 'Side chat'), h('span.wt-side-hint', {}, 'Ask a follow-up with /btw. It stays out of the conversation.'), sideClose),
-    sideText,
-  );
-  const paintSide = () => {
-    const side = liveView?.side;
-    sidePanel.hidden = !side;
-    if (side && sideText.textContent !== side.text) sideText.textContent = side.text || 'Thinking…';
-  };
-  const closeSide = async () => {
-    const why = await opts.send({ t: 'worker.side', workerId: worker.id, close: true });
-    if (why) {
-      told = why;
-      updateControls();
-    }
-  };
+  const paintSettings = () => settingsUi.paint(liveView?.settings, !cloud && connected && (worker.kind === 'agent' || worker.id === ORCHESTRATOR_ID));
   // While a turn runs, Send steers it (Droid reads the message now) and Queue holds it for after the turn.
   const queue = h('button.btn.sm.wt-queue', { type: 'button', title: 'Send once this turn is over', onclick: () => void submit(true) }, 'Queue');
   const sendLabel = h('span', {}, 'Send');
@@ -822,7 +857,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   box.addEventListener('click', (event) => {
     if (!input.disabled && event.target instanceof Element && !event.target.closest('button, .pimgs, textarea')) input.focus();
   });
-  const form = h('form.wt-composer', {}, mentionMenu, slashMenu, settingsUi.menu, sidePanel, file, queuedBox, box);
+  const form = h('form.wt-composer', {}, mentionMenu, slashMenu, settingsUi.menu, file, queuedBox, box);
   const progress = mountThreadStatusRow();
   const blockedText = h('p.wt-blocked-text');
   const blockedNote = h('div.wt-blocked.note.warn', { role: 'status', hidden: true }, icon('lock', 15), blockedText, opts.blockedAction ?? null);
@@ -835,12 +870,38 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     scroll,
     latestAnchor,
     progress.element,
-    h('div.wt-feedback', {}, notice, retry, raw, resume),
+    h('div.wt-feedback', {}, notice, retry, resume),
     limitsBar,
     blockedNote,
     planBar,
     form,
   );
+  const releaseEscape = claimEscape(element, () => {
+    if (!active || disposed) return false;
+    if (mentionShown.length) {
+      if (activeMention) mentionDismissedKey = `${activeMention.start}:${activeMention.query}`;
+      paintMention();
+      return true;
+    }
+    if (slashShown.length) {
+      slashClosed = true;
+      paintSlash();
+      return true;
+    }
+    if (settingsUi.isOpen) {
+      settingsUi.close();
+      return true;
+    }
+    if (search.isOpen) {
+      search.close();
+      return true;
+    }
+    if (document.activeElement === input && isBusy(worker.status) && !stop.disabled) {
+      stopTurn();
+      return true;
+    }
+    return false;
+  });
   const applyViewPrefs = () => {
     for (const [name, value] of Object.entries(threadViewVars(threadViewPrefs()))) element.style.setProperty(name, value);
   };
@@ -853,7 +914,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   });
   images.dropZone(form);
   const detachQuote = attachQuoteReply(
-    element,
+    scroll,
     (_quote, text) => {
       const next = insertQuote(input.value, input.selectionStart ?? input.value.length, input.selectionEnd ?? input.value.length, text);
       if (!next) return;
@@ -1421,7 +1482,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   };
 
   const syncTeam = () => {
-    team.sync(`${opts.queueKey}:${worker.id}:${worker.sessionId ?? ''}`, worker.id, opts.team?.() ?? []);
+    const scope = opts.queueKey ?? `${opts.floor ?? 'mission'}:${worker.id}`;
+    team.sync(`${scope}:${worker.id}:${worker.sessionId ?? ''}`, worker.id, opts.team?.() ?? []);
     team.enable(teamThreadVisible(active && !disposed, connected, !document.hidden && element.isConnected, teamSection.open));
     if (connected) team.syncWatches((msg) => net.send(msg));
     else team.resetWatches();
@@ -1465,7 +1527,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     else empty.setAttribute('role', 'status');
     empty.setAttribute('aria-busy', String(!intro && connected && !error && !received));
     if (intro) empty.replaceChildren(intro);
-    else if (error) empty.textContent = `Conversation unavailable. Retry below, or ${fallback}.`;
+    else if (error) empty.textContent = `Conversation unavailable. ${errorHint}`;
     else if (!connected) empty.textContent = 'Waiting for the office to reconnect…';
     else if (!received)
       empty.replaceChildren(
@@ -1478,11 +1540,30 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     else empty.replaceChildren(h('span.wt-empty-mark', { 'aria-hidden': true }), h('b', {}, 'No messages yet. Start a conversation!'));
   };
 
+  const renderStreamMarkdown = (text: string, since: number) => {
+    const nextKey = `live:stream:${since}`;
+    if (liveStreamKey && liveStreamKey !== nextKey) threadMarkdown('', { key: liveStreamKey, streaming: false });
+    liveStreamKey = nextKey;
+    return threadMarkdown(text, {
+      key: nextKey,
+      streaming: true,
+      onOpenPath: onOpenPathFor(worker),
+      ...(canOpenFiles(worker) ? { imageUrl: (path: string) => threadFileImageUrl({ floor: opts.floor ?? '', workerId: worker.id, path }) } : {}),
+    });
+  };
+
+  const resetStreamMarkdown = () => {
+    if (!liveStreamKey) return;
+    threadMarkdown('', { key: liveStreamKey, streaming: false });
+    liveStreamKey = '';
+  };
+
   const paintLive = () => {
     const stream = liveView?.stream;
     const current = !!liveView && liveView.after !== undefined && liveView.after === history.entries.at(-1)?.id && !history.historical;
     const showStream = active && connected && current && liveView?.status !== 'idle' && !!stream;
     const pendingTools = active && connected && current ? (liveView?.tools.filter((tool) => !tool.id) ?? []) : [];
+    if (!showStream || stream?.kind !== 'text') resetStreamMarkdown();
     streamNode.hidden = !showStream && !pendingTools.length;
     streamNode.className = streamNode.hidden ? 'wt-stream' : 'wt-entry assistant text wt-stream';
     if (streamNode.hidden) return;
@@ -1505,7 +1586,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
             ),
           );
         } else {
-          children.push(h('div.wt-stream-copy', {}, ...stream.text.split(/\n{2,}/).map((paragraph) => h('p', {}, paragraph))));
+          children.push(h('div.wt-stream-copy', {}, renderStreamMarkdown(stream.text, stream.since)));
         }
       }
       for (const tool of pendingTools) {
@@ -1522,6 +1603,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         );
       }
       streamNode.replaceChildren(...children);
+      updateClamps(streamNode);
     } else if (streamNode.dataset.liveText !== textKey && showStream && stream) {
       streamNode.dataset.liveText = textKey;
       if (stream.kind === 'thinking') {
@@ -1529,7 +1611,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         if (body) body.textContent = stream.text;
       } else {
         const copy = streamNode.querySelector<HTMLElement>('.wt-stream-copy');
-        copy?.replaceChildren(...stream.text.split(/\n{2,}/).map((paragraph) => h('p', {}, paragraph)));
+        copy?.replaceChildren(renderStreamMarkdown(stream.text, stream.since));
+        updateClamps(streamNode);
       }
     }
     for (const el of streamNode.querySelectorAll<HTMLElement>('.wt-live-time[data-since]')) {
@@ -1677,7 +1760,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     stop.hidden = !busy && !waiting;
     stop.disabled = !allowed || sending || stopping;
     const label = sending ? 'Sending…' : busy ? (cloud ? 'Queue' : 'Send now') : 'Send';
-    sendLabel.textContent = label;
+    sendLabel.textContent = !sending && !busy ? '' : label;
     send.classList.toggle('icon', !sending && !busy);
     send.setAttribute('aria-label', busy || sending ? label : 'Send message');
     send.title = busy ? (cloud ? `Sent to ${worker.name} once this turn is over` : `Steer ${worker.name}: it reads this now, during the turn`) : 'Send ⏎';
@@ -1702,7 +1785,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     notice.textContent = connected
       ? error || told || (broken && !opts.cloudErrorShown ? `${worker.name} can’t work: ${broken}` : '') || (isAsleep(worker.status) && !opts.promptWakes ? 'Resume this worker to send another message.' : '')
       : '';
-    raw?.classList.toggle('hidden', !connected || !error);
     // A cloud worker's Resume reads its Factory session again, which is also how one that broke is checked.
     resume.hidden = (!isAsleep(worker.status) || !!opts.promptWakes) && !broken;
     resume.disabled = !active || !connected || !!worker.lost || resuming;
@@ -1744,7 +1826,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       refreshLiveOutput(element, (id) => liveTools.get(id));
       paintLive();
       paintSettings();
-      paintSide();
       paintProgress();
       if (stick) motion.follow();
       return;
@@ -1752,11 +1833,17 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const rewound = msg;
     if (rewound.t === 'worker.rewound' && rewound.workerId === worker.id) {
       if (rewound.ok) {
-        history.clear(worker.sessionId);
+        const nextSessionId = rewound.sessionId ?? worker.sessionId;
+        if (rewound.sessionId && rewound.sessionId !== worker.sessionId) {
+          rewoundFromSessionId = worker.sessionId;
+          worker = { ...worker, sessionId: rewound.sessionId };
+        }
+        history.clear(nextSessionId);
         nodes.clear();
         list.replaceChildren();
         received = false;
         liveView = undefined;
+        resetStreamMarkdown();
         liveTools.clear();
         if (rewound.text) {
           input.value = rewound.text;
@@ -1815,7 +1902,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     error = threadSnapshotError(worker, msg.error, !received && Date.now() < startupReadUntil);
     if (!msg.error) {
       history.apply(msg);
-      if (history.unsupported) error = `This office sent a Thread this page can’t read. Reload the page, or ${fallback}.`;
+      if (history.unsupported) error = `This office sent a Thread this page can’t read. ${cloud ? 'Reload the page, or open it in Factory.' : 'Reload the page.'}`;
       opts.onEntries?.();
       received = true;
       paintEntries(older);
@@ -1843,7 +1930,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       return;
     }
     if (live && !cloud && nativeCopy(text)) {
-      openThreadCopy({ entries: history.entries, sessionId: worker.sessionId });
+      openThreadCopy({ entries: history.entries, sessionId: worker.sessionId, initialTurns: copyTurns(text) });
       clearDraft();
       updateControls();
       return;
@@ -1868,13 +1955,13 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       updateControls();
       return;
     }
-    const queueReceipt = (queueSend || cloud) && isBusy(worker.status);
-    const after = queued.sequence;
+    const queueReceipt = cloud && isBusy(worker.status);
+    const after = cloudQueueMaxSeq;
     const hasImage = images.ids().length > 0;
     const result = await opts.send({ t: 'worker.prompt', workerId: worker.id, prompt: text, images: images.ids(), queue: queueSend });
     sending = false;
     if (!result) {
-      if (queueReceipt) queued.sent(text, hasImage, after);
+      if (queueReceipt) cloudPending = [...cloudPending, { id: ++cloudQueueSeq, text, hasImage, after }].slice(-32);
       images.take();
       clearDraft();
       if (history.historical) history.clear(worker.sessionId);
@@ -1883,8 +1970,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     }
     error = result ?? '';
     updateControls();
-    // Droid answers most of its slash commands with a dialog, which only its terminal shows.
-    if (!result && !cloud && slashOf(text)?.command?.kind === 'tty') opts.raw?.();
   };
 
   const rewindConversation = (entryId: string) => {
@@ -1901,19 +1986,13 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
 
   const stopTurn = () => {
     if (stop.disabled) return;
-    if (cloud || opts.interrupt) {
-      stopping = true;
-      updateControls();
-      void opts.send({ t: 'worker.interrupt', workerId: worker.id }).then((why) => {
-        stopping = false;
-        told = why ?? '';
-        updateControls();
-      });
-      return;
-    }
-    // Escape is the CLI's own cancel path, and requires the normal worker attachment.
-    told = typeKeys('\u001b') ? '' : 'Disconnected. Nothing was sent.';
+    stopping = true;
     updateControls();
+    void opts.send({ t: 'worker.interrupt', workerId: worker.id }).then((why) => {
+      stopping = false;
+      told = why ?? '';
+      updateControls();
+    });
   };
 
   form.addEventListener('submit', (event) => {
@@ -1971,12 +2050,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       event.preventDefault();
       return;
     }
-    if (event.key === 'Escape' && !event.shiftKey && (!sidePanel.hidden || isBusy(worker.status))) {
+    if (event.key === 'Escape' && !event.shiftKey && isBusy(worker.status)) {
       event.preventDefault();
       event.stopPropagation();
-      // An open side chat takes Escape first, as it does in Droid.
-      if (!sidePanel.hidden) void closeSide();
-      else stopTurn();
+      stopTurn();
       return;
     }
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -2008,7 +2085,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         // A cloud worker's conversation is a read of its Factory session, which can take a while.
         if (pending && now - pending.at > (cloud ? 20_000 : 8000)) {
           pending = undefined;
-          error = cloud ? 'The office did not return this conversation. Retry, or open it in Factory.' : 'The office did not return this conversation. Retry, or use Raw TTY on an older office.';
+          error = cloud ? 'The office did not return this conversation. Retry, or open it in Factory.' : 'The office did not return this conversation. Retry below.';
           updateControls();
         }
         if (!error) read(undefined, received ? RECONCILE_INTERVAL_MS : STARTUP_RETRY_MS);
@@ -2044,8 +2121,15 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   return {
     element,
     entries: () => history.entries,
+    search(query) {
+      search.open(query);
+    },
     update(next, online) {
       const reconnected = online && !connected;
+      if (rewoundFromSessionId) {
+        if (next.id === worker.id && next.sessionId === rewoundFromSessionId) next = { ...next, sessionId: worker.sessionId };
+        else rewoundFromSessionId = undefined;
+      }
       const workerChanged = next.id !== worker.id;
       const sessionChanged = next.sessionId !== worker.sessionId || workerChanged;
       if (sessionChanged) {
@@ -2058,6 +2142,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         error = '';
         nodes.clear();
         liveView = undefined;
+        resetStreamMarkdown();
         liveTools.clear();
         streamNode.hidden = true;
         paintedOnce = false;
@@ -2118,6 +2203,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       if (disposed) return;
       disposed = true;
       active = false;
+      releaseEscape();
+      resetStreamMarkdown();
       syncTimer();
       syncAttach();
       syncWatch();

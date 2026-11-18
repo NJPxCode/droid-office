@@ -64,16 +64,6 @@ class Alerts(
     init {
         createChannels()
         scope.launch { connection.data.collect(::diff) }
-        // The question's choices come on its screen, often a moment after the status flips: add them, quietly.
-        scope.launch {
-            connection.screens.collect {
-                val d = connection.data.value
-                for (id in shown.keys.toList()) {
-                    val w = d.worker(id) ?: continue
-                    if (w.state == WorkerStatus.NeedsInput && shown[id] != signature(w)) alert(w, d, update = true)
-                }
-            }
-        }
     }
 
     private fun diff(d: OfficeData) {
@@ -124,8 +114,8 @@ class Alerts(
 
     private fun text(w: WorkerInfo) = Workers.detail(w) ?: if (w.state == WorkerStatus.NeedsInput) "Waiting on an answer" else "Finished its turn"
 
-    /** The question on a waiting worker's screen, when the phone can read it. */
-    private fun menu(w: WorkerInfo): Menu? = if (w.state == WorkerStatus.NeedsInput) Asks.menu(w, connection.screens.value[w.id]) else null
+    /** The structured AskUser menu held for a waiting worker, when present. */
+    private fun menu(w: WorkerInfo): Menu? = if (w.state == WorkerStatus.NeedsInput) Asks.menu(w) else null
 
     /** What its notification says: brought up to date when this changes. */
     private fun signature(w: WorkerInfo): String {
@@ -264,8 +254,8 @@ class Alerts(
             Answered.Changed -> "$name's question changed" to "Nothing was sent. Open it to see the new question."
             Answered.NeedsThread -> "Answer $name in the app" to "The phone couldn't type that into its question. Nothing was sent."
             Answered.Unreachable -> "Couldn't reach the office" to "Your answer to $name wasn't sent. Open the app to try again."
-            Answered.Unconfirmed -> "Answer not confirmed" to "Check $name's terminal before trying again. Your answer was not replayed."
-            Answered.Refused -> "Answer refused" to "Open $name in the app and check Raw TTY."
+            Answered.Unconfirmed -> "Answer not confirmed" to "Check $name's thread before trying again. Your answer was not replayed."
+            Answered.Refused -> "Answer refused" to "Open $name in the app to answer on its thread."
         }
         val n = NotificationCompat.Builder(context, CHANNEL_INPUT)
             .setSmallIcon(R.drawable.ic_bolt)

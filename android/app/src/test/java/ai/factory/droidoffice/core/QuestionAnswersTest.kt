@@ -5,36 +5,20 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class QuestionAnswersTest {
-    private val checkbox = Choices.read(listOf(
-        "  Ask User",
-        "  What does managing several agents",
-        "  simultaneously mean to you?",
-        "",
-        "  1. [ ] Persistent roster",
-        "     with live status while working",
-        "     in one conversation",
-        "  2. [x] Several conversations",
-        "     visible side by side",
-        "  [ ] Or type your own answer...",
-        "  Next",
-        "  ↑/↓ Navigate · Space Toggle · Enter Select",
-    ))!!
-
-    @Test
-    fun checkboxStateIsNotThePointerAndDoesNotBecomePartOfTheLabel() {
-        assertTrue(checkbox.multiSelect)
-        assertTrue(checkbox.freeText)
-        assertEquals(listOf(false, true), checkbox.choices.map { it.selected })
-        assertEquals(listOf("Persistent roster", "Several conversations"), checkbox.choices.map { it.label })
-        assertNull(checkbox.pointer)
-        assertEquals("What does managing several agents simultaneously mean to you?", checkbox.question)
-        assertEquals("with live status while working in one conversation", checkbox.choices[0].description)
-    }
+    private val checkbox = Menu(
+        question = "What does managing several agents simultaneously mean to you?",
+        choices = listOf(
+            Choice(1, "Persistent roster", description = "with live status while working in one conversation", selected = false),
+            Choice(2, "Several conversations", description = "visible side by side", selected = true),
+        ),
+        pointer = null,
+        freeText = true,
+        multiSelect = true,
+    )
 
     @Test
     fun togglingOnlyChangesTheLocalDesiredSet() {
@@ -42,9 +26,6 @@ class QuestionAnswersTest {
         assertEquals(listOf(2, 1), first)
         assertEquals(listOf(1), QuestionAnswers.toggle(checkbox, first, 2))
         assertEquals(listOf(2), checkbox.choices.filter { it.selected == true }.map { it.number })
-        assertNull(Asks.replyKeys(checkbox, "1"))
-        assertNull(Choices.textKeys(checkbox, "my answer"))
-        assertNull(Choices.toTextRow(checkbox.copy(pointer = checkbox.choices.size + 1)))
     }
 
     @Test
@@ -55,7 +36,7 @@ class QuestionAnswersTest {
     }
 
     @Test
-    fun sendCarriesTheFullDesiredSetAndScreenMetadataNotAChoiceShortcut() {
+    fun sendCarriesTheFullDesiredSetAndStructuredMenuMetadata() {
         val wire = OfficeJson.parseToJsonElement(ClientMsg.workerAnswer("w", checkbox, "receipt", "floor", choices = listOf(1, 2))).jsonObject
         assertEquals("worker.answer", wire.getValue("t").jsonPrimitive.content)
         assertEquals("receipt", wire.getValue("requestId").jsonPrimitive.content)
@@ -84,28 +65,21 @@ class QuestionAnswersTest {
     }
 
     @Test
+    fun takesTextRecognizesExplicitFreeTextAndOtherOptions() {
+        val strict = Menu("Pick one", listOf(Choice(1, "Alpha"), Choice(2, "Beta")), freeText = false)
+        assertFalse(Asks.takesText(strict))
+        assertFalse(QuestionAnswers.valid(strict, null, null, "Custom"))
+        assertTrue(Asks.takesText(strict.copy(freeText = true)))
+        assertTrue(Asks.takesText(strict.copy(choices = strict.choices + Choice(3, "Other: specify"))))
+        assertTrue(Asks.takesText(strict.copy(choices = strict.choices + Choice(3, "Type your own answer"))))
+    }
+
+    @Test
     fun onlyPointerAndCheckboxStateMayChangeWithoutInvalidatingTheMenu() {
-        assertTrue(Choices.same(checkbox, checkbox.copy(pointer = 3, choices = checkbox.choices.map { it.copy(selected = it.selected != true) })))
-        assertFalse(Choices.same(checkbox, checkbox.copy(multiSelect = false)))
-        assertFalse(Choices.same(checkbox, checkbox.copy(freeText = false)))
-        assertFalse(Choices.same(checkbox, checkbox.copy(choices = checkbox.choices.map { it.copy(description = "changed") })))
-    }
-
-    @Test
-    fun customAnswerFocusKeepsTheSameMenuWhenThePlaceholderIsReplaced() {
-        val custom = Choices.read(listOf("Pick?", "  1. [ ] One", "  2. [x] Two", "  > My custom answer", "  Submit", "  Enter Add answer · back to options"))!!
-        assertTrue(custom.freeText)
-        assertTrue(Choices.onTextRow(listOf("Enter Add answer · back to options")))
-        assertTrue(Choices.read(listOf("Pick?", "  1. [ ] One", "  2. [x] Two", "  > Saved custom answer", "  Submit"))!!.freeText)
-    }
-
-    @Test
-    fun longWrappedAnswersKeepEveryDescriptionLine() {
-        val lines = listOf("Question?", "  1. First") + (1..10).map { "     First description paragraph $it" } +
-            listOf("  2. Second") + (1..10).map { "     Second description paragraph $it" } + "  Or type your own answer..."
-        val menu = Choices.read(lines)!!
-        assertTrue(menu.choices[0].description!!.length > 160)
-        assertTrue(menu.choices[0].description!!.endsWith("paragraph 10"))
-        assertTrue(menu.choices[1].description!!.endsWith("paragraph 10"))
+        assertTrue(Asks.sameMenu(checkbox, checkbox.copy(pointer = 3, choices = checkbox.choices.map { it.copy(selected = it.selected != true) })))
+        assertFalse(Asks.sameMenu(checkbox, checkbox.copy(multiSelect = false)))
+        assertFalse(Asks.sameMenu(checkbox, checkbox.copy(freeText = false)))
+        assertFalse(Asks.sameMenu(checkbox, checkbox.copy(choices = checkbox.choices.map { it.copy(description = "changed") })))
+        assertFalse(Asks.sameMenu(checkbox, null))
     }
 }

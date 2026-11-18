@@ -2,22 +2,31 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { Answers } from '../src/server/answers.js';
 import { createOfficeMcp, OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER, type OfficeMcpFloor } from '../src/server/office-mcp/index.js';
+import type { OwnerOffice } from '../src/server/office-mcp/owner.js';
 import { parseCursor } from '../src/server/office-mcp/team-events.js';
+import { RemoteOffice, type RemoteFloor } from '../src/server/remote-office.js';
+import { RemoteWorkers } from '../src/server/remote-workers.js';
 import { Team, type TeamWorkers } from '../src/server/team.js';
 import { Visits } from '../src/server/visits.js';
 import { WhiteboardStore } from '../src/server/whiteboard.js';
-import { readMenu } from '../src/shared/asks.js';
+import type { Menu } from '../src/shared/asks.js';
 import { SUBAGENT_DEFAULTS, type SubagentSettings, type WorkerInfo } from '../src/shared/protocol.js';
 
-// The same Droid AskUser screen as tests/asks.test.ts (Android's fixtures).
-const DIGITS = ['│ Which file should I create? │', '│ 1. hello.txt │', '│    A greeting │', '│ 2. bye.txt │', '│ 3. Other (type your answer) │', '│ Press a number to answer, Esc to skip │'];
+const FILE_MENU: Menu = {
+  question: 'Which file should I create?',
+  choices: [
+    { number: 1, label: 'hello.txt', description: 'A greeting' },
+    { number: 2, label: 'bye.txt' },
+    { number: 3, label: 'Other (type your answer)' },
+  ],
+  freeText: true,
+};
 const LONG_REPORT = ['Done: fixed the redirect.', ...Array.from({ length: 60 }, (_, i) => `| bench ${i} | ${i * 3} ms | ok |`)].join('\n');
 
 function worker(id: string, extra: Partial<WorkerInfo> = {}): WorkerInfo {
@@ -28,15 +37,17 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
   const dir = mkdtempSync(path.join(tmpdir(), 'office-mcp-events-'));
   const settings: SubagentSettings = { ...SUBAGENT_DEFAULTS, wakeLead: false };
   const people = new Map([['lead', worker('lead', { name: 'Nibble' })]]);
-  const screens = new Map<string, string[]>();
-  const writes: [string, string][] = [];
+  const answered: { id: string; reply: { menu?: Menu; choice?: number; choices?: number[]; text?: string } }[] = [];
+  const ownerActions: Record<string, unknown>[] = [];
+  let answerGate: Promise<void> | undefined;
   const prompts: [string, string][] = [];
   let hired = 0;
   let now = Date.parse('2026-11-03T12:00:00Z');
-  const workers: TeamWorkers & OfficeMcpFloor['workers'] = {
+  const workers: TeamWorkers & OfficeMcpFloor['workers'] & RemoteFloor['workers'] = {
     list: () => [...people.values()],
     get: (id) => people.get(id),
     authenticate: (id, token) => (token === `token-${id}` ? people.get(id) : undefined),
+    releaseLead: () => {},
     officeDefault: undefined,
     deskOccupied: (desk) => [...people.values()].some((w) => w.deskId === desk),
     hire: (deskId, _by, _prompt, worktree, _choice, lead) => {
@@ -67,17 +78,37 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
       const w = people.get(id);
       if (w) w.task = task;
     },
-    screenLines: (id) => screens.get(id),
-    screenMenu: (id) => (screens.has(id) ? readMenu(screens.get(id)!) : undefined),
-    write: (id, data) => {
-      writes.push([id, data]);
+    answerQuestion: async (id, menu, reply) => {
+      answered.push({ id, reply: { menu, ...reply } });
+      if (answerGate) await answerGate;
+      return {};
     },
   };
   const team = new Team(workers, { dataDir: dir, dir, git: true, settings: () => settings, toast() {}, now: () => now });
-  const visits = new Visits({ ...workers, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {} });
+  const visits = new Visits({ ...workers, cancelTurn: () => false }, { on: () => settings.visits, emit() {} });
   const whiteboard = new WhiteboardStore(dir);
-  const floor: OfficeMcpFloor = { id: 'floor', name: 'Floor', dir, workers, team, visits, whiteboard };
-  const office = createOfficeMcp({ answers: new Answers(), settings: () => settings, floor: (id) => (people.has(id) ? floor : undefined) });
+  const floor: OfficeMcpFloor & RemoteFloor = { id: 'floor', name: 'Floor', def: { name: 'Floor' }, dir, workers, team, visits, whiteboard };
+  const remoteStore = new RemoteWorkers(dir);
+  const remote = new RemoteOffice(remoteStore, () => [floor]);
+  const owner: OwnerOffice = {
+    floors: () => [{ id: 'floor', name: 'Floor', workers: [...people.values()] }],
+    mission: () => [],
+    tail: () => '',
+    act: async (_by, msg) => {
+      ownerActions.push(msg);
+      return { notes: [] };
+    },
+  };
+  const office = createOfficeMcp({
+    settings: () => settings,
+    floor: (id) => (people.has(id) ? floor : undefined),
+    remote,
+    owner,
+    orchestrator: {
+      cwd: dir,
+      authenticate: (id, token) => (id === 'orchestrator' && token === 'token-orchestrator' ? worker('orchestrator', { name: 'Orchestrator', deskId: '' }) : undefined),
+    },
+  });
   const http = createServer((req, res) => {
     if (req.url === OFFICE_MCP_PATH) void office.handle(req, res);
     else res.writeHead(404).end();
@@ -93,6 +124,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
     team.stop();
     visits.stop();
     whiteboard.stop();
+    remote.stop();
     rmSync(dir, { recursive: true, force: true });
   });
   async function connect(id: string) {
@@ -119,7 +151,27 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
     for (let i = 0; i < 500 && team.watchers() !== n; i++) await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(team.watchers(), n);
   }
-  return { dir, url, settings, people, screens, writes, prompts, team, connect, call, lead, hire, status, set, held, tick: (ms: number) => (now += ms) };
+  return {
+    dir,
+    url,
+    settings,
+    people,
+    answered,
+    ownerActions,
+    setAnswerGate: (gate: Promise<void> | undefined) => {
+      answerGate = gate;
+    },
+    prompts,
+    team,
+    connect,
+    call,
+    lead,
+    hire,
+    status,
+    set,
+    held,
+    tick: (ms: number) => (now += ms),
+  };
 }
 
 test('status keeps its prose and adds compact workers, typed news with ids and times, and a cursor', async (t) => {
@@ -321,12 +373,12 @@ test('a question makes the subagent blocked_on_question until its lead answers t
   assert.deepEqual(restarted.questions('lead'), [], 'answered questions stay answered after a restart');
 });
 
-test('terminal questions are listed like the Asks inbox and answered only while the same menu shows; permission prompts are refused', async (t) => {
+test('structured AskUser questions are listed like the Asks inbox and answered only while the same menu shows; permission prompts are refused', async (t) => {
   const r = await rig(t);
   await r.hire();
-  r.screens.set('sub1', DIGITS);
   r.set('sub1', 'needs_input', {
     ask: { kind: 'question', questions: [{ question: 'Which file should I create?', options: ['hello.txt', 'bye.txt', 'Other (type your answer)'], multiSelect: false }] },
+    menu: FILE_MENU,
     waitingSince: Date.parse('2026-11-03T12:00:00Z'),
   });
   const [menu] = (await r.call(r.lead, 'questions_list')).body.questions;
@@ -340,22 +392,33 @@ test('terminal questions are listed like the Asks inbox and answered only while 
   assert.equal(menu.takesText, true);
   assert.equal(menu.answerable, true);
   assert.equal((await r.status()).body.workers[0].state, 'blocked_on_question');
-  r.screens.set(
-    'sub1',
-    DIGITS.map((line) => line.replace('bye.txt', 'farewell.txt')),
-  );
+  r.people.get('sub1')!.menu = {
+    ...FILE_MENU,
+    choices: FILE_MENU.choices.map((c) => (c.number === 2 ? { ...c, label: 'farewell.txt' } : c)),
+  };
   assert.match((await r.call(r.lead, 'question_answer', { questionId: menu.id, optionId: '1' })).text, /question changed/);
-  assert.deepEqual(r.writes, []);
-  r.screens.set('sub1', DIGITS);
+  assert.deepEqual(r.answered, []);
+  r.people.get('sub1')!.menu = FILE_MENU;
   assert.match((await r.call(r.lead, 'question_answer', { questionId: menu.id, optionId: '3', text: 'notes.txt' })).text, /not both/, 'a terminal question never drops the typed half of an answer');
-  assert.deepEqual(r.writes, []);
+  assert.deepEqual(r.answered, []);
   assert.equal((await r.call(r.lead, 'question_answer', { questionId: menu.id, optionId: '9' })).isError, true);
-  assert.match((await r.call(r.lead, 'question_answer', { questionId: menu.id, optionIds: ['x'] })).text, /x is not one of this question's options/);
-  assert.equal((await r.call(r.lead, 'question_answer', { questionId: menu.id, optionId: '1' })).isError, undefined);
-  assert.deepEqual(r.writes, [['sub1', '1']]);
-  assert.match((await r.call(r.lead, 'question_answer', { questionId: menu.id, optionId: '1' })).text, /already being answered/, 'the shared answer queue stops a second answer');
+  assert.equal((await r.call(r.lead, 'question_answer', { questionId: menu.id, optionIds: ['1'] })).isError, true, 'single-select rejects optionIds');
 
-  r.set('sub1', 'needs_input', { ask: { kind: 'permission', tool: 'Execute', command: 'rm -rf build', risk: 'high' } });
+  let releaseGate!: () => void;
+  r.setAnswerGate(
+    new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    }),
+  );
+  const firstAnswer = r.call(r.lead, 'question_answer', { questionId: menu.id, optionId: '1' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.match((await r.call(r.lead, 'question_answer', { questionId: menu.id, optionId: '1' })).text, /already being answered/, 'concurrent answers on one worker are rejected');
+  releaseGate();
+  assert.equal((await firstAnswer).isError, undefined);
+  r.setAnswerGate(undefined);
+  assert.deepEqual(r.answered, [{ id: 'sub1', reply: { menu: FILE_MENU, choice: 1 } }]);
+
+  r.set('sub1', 'needs_input', { menu: undefined, ask: { kind: 'permission', tool: 'Execute', command: 'rm -rf build', risk: 'high' } });
   const [permission] = (await r.call(r.lead, 'questions_list')).body.questions;
   assert.equal(permission.kind, 'permission');
   assert.equal(permission.answerable, false);
@@ -363,30 +426,88 @@ test('terminal questions are listed like the Asks inbox and answered only while 
   const refused = await r.call(r.lead, 'question_answer', { questionId: permission.id, optionId: '1' });
   assert.equal(refused.isError, true);
   assert.match(refused.text, /desk/);
-  assert.equal(r.writes.length, 1);
+  assert.equal(r.answered.length, 1);
   assert.equal((await r.call(r.lead, 'question_answer', { questionId: 'ask:floor:lead:permission', optionId: '1' })).isError, true, 'only the caller’s own subagents');
 });
 
-test('MCP lists captured AskUser review answers and submits only the unchanged review', async (t) => {
+test('MCP steps through multi-question and multi-select AskUser menus directly without a Review screen, including Orchestrator watching cloud workers', async (t) => {
   const r = await rig(t);
   await r.hire();
-  const lines = readFileSync(new URL('../android/app/src/test/resources/askuser-1.7.1-review.txt', import.meta.url), 'utf8').split('\n');
-  r.screens.set('sub1', lines);
-  r.set('sub1', 'needs_input', { ask: { kind: 'question', questions: [] } });
-  const [review] = (await r.call(r.lead, 'questions_list')).body.questions;
-  assert.equal(review.answerable, true);
-  assert.match(review.question, /Review your answers\nWhich hypervisor should we use\?\n→ UTM/);
-  assert.deepEqual(review.options, [{ id: '1', label: 'Submit answers' }]);
-  r.screens.set(
-    'sub1',
-    lines.map((line) => line.replace('→ SSH', '→ RDP')),
+  const step1: Menu = {
+    question: 'Which hypervisor should we use?',
+    choices: [
+      { number: 1, label: 'UTM' },
+      { number: 2, label: 'Tart' },
+    ],
+    freeText: false,
+  };
+  const step2: Menu = {
+    question: 'Which protocols should we enable?',
+    multiSelect: true,
+    choices: [
+      { number: 1, label: 'SSH' },
+      { number: 2, label: 'VNC' },
+    ],
+    freeText: true,
+  };
+  r.set('sub1', 'needs_input', {
+    ask: {
+      kind: 'question',
+      questions: [
+        { question: step1.question!, options: ['UTM', 'Tart'], multiSelect: false },
+        { question: step2.question!, options: ['SSH', 'VNC'], multiSelect: true },
+      ],
+    },
+    menu: step1,
+  });
+  const [q1] = (await r.call(r.lead, 'questions_list')).body.questions;
+  assert.equal(q1.answerable, true);
+  assert.equal(q1.multiSelect, false);
+  assert.equal(q1.takesText, false);
+  assert.match((await r.call(r.lead, 'question_answer', { questionId: q1.id, text: 'custom' })).text, /does not accept a typed text answer/);
+  assert.equal((await r.call(r.lead, 'question_answer', { questionId: q1.id, optionId: '1' })).isError, undefined);
+  assert.deepEqual(r.answered.at(-1), { id: 'sub1', reply: { menu: step1, choice: 1 } });
+
+  // Daemon advances directly to question 2 (no Review screen); stale q1 id is rejected.
+  r.set('sub1', 'needs_input', { menu: step2 });
+  assert.equal((await r.call(r.lead, 'question_answer', { questionId: q1.id, optionId: '1' })).isError, true);
+  const [q2] = (await r.call(r.lead, 'questions_list')).body.questions;
+  assert.notEqual(q2.id, q1.id);
+  assert.equal(q2.multiSelect, true);
+  assert.equal(q2.takesText, true);
+  assert.equal((await r.call(r.lead, 'question_answer', { questionId: q2.id, optionId: '1' })).isError, true, 'multi-select requires optionIds');
+  assert.match((await r.call(r.lead, 'question_answer', { questionId: q2.id, optionIds: ['x'] })).text, /x is not one of this question's options/);
+  assert.equal((await r.call(r.lead, 'question_answer', { questionId: q2.id, optionIds: ['1', '2'], text: 'Port 2222' })).isError, undefined);
+  assert.deepEqual(r.answered.at(-1), { id: 'sub1', reply: { menu: step2, choices: [1, 2], text: 'Port 2222' } });
+
+  // Orchestrator watching a cloud worker sees its cloud.menu in questions_list and answers via owner bridge.
+  const cloudMenu: Menu = {
+    question: 'Deploy to staging?',
+    choices: [
+      { number: 1, label: 'Deploy now' },
+      { number: 2, label: 'Hold' },
+    ],
+    freeText: false,
+  };
+  r.people.set(
+    'cloud1',
+    worker('cloud1', {
+      name: 'Nimbus',
+      kind: 'cloud',
+      deskId: 'desk-8',
+      status: 'needs_input',
+      cloud: { computerId: 'comp-1', sessionUrl: 'https://app.factory.ai/sessions/c1', menu: cloudMenu },
+    }),
   );
-  assert.equal((await r.call(r.lead, 'question_answer', { questionId: review.id, optionId: '1' })).isError, true);
-  assert.deepEqual(r.writes, []);
-  const [updated] = (await r.call(r.lead, 'questions_list')).body.questions;
-  assert.notEqual(updated.id, review.id);
-  assert.equal((await r.call(r.lead, 'question_answer', { questionId: updated.id, optionId: '1' })).isError, undefined);
-  assert.deepEqual(r.writes, [['sub1', '\r']]);
+  const orch = await r.connect('orchestrator');
+  assert.equal((await r.call(orch, 'team_watch', { worker: 'Nimbus', floor: 'floor' })).isError, undefined);
+  const orchListed = await r.call(orch, 'questions_list', { floor: 'floor' });
+  const cloudAsk = orchListed.body.questions.find((q: { worker: string }) => q.worker === 'cloud1');
+  assert.ok(cloudAsk);
+  assert.equal(cloudAsk.answerable, true);
+  assert.equal(cloudAsk.question, 'Deploy to staging?');
+  assert.equal((await r.call(orch, 'question_answer', { questionId: cloudAsk.id, optionId: '1' })).isError, undefined);
+  assert.deepEqual(r.ownerActions.at(-1), { t: 'worker.answer', workerId: 'cloud1', menu: cloudMenu, choice: 1 });
 });
 
 test('team_wait returns as soon as news arrives, times out, cancels and never leaks listeners or blocks other calls', async (t) => {
@@ -498,17 +619,17 @@ test('team_wait returns every event that landed before it answered, and counts a
   r.set('sub2', 'working');
   const question = r.call(r.lead, 'team_wait', { until: ['question'], timeoutSec: 20 });
   await r.held(1);
-  // The AskUser hook comes before its menu is drawn, and drawing it signals no wait.
-  r.set('sub1', 'needs_input', { ask: { kind: 'question', questions: [{ question: 'Which file should I create?', options: ['hello.txt', 'bye.txt', 'Other (type your answer)'], multiSelect: false }] } });
+  // When ask arrives before structured menu is populated, it reports not ready yet; once menu is set it becomes answerable.
+  r.set('sub1', 'needs_input', { ask: { kind: 'question', questions: [{ question: 'Which file should I create?', options: ['hello.txt', 'bye.txt', 'Other (type your answer)'], multiSelect: false }] }, menu: undefined });
   const asked = await question;
   assert.equal(asked.body.reason, 'question');
   assert.deepEqual(asked.body.events, [], 'its needs_input news is not what this wait asked for');
   assert.equal(asked.body.questions[0].kind, 'terminal');
   assert.equal(asked.body.questions[0].answerable, false);
-  assert.match(asked.body.questions[0].why, /not on screen yet/);
-  r.screens.set('sub1', DIGITS);
+  assert.match(asked.body.questions[0].why, /not ready yet/);
+  r.people.get('sub1')!.menu = FILE_MENU;
   const [drawn] = (await r.call(r.lead, 'questions_list')).body.questions;
-  assert.equal(drawn.answerable, true, 'answerable once its menu shows');
+  assert.equal(drawn.answerable, true, 'answerable once its structured menu is set');
   const again = await r.call(r.lead, 'team_wait', { until: ['question'], timeoutSec: 1 });
   assert.equal(again.body.matched, false, 'the same terminal question does not end the next wait');
   assert.equal(again.body.questions[0].id, drawn.id);

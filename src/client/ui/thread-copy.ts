@@ -11,8 +11,8 @@ const CHOICES: { id: ThreadCopyChoice; label: string }[] = [
 ];
 
 /** Droid's /copy menu: a reply, a prompt, the session id, the transcript or the last turns, to the clipboard. */
-export function openThreadCopy(opts: { entries: readonly ThreadEntry[]; sessionId?: string }) {
-  const turns = h('input.wt-copy-turns', { type: 'number', min: 1, value: 1, inputmode: 'numeric', 'aria-label': 'Turns to copy' });
+export function openThreadCopy(opts: { entries: readonly ThreadEntry[]; sessionId?: string; initialTurns?: string }) {
+  const turns = h('input.wt-copy-turns', { type: 'number', min: 1, value: opts.initialTurns ?? '1', inputmode: 'numeric', 'aria-label': 'Turns to copy' });
   const pick = async (choice: ThreadCopyChoice) => {
     const text = threadCopyText(opts.entries, choice, { sessionId: opts.sessionId, turns: Number(turns.value) || 1 });
     if (!text) {

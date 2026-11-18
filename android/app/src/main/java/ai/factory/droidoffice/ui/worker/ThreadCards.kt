@@ -673,7 +673,7 @@ private fun commandText(command: String, output: String?, working: Boolean, load
                 withStyle(SpanStyle(color = if (l.dim) ToolDetail else ThreadPalette.TextSecondary)) { append(l.text.ifEmpty { " " }) }
             }
             if (more > 0) dim("... and $more more ${if (more == 1) "line" else "lines"}")
-            if (clipped) dim("Showing the first $OUTPUT_CHARS of ${output.length} characters. Raw TTY has the rest.")
+            if (clipped) dim("Showing the first $OUTPUT_CHARS of ${output.length} characters.")
         }
     }
 }
@@ -1045,7 +1045,7 @@ private fun Mono(label: String, body: String, color: Color) {
         Text(shown, style = LocalOfficeType.current.monoBody.copy(fontSize = 11.sp, lineHeight = 17.sp, color = color))
     }
     if (shown.length < body.length) {
-        Text("Showing the first $SHOWN_CHARS of ${body.length} characters. Raw TTY has the rest.", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ToolDetail))
+        Text("Showing the first $SHOWN_CHARS of ${body.length} characters.", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ToolDetail))
     }
 }
 

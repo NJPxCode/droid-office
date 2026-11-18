@@ -128,3 +128,50 @@ setInterval(() => {}, 1000);
   mkdirSync(refused);
   await assert.rejects(listDroidCommands(droid, refused), /refused to list its commands/);
 });
+
+test('the catalogue prefers daemon.listSlashCommands when a sessionId is open and falls back to lister otherwise', async () => {
+  const daemonCalls: string[] = [];
+  const listerCalls: string[] = [];
+  const catalogue = createDroidCommandCatalogue({
+    command: () => '/usr/local/bin/droid',
+    daemon: {
+      listSlashCommands: async (sessionId) => {
+        daemonCalls.push(sessionId);
+        if (sessionId === 'broken-session') throw new Error('daemon disconnected');
+        return [
+          { name: 'ship', description: 'Deploy release\nextra line', source: 'command', argumentHint: '<tag>' },
+          { name: 'office-clone', description: 'Clone office', source: 'skill' },
+          { name: 'bad name', description: 'ignored', source: 'command' },
+          { name: 'ship', description: 'duplicate ignored', source: 'skill' },
+        ];
+      },
+    },
+    lister: (command, cwd) => {
+      listerCalls.push(`${command} ${cwd}`);
+      return Promise.resolve([{ name: 'fallback-cmd', description: 'From askDroid', source: 'command' }]);
+    },
+  });
+
+  const fromDaemon = await catalogue.get('/repo', 'sess-1');
+  assert.deepEqual(fromDaemon, [
+    { name: 'ship', description: 'Deploy release', source: 'command', argumentHint: '<tag>' },
+    { name: 'office-clone', description: 'Clone office', source: 'skill' },
+  ]);
+  assert.deepEqual(daemonCalls, ['sess-1']);
+  assert.deepEqual(listerCalls, []);
+
+  // Cached per folder + sessionId.
+  assert.equal(await catalogue.get('/repo', 'sess-1'), fromDaemon);
+  assert.deepEqual(daemonCalls, ['sess-1']);
+
+  // No sessionId -> falls back to askDroid lister.
+  const withoutSession = await catalogue.get('/repo');
+  assert.deepEqual(withoutSession, [{ name: 'fallback-cmd', description: 'From askDroid', source: 'command' }]);
+  assert.deepEqual(listerCalls, ['/usr/local/bin/droid /repo']);
+
+  // Daemon RPC failure -> falls back to askDroid lister instead of returning empty.
+  const onFailure = await catalogue.get('/repo-two', 'broken-session');
+  assert.deepEqual(onFailure, [{ name: 'fallback-cmd', description: 'From askDroid', source: 'command' }]);
+  assert.deepEqual(daemonCalls, ['sess-1', 'broken-session']);
+  assert.deepEqual(listerCalls, ['/usr/local/bin/droid /repo', '/usr/local/bin/droid /repo-two']);
+});

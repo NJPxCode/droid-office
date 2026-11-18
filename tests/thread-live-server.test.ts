@@ -35,7 +35,7 @@ test('session settings keep model, effort, interaction mode and autonomy without
 
 test('an earlier turn saying the same words cannot suppress the current live response', async () => {
   const tracker = new ThreadLiveTracker(() => 5000);
-  const inputs = { ...base(), status: 'working' as const, screen: ['⛬  OK', '', ' ⠰ Streaming...  (Press ESC to stop)', '', '╭────╮', '│ > │', '╰────╯'] };
+  const inputs = { ...base(), status: 'working' as const, daemon: { working: 'streaming_assistant_message' as const, stream: { kind: 'text' as const, text: 'OK', since: 5000 } } };
   const oldReply = entry('old', { text: 'OK' });
   const prompt = entry('new', { role: 'user', text: 'Reply with OK' });
   const current = await tracker.compute('w', inputs, [oldReply, prompt]);
@@ -48,10 +48,10 @@ test('idle live state still carries settings, and an unchanged computation keeps
   const root = await mkdtemp(path.join(os.tmpdir(), 'office-live-settings-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'session.jsonl');
-  await writeFile(path.join(root, 'session.settings.json'), JSON.stringify({ model: 'claude-haiku-5-5', lastCallTokenUsage: { inputTokens: 400, cacheReadTokens: 600, cacheCreationTokens: 0, outputTokens: 0 } }));
+  await writeFile(path.join(root, 'session.settings.json'), JSON.stringify({ model: 'claude-haiku-5-5', reasoningEffort: 'low', lastCallTokenUsage: { inputTokens: 400, cacheReadTokens: 600, cacheCreationTokens: 0, outputTokens: 0 } }));
   let now = 1000;
   const tracker = new ThreadLiveTracker(() => now);
-  const inputs = { ...base(), screen: [' Auto (High) · allow all commands                       Haiku 5.5 (Low)', '╭────╮', '│ > │', '╰────╯', '[⏱ 11s, context: 5%] ? for help'] };
+  const inputs = { ...base(), modelName: () => 'Haiku 5.5' };
   const first = await tracker.compute('w', inputs, [entry('last')], file);
   assert.equal(first.changed, true);
   assert.equal(first.live.status, 'idle');
@@ -66,7 +66,7 @@ test('idle live state still carries settings, and an unchanged computation keeps
   assert.equal(second.live.rev, first.live.rev);
 });
 
-test('the mode line wins over a settings file Droid has not rewritten yet after /model or Tab', async (t) => {
+test('daemon settings win over a settings file Droid has not rewritten yet', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'office-live-stale-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'session.jsonl');
@@ -75,19 +75,18 @@ test('the mode line wins over a settings file Droid has not rewritten yet after 
   const tracker = new ThreadLiveTracker(() => 1000);
   const inputs: ThreadLiveInputs = {
     ...base(),
-    screen: [' Auto (High) · allow all commands                       Haiku 5.5 (Extra high)', '╭────╮', '│ > │', '╰────╯'],
+    daemon: { working: 'idle', settings: { model: 'claude-haiku-5-5', reasoningEffort: 'xhigh', interactionMode: 'auto' } },
     modelName: (id) => names[id],
-    modelId: (name) => Object.keys(names).find((id) => names[id] === name),
   };
   const { live } = await tracker.compute('w', inputs, [entry('last')], file);
   assert.deepEqual(live.settings, { model: 'claude-haiku-5-5', modelName: 'Haiku 5.5', reasoningEffort: 'xhigh', interactionMode: 'auto' });
-  // A name the office does not know keeps the file's model rather than dropping it.
-  const unknown = await new ThreadLiveTracker(() => 1000).compute('w', { ...inputs, screen: [' Auto (High)                       Custom Thing (Low)', '╭────╮', '│ > │', '╰────╯'] }, [entry('last')], file);
+  // Without daemon settings, the last settings on disk are still available.
+  const unknown = await new ThreadLiveTracker(() => 1000).compute('w', { ...inputs, daemon: undefined }, [entry('last')], file);
   assert.equal(unknown.live.settings?.model, 'claude-sonnet-4-5');
-  assert.equal(unknown.live.settings?.reasoningEffort, 'low');
+  assert.equal(unknown.live.settings?.reasoningEffort, 'high');
 });
 
-test('a running Execute gets its canonical id, hook start and live output', async () => {
+test('a running Execute gets its canonical id, daemon start and live output', async () => {
   const tracker = new ThreadLiveTracker(() => 5000);
   const tool = entry('tool:call', { kind: 'tool', name: 'Execute', input: '{"command":"printf ticks"}', at: 4000 });
   const inputs: ThreadLiveInputs = {
@@ -95,7 +94,7 @@ test('a running Execute gets its canonical id, hook start and live output', asyn
     status: 'working',
     workingSince: 3000,
     activeTool: new Map([['session', { tool: 'Execute', input: { command: 'printf ticks' }, startedAt: 4100 }]]),
-    screen: ['   Execute printf ticks', '    ↳ tick 1', '      tick 2', '', ' ⠙ Executing...  (Press ESC to stop)', '', '╭────╮', '│ > │', '╰────╯'],
+    daemon: { working: 'executing_tool', tools: [{ toolUseId: 'call', name: 'Execute', startedAt: 4100, output: 'tick 1\ntick 2' }] },
   };
   const { live } = await tracker.compute('w', inputs, [tool]);
   assert.equal(live.status, 'pondering');
@@ -120,4 +119,108 @@ test('an ExitSpecMode wait attaches to its tool row, and rewind is explicit', as
   assert.equal(rewinding.live.working, 'idle');
   assert.deepEqual(rewinding.live.tools, []);
   assert.equal(rewinding.live.waiting, undefined);
+});
+
+test('daemon live stream tracks thinking/text deltas, dedupes landed entries, and links pending vs canonical tools', async () => {
+  const tracker = new ThreadLiveTracker(() => 6000);
+  const prompt = entry('u1:0', { role: 'user', text: 'Run tests' });
+
+  // 1. Thinking delta + unlanded pending tool (no id yet so client renders in pendingTools).
+  const thinkingInputs: ThreadLiveInputs = {
+    ...base(),
+    status: 'working',
+    workingSince: 5000,
+    daemon: {
+      working: 'thinking',
+      stream: { kind: 'thinking', messageId: 'm1', blockIndex: 0, since: 5100, text: 'Checking test suite...' },
+      tools: [{ toolUseId: 'call-1', name: 'Execute', startedAt: 5200, output: 'line 1\nline 2', more: 5 }],
+      settings: { model: 'claude-opus-4-6', reasoningEffort: 'high', interactionMode: 'auto', autonomyLevel: 'high' },
+    },
+    modelName: (id) => (id === 'claude-opus-4-6' ? 'Opus 4.6' : undefined),
+  };
+  const step1 = await tracker.compute('w', thinkingInputs, [prompt]);
+  assert.equal(step1.live.status, 'pondering');
+  assert.equal(step1.live.working, 'thinking');
+  assert.deepEqual(step1.live.stream, { kind: 'thinking', text: 'Checking test suite...', since: 5100 });
+  assert.deepEqual(step1.live.tools, [
+    {
+      name: 'Execute',
+      startedAt: 5200,
+      phase: 'running',
+      output: 'line 1\nline 2',
+      more: 5,
+    },
+  ]);
+  assert.deepEqual(step1.live.settings, {
+    model: 'claude-opus-4-6',
+    modelName: 'Opus 4.6',
+    reasoningEffort: 'high',
+    interactionMode: 'auto',
+    autonomyLevel: 'high',
+  });
+
+  // 2. Once tool:call-1 lands in entries, live tool carries canonical id 'tool:call-1'; assistant text delta dedupes once landed.
+  const landedTool = entry('tool:call-1', { kind: 'tool', name: 'Execute', input: '{"command":"npm test"}', at: 5200 });
+  const textInputs: ThreadLiveInputs = {
+    ...thinkingInputs,
+    daemon: {
+      ...thinkingInputs.daemon!,
+      working: 'streaming_assistant_message',
+      stream: { kind: 'text', messageId: 'm2', blockIndex: 0, since: 5500, text: 'All tests passed.' },
+    },
+  };
+  const step2 = await tracker.compute('w', textInputs, [prompt, landedTool]);
+  assert.equal(step2.live.tools[0]?.id, 'tool:call-1');
+  assert.equal(step2.live.stream?.text, 'All tests passed.');
+
+  const step3 = await tracker.compute('w', textInputs, [prompt, landedTool, entry('m2:0', { text: 'All tests passed.' })]);
+  assert.equal(step3.live.stream, undefined);
+});
+
+test('daemon llm_retry label surfaces while working, clears at rest, and AskUser sets waiting question state', async () => {
+  const tracker = new ThreadLiveTracker(() => 7000);
+  const retrying = await tracker.compute(
+    'w',
+    {
+      ...base(),
+      status: 'working',
+      daemon: {
+        working: 'thinking',
+        tools: [],
+        label: 'Retrying the model request (attempt 2)...',
+      },
+    },
+    [],
+  );
+  assert.equal(retrying.live.status, 'pondering');
+  assert.equal(retrying.live.label, 'Retrying the model request (attempt 2)...');
+
+  const settled = await tracker.compute(
+    'w',
+    {
+      ...base(),
+      status: 'done',
+      daemon: {
+        working: 'idle',
+        tools: [],
+        label: 'Retrying the model request (attempt 2)...',
+      },
+    },
+    [],
+  );
+  assert.equal(settled.live.status, 'idle');
+  assert.equal(settled.live.label, undefined);
+
+  const asking = await tracker.compute(
+    'w',
+    {
+      ...base(),
+      status: 'needs_input',
+      ask: { kind: 'question', questions: [{ question: 'Deploy now?', options: ['Yes', 'No'], multiSelect: false }] },
+      daemon: { working: 'waiting_for_tool_confirmation', tools: [] },
+    },
+    [],
+  );
+  assert.equal(asking.live.status, 'waiting');
+  assert.deepEqual(asking.live.waiting, { kind: 'question' });
 });

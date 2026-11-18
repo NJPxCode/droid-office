@@ -7,7 +7,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { Answers } from '../src/server/answers.js';
 import { FloorLinear, LinearOffice, type RawIssue } from '../src/server/linear.js';
 import { createOfficeMcp, OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER, type OfficeMcpFloor } from '../src/server/office-mcp/index.js';
 import { signed } from '../src/server/office-mcp/linear.js';
@@ -115,7 +114,6 @@ async function rig(
   };
   const linear = new LinearOffice(dir, fetchImpl);
   const office = createOfficeMcp({
-    answers: new Answers(),
     settings: () => ({ ...SUBAGENT_DEFAULTS }),
     floor: (id) => (id === worker.id ? floor : undefined),
     linear,

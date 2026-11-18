@@ -106,7 +106,7 @@ data class OfficeData(
     val synced: Boolean = false,
     /** Only a welcome that explicitly advertises the checkbox-answer contract enables it. */
     val workerAnswerMultiSelect: Boolean = false,
-    /** The office answers rewind, queue, model and side-chat actions in a worker's terminal; an older one leaves them unanswered. */
+    /** The office answers rewind and queue actions for Droid workers; an older one leaves them unanswered. */
     val threadActions: Boolean = false,
     /** The building's agents, the same on every floor; null from an office that predates Mission Control. */
     val mission: MissionControlState? = null,
@@ -286,7 +286,7 @@ class OfficeConnection(
 
     private val holders = MutableStateFlow<Set<String>>(emptySet())
     private val nonce = MutableStateFlow(0)
-    private val attached = ConcurrentHashMap.newKeySet<String>()
+    private val attached = ConcurrentHashMap<String, Boolean>()
     private val holds = HashMap<String, Int>()
     /** Each attached terminal's stream, on the main thread like [handle]. */
     private val feeds = HashMap<String, TermFeed>()
@@ -362,15 +362,16 @@ class OfficeConnection(
     }
 
     /**
-     * Attaches to a worker's terminal: its stream comes in, and the office takes keys for it only
-     * from an attached window. Counted, so the terminal screen and an answer from the Asks tab or a
-     * notification can each hold it; it detaches when the last one lets go.
+     * Attaches to a worker (`worker.attach`): with [stream] true (explicit shells), its PTY stream
+     * comes in; with [stream] false (Droid workers), the office marks the worker open/acked without
+     * streaming PTY output. Reference-counted until the last holder detaches.
      */
-    fun attach(workerId: String) {
+    fun attach(workerId: String, stream: Boolean = true) {
         synchronized(holds) { holds[workerId] = (holds[workerId] ?: 0) + 1 }
-        attached += workerId
-        feeds.getOrPut(workerId) { TermFeed() }
-        send(ClientMsg.attach(workerId))
+        val effectiveStream = stream || (attached[workerId] == true)
+        attached[workerId] = effectiveStream
+        if (effectiveStream) feeds.getOrPut(workerId) { TermFeed() }
+        send(ClientMsg.attach(workerId, effectiveStream))
     }
 
     fun detach(workerId: String) {
@@ -380,7 +381,7 @@ class OfficeConnection(
             n
         }
         if (left > 0) return
-        attached -= workerId
+        attached.remove(workerId)
         feeds.remove(workerId)
         send(ClientMsg.detach(workerId))
     }
@@ -390,7 +391,8 @@ class OfficeConnection(
 
     /** Asks the office for a fresh snapshot of an attached terminal (attaching again sends one). */
     fun resnapshot(workerId: String) {
-        if (workerId in attached) send(ClientMsg.attach(workerId))
+        val stream = attached[workerId] ?: return
+        send(ClientMsg.attach(workerId, stream))
     }
 
     /** Asks the office to move this phone to [floorId]; false when the message couldn't be sent. */
@@ -709,7 +711,7 @@ class OfficeConnection(
                         if (msg is ServerMsg.Welcome) {
                             welcomed = true
                             _link.value = Link(Phase.Connected, office.id, base = base, kind = kind)
-                            for (id in attached) ws.send(ClientMsg.attach(id))
+                            for ((id, stream) in attached) ws.send(ClientMsg.attach(id, stream))
                         }
                         handle(office.id, msg)
                     }
@@ -804,7 +806,7 @@ class OfficeConnection(
                 if (msg.floor != activeFloor && knownBefore != null && (knownBefore.cols != w.cols || knownBefore.rows != w.rows)) {
                     feeds[w.id]?.push(TermEvent.Resize(TermSize(w.cols, w.rows)))
                 }
-                if (msg.floor != activeFloor && w.state != WorkerStatus.NeedsInput && w.id !in attached) {
+                if (msg.floor != activeFloor && w.state != WorkerStatus.NeedsInput && !attached.containsKey(w.id)) {
                     _screens.update { it - w.id }
                 }
             }
@@ -818,7 +820,7 @@ class OfficeConnection(
                     )
                 }
                 _screens.update { it - msg.workerId }
-                attached -= msg.workerId
+                attached.remove(msg.workerId)
                 synchronized(holds) { holds.remove(msg.workerId) }
                 feeds.remove(msg.workerId)
             }
@@ -863,7 +865,7 @@ class OfficeConnection(
                     d.copy(workers = d.workers - msg.workerId, buildingWorkers = nextBuilding)
                 }
                 _screens.update { it - msg.workerId }
-                attached -= msg.workerId
+                attached.remove(msg.workerId)
                 synchronized(holds) { holds.remove(msg.workerId) }
                 feeds.remove(msg.workerId)
             }

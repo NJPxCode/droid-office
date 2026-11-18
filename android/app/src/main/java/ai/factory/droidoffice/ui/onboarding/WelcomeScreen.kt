@@ -103,8 +103,8 @@ fun WelcomeScreen(onScan: () -> Unit, onLink: (PairingInvite) -> Unit, pendingDe
                 Spacer(Modifier.height(28.dp))
                 TypedLine()
                 Spacer(Modifier.height(24.dp))
-                Feature(OfficeIcons.Terminal, "Live terminals", "Every worker's screen, in color, as it happens.", 0)
-                Feature(OfficeIcons.Sparkle, "Reprompt anywhere", "Follow up, answer prompts, press keys a TUI waits for.", 1)
+                Feature(OfficeIcons.Terminal, "Live threads and terminals", "Follow Droid threads and shell terminals as they happen.", 0)
+                Feature(OfficeIcons.Sparkle, "Reprompt anywhere", "Follow up, answer questions and steer workers.", 1)
                 Feature(OfficeIcons.Bell, "Pinged when it matters", "A notification the moment a worker needs you, with a reply right in it.", 2)
             }
             Spacer(Modifier.weight(1f).height(32.dp))

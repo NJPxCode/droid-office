@@ -4,7 +4,7 @@ import { FLAG_BOLD, FLAG_DIM, RGB_FLAG, type Run } from './protocol.js';
 // A cloud worker's laptop screen. Its session runs on a Factory computer, so there is no PTY here
 // to paint: the newest messages of its transcript are laid out the way the Droid CLI shows them
 // (the prompt, its replies, each tool call with the first lines of its result) on a terminal-sized
-// grid, and sent as the same `screen` frame a local worker's PTY sends.
+// grid and sent as a `screen` frame, just like a local Droid transcript or shell terminal.
 
 export const CLOUD_SCREEN_COLS = 136;
 export const CLOUD_SCREEN_ROWS = 39;

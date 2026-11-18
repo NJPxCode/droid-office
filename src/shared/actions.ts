@@ -11,11 +11,11 @@ export const FAILS_TO_DESPAIR = 2;
 const READ_TOOLS = new Set(['read', 'read_file', 'view', 'view_file', 'grep', 'grep_files', 'glob', 'ls', 'list', 'list_dir', 'list_files', 'find', 'codesearch', 'search_files', 'notebookread']);
 const EDIT_TOOLS = new Set(['edit', 'multiedit', 'write', 'write_file', 'create_file', 'notebookedit', 'apply_patch', 'patch', 'str_replace', 'str_replace_editor', 'str_replace_based_edit_tool']);
 const WEB_TOOLS = new Set(['websearch', 'webfetch', 'web_search', 'web_fetch', 'fetch', 'browse', 'search_web']);
-const SHELL_TOOLS = new Set(['bash', 'shell', 'exec_command', 'local_shell', 'run_command', 'terminal']);
+const SHELL_TOOLS = new Set(['bash', 'execute', 'shell', 'exec_command', 'local_shell', 'run_command', 'terminal']);
 
 /**
  * The action for a tool call: `tool` is its name (e.g. "Bash", "read_file", "mcp__fetch__fetch") and
- * `input` its arguments when the hook sends them, which is how a shell command gets told apart.
+ * `input` its arguments, which is how a shell command gets told apart.
  */
 export function toolAction(tool: unknown, input?: unknown): WorkerAction | undefined {
   if (typeof tool !== 'string') return undefined;

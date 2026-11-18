@@ -1,5 +1,5 @@
 /**
- * The workers' terminal host: owns every worker's PTY so a restarting office doesn't take its
+ * The shell terminal host: owns shell PTYs so a restarting office doesn't take its
  * agents down with it. The office starts it detached (see ptys.ts) and talks to it over a Unix socket
  * that only its own token opens. It keeps a headless copy of each screen, so the next office
  * gets the scrollback back, and ends everything once no office has come back for a while.

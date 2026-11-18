@@ -1,12 +1,12 @@
-// Ping a worker (docs/whiteboard.md, "Ping a worker"): whether the office can type the Whiteboard
-// line into a worker's terminal now, and how. The server checks it when the ping arrives; the window's
+// Ping a worker (docs/whiteboard.md, "Ping a worker"): whether the office can send the Whiteboard
+// prompt now, and how. The server checks it when the ping arrives; the window's
 // picker computes it from the live worker list, so both always agree.
 
 import type { WorkerInfo } from './protocol.js';
 import type { Card } from './whiteboard.js';
 import { wantsCsiEnter } from './csi-enter.js';
 
-/** How the line goes in: typed now, typed into a sleeping worker as it's resumed, or queued behind its turn. */
+/** How the prompt is delivered: sent now, sent on resume, or queued behind the current turn. */
 export type PingHow = 'type' | 'resume' | 'queue';
 
 export type PingEligibility =
@@ -54,9 +54,8 @@ export function buttonTarget(card: Pick<Card, 'stamps'>, workers: Iterable<Worke
 }
 
 /**
- * How a button's message goes in: typed now (steering a turn that's running, like a team message),
- * typed as a sleeping worker wakes, or held until it has started or the question in its terminal is
- * answered, since typing then would answer the question.
+ * How a button's message is delivered: send it now (steering a running turn), send it on resume,
+ * or hold it until the worker is ready or its pending question is answered.
  */
 export type ButtonDelivery = 'tell' | 'resume' | 'hold';
 

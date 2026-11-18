@@ -2599,7 +2599,7 @@ html:has(body.dashboard), body.dashboard { overflow: auto; }
 .dash-keys > span { display: flex; align-items: center; gap: var(--space-2); min-width: 0; white-space: nowrap; }
 .dash-keys .key { margin: 0; }
 
-/* A compact lead-to-team trail stays available in both Thread and raw TTY views. */
+/* A compact lead-to-team trail stays available across team worker threads. */
 .dash-team-nav { display: flex; align-items: center; gap: var(--space-2); flex: none; min-width: 0; padding: var(--space-2); border-bottom: 1px solid var(--border); background: var(--surface); }
 .dash-team-nav[hidden] { display: none; }
 .dash-team-chip { display: inline-flex; align-items: center; gap: var(--space-2); flex: none; min-width: 0; max-width: 160px; height: 28px; padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: var(--radius); background: transparent; color: var(--text-secondary); font: 400 11px/16px var(--font-mono); cursor: pointer; transition: background 150ms ease-out, border-color 150ms ease-out; }
@@ -2680,12 +2680,6 @@ html:has(body.dashboard), body.dashboard { overflow: auto; }
 .dash-workspace[data-layout=single] .dash-pane[data-mode=empty] .dash-pane-head { visibility: hidden; }
 .dash-pane-task { min-width: 0; overflow: hidden; font-size: 12.5px; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .dash-pane-model { display: none; align-self: center; min-width: 0; overflow: hidden; font: 400 10px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .08em; color: var(--text-tertiary); text-overflow: ellipsis; white-space: nowrap; }
-.dash-pane-views { flex: none; }
-.dash-pane-head .dash-pane-views.seg { padding: 2px; border: 0; border-radius: calc(var(--radius) + 2px); box-shadow: inset 0 0 0 1px var(--border); }
-.dash-pane-head .dash-pane-views.seg > .btn { min-height: 22px; margin: 0; padding: 0 var(--space-2); border: 0; border-radius: var(--radius); background: none; color: var(--text-tertiary); font-size: 10px; }
-.dash-pane-head .dash-pane-views.seg > .btn:hover:where(:not(:disabled)) { color: var(--text); }
-.dash-pane-head .dash-pane-views.seg > .btn:is(.on, [aria-pressed=true]) { background: none; box-shadow: inset 0 0 0 1px var(--border-strong); color: #fff; }
-.dash-pane-flip { display: none; }
 .dash-pane-actions { flex: none; display: flex; align-items: center; gap: 2px; }
 .dash-pane-head .btn.ghost:where(:not(:hover, :focus-visible)) { color: #8c8c8c; }
 .dash-pane-actions:empty { display: none; }
@@ -2696,8 +2690,7 @@ html:has(body.dashboard), body.dashboard { overflow: auto; }
   .dash-pane-pr > span { display: none; }
 }
 @container pane (max-width: 460px) {
-  .dash-pane-model, .dash-pane-head > .pill, .dash-pane .dash-pane-head .dash-pane-views { display: none; }
-  .dash-pane-flip { display: inline-flex; }
+  .dash-pane-model, .dash-pane-head > .pill { display: none; }
   .dash-pane-name { max-width: 100%; }
 }
 @container pane (max-width: 340px) {
@@ -3880,17 +3873,11 @@ button.wt-setting:hover { background: var(--surface-hover); color: var(--text); 
 .wt-model { flex: 0 1 auto; max-width: 180px; overflow: hidden; }
 .wt-model > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .wt-model-effort { flex: none; color: var(--text-tertiary); }
-.wt-mode { color: var(--accent); }
 .wt-setting.fixed { cursor: default; pointer-events: none; }
 .wt-setting[aria-busy='true'] { opacity: .6; }
 .wt-settings-menu { max-height: min(320px, 40dvh); }
 .wt-settings-item[aria-checked='true'] { color: var(--accent); }
 .wt-settings-item:disabled { color: var(--text-tertiary); cursor: default; }
-.wt-side { display: flex; flex-direction: column; gap: var(--space-2); max-height: min(320px, 40dvh); padding: var(--space-3); border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); }
-.wt-side[hidden] { display: none; }
-.wt-side-head { display: flex; align-items: center; gap: var(--space-2); }
-.wt-side-hint { flex: 1; min-width: 0; overflow: hidden; color: var(--text-tertiary); font-size: calc(12px * var(--wt-text-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
-.wt-side-text { overflow: auto; overscroll-behavior: contain; color: var(--text); font-size: calc(13px * var(--wt-text-scale, 1)); line-height: 1.6; white-space: pre-wrap; }
 .wt-rewind-files { display: flex; flex-direction: column; gap: var(--space-1); max-height: 220px; overflow: auto; padding-left: var(--space-5); }
 .wt-rewind-files[hidden] { display: none; }
 .wt-rewind-file { display: flex; align-items: center; gap: var(--space-2); margin: 0; color: var(--text); font: 400 13px/20px var(--font-sans); letter-spacing: 0; text-transform: none; }
@@ -3910,8 +3897,7 @@ button.wt-setting:hover { background: var(--surface-hover); color: var(--text); 
 .wt-recent-item:hover, .wt-recent-item[aria-selected='true'] { background: var(--surface-hover); }
 
 .wt-stream { max-width: var(--wt-measure); margin: var(--wt-entry-gap, var(--space-5)) auto 0; }
-.wt-stream-copy { color: var(--text); font-family: var(--wt-prose-font, var(--font-sans)); font-size: calc(14px * var(--wt-text-scale, 1)); line-height: calc(var(--wt-prose-leading, 1.725) - .125); white-space: pre-wrap; }
-.wt-stream-copy p { margin: 0 0 var(--space-2); }
+.wt-stream-copy { min-width: 0; }
 .wt-live-tool { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); min-height: 30px; color: var(--text-secondary); font-size: calc(13px * var(--wt-text-scale, 1)); }
 .wt-live-tool .spinner { width: 12px; height: 12px; }
 .wt-live-tool-output { flex-basis: 100%; max-height: 240px; margin: 0; overflow: auto; color: var(--text-tertiary); font: 400 calc(12px * var(--wt-text-scale, 1))/1.5 var(--font-mono); white-space: pre-wrap; }
@@ -3932,9 +3918,7 @@ button.wt-setting:hover { background: var(--surface-hover); color: var(--text); 
   .wt-search, .wt-status-phrase { transition: none; }
 }
 
-/* The desk window keeps both views mounted; only their visibility changes. */
 .term-thread-host { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .term-thread-host[hidden], .term-host[hidden] { display: none; }
 .term-thread-host > .worker-thread { width: 100%; }
-.term-view { flex: none; }
 .modal.term .wt-scroll > .dash-question { padding: 0; }

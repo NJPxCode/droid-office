@@ -11,6 +11,7 @@ import { WorkerManager, relatedBlock, withRelated, workspaceNames, type RepoSour
 import { Worktrees } from '../src/server/worktrees.js';
 import { choosePullBase } from '../src/server/open-pull.js';
 import type { ChangesState, GhPull, WorkerInfo } from '../src/shared/protocol.js';
+import { TestDaemon } from './daemon-fixture.js';
 
 // A worker across repositories (WorkerInfo.repos): hired on one floor with other floors' projects,
 // it works in a workspace holding a worktree of each, all on one branch, and opens a PR in each.
@@ -37,18 +38,6 @@ function project(root: string, name: string): string {
   excludeFromGit(dir);
   return dir;
 }
-
-/** Records where it was started and whether git finds a repository there, then waits. */
-const fakeAgent = `#!/usr/bin/env node
-// The task namer runs droid exec and waits out its timeout on a process that doesn't exit.
-if (process.argv.includes('--output-format')) process.exit(1);
-const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
-let top = null;
-try { top = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
-fs.appendFileSync(process.env.FAKE_AGENT_LOG, JSON.stringify({ cwd: process.cwd(), ceiling: process.env.GIT_CEILING_DIRECTORIES, top }) + '\\n');
-setInterval(() => {}, 1000);
-`;
 
 /** Pull requests kept in $GH_STATE: list, create, view (the body) and edit (the body). */
 const fakeGh = `#!/usr/bin/env node
@@ -79,10 +68,9 @@ interface Fixture {
   a: string;
   b: string;
   c: string;
-  log: string;
+  daemon: TestDaemon;
   agent: string;
   ghState: string;
-  starts(): { cwd: string; ceiling?: string; top: string | null }[];
   prs(): { repo: string; number: number; url: string; head: string; base?: string; title: string; body: string }[];
 }
 
@@ -91,16 +79,13 @@ function fixture(t: { after(fn: () => void): void }): Fixture {
   const bin = path.join(root, 'bin');
   mkdirSync(bin);
   const agent = path.join(bin, 'fake-agent');
-  writeFileSync(agent, fakeAgent, { mode: 0o755 });
+  writeFileSync(agent, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   writeFileSync(path.join(bin, 'gh'), fakeGh, { mode: 0o755 });
   // The task namer asks `claude -p`: not the real one.
   writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  const log = path.join(root, 'starts.jsonl');
-  writeFileSync(log, '');
   const ghState = path.join(root, 'gh.json');
-  const saved = { PATH: process.env.PATH, FAKE_AGENT_LOG: process.env.FAKE_AGENT_LOG, GH_STATE: process.env.GH_STATE };
+  const saved = { PATH: process.env.PATH, GH_STATE: process.env.GH_STATE };
   process.env.PATH = `${bin}${path.delimiter}${saved.PATH ?? ''}`;
-  process.env.FAKE_AGENT_LOG = log;
   process.env.GH_STATE = ghState;
   t.after(() => {
     for (const [k, v] of Object.entries(saved)) {
@@ -114,16 +99,9 @@ function fixture(t: { after(fn: () => void): void }): Fixture {
     a: project(root, 'web'),
     b: project(root, 'api'),
     c: project(root, 'admin'),
-    log,
+    daemon: new TestDaemon(root),
     agent,
     ghState,
-    starts: () => {
-      // A poll can land mid-append. A finished record always ends with a newline, so a trailing segment without one is not a record yet.
-      const text = readFileSync(log, 'utf8');
-      const lines = text.split('\n');
-      if (text.length > 0 && !text.endsWith('\n')) lines.pop();
-      return lines.filter(Boolean).map((l) => JSON.parse(l));
-    },
     prs: () => (existsSync(ghState) ? JSON.parse(readFileSync(ghState, 'utf8')).prs : []),
   };
 }
@@ -133,21 +111,12 @@ const events: WorkerEvents = { update() {}, remove() {}, data() {}, screen() {},
 function manager(f: Fixture, t: { after(fn: () => void): void }): WorkerManager {
   const data = path.join(f.a, '.droid-office');
   mkdirSync(data, { recursive: true });
-  const workers = new WorkerManager(f.a, data, f.agent, [], { url: 'http://127.0.0.1:1', token: '' }, events);
+  const workers = new WorkerManager(f.a, data, f.agent, [], { url: 'http://127.0.0.1:1', token: '' }, events, undefined, undefined, undefined, false, undefined, false, f.daemon);
   t.after(() => workers.shutdown());
   return workers;
 }
 
 const source = (floor: string, dir: string): RepoSource => ({ floor, name: path.basename(dir), repo: `acme/${path.basename(dir)}`, dir });
-
-/** The fake agent fires no hooks, so its worker is seated the way Droid's SessionStart would seat it. */
-async function sessionStart(workers: WorkerManager, data: string, id: string) {
-  const token = await waitFor(
-    () => (JSON.parse(readFileSync(path.join(data, 'workers.json'), 'utf8')) as { id: string; hookToken?: string }[]).find((s) => s.id === id)?.hookToken,
-    (t) => typeof t === 'string' && t.length > 0,
-  );
-  assert.equal(workers.hookReply(id, token, 'SessionStart', { hook_event_name: 'SessionStart', session_id: 'session-1' }) !== undefined, true);
-}
 
 async function waitFor<T>(read: () => T, ok: (v: T) => boolean, timeout = 5000): Promise<T> {
   const end = Date.now() + timeout;
@@ -190,14 +159,13 @@ test('a worker across repositories gets a workspace with a worktree of each on o
   for (const line of ['`web/`: acme/web, cut from main', '`api/`: acme/api, cut from main', '`admin/`: acme/admin', w.worktree!.branch, 'acme/web#12']) assert.ok(brief.includes(line), line);
   assert.ok(!brief.includes('{{'), brief);
 
-  // It starts in the workspace, where git finds no repository (not the web floor's own checkout).
+  // The daemon starts in the workspace, not any of its individual checkouts.
   const [start] = await waitFor(
-    () => f.starts(),
-    (s) => s.length === 1,
+    () => f.daemon.launches,
+    (launches) => launches.length === 1,
   );
-  assert.equal(realpathSync(start.cwd), ws);
-  assert.equal(start.top, null);
-  assert.equal(start.ceiling, path.dirname(ws));
+  assert.ok('cwd' in start.options);
+  assert.equal(realpathSync(start.options.cwd), ws);
 
   // It comes back with them after a restart.
   workers.shutdown();
@@ -365,7 +333,7 @@ test('Linear tasks title pull requests and close the ticket only from the home r
   const w = workers.spawn('desk-1', 'Cody', 'Work on Linear issue DOFF-12: "Sign in with passkeys".\n\nKeep the existing login.', true, 'agent', undefined, undefined, [source('floor-api', f.b)]);
   assert.notEqual(typeof w, 'string');
   if (typeof w === 'string') return;
-  await sessionStart(workers, path.join(f.a, '.droid-office'), w.id);
+  await waitFor(() => workers.get(w.id)?.sessionId, Boolean);
   for (const rel of [w.worktree!.path, w.repos![0].path]) {
     const cwd = path.join(f.a, rel);
     writeFileSync(path.join(cwd, 'passkeys.js'), '// passkeys\n');
@@ -392,7 +360,7 @@ test('O opens a pull request in each repository with commits, and each one lists
   const workers = manager(f, t);
   const w = workers.spawn('desk-1', 'Cody', 'Work on GitHub issue #12: "Sign in with passkeys".', true, 'agent', undefined, undefined, [source('floor-api', f.b), source('floor-admin', f.c)]) as WorkerInfo;
   const ws = path.join(f.a, '.droid-office', 'worktrees', w.worktree!.branch.slice('office/'.length));
-  await sessionStart(workers, path.join(f.a, '.droid-office'), w.id);
+  await waitFor(() => workers.get(w.id)?.sessionId, Boolean);
   // Work in web and api; nothing in admin.
   for (const name of ['web', 'api']) {
     writeFileSync(path.join(ws, name, 'passkeys.js'), `// ${name}\n`);

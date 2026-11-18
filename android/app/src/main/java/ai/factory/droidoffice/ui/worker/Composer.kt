@@ -308,7 +308,7 @@ fun Composer(
 
     // Keep the composer's state and upload launcher alive while the terminal takes the keyboard.
     if (!visible) return
-    // The Thread view's composer is near-square and mono like the rest of its chrome; Raw TTY's keeps its round controls.
+    // The Thread view's composer is near-square and mono like the rest of its chrome; a shell's keeps its round controls.
     val field = RoundedCornerShape(if (thread) 4.dp else 14.dp)
     val control = if (thread) RoundedCornerShape(3.dp) else CircleShape
     val thumb = RoundedCornerShape(if (thread) 3.dp else 9.dp)
@@ -562,8 +562,7 @@ fun Composer(
 
 /**
  * Droid's slash commands that start with what's typed, over the composer: tapping one fills it in.
- * Each says what it does, whether it is one of the worker's skills or custom commands, and in the
- * Thread whether it opens in Raw TTY, where Droid shows its dialogs.
+ * Each says what it does and whether it is one of the worker's skills or custom commands.
  */
 @Composable
 private fun SlashMenu(commands: List<SlashCommands.Command>, thread: Boolean, busy: Boolean, onPick: (SlashCommands.Command) -> Unit) {
@@ -574,7 +573,7 @@ private fun SlashMenu(commands: List<SlashCommands.Command>, thread: Boolean, bu
         Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(shape).background(Palette.Surface).border(1.dp, Palette.BorderStrong, shape)
             .tagged(Tags.Worker.SLASH_MENU).padding(vertical = 4.dp),
     ) {
-        if (busy && thread) Text(
+        if (busy && thread && commands.any { !it.midTurn }) Text(
             "Slash commands run once this turn is over. Stop it to run one now.",
             style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, color = Palette.TextSecondary),
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -605,9 +604,6 @@ private fun SlashMenu(commands: List<SlashCommands.Command>, thread: Boolean, bu
                     Text(
                         c.description, style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp, color = Palette.TextSecondary),
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 10.dp),
-                    )
-                    if (thread && c.kind == SlashCommands.Kind.Tty) Text(
-                        "RAW TTY", style = LocalOfficeType.current.eyebrow.copy(fontSize = 9.sp, color = Palette.TextTertiary), modifier = Modifier.padding(start = 8.dp),
                     )
                     c.source?.let { source ->
                         Text(

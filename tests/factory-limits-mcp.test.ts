@@ -7,12 +7,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { Answers } from '../src/server/answers.js';
 import { createOfficeMcp, OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER, type OfficeMcpFloor } from '../src/server/office-mcp/index.js';
 import { Team, type TeamModel, type TeamWorkers } from '../src/server/team.js';
 import { Visits } from '../src/server/visits.js';
 import { WhiteboardStore } from '../src/server/whiteboard.js';
-import { buildWorkerInspection, factoryModelUsage, formatProviderQuotas, inspectTerminalRetry, summarizeFactoryQuotas, type ProviderQuotaSummary } from '../src/server/worker-status.js';
+import { buildWorkerInspection, factoryModelUsage, formatProviderQuotas, inspectWorkerRetry, summarizeFactoryQuotas, type ProviderQuotaSummary } from '../src/server/worker-status.js';
 import { emptyFactoryState } from '../src/shared/factory.js';
 import { SUBAGENT_DEFAULTS, type WorkerInfo } from '../src/shared/protocol.js';
 
@@ -88,13 +87,13 @@ test('worker quota and 402/retry inspection reports Factory resets and leaves cu
   assert.ok(inspection.modelStatus?.resetsIn);
   assert.ok(inspection.modelStatus?.overageHint);
   assert.equal(inspection.modelStatus?.windows?.length, 3);
-  const retry = ['Retrying the model request (attempt 2/5)...'];
-  const core = buildWorkerInspection({ worker: worker('core', { model: CORE }), factory, runtime: { screenRows: retry }, now: NOW });
+  const retry = { retrying: true, attempt: 2, maxAttempts: 5, detail: 'Retrying the model request (attempt 2/5)...' };
+  const core = buildWorkerInspection({ worker: worker('core', { model: CORE }), factory, runtime: { retry }, now: NOW });
   assert.equal(core.modelStatus?.state, 'retrying');
   assert.equal(core.modelStatus?.providerName, 'Factory Droid Core');
   assert.match(core.modelStatus!.summary, /Monthly 85% left/);
   assert.equal(buildWorkerInspection({ worker: worker('custom', { model: CUSTOM }), factory, now: NOW }).modelStatus, undefined);
-  assert.equal(inspectTerminalRetry(['402 Usage exhausted for this subscription'], 'idle')?.retrying, false);
+  assert.equal(inspectWorkerRetry(worker('exhausted', { status: 'idle' }), { retry: { retrying: false, error: '402 Usage exhausted for this subscription' } })?.retrying, false);
   factory.limits.error = 'Limits could not be read';
   assert.notEqual(buildWorkerInspection({ worker: worker('hosted', { model: STANDARD }), factory, now: NOW }).modelStatus?.state, 'cooldown');
 });
@@ -125,7 +124,7 @@ test('MCP Factory quotas, model discovery, hire gates and retry rechecks share t
     resume: () => undefined,
     kill: async () => ({}),
     tail: () => 'Retrying the model request (attempt 2/5)...',
-    runtime: () => ({ screenRows: ['Retrying the model request (attempt 2/5)...'] }),
+    runtime: () => ({ retry: { retrying: true, attempt: 2, maxAttempts: 5, detail: 'Retrying the model request (attempt 2/5)...' } }),
     setTask: () => {},
   };
   const settings = { ...SUBAGENT_DEFAULTS, wakeLead: false };
@@ -152,7 +151,7 @@ test('MCP Factory quotas, model discovery, hire gates and retry rechecks share t
   const visits = new Visits(workers, { settings: () => settings, toast: () => {}, emit: () => {} });
   const whiteboard = new WhiteboardStore(dir);
   const floor: OfficeMcpFloor = { id: 'test', name: 'test', dir, workers, team, visits, whiteboard };
-  const mcp = createOfficeMcp({ hookUrl: 'http://127.0.0.1:0', answers: new Answers(), settings: () => settings, floor: () => floor });
+  const mcp = createOfficeMcp({ hookUrl: 'http://127.0.0.1:0', settings: () => settings, floor: () => floor });
   const server = createServer((req, res) => {
     void mcp.handle(req, res);
   });

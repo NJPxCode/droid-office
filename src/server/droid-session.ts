@@ -26,8 +26,8 @@ const exists = (file: string) =>
  * Reads the model and reasoning effort Droid records for a session in
  * `<sessions dir>/<working directory, slashes as dashes>/<session id>.settings.json`. That is the
  * model actually in use, including the one droid picked from its own settings when the worker
- * pinned nothing, and one changed with /model since. The file sits next to the session's
- * conversation, which the worker's hooks name, so that's looked at first.
+ * pinned nothing, and any subsequent model change. If a transcript path is known, the settings
+ * file next to it is checked first.
  */
 export class DroidSessionReader {
   private files = new Map<string, string>();
@@ -45,12 +45,12 @@ export class DroidSessionReader {
       if (!raw || typeof raw !== 'object' || !isValidDroidModel(raw.model)) return undefined;
       return { model: raw.model, ...(isAgentEffort(raw.reasoningEffort) ? { effort: raw.reasoningEffort } : {}) };
     } catch {
-      // being rewritten, or gone: the next hook asks again
+      // Being rewritten, or gone: a later read can try again.
       return undefined;
     }
   }
 
-  /** The settings file next to the session's conversation file, as its hooks named it (transcript_path), when it's in the sessions folder. */
+  /** The settings file next to the known transcript, when it's inside the sessions folder. */
   private async beside(sessionId: string, transcript: string | undefined): Promise<string | undefined> {
     if (!transcript || path.basename(transcript) !== `${sessionId}.jsonl`) return undefined;
     const file = path.join(path.dirname(transcript), `${sessionId}.settings.json`);

@@ -1,10 +1,10 @@
 # Droid Office
 
-A 3D browser and Mac office where one owner hires Droid workers at desks and works in their live PTYs, backed by a Node server, a Vite/three.js client, and web and Android companions.
+A 3D browser and Mac office where one owner hires Droid workers at desks and works in their live Threads (with PTY terminals for shell desks and the boss laptop), backed by a Node server, a Vite/three.js client, and web and Android companions.
 
 ## Subsystem and design references
 
-- **Subsystems** (status hooks, PTY host, worktrees, pipelines, floors, `.droid-office/` state files): read and update the matching bullet in [docs/guide/how-it-works.md](docs/guide/how-it-works.md) in the same change.
+- **Subsystems** (local `droid daemon`, shell PTY host, worktrees, pipelines, floors, `.droid-office/` state files): read and update the matching bullet in [docs/guide/how-it-works.md](docs/guide/how-it-works.md) in the same change.
 - **Implemented design specs** (follow and keep current when changing their area):
 
 | Area | Spec |
@@ -24,7 +24,7 @@ Each directory with local rules carries its own `AGENTS.md`:
 
 | Path | Role |
 | --- | --- |
-| `src/server/`, `src/server/office-mcp/` | Node daemon (CLI, workers, PTY host, hooks, boards, pipelines, floors) and Office MCP tools |
+| `src/server/`, `src/server/office-mcp/` | Node daemon (CLI, workers, local `droid daemon`, shell PTY host, boards, pipelines, floors) and Office MCP tools |
 | `src/shared/` | Pure ES2022 types and logic shared by server and client (`protocol.ts`, `prompts.ts`, `layout.ts`) |
 | `src/client/` | Vite app: `ui/` (DOM modals and panels), `world/` (three.js scene), `/dashboard` (web companion) |
 | `src/desktop/`, `native/`, `build/`, `electron-builder.yml` | Mac Electron main process, Objective-C++ Metal presenter, Swift Finder bundles, signing and packaging |
@@ -46,7 +46,7 @@ Run from the repository root with npm (`package-lock.json` is the sole lockfile)
 
 - Keep `.droid-office/` (runtime config, workers, scrollback, worktrees) and `.env*` files untracked. Update `.env.example` whenever adding, renaming or removing an env var (`tests/env-example.test.ts` enforces parity).
 - The signed Mac app release (with the paired Android APK) is the only supported production distribution, and `package.json` stays `"private": true` (no standalone tarballs, installers or npm publishing).
-- The Mac app ships unpacked (`asar: false`) and runs the office, PTY host and worker hooks on `process.execPath` with `ELECTRON_RUN_AS_NODE=1`. Route any new `process.execPath` script through `runAsNode` in `src/server/workers.ts` as a file on disk.
+- The Mac app ships unpacked (`asar: false`) and runs the office, shell PTY host and worktree-setup helper on `process.execPath` with `ELECTRON_RUN_AS_NODE=1`. Route any new `process.execPath` script through `runAsNode` in `src/server/workers.ts` as a file on disk.
 - Bump `version` in `package.json` only to start a new minor; CI releases every `main` merge as `v<major>.<minor>.<commit count>`.
 - Prefix commit subjects with `feat:`, `fix:`, `docs:` or `chore:`. Fix everything `.husky/pre-commit` (`lint-staged` + `npm run typecheck`) reports rather than bypassing with `--no-verify`.
 - `npm run lint` runs Oxlint (`.oxlintrc.json`) and Biome (`biome.jsonc`). Fix findings in source code; linter suppressions and rule-config edits are off the table.

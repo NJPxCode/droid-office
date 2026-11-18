@@ -9,7 +9,6 @@ import { CloudFeature, type CloudOptions } from '../src/server/factory/cloud.js'
 import { CloudStream, type CloudStreamClient, type CloudStreamSource } from '../src/server/factory/cloud-stream.js';
 import { CloudStreamMessages } from '../src/server/factory/cloud-stream-messages.js';
 import { askAnswer, askMenu, cloudAsk } from '../src/server/factory/cloud-ask.js';
-import { canAnswer, workerMenu } from '../src/shared/asks.js';
 import { CloudThreadReader } from '../src/server/factory/cloud-thread.js';
 import { cloudEntries } from '../src/shared/cloud-thread.js';
 import { messageOf, TEXT_MAX, type FactoryMessage } from '../src/shared/factory-sessions.js';
@@ -841,8 +840,6 @@ test('cloud feature: an AskUser held from the relay is answered one question at 
     ],
     freeText: true,
   });
-  assert.equal(workerMenu(asked(), undefined), first);
-  assert.equal(canAnswer(asked(), undefined), true);
   // A live request repeats the same AskUser: its descriptions show, and nothing goes back unasked.
   r.client.message(ASK_REQUEST);
   assert.equal(asked().cloud!.menu!.choices[0].description, 'One overlay for the whole AskUser call.');

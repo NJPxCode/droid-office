@@ -88,6 +88,49 @@ data class WorkerRepo(
     val pr: PrRef? = null,
 )
 
+/** One numbered option of an AskUser menu (src/shared/asks.ts Choice). */
+@Serializable
+data class Choice(
+    val number: Int,
+    val label: String,
+    val description: String? = null,
+    val selected: Boolean? = null,
+)
+
+/** A worker's waiting AskUser question (src/shared/asks.ts Menu), answered via worker.answer. */
+@Serializable
+data class Menu(
+    val question: String? = null,
+    val choices: List<Choice> = emptyList(),
+    val pointer: Int? = null,
+    val freeText: Boolean = false,
+    val multiSelect: Boolean = false,
+)
+
+/** One pending message held by the office outbox or Droid daemon queue (src/shared/protocol.ts QueuedMessageItem). */
+@Serializable
+data class QueuedMessageItem(
+    val id: String? = null,
+    val index: Int = 0,
+    val text: String = "",
+    val hasImage: Boolean = false,
+    val preview: Boolean = false,
+    val moreLines: Int = 0,
+    val source: String = "droid",
+    val delivery: String = "after_turn",
+) {
+    val isSteering: Boolean get() = delivery == "steering" || delivery == "next_step"
+}
+
+/** Authoritative queue state for a worker (src/shared/protocol.ts WorkerQueueState). */
+@Serializable
+data class WorkerQueueState(
+    val count: Int = 0,
+    val items: List<QueuedMessageItem> = emptyList(),
+    val moreSteering: Int = 0,
+    val moreQueued: Int = 0,
+)
+
 /** A cloud worker's Factory computer (src/shared/factory-cloud.ts): its Droid session runs there, not in a terminal of the office's. */
 @Serializable
 data class CloudRef(
@@ -110,7 +153,7 @@ data class CloudRef(
 @Serializable
 data class AskedQuestion(val question: String = "", val topic: String? = null, val options: List<String> = emptyList(), val multiSelect: Boolean = false)
 
-/** A pending ask: `kind` "question" carries the whole questionnaire, "permission" the tool call it is about. */
+/** A pending AskUser questionnaire (src/shared/protocol.ts WorkerAsk). */
 @Serializable
 data class WorkerAsk(
     val kind: String = "",
@@ -121,9 +164,7 @@ data class WorkerAsk(
     val risk: String? = null,
     val summary: String? = null,
     val sub: Boolean = false,
-) {
-    val isPermission: Boolean get() = kind == "permission" && !tool.isNullOrBlank()
-}
+)
 
 /** A worker's team markings (src/shared/protocol.ts TeamBadge): `lead` formed the team, `member` was hired into it. */
 @Serializable
@@ -158,8 +199,12 @@ data class WorkerInfo(
     val rows: Int = 24,
     val open: Boolean = false,
     val activity: String? = null,
-    /** What it waits on the owner for, from its hooks (src/shared/protocol.ts WorkerAsk). */
+    /** What it waits on the owner for (src/shared/protocol.ts WorkerAsk). */
     val ask: WorkerAsk? = null,
+    /** Structured AskUser menu held by the office for local Droid, Orchestrator, or cloud workers. */
+    val menu: Menu? = null,
+    /** Structured pending-message queue for Droid workers. */
+    val queue: WorkerQueueState? = null,
     val action: String? = null,
     val task: WorkerTask? = null,
     val todos: TodoProgress? = null,
@@ -174,7 +219,9 @@ data class WorkerInfo(
 ) {
     val state: WorkerStatus get() = WorkerStatus.of(status)
     val isShell: Boolean get() = kind == "shell"
-    /** It works on a Factory computer: no terminal to show, but it takes prompts. */
+    /** Every Droid worker (`agent`, `cloud`, `orchestrator`) renders Thread-only; only explicit `shell` sessions use Terminal. */
+    val usesThread: Boolean get() = !isShell
+    /** It works on a Factory computer: no local worktree, and its session runs in Factory cloud. */
     val isCloud: Boolean get() = kind == "cloud" || cloud != null
     /** Hired by another worker with the Office MCP's `team_hire`. `lead` is dropped when its lead leaves; the team badge isn't. */
     val isSubagent: Boolean get() = lead != null || team?.role == "member"
@@ -490,7 +537,7 @@ object ClientMsg {
         })
     }
 
-    /** Stops the turn a worker is in: an interrupt of a cloud worker's Factory session, Escape in a local agent's terminal. */
+    /** Stops the turn a Droid worker is in (`worker.interrupt` or `orchestrator.interrupt`). */
     fun interrupt(workerId: String) = if (workerId == ORCHESTRATOR_ID) orchestratorInterrupt() else obj("worker.interrupt") { put("workerId", workerId) }
 
     /**
@@ -551,11 +598,12 @@ object ClientMsg {
         child?.let { put("child", it) }
     }
 
-    /** Send now, remove, or clear Droid's pending messages; index is 1-based when one item is chosen. */
-    fun queueAction(workerId: String, action: String, index: Int? = null, group: String? = null, text: String? = null) = obj("worker.queue") {
+    /** Send now, remove, or clear Droid's pending messages; [id] names the daemon requestId when present, [index] is 1-based. */
+    fun queueAction(workerId: String, action: String, index: Int? = null, group: String? = null, text: String? = null, id: String? = null) = obj("worker.queue") {
         require(action == "promote" || action == "delete" || action == "clear")
         put("workerId", workerId)
         put("action", action)
+        id?.let { put("id", it) }
         index?.let { put("index", it) }
         group?.let { put("group", it) }
         text?.let { put("text", it) }
@@ -573,14 +621,10 @@ object ClientMsg {
         if (restore == "choose") put("files", JsonArray(files.map { JsonPrimitive(it) }))
     }
 
-
-    /** Closes Droid's side chat (/btw) when the terminal shows it. */
-    fun closeSide(workerId: String) = obj("worker.side") {
+    fun attach(workerId: String, stream: Boolean = true) = obj("worker.attach") {
         put("workerId", workerId)
-        put("close", true)
+        if (!stream) put("stream", false)
     }
-
-    fun attach(workerId: String) = obj("worker.attach") { put("workerId", workerId) }
     fun detach(workerId: String) = obj("worker.detach") { put("workerId", workerId) }
     fun resume(workerId: String) = obj("worker.resume") { put("workerId", workerId) }
     fun pr(workerId: String) = obj("worker.pr") { put("workerId", workerId) }

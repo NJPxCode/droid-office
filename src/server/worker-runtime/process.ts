@@ -36,8 +36,8 @@ export function defaultShell(): string {
 }
 
 /**
- * The command line a new worktree's first terminal runs: the setup script (see worktree-setup.ts)
- * with the office's own node, then the agent (or the shell) in its place. `quoteFile` says `file` is
+ * The command line a new shell worktree's PTY runs: the setup script (see worktree-setup.ts)
+ * with the office's own node, then the shell in its place. `quoteFile` says `file` is
  * a path; otherwise it's a command for the shell to find. `cmd` writes it for cmd.exe.
  */
 export function setupLine(o: { node: string; script: string; plan: string; file: string; quoteFile: boolean; args: string[]; cmd: boolean; asNode?: { sh: string; cmd: string } }): string {

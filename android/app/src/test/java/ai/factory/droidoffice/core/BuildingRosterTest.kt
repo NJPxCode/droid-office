@@ -57,7 +57,6 @@ class BuildingRosterTest {
                 "api" to listOf(GhPull(number = 42, state = "OPEN", headRefName = "office/pixel", url = "https://github.com/nikships/api-service/pull/42")),
             ),
             mission = mission,
-            screens = emptyMap(),
         )
 
         assertEquals(1, view.totalSummary.waiting)
@@ -77,11 +76,13 @@ class BuildingRosterTest {
 
     @Test
     fun buildingAgentsAreListedOnlyWithSubagentsWhileTheirAsksStayPinned() {
+        val askingMenu = Menu("Which floor?", listOf(Choice(1, "Web"), Choice(2, "Api")), freeText = true)
         val asking = WorkerInfo(
             id = ORCHESTRATOR_ID,
             name = ORCHESTRATOR_NAME,
             status = "needs_input",
             waitingSince = 5L,
+            menu = askingMenu,
             ask = WorkerAsk(kind = "question", questions = listOf(AskedQuestion(question = "Which floor?", options = listOf("Web", "Api")))),
         )
         val lone = MissionAgent(worker = WorkerInfo(id = "bot-lone", name = "Lone", remote = true, status = "idle"))
@@ -95,13 +96,13 @@ class BuildingRosterTest {
                 orchestrator = OrchestratorState(settings = OrchestratorSettings(on = true), agent = MissionAgent(worker = asking), team = orchTeam),
                 bots = listOf(lone, led),
             ),
-            screens = emptyMap(),
         )
 
         val alone = build(emptyList())
         assertEquals(listOf("bot-led", "bot-sub"), alone.rows.map { it.worker.id })
         assertEquals(2, alone.totalSummary.total)
         assertEquals(listOf(ORCHESTRATOR_ID), alone.asks.map { it.worker.id })
+        assertEquals(askingMenu, alone.asks.single().menu)
 
         val withTeam = build(listOf(MissionTeamMember(id = "far", name = "Far", floor = "api", floorName = "api", status = "working")))
         assertEquals(listOf(ORCHESTRATOR_ID, "bot-led", "bot-sub"), withTeam.rows.map { it.worker.id })
@@ -123,7 +124,6 @@ class BuildingRosterTest {
             ),
             pullsByFloor = emptyMap(),
             mission = null,
-            screens = emptyMap(),
         )
 
         assertEquals(listOf("root", "child", "grand", "cyc-a", "cyc-b"), view.rows.map { it.worker.id })

@@ -292,7 +292,7 @@ test('Mission Control pins the building’s agents in the sidebar and opens the 
     w.mission.orchestrator.agent.worker = { ...w.mission.orchestrator.agent.worker, status: 'idle' };
     w.paintPane('orchestrator', 'terminal');
   });
-  assert.equal(await pane.getAttribute('data-mode'), 'terminal', 'awake, its terminal opens');
+  assert.equal(await pane.getAttribute('data-mode'), 'thread', 'awake, its Thread opens');
 
   // A subagent's pane: the strip across the top is its lead's team across floors.
   await page.evaluate(() => {

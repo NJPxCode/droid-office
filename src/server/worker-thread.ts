@@ -409,7 +409,7 @@ export class WorkerThreadReader {
 
   private async find({ sessionId, cwd, transcript }: ThreadSession): Promise<string | undefined> {
     const name = `${sessionId}.jsonl`;
-    // Where the worker's own hooks say its conversation is, when that's in the sessions folder.
+    // Prefer a known transcript path when it belongs to this session and is inside the sessions folder.
     if (transcript && path.basename(transcript) === name) {
       const rel = path.relative(this.root, transcript);
       const inside = !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
@@ -444,7 +444,11 @@ export class WorkerThreadReader {
         const newline = head.indexOf(10);
         if (newline < 0) continue;
         const start = object(JSON.parse(head.subarray(0, newline).toString('utf8')));
-        if (start.type === 'session_start' && typeof start.cwd === 'string' && (start.cwd === cwd || (await realpath(start.cwd).catch(() => start.cwd)) === canonical)) return file;
+        if (start.type !== 'session_start') continue;
+        // A session moved to another folder (a fork into its worktree) stays filed under its first cwd and records the new one as lastCwd.
+        for (const recorded of [start.cwd, start.lastCwd]) {
+          if (typeof recorded === 'string' && (recorded === cwd || (await realpath(recorded).catch(() => recorded)) === canonical)) return file;
+        }
       } catch {
         // An incomplete header can be retried on the next read.
       } finally {

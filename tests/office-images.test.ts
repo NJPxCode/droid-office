@@ -8,7 +8,6 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { Answers } from '../src/server/answers.js';
 import { DropStore } from '../src/server/drops.js';
 import type { GrokWebhookPayload } from '../src/server/grok-webhook.js';
 import { formatImageLines, OFFICE_IMAGES_PATH, OfficeImageStore, parseImageRoute, restoreStoredImages, UPLOAD_WIRE_MAX, type OfficeImageRef } from '../src/server/office-images.js';
@@ -21,7 +20,6 @@ import { Team, type TeamWorkers } from '../src/server/team.js';
 import { Visits } from '../src/server/visits.js';
 import { WhiteboardStore, type CardRenders, type PinnedCard, type RenderImage, type RenderOutcome, type WhiteboardRenderer } from '../src/server/whiteboard.js';
 import { WorkerThreadReader } from '../src/server/worker-thread.js';
-import { readMenu } from '../src/shared/asks.js';
 import { DROP_MAX_BYTES, splitImages, withImages } from '../src/shared/drops.js';
 import { SUBAGENT_DEFAULTS, type ClientMsg, type WorkerInfo } from '../src/shared/protocol.js';
 
@@ -337,7 +335,6 @@ test('Tailnet /office/images enforces auth/Funnel/Origin/Host/owner gates, suppo
   let ownerLogin: string | undefined = 'nik@github';
 
   const server = remoteMcpListener({
-    answers: new Answers(),
     remote: office,
     remoteTransport: {
       hostname: () => hostname,
@@ -604,9 +601,6 @@ test('End-to-end Tailnet image exchange: upload -> team_hire / team_message / of
       return {};
     },
     tail: () => screenRows.join('\n'),
-    screenLines: () => screenRows,
-    screenMenu: () => readMenu(screenRows),
-    write: () => true,
     setTask() {},
   };
 
@@ -637,14 +631,14 @@ test('End-to-end Tailnet image exchange: upload -> team_hire / team_message / of
   rig.after(() => alphaWhiteboard.stop());
   const alphaTeam = new Team({ ...workers, get }, { dataDir: alphaDir, dir: alphaDir, git: false, settings: () => settings, toast() {}, now: () => now, images: office.images });
   rig.after(() => alphaTeam.stop());
-  const alphaVisits = new Visits({ ...workers, get, tell: workers.prompt, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {}, now: () => now });
+  const alphaVisits = new Visits({ ...workers, get, tell: workers.prompt, cancelTurn: () => false }, { on: () => settings.visits, emit() {}, now: () => now });
   rig.after(() => alphaVisits.stop());
 
   const betaWhiteboard = new WhiteboardStore(betaDir);
   rig.after(() => betaWhiteboard.stop());
   const betaTeam = new Team({ ...workers, list: () => [], get: (id) => store.identity(id) }, { dataDir: betaDir, dir: betaDir, git: false, settings: () => settings, toast() {}, now: () => now, images: office.images });
   rig.after(() => betaTeam.stop());
-  const betaVisits = new Visits({ ...workers, list: () => [], get: (id) => store.identity(id), tell: () => false, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {}, now: () => now });
+  const betaVisits = new Visits({ ...workers, list: () => [], get: (id) => store.identity(id), tell: () => false, cancelTurn: () => false }, { on: () => settings.visits, emit() {}, now: () => now });
   rig.after(() => betaVisits.stop());
 
   floors.push(
@@ -700,7 +694,7 @@ test('End-to-end Tailnet image exchange: upload -> team_hire / team_message / of
     const f = floors.find((x) => x.workers.get(wid));
     return f ? { ...f, name: f.def.name } : undefined;
   };
-  const mcpDeps = { answers: new Answers(), owner: ownerBridge, remote: office, images: office.images, floor: floorLookup, settings: () => settings };
+  const mcpDeps = { owner: ownerBridge, remote: office, images: office.images, floor: floorLookup, settings: () => settings };
   const localMcp = createOfficeMcp(mcpDeps);
   const localServer = createServer((req, res) => void localMcp.handle(req, res));
   const localUrl = new URL('/office/mcp', await listening(rig, localServer));

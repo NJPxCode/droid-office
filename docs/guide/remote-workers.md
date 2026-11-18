@@ -49,7 +49,7 @@ which carries no user. A user you shared this Mac with has their own login and i
 also needs a bot's key.
 
 The listener binds **only** to `127.0.0.1` (port 4611 unless that's taken) and serves **only**
-`/office/mcp`. It is separate from the main office server and the hook listener, and Browser Origins
+`/office/mcp`. It is separate from the main office server and the local Office MCP listener, and Browser Origins
 and other Host names are refused. Never put another network-accessible proxy in front of it. For a bot
 that isn't on your tailnet, see [Reaching it from outside the tailnet](remote-mcp.md#reaching-it-from-outside-the-tailnet).
 
@@ -88,7 +88,7 @@ Tailscale at all; Settings then says so. CI and office clones run that way.
   in a later call's `ack` array. Deduplicate by id: delivery is at least once.
 - Inspect and control workers across the office. `office_roster` lists every worker on
   every floor and building agents in a separate Mission Control section;
-  `office_look` reads floor terminals and the Orchestrator's terminal;
+  `office_look` reads floor workers (Thread output for Droid sessions, terminal scrollback for shells) and the Orchestrator's Thread;
   `office_send_home` sends floor workers home, including workers you hired and
   other leads' subagents, but never building agents or itself.
   It keeps the worktree and branch unless asked otherwise, and says first
@@ -114,7 +114,7 @@ Ordinary external bots use no push callbacks: the bot's own scheduler decides wh
 MCP inbox, or it can hold a `team_wait` call open (up to 600 seconds) that returns as soon as one
 of its subagents reports, asks, gets blocked or settles. Pass the `cursor` from the last status or
 wait as `since` to see only what is new. When a bot is marked as a **Grok Bot**, the office also
-pushes its subagents' final reports, questions, blockers, terminal `needs_input` prompts, unexpected
+pushes its subagents' final reports, questions, blockers, `AskUser` `needs_input` prompts, unexpected
 stops, and inbox messages directly to that bot's webhook over HTTPS `POST` JSON (and gives its
 subagents `lead_notify` for immediate mid-turn notifications), while still saving durable items in
 `office_inbox` for `ack` deduplication. Worker messages are not owner instructions.
@@ -139,9 +139,9 @@ acknowledging updates rather than treating the inbox as permanent archival
 storage.
 
 Building agents cannot prompt, interrupt, answer or send home one another.
-They may read the Orchestrator's terminal and thread; an external bot has neither
+They may read the Orchestrator's Thread; an external bot has no local session
 on this machine. The Orchestrator uses these same building-wide tools through the
-local hook listener, independent of Tailscale. See [Mission Control](../mission-control.md).
+local loopback Office MCP endpoint, independent of Tailscale. See [Mission Control](../mission-control.md).
 
 All `cwd` values and worker paths refer to the **office machine**, not the bot's host.
 A key still permits hiring agents that run commands on the owner's machine and

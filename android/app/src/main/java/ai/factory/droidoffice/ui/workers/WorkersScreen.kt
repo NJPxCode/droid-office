@@ -65,7 +65,6 @@ import ai.factory.droidoffice.core.Asks
 import ai.factory.droidoffice.core.BuildingRoster
 import ai.factory.droidoffice.core.BuildingRosterView
 import ai.factory.droidoffice.core.BuildingWorkerRow
-import ai.factory.droidoffice.core.Choices
 import ai.factory.droidoffice.core.EffortDial
 import ai.factory.droidoffice.core.FloorInfo
 import ai.factory.droidoffice.core.Menu
@@ -133,7 +132,6 @@ private data class AnsweredAsk(
 @Composable
 fun WorkersScreen(
     onOpenWorker: (String) -> Unit,
-    onOpenRawTty: (String) -> Unit,
     selected: String?,
     onCloseWorker: () -> Unit,
     onHire: () -> Unit,
@@ -143,7 +141,6 @@ fun WorkersScreen(
     val connection = graph.connection
     val link by connection.link.collectAsStateWithLifecycle()
     val data by connection.data.collectAsStateWithLifecycle()
-    val screens by connection.screens.collectAsStateWithLifecycle()
     val catalogue by connection.catalogue.collectAsStateWithLifecycle()
     val store by graph.store.snapshot.collectAsStateWithLifecycle()
     val office = store.active
@@ -154,13 +151,12 @@ fun WorkersScreen(
         if (link.phase == Phase.Connected) connection.models()
     }
 
-    val view = remember(data.floors, data.workers, data.buildingWorkers, data.pulls, data.buildingPulls, data.mission, screens) {
+    val view = remember(data.floors, data.workers, data.buildingWorkers, data.pulls, data.buildingPulls, data.mission) {
         BuildingRoster.build(
             floors = data.floors,
             workersByFloor = data.workersByFloor,
             pullsByFloor = data.pullsByFloor,
             mission = data.mission,
-            screens = screens,
         )
     }
 
@@ -177,7 +173,6 @@ fun WorkersScreen(
                     view = view,
                     selected = if (wide) selected else null,
                     onOpen = onOpenWorker,
-                    onOpenRawTty = { id -> if (wide) onOpenWorker(id) else onOpenRawTty(id) },
                     onActions = { actionWorker = it },
                     onHire = onHire,
                     onRetry = connection::retryNow,
@@ -227,7 +222,6 @@ private fun WorkersRosterPane(
     view: BuildingRosterView,
     selected: String?,
     onOpen: (String) -> Unit,
-    onOpenRawTty: (String) -> Unit,
     onActions: (String) -> Unit,
     onHire: () -> Unit,
     onRetry: () -> Unit,
@@ -252,7 +246,7 @@ private fun WorkersRosterPane(
     }
 
     val waitingAsks = view.asks.filter { ask ->
-        sent.none { it.workerId == ask.worker.id && now - it.at < 15_000 && Choices.same(it.menu, ask.menu) }
+        sent.none { it.workerId == ask.worker.id && now - it.at < 15_000 && Asks.sameMenu(it.menu, ask.menu) }
     }
     val primaryAsk = waitingAsks.firstOrNull { it.worker.id == focusedAsk } ?: waitingAsks.firstOrNull()
     val queuedAsks = waitingAsks.filter { it !== primaryAsk }
@@ -314,7 +308,7 @@ private fun WorkersRosterPane(
                                     multiFloor = data.floors.size > 1,
                                     now = now,
                                     connected = connected,
-                                    onOpenRawTty = { onOpenRawTty(w.id) },
+                                    onOpenThread = { onOpen(w.id) },
                                     onAnswered = { label ->
                                         if (menu != null) {
                                             sent.add(0, AnsweredAsk(w.id, w.name, floor?.name, label, System.currentTimeMillis(), menu))
@@ -455,7 +449,7 @@ private fun PinnedAskCard(
     multiFloor: Boolean,
     now: Long,
     connected: Boolean,
-    onOpenRawTty: () -> Unit,
+    onOpenThread: () -> Unit,
     onAnswered: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -511,8 +505,8 @@ private fun PinnedAskCard(
             context = Asks.context(w),
             enabled = connected,
             connected = connected,
-            openLabel = "Raw TTY",
-            onOpenThread = onOpenRawTty,
+            openLabel = "Open thread",
+            onOpenThread = onOpenThread,
             onAnswered = onAnswered,
         )
     }

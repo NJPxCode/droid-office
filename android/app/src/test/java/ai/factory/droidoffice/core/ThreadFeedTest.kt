@@ -501,7 +501,7 @@ class ThreadFeedTest {
         assertEquals(ThreadSupport.OlderOffice, feed.state.support)
         assertEquals(listOf("a"), feed.state.entries.map { it.id })
         assertTrue(feed.state.rows.isEmpty())
-        assertEquals("Update Droid Office on your computer to read this Thread here. Raw TTY still works.", feed.state.support.message)
+        assertEquals("Update Droid Office on your computer to read this Thread here.", feed.state.support.message)
         // The office updated: the next page reads.
         feed.receive(shown(feed, feed.latest(1)!!, listOf(text("a", 1), text("b", 2))))
         assertEquals(ThreadSupport.Supported, feed.state.support)
@@ -521,7 +521,7 @@ class ThreadFeedTest {
         assertEquals(ThreadSupport.NewerOffice, feed.state.support)
         assertTrue("rows of an unknown version are never guessed at", feed.state.rows.isEmpty())
         assertEquals(listOf("a"), feed.state.entries.map { it.id })
-        assertEquals("Update the app to read this Thread. Raw TTY still works.", feed.state.support.message)
+        assertEquals("Update the app to read this Thread.", feed.state.support.message)
     }
 
     @Test

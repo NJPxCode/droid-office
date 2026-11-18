@@ -77,25 +77,44 @@ class ThreadActionsTest {
 
 
 class ThreadQueuePanelTest {
-    @Test fun groupsSteeringAndQueuedAndKeepsThisPhonesWholeText() {
+    @Test fun groupsSteeringAndQueuedCarriesDaemonIdsAndKeepsWholeText() {
         val queue = ThreadQueue()
-        queue.sent("hello whole text", hasImage = false, after = 0)
-        val droid = DroidQueue.PendingSnapshot(
+        queue.sent("hello whole text\nline 2\nline 3", hasImage = true, after = 0, at = 1_000)
+        val server = WorkerQueueState(
+            count = 2,
             items = listOf(
-                DroidQueue.Pending(DroidQueue.Group.Steering, DroidQueue.Row("steer now", cut = false, more = 0)),
-                DroidQueue.Pending(DroidQueue.Group.Queued, DroidQueue.Row("hello", cut = true, more = 2)),
+                QueuedMessageItem(id = "req-steer", index = 1, text = "steer now", delivery = "steering"),
+                QueuedMessageItem(id = "req-queued", index = 2, text = "hello whole text", preview = true, moreLines = 2, delivery = "after_turn"),
             ),
             moreSteering = 1,
             moreQueued = 3,
-            reviewActive = true,
         )
-        val panel = queue.panel(droid)
+        val panel = queue.panel(server, now = 1_500)
         assertEquals(1, panel.steering.size)
         assertEquals("steer now", panel.steering[0].text)
-        assertEquals("hello whole text", panel.queued[0].text)
+        assertEquals("req-steer", panel.steering[0].id)
+        assertEquals(ThreadQueue.Group.Steering, panel.steering[0].group)
+
+        assertEquals(1, panel.queued.size)
+        assertEquals("hello whole text\nline 2\nline 3", panel.queued[0].text)
+        assertTrue(panel.queued[0].hasImage)
+        assertFalse(panel.queued[0].preview)
+        assertEquals("req-queued", panel.queued[0].id)
+        assertEquals(2, panel.queued[0].serverIndex)
         assertEquals(0, panel.queued[0].index)
         assertEquals(6, panel.total)
-        assertTrue(panel.review)
+    }
+
+    @Test fun optimisticLocalReceiptDropsOnRemoveOrAfterGraceWindow() {
+        val queue = ThreadQueue()
+        queue.sent("optimistic", hasImage = false, after = 0, at = 1_000)
+        val empty = WorkerQueueState(count = 0, items = emptyList())
+        assertEquals(listOf("optimistic"), queue.panel(empty, now = 2_000).queued.map { it.text })
+        queue.remove("optimistic")
+        assertTrue(queue.panel(empty, now = 2_100).isEmpty)
+
+        queue.sent("expires", hasImage = false, after = 0, at = 1_000)
+        assertTrue(queue.panel(empty, now = 1_000 + ThreadQueue.GRACE_MS + 1).isEmpty)
     }
 }
 class ThreadSearchTest {

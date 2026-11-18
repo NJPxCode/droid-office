@@ -2,7 +2,7 @@
 
 The office's Model Context Protocol (MCP) server for external bots: building agents that run somewhere other than the office machine and join Mission Control with no floor or desk. The Orchestrator is the building agent the office runs itself, and it gets the same Mission Control tools on the office's local hook listener instead. [External workers over Tailscale](remote-workers.md) explains how to turn it on and add a bot in Settings. This page is the reference a bot's author needs: the endpoint, headers, keys, response formats and every tool.
 
-The local workers' MCP (the `droid-office` entry the office writes to Droid's profile) uses its own permission-filtered tools and the same transport on the office's own hook server, with each worker's hook token. It is not covered here.
+The local workers' MCP (the `droid-office` entry passed inline via `mcpServers` to each local `droid daemon` session) uses its own permission-filtered tools and the same transport on the office's loopback server, with each worker's hook token. It is not covered here.
 
 ## Endpoint
 
@@ -155,9 +155,9 @@ Worker-control tools have strict input schemas, including nested objects. Unknow
 
 Owner action results contain `status: done | pending | unconfirmed`, notes, and any bounded reply; refusals return `isError`. `pending` means no confirmed outcome within 30 seconds. `unconfirmed` means the handler neither confirmed nor refused it. Neither is a safe reason to retry a mutation. `office_send_home` keeps worktrees, branches and cloud sessions unless deletion is explicitly requested.
 
-Worker, floor, question and Whiteboard tool results (including `office_whoami`, `office_floors`, `office_inbox`, `office_roster`, `office_look`, `office_worker_spawn`/`prompt`/`answer`/`interrupt`/`thread`, `team_hire`, `team_watch`, `team_status`, `team_message`, `team_review`, `worker_log`, `team_wait`, `team_report_get`, `questions_list`, and Grok Bot webhook payloads) include token-free `deepLink` URLs (`http(s)://<office-tailscale-or-lan>:<port>/open/worker|floor|card|question/<id>?...`, or `droidoffice://open/...` when loopback-only, plus `questionDeepLink` on blocked workers) that open the paired Droid Office Android app straight to that worker's terminal, floor, Whiteboard card or pending AskUser question when tapped in chat.
+Worker, floor, question and Whiteboard tool results (including `office_whoami`, `office_floors`, `office_inbox`, `office_roster`, `office_look`, `office_worker_spawn`/`prompt`/`answer`/`interrupt`/`thread`, `team_hire`, `team_watch`, `team_status`, `team_message`, `team_review`, `worker_log`, `team_wait`, `team_report_get`, `questions_list`, and Grok Bot webhook payloads) include token-free `deepLink` URLs (`http(s)://<office-tailscale-or-lan>:<port>/open/worker|floor|card|question/<id>?...`, or `droidoffice://open/...` when loopback-only, plus `questionDeepLink` on blocked workers) that open the paired Droid Office Android app straight to that worker's Thread (or terminal for a shell), floor, Whiteboard card or pending AskUser question when tapped in chat.
 
-A bot's key still conveys owner-level worker control, including hiring agents that execute commands and answering terminal menus. Floor workers do not see these owner tools. All paths and `cwd` values refer to the **office machine**, not the bot's host.
+A bot's key still conveys owner-level worker control, including hiring agents that execute commands and answering `AskUser` menus. Floor workers do not see these owner tools. All paths and `cwd` values refer to the **office machine**, not the bot's host.
 
 Remote bots can read floor Whiteboards with `whiteboard_read` (including downloadable image URLs and ids), while Whiteboard mutation, visits, raw terminal input, floor-management, forge, pipeline, settings, connection, picture and jukebox tools stay internal. Internal workers retain `team`, `models_list`, `team_report`, `visit_roster`, `visit_look`, `whiteboard_guide`, `whiteboard_read`, `whiteboard_card`, `whiteboard_state`, `whiteboard_marks` and `whiteboard_apply`, subject to their existing permissions.
 
@@ -207,7 +207,7 @@ List every worker in the building, or on one floor: id, name, floor id and numbe
 
 ### `office_look`
 
-Read structured worker state (plan steps and progress, current or last tool call, hook age, queued messages, model retry or subscription cooldown with reset time, and PR/CI/Release runs) plus the end of any worker's terminal, on any floor, without typing anything. Pass `lines: 0` for structured worker state without raw terminal output. `"office-shell"` reads the floor's boss shell (`lines >= 1`). In Mission Control, it reads the Orchestrator; an external bot has no terminal on this machine. At most 48,000 characters, with a truncation marker if older text was omitted. A snapshot, not a transcript; for conversation history or a cloud worker's thread use `office_worker_thread`.
+Read structured worker state (plan steps and progress, current or last tool call, silence age, queued messages, model retry or subscription cooldown with reset time, and PR/CI/Release runs) plus bounded recent output for any worker, on any floor, without sending input: recent Thread transcript and live stream lines for Droid sessions (`agent` and `Orchestrator`), or terminal lines for explicit `shell` desks and `"office-shell"`. Pass `lines: 0` for structured worker state without output text. `"office-shell"` reads the floor's boss shell (`lines >= 1`). In Mission Control, it reads the Orchestrator; an external bot has no local session on this machine. At most 48,000 characters, with a truncation marker if older text was omitted. A snapshot, not a full transcript; for paginated conversation history or a cloud worker's thread use `office_worker_thread`.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -215,7 +215,7 @@ Read structured worker state (plan steps and progress, current or last tool call
 | `name` | string | alias | Alias for `worker`. |
 | `workerId` | string | alias | Alias for `worker`. |
 | `floor` | string | no | Floor id, number (1 is the top of the elevator list) or name. |
-| `lines` | integer | no, default `80` | Latest terminal lines, default 80, at most 400 (`0` returns structured worker state only). |
+| `lines` | integer | no, default `80` | Latest output lines, default 80, at most 400 (`0` returns structured worker state only). |
 
 ### `office_send_home`
 
@@ -253,7 +253,7 @@ Hire an independent worker, shell or cloud worker on a floor. For a subagent tha
 
 ### `office_worker_prompt`
 
-Prompt or steer any floor worker as the owner, as a message in its session. Your own subagents take team_message. When `queue` is `false` (default), Droid steers during a running turn; `queue: true` queues behind the turn via Ctrl+Enter; `urgent: true` interrupts a running turn or blocking command via Escape and delivers immediately.
+Prompt or steer any floor worker as the owner, as a message in its session. Your own subagents take team_message. When `queue` is `false` (default), Droid steers during a running turn (`EndOfTurn`); `queue: true` queues behind the turn (`EndOfLoop`); `urgent: true` interrupts a running turn or blocking command (`interruptSession`) and delivers immediately.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -265,12 +265,12 @@ Prompt or steer any floor worker as the owner, as a message in its session. Your
 | `text` | string | alias | Alias for `prompt`. |
 | `issue` | integer | no |  |
 | `images` | string[] | no | Existing office-upload image ids, not paths or image bytes. |
-| `queue` | boolean | no, default `false` | Queue behind the current turn using Ctrl+Enter instead of steering during the turn. |
-| `urgent` | boolean | no | Interrupt a running turn or blocking command via Escape and deliver immediately (not with `queue: true`). |
+| `queue` | boolean | no, default `false` | Queue behind the current turn (`EndOfLoop`) instead of steering during the turn (`EndOfTurn`). |
+| `urgent` | boolean | no | Interrupt a running turn or blocking command (`interruptSession`) and deliver immediately (not with `queue: true`). |
 
 ### `office_worker_answer`
 
-Answer a worker’s currently displayed menu as the owner. Supply its exact menu snapshot; changed menus are refused. Unlike question_answer, this is owner-level terminal control.
+Answer a worker’s active structured `AskUser` menu (`WorkerInfo.menu`) as the owner. Supply its exact menu snapshot; changed menus are refused. Unlike question_answer, this is owner-level worker control.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -278,7 +278,7 @@ Answer a worker’s currently displayed menu as the owner. Supply its exact menu
 | `workerId` | string | alias | Alias for `worker`. |
 | `name` | string | alias | Alias for `worker`. |
 | `floor` | string | no | Floor id, elevator number or name. Required when the name exists on more than one floor; a building agent has no current floor. |
-| `menu` | object | yes | Exact menu snapshot from the worker’s screen. The server refuses an answer if the menu changed. |
+| `menu` | object | yes | Exact structured `WorkerInfo.menu` snapshot. The server refuses an answer if the menu changed. |
 | `menu.question` | string | no | Exact question currently shown. |
 | `menu.choices` | object[] | yes | The currently displayed options, in order, with their original numbers and labels. |
 | `menu.pointer` | integer | no | Currently focused zero-based option. |
@@ -290,7 +290,7 @@ Answer a worker’s currently displayed menu as the owner. Supply its exact menu
 
 ### `office_worker_interrupt`
 
-Interrupt any worker’s current turn without dismissing it. Sends Escape locally or interrupts its Factory session.
+Interrupt any worker’s current turn without dismissing it (`interruptSession` locally or REST interrupt on its Factory session).
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -301,7 +301,7 @@ Interrupt any worker’s current turn without dismissing it. Sends Escape locall
 
 ### `office_worker_thread`
 
-Read one page of any local or cloud agent’s conversation, including the Orchestrator in Mission Control. Does not attach or type into its terminal. Returns a bounded snapshot and pagination information.
+Read one page of any local or cloud agent’s conversation, including the Orchestrator in Mission Control. Does not modify or interrupt its session. Returns a bounded snapshot and pagination information.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -325,7 +325,7 @@ Read the models allowed for your subagents, led by a compact per-provider `Subsc
 
 ### `team_hire`
 
-Hire one fresh subagent at the nearest free desk for an independent task. It gets your brief, its own terminal, and normally a fresh worktree on Git floors. Pass top-level `title` + `brief` for a simple hire, or `task` when adding branch, PR, or acceptance-criteria metadata. Read team_models first. Permission, capacity and model refusals explain what to do; no desk is taken for an unavailable model. Commit shared prerequisites before hiring. A building agent names the open floor it hires on, either with `floor` or in `task.repo`.
+Hire one fresh subagent at the nearest free desk for an independent task. It gets your brief, its own Thread, and normally a fresh worktree on Git floors. Pass top-level `title` + `brief` for a simple hire, or `task` when adding branch, PR, or acceptance-criteria metadata. Read team_models first. Permission, capacity and model refusals explain what to do; no desk is taken for an unavailable model. Commit shared prerequisites before hiring. A building agent names the open floor it hires on, either with `floor` or in `task.repo`.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -341,7 +341,7 @@ Hire one fresh subagent at the nearest free desk for an independent task. It get
 
 ### `team_watch`
 
-Follow or unfollow independent floor workers without re-hiring or interrupting them. Watched workers remain independent (their system prompt, Stop hook and owner attention stay unchanged), appear in `team_status`, `team_wait` and `questions_list` with `watched: true`, and wake you on turn completion, terminal `AskUser` questions, stops, departures and pull-request updates (`pr`). `team_dismiss` refuses watched independent workers so owner sessions are never accidentally sent home.
+Follow or unfollow independent floor workers without re-hiring or interrupting them. Watched workers remain independent (their system prompt, report reminder and owner attention stay unchanged), appear in `team_status`, `team_wait` and `questions_list` with `watched: true`, and wake you on turn completion, structured `AskUser` questions, stops, departures and pull-request updates (`pr`). `team_dismiss` refuses watched independent workers so owner sessions are never accidentally sent home.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -353,7 +353,7 @@ Follow or unfollow independent floor workers without re-hiring or interrupting t
 
 ### `team_status`
 
-Read your subagents, watched floor workers, other active workers on the floor (`floorWorkers`), and unread team news at once, without waiting; optionally one worker, with recent terminal lines. `structuredContent` has `workers` (one compact object each with `state`, `task`, `taskLabel` provenance/timestamp/staleness, `plan`, `currentTool`/`lastTool`, `lastActivityAt`/`silentForMs`, `queued`, `retryingModel`/`modelStatus` cooldowns, `prStatus`/`ci`/`releaseRun` from cached floor state, working directory, branch, and checkout warnings), optional `floorWorkers` (independent workers on the floor not yet in your team), `news` (typed events with ids and times) and a `cursor` to pass as `since`. `verbose: false` makes the text compact too. `team_report_get` reads a full report.
+Read your subagents, watched floor workers, other active workers on the floor (`floorWorkers`), and unread team news at once, without waiting; optionally one worker, with recent output lines. `structuredContent` has `workers` (one compact object each with `state`, `task`, `taskLabel` provenance/timestamp/staleness, `plan`, `currentTool`/`lastTool`, `lastActivityAt`/`silentForMs`, `queued`, `retryingModel`/`modelStatus` cooldowns, `prStatus`/`ci`/`releaseRun` from cached floor state, working directory, branch, and checkout warnings), optional `floorWorkers` (independent workers on the floor not yet in your team), `news` (typed events with ids and times) and a `cursor` to pass as `since`. `verbose: false` makes the text compact too. `team_report_get` reads a full report.
 
 For an external worker, status news follows a cursor kept for that bot across reconnects and office restarts: the first status call sets a baseline without replaying old reports, later calls return only newer events that have not already been acknowledged in `office_inbox`, and each news line starts with its UTC time. `team` with action `status` reads the same cursor. Reading status does not acknowledge anything in `office_inbox`.
 
@@ -361,14 +361,14 @@ For an external worker, status news follows a cursor kept for that bot across re
 | --- | --- | --- | --- |
 | `worker` | string | no | Your subagent’s name or id, case-insensitive. Omit for all. |
 | `floor` | string | no | Building agents only: just this open floor, by id, name or checkout path. Omit for all your teams across the building. |
-| `lines` | integer | no | Include this many recent terminal lines per selected subagent, at most 400. Omit to leave terminals out. |
+| `lines` | integer | no | Include this many recent output lines per selected subagent, at most 400. Omit to leave output lines out. |
 | `verbose` | boolean | no | false for one compact line per subagent and per event, with summaries instead of whole reports. Omit or true for the full text. |
 | `since` | string | no | A cursor from an earlier status (cursor field) or one event id. News is everything after it, heard or not, instead of only unread news. |
 | `kinds` | "question" \| "report" \| "pr" \| "needs_input" \| "stopped" \| "left" \| "sent_home" \| "done" \| "blocked"[] | no | Just these news kinds (blocked is needs_input). Other news stays unread, but the cursor moves past it: reuse a filtered cursor only with the same kinds. |
 
 ### `team_message`
 
-Steer one subagent, a subset or all your teams. By default (`queue: false`), guidance steers during a running turn (at the next tool step through hooks, or via plain Enter in Droid's TUI). Set `queue: true` to queue behind the current turn via Ctrl+Enter, or `urgent: true` to cancel a running turn or blocking command via Escape and deliver immediately. Select exactly one of `worker`, `workers` or `all: true`. Responses give canonical worker ids, readable names, floors, blocking-command warnings, and per-recipient delivery (`next_step`, `queued_turn`, `interrupted`, `sent`, `resumed`) or errors. Names and ids resolving to the same worker deliver once. Empty teams and entirely failed broadcasts return tool errors; partial delivery keeps all recipient outcomes. A permission prompt still needs the person at its desk.
+Steer one subagent, a subset or all your teams. By default (`queue: false`), guidance steers during a running turn via `EndOfTurn`. Set `queue: true` to queue behind the current turn (`EndOfLoop`), or `urgent: true` to interrupt a running turn or blocking command (`interruptSession`) and deliver immediately. Select exactly one of `worker`, `workers` or `all: true`. Responses give canonical worker ids, readable names, floors, blocking-command warnings, and per-recipient delivery (`next_step`, `queued_turn`, `interrupted`, `sent`, `resumed`) or errors. Names and ids resolving to the same worker deliver once. Empty teams and entirely failed broadcasts return tool errors; partial delivery keeps all recipient outcomes.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -377,8 +377,8 @@ Steer one subagent, a subset or all your teams. By default (`queue: false`), gui
 | `all` | true | one selector | Broadcast to all your subagents on the selected floor, or across all floors. |
 | `text` | string | yes | Guidance or follow-up for the selected subagents. |
 | `images` | string[] | no | Uploaded image ids from POST /office/images to attach for the subagent. |
-| `queue` | boolean | no, default `false` | Default `false` steers during the running turn; `true` queues behind the current turn using Ctrl+Enter. |
-| `urgent` | boolean | no | Interrupt a running turn or blocking command via Escape and deliver immediately (not with `queue: true`). |
+| `queue` | boolean | no, default `false` | Default `false` steers during the running turn (`EndOfTurn`); `true` queues behind the current turn (`EndOfLoop`). |
+| `urgent` | boolean | no | Interrupt a running turn or blocking command (`interruptSession`) and deliver immediately (not with `queue: true`). |
 | `floor` | string | no | Building agents only: just this open floor, by id, name or checkout path. Omit for all your teams across the building. |
 
 ### `team_review`
@@ -441,17 +441,17 @@ Read a size-capped Git diff and stat for your subagent (including dismissed suba
 
 ### `worker_log`
 
-Read your subagent's structured runtime state (plan steps, current/last tool, hook age, queued messages, model retry or cooldown with reset time, PR/CI/Release runs) and recent terminal output, read-only. Pass `tail: 0` for structured state only; otherwise at most 400 lines and 48,000 characters.
+Read your subagent's structured runtime state (plan steps, current/last tool, silence age, queued messages, model retry or cooldown with reset time, PR/CI/Release runs) and bounded recent output (Thread transcript and live stream lines for Droid sessions, or PTY terminal lines for shells), read-only. Pass `tail: 0` for structured state only; otherwise at most 400 lines and 48,000 characters.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
 | `worker` | string | yes | Your subagent’s name or id, case-insensitive. |
 | `floor` | string | no | Building agents only: just this open floor, by id, name or checkout path. Omit for all your teams across the building. |
-| `tail` | integer | no, default `80` | Latest terminal lines to read, 0 to 400 (`0` returns structured worker state only). |
+| `tail` | integer | no, default `80` | Latest output lines to read, 0 to 400 (`0` returns structured worker state only). |
 
 ### `worker_queue`
 
-Inspect, clear or promote pending messages on a worker (both office hook outbox notices and Droid's TUI queue), and see any active blocking command. When `promote` fails, the message stays visible in the queue with `stillPending` and `remaining` reported on `queue_error` (or `delivery: "already_delivered"` when the turn drained it first). Building agents with owner access may target any local floor worker; floor leads target their own subagents.
+Inspect, clear or promote pending messages in a worker's daemon queue (`WorkerInfo.queue`: `EndOfTurn` steering and `EndOfLoop` queued items, keyed by `requestId`), and see any active blocking command. When `promote` fails, the message stays visible in the queue with `stillPending` and `remaining` reported on `queue_error` (or `delivery: "already_delivered"` when the turn drained it first). Building agents with owner access may target any local floor worker; floor leads target their own subagents.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -460,27 +460,28 @@ Inspect, clear or promote pending messages on a worker (both office hook outbox 
 | `action` | "list" \| "clear" \| "promote" | no, default `"list"` | `list` inspects pending items; `clear` cancels one item or all; `promote` pulls queued item(s) forward to steer now. |
 | `index` | integer | no | 1-based queued message index from `list` (omit to clear all or promote the top queued item). |
 | `all` | boolean | no | Apply `clear` or `promote` to all pending items (not with `index`). |
-| `urgent` | boolean | no | For `promote` only: interrupt a running turn or blocking command via Escape and deliver immediately. |
+| `id` | string | no | Queued message id from list (daemon requestId). |
+| `urgent` | boolean | no | For `promote` only: interrupt a running turn or blocking command (`interruptSession`) and deliver immediately. |
 
 ### `worker_model`
 
-Change Model: switch your subagent's Droid model the way the owner types `/model` in its terminal (building agents can also switch floor workers they watch with `team_watch`). `team_message` can't run slash commands, so use this instead. Pass the words you would type after `/model`: `Sol` picks GPT Sol on Factory credits, `droidproxy sol` picks DroidProxy's Sol on its subscription, and the same pattern picks any other model (`opus`, `opus 5`, `droidproxy terra`). An exact model id or name from `team_models` works too. Factory's own models win over your own-key (BYOK) ones unless the words name the gateway, whole words win over prefixes, then the shortest name, then Droid's own order (newest first). The response names the model it picked (`model`), any `otherMatches`, and `applied`: `now` for a running session (mid-turn, from its next model call), `next_launch` for an asleep one. The model allowlist and quota checks `team_hire` enforces apply, and the switch is kept when the worker resumes.
+Change Model: switch your subagent's Droid model and reasoning effort via `daemon.update_session_settings` (building agents can also switch floor workers they watch with `team_watch`). `team_message` sends prompts rather than slash commands, so use this instead. Pass fuzzy filter words (`Sol` picks GPT Sol on Factory credits, `droidproxy sol` picks DroidProxy's Sol on its subscription, and the same pattern picks any other model such as `opus`, `opus 5`, `droidproxy terra`), or an exact model id or name from `team_models`. Factory's own models win over your own-key (BYOK) ones unless the words name the gateway, whole words win over prefixes, then the shortest name, then Droid's own order (newest first). The response names the model it picked (`model`), any `otherMatches`, and `applied`: `now` for a running session (mid-turn, from its next model call), `next_launch` for an asleep one. The model allowlist and quota checks `team_hire` enforces apply, and the switch is kept when the worker resumes.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
 | `worker` | string | yes | Your subagent’s name or id, case-insensitive. |
-| `model` | string | yes | What you would type after `/model` in Droid (`Sol`, `droidproxy sol`, `opus 5`), or an exact model id or name from `team_models`. |
+| `model` | string | yes | Fuzzy filter words (`Sol`, `droidproxy sol`, `opus 5`), or an exact model id or name from `team_models`. |
 | `effort` | "low" \| "medium" \| "high" \| "xhigh" \| "max" | no | Reasoning effort from `team_models` to pick with the model; omit to keep Droid's selection for it. |
 | `floor` | string | no | Building agents only: just this open floor, by id, name or checkout path. Omit for all your teams across the building. |
 ### `team_wait`
 
-Wait until one of your subagents reports, asks, gets blocked in its terminal or settles, then return with what happened: typed events with ids, waiting questions and a cursor. Matching news you have not heard (or news after since) returns at once. A terminal question counts when it appears during the wait, and idle when every watched subagent settles during it; questions already waiting are listed without ending the wait. Each call holds at most 90 s on the server so MCP clients do not abort with `-32001` request timeouts around 200–240 s; when nothing matches in that slice it returns `matched: false` (with `capped: true` when `timeoutSec > 90`) and a `cursor` to pass as `since` on the next wait. The cursor moves past news that until leaves out, so reuse it with the same until. Without since, a local lead hears the news it is shown, as with team_status. With a progress token it also reports progress every 15 s.
+Wait until one of your subagents reports, asks, gets blocked on a structured `AskUser` question or settles, then return with what happened: typed events with ids, waiting questions and a cursor. Matching news you have not heard (or news after since) returns at once. An `AskUser` question counts when it appears during the wait, and idle when every watched subagent settles during it; questions already waiting are listed without ending the wait. Each call holds at most 90 s on the server so MCP clients do not abort with `-32001` request timeouts around 200–240 s; when nothing matches in that slice it returns `matched: false` (with `capped: true` when `timeoutSec > 90`) and a `cursor` to pass as `since` on the next wait. The cursor moves past news that until leaves out, so reuse it with the same until. Without since, a local lead hears the news it is shown, as with team_status. With a progress token it also reports progress every 15 s.
 
 Without `since`, an external worker's wait starts from the news as it stands when the call arrives, and it consumes nothing in `office_inbox` or the status cursor.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
-| `until` | "question" \| "report" \| "pr" \| "needs_input" \| "stopped" \| "left" \| "sent_home" \| "done" \| "blocked" \| "idle"[] | no | What to wait for. Event kinds, blocked (needs input in its own terminal), or idle (every watched subagent settles during the wait). Default report, question, pr, blocked, idle. |
+| `until` | "question" \| "report" \| "pr" \| "needs_input" \| "stopped" \| "left" \| "sent_home" \| "done" \| "blocked" \| "idle"[] | no | What to wait for. Event kinds, blocked (waiting on input), or idle (every watched subagent settles during the wait). Default report, question, pr, blocked, idle. |
 | `workers` | string[] | no | Subagent names or ids to watch. Omit for your whole team. |
 | `timeoutSec` | integer | no | Longest wait in seconds, default 30, at most 600 (each call holds at most 90 s and returns `matched: false` + `cursor` to continue). |
 | `since` | string | no | A cursor from an earlier response (cursor field), or one event id: only events after it are considered, whether or not you have heard them. |
@@ -499,7 +500,7 @@ Read one full report or question from your subagents, by its event id (lastRepor
 
 ### `questions_list`
 
-List questions waiting on you from your subagents, like the owner's Asks inbox: team_report questions, and AskUser questions in their own terminals with numbered options. Permission prompts are listed but only the person at that desk can answer them. Answer with question_answer using the id. Reading changes nothing.
+List questions waiting on you from your subagents (and watched workers), like the owner's Needs you queue: `team_report` questions, and structured `AskUser` questionnaires (`WorkerInfo.menu`) with numbered options. Answer with `question_answer` using the id. Reading changes nothing.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -508,7 +509,7 @@ List questions waiting on you from your subagents, like the owner's Asks inbox: 
 
 ### `question_answer`
 
-Answer one question from questions_list by its id: optionId picks a numbered option, optionIds the boxes of a multi-select question, text a typed answer (with optionIds, the typed extra). A team question gets your answer as a message, optionId and text together; a terminal question takes optionId or text, not both, and is answered in the subagent terminal only while it still shows the same question. Permission prompts are refused: only the person at the desk can approve.
+Answer one question from `questions_list` by its id: `optionId` picks a numbered option, `optionIds` the boxes of a multi-select question, `text` a typed answer (with `optionIds`, the typed extra). A `team_report` question gets your answer as a message, `optionId` and `text` together; a structured `AskUser` question sends the response via `sendAskUserResponse` only while `WorkerInfo.menu` still matches the question id.
 
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -538,7 +539,7 @@ The office sends an HTTP `POST` (`Content-Type: application/json`, `Authorizatio
 
 - A subagent finishes or asks via `team_report` (flushed immediately; `progress: true` reports do not wake the lead while a background job is still running).
 - A subagent calls `lead_notify` (available only to subagents of a Grok Bot) for a mid-turn `update`, `question`, `blocker` or `test` ping without ending its turn.
-- Floor hooks or board updates report that a subagent or `team_watch`-followed floor worker entered `needs_input` (including terminal `AskUser` choices and `questionId`, or a desk permission prompt), `pr` (opened, merged or closed pull request), `stopped`, `done` (when not already covered by a report), `left`, or `sent_home` (coalesced across bursts).
+- Daemon notifications or board updates report that a subagent or `team_watch`-followed floor worker entered `needs_input` (structured `AskUser` choices and `questionId`), `pr` (opened, merged or closed pull request), `stopped`, `done` (when not already covered by a report), `left`, or `sent_home` (coalesced across bursts).
 - A message is queued to the bot's inbox, or the owner clicks **Send test** in Settings (`test: true`).
 
 Each payload has `{ source: "droid-office", version: 1, event, test?, deliveryId?, ackIds?, summary, sentAt, lead: { id, name }, items: [...] }`. Durable items carry an `ackId` (`team:<floor>:<seq>` or `msg-...`) that stays in `office_inbox` until acknowledged via `office_inbox({ ack: [ackId] })` (or `office_inbox({ deliveryId, ack: [ackId] })` in overlapping webhook runs), so a failed, retried, or concurrent webhook wake never loses or cross-acknowledges work.

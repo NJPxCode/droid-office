@@ -114,7 +114,6 @@ async function mountThread(t: TestContext, mounted: WorkerInfo = worker, floor?:
           w.actions.push(msg);
           return w.refusal;
         },
-        ...(worker.cloud ? {} : { raw() {} }),
         team: () => w.team ?? [],
         ...(floor ? { floor } : {}),
       });
@@ -336,7 +335,7 @@ test('thread work signal follows worker lifecycle without restarting or announci
     w.thread.update(w.worker, true);
     w.thread.activate(false);
   });
-  assert.equal(await signal.isVisible(), false, 'Raw TTY/inactive pane');
+  assert.equal(await signal.isVisible(), false, 'inactive pane');
   await page.evaluate(() => (window as any).thread.activate(true));
   assert.equal(await signal.isVisible(), true);
   await page.evaluate(() => {

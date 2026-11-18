@@ -1,5 +1,4 @@
-import { CTRL_ENTER, enterKeyAction, type KeyAction, type KeyEventLike } from './csi-enter.js';
-import { CLEAR_DROID_QUEUE } from './droid-queue.js';
+import { enterKeyAction, type KeyAction, type KeyEventLike } from './csi-enter.js';
 
 /**
  * Kitty terminal protocol support shared by the PTY host, server, 3D office, web companion and tests:
@@ -108,7 +107,7 @@ export interface KittyKeyEvent extends KeyEventLike {
 }
 
 export interface KittyEncodeOpts {
-  /** Fallback `Ctrl+Enter` / `Shift+Enter` CSI u for Droid when `flags === 0`. */
+  /** Legacy `Ctrl+Enter` / `Shift+Enter` CSI u fallback when `flags === 0`. */
   csiEnter?: boolean;
   /** DECSET 1 (`DECCKM`) application cursor mode for unmodified arrow/home/end keys. */
   appCursor?: boolean;
@@ -378,31 +377,6 @@ export function encodeKittyKey(e: KittyKeyEvent, flags: number, opts: KittyEncod
   }
 
   return { do: 'default' };
-}
-
-/** Matches `Ctrl+Enter` presses/repeats in both fixed (`\x1b[13;5u`) and extended Kitty CSI u forms, ignoring `:3` keyup. */
-const CTRL_ENTER_CSI_RE = /\x1b\[(?:13|57414)(?::\d+)?;5(?::[12])?(?:;\d+)?u/g;
-
-/** Counts `Ctrl+Enter` submissions in a raw input chunk so `workers.ts` tracks Droid's queued turns accurately. */
-export function countCtrlEnterInputs(data: string): number {
-  if (!data.includes('\x1b[')) return 0;
-  if (data === CTRL_ENTER) return 1;
-  let count = 0;
-  CTRL_ENTER_CSI_RE.lastIndex = 0;
-  while (CTRL_ENTER_CSI_RE.exec(data)) count++;
-  return count;
-}
-
-/** Whether `data` is `Ctrl+X` (legacy `\x18` or Kitty `CSI 120 ; 5 u` press/repeat) that clears Droid's queue. */
-export function isClearQueueInput(data: string): boolean {
-  if (data === CLEAR_DROID_QUEUE) return true;
-  return /^\x1b\[120(?::\d+)?;5(?::[12])?(?:;\d+)?u$/.test(data);
-}
-
-/** Whether `data` is `Escape` or `Ctrl+C` (legacy `\x1b` / `\x03` or Kitty `CSI 27 u` / `CSI 99;5 u` press). */
-export function isCancelInput(data: string): boolean {
-  if (data === '\x1b' || data === '\x03') return true;
-  return /^\x1b\[27(?:;1(?::[12])?)?u$/.test(data) || /^\x1b\[99(?::\d+)?;5(?::[12])?(?:;\d+)?u$/.test(data);
 }
 
 // ---------------------------------------------------------------------------
