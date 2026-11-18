@@ -476,6 +476,8 @@ function defaultSpawnDaemon(droidPath: string, args: string[], env: Record<strin
   }
   try {
     const child = spawn(droidPath, args, {
+      // The daemon loads AGENTS.md and skills from its own folder into every session, so it must not inherit the office's cwd.
+      cwd: path.parse(os.homedir()).root,
       detached: true,
       stdio: fd !== undefined ? ['ignore', fd, fd] : 'ignore',
       env,

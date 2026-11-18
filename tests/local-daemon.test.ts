@@ -1079,3 +1079,31 @@ test('handles early child exit, connect deadline cleanup, concurrent ensureStart
     await assert.rejects(() => concurrent.ensureStarted(), /stopped/);
   }
 });
+
+test('the detached daemon starts at the filesystem root, not the office process cwd', async (t) => {
+  const { dataDir, home } = makeTempWorkspace(t);
+  const bin = path.join(home, 'fake-droid');
+  // Prints where it was started, then idles like a daemon that never accepts a connection.
+  writeFileSync(bin, '#!/bin/sh\npwd -P\nexec sleep 30\n', { mode: 0o755 });
+  const daemon = new LocalDaemon({
+    dataDir,
+    home,
+    apiKey: () => 'fk-cwd',
+    env: () => ({ PATH: '/usr/bin:/bin' }),
+    resolveDroidPath: () => bin,
+    pickPort: async () => 55190,
+    connectTimeoutMs: 600,
+    pollIntervalMs: 50,
+    createClient: () => {
+      const c = new FakeDaemonClient();
+      c.connectFailuresRemaining = 999;
+      return c;
+    },
+  });
+  await assert.rejects(() => daemon.ensureStarted(), /Timed out connecting to droid daemon/);
+  const log = path.join(dataDir, 'droid-daemon.log');
+  const deadline = Date.now() + 5000;
+  while (!(existsSync(log) && readFileSync(log, 'utf8').trim()) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+  assert.equal(readFileSync(log, 'utf8').trim().split('\n')[0], path.parse(os.homedir()).root);
+  assert.notEqual(process.cwd(), path.parse(os.homedir()).root);
+});
