@@ -79,7 +79,7 @@ function sanitizeDaemonCommands(items: readonly DroidSlashCommand[]): DroidSlash
 }
 
 /**
- * The skills and custom commands a worker's droid offers, per folder: a project's own skills and
+ * The skills and custom commands a worker's droid offers, per folder and session: a project's own skills and
  * commands live in it, and a worktree can add or change them. Cached briefly, since they change
  * when the owner edits them, not while a menu is open.
  */
@@ -90,9 +90,10 @@ export function createDroidCommandCatalogue(options: DroidCommandCatalogueOption
   let generation = 0;
   return {
     get(cwd = homedir(), sessionId) {
-      const hit = cached.get(cwd);
+      const key = JSON.stringify([cwd, sessionId]);
+      const hit = cached.get(key);
       if (hit && now() < hit.expiresAt) return Promise.resolve(hit.commands);
-      const running = pending.get(cwd);
+      const running = pending.get(key);
       if (running) return running;
       const started = generation;
       const askCli = () => lister(typeof command === 'function' ? command() : command, cwd);
@@ -101,15 +102,15 @@ export function createDroidCommandCatalogue(options: DroidCommandCatalogueOption
         .then((commands) => {
           if (started === generation) {
             for (const [key, entry] of cached) if (now() >= entry.expiresAt) cached.delete(key);
-            cached.set(cwd, { commands, expiresAt: now() + DROID_COMMANDS_TTL_MS });
+            cached.set(key, { commands, expiresAt: now() + DROID_COMMANDS_TTL_MS });
           }
           return commands;
         })
         .catch(() => [] as DroidSlashCommand[])
         .finally(() => {
-          if (pending.get(cwd) === load) pending.delete(cwd);
+          if (pending.get(key) === load) pending.delete(key);
         });
-      pending.set(cwd, load);
+      pending.set(key, load);
       return load;
     },
     forget() {

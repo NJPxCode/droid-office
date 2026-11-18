@@ -132,7 +132,7 @@ export interface FinderOptions {
   dataDir: string;
   officeUrl: () => string;
   models: () => Promise<{ models: FinderModel[]; defaultModel?: string }>;
-  dispatch: (floor: FloorDef, text: string, model?: string) => { leadId: string; model?: string } | string;
+  dispatch: (floor: FloorDef, text: string, model?: string) => Promise<{ leadId: string; model?: string } | string> | { leadId: string; model?: string } | string;
   changed: () => void;
 }
 
@@ -235,7 +235,7 @@ export class FinderDispatch {
       // Keep paths quoted and separate; no planning or orchestration text is added.
       const text = `${(body.prompt as string).trim()}\n\n${group.paths.map((p) => JSON.stringify(p)).join('\n')}`;
       try {
-        const sent = this.options.dispatch(def, text, model);
+        const sent = await this.options.dispatch(def, text, model);
         if (typeof sent === 'string') {
           result.errors.push({ floorId: def.id, error: sent });
           continue;

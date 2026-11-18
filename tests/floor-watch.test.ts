@@ -11,7 +11,6 @@ import test, { type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { WebSocket } from 'ws';
-import { Answers } from '../src/server/answers.js';
 import { loadConfig } from '../src/server/config.js';
 import { analyzeCheckoutSafety, buildOtherFloorWorkers, formatOtherFloorWorkers, pickUniqueForkName, pickUniqueSeat, pickUniqueWorkerName, readHeadBranch, workerLocation } from '../src/server/floor-watch.js';
 import type { GrokWebhookPayload } from '../src/server/grok-webhook.js';
@@ -25,7 +24,6 @@ import { Team, type TeamWorkers } from '../src/server/team.js';
 import { Visits } from '../src/server/visits.js';
 import { WhiteboardStore } from '../src/server/whiteboard.js';
 import { NAMES } from '../src/server/workers.js';
-import { readMenu } from '../src/shared/asks.js';
 import { DESKS, nextFreeSeat } from '../src/shared/layout.js';
 import { SUBAGENT_DEFAULTS, type ServerMsg, type SubagentSettings, type WorkerInfo } from '../src/shared/protocol.js';
 
@@ -207,8 +205,7 @@ test('team_watch wakes Grok Bot on independent floor worker turns, terminal asks
   const makeFloor = (id: string, name: string, repoDir: string) => {
     const people = new Map<string, WorkerInfo>();
     const tokens = new Map<string, string>();
-    let screenRows: string[] = [];
-    let answeredInput = '';
+    let answeredChoice: number | undefined;
     const get = (wid: string) => people.get(wid) ?? store.identity(wid);
     let teamRef: Team | undefined;
     const removeWorker = async (wid: string) => {
@@ -216,7 +213,7 @@ test('team_watch wakes Grok Bot on independent floor worker turns, terminal asks
       teamRef?.onWorkerGone(wid);
       return {};
     };
-    const workers: RemoteFloor['workers'] & TeamWorkers = {
+    const workers: RemoteFloor['workers'] & TeamWorkers & Pick<OfficeMcpFloor['workers'], 'answerQuestion'> = {
       list: () => [...people.values()],
       get: (wid) => people.get(wid),
       authenticate: (wid, tok) => (tokens.get(wid) === tok ? people.get(wid) : undefined),
@@ -237,12 +234,11 @@ test('team_watch wakes Grok Bot on independent floor worker turns, terminal asks
       resume: () => undefined,
       kill: removeWorker,
       dismiss: removeWorker,
-      tail: () => screenRows.join('\n'),
-      screenLines: () => screenRows,
-      screenMenu: () => readMenu(screenRows),
-      write: (_wid, data) => {
-        answeredInput += data;
-        return true;
+      tail: () => '',
+      answerQuestion: (wid, _menu, reply) => {
+        if (!people.get(wid)?.menu) return 'Question changed.';
+        answeredChoice = reply.choice;
+        return undefined;
       },
       setTask: (wid, task) => {
         const w = people.get(wid);
@@ -276,10 +272,7 @@ test('team_watch wakes Grok Bot on independent floor worker turns, terminal asks
       floor,
       people,
       tokens,
-      setScreen: (rows: string[]) => {
-        screenRows = rows;
-      },
-      getAnswered: () => answeredInput,
+      getAnswered: () => answeredChoice,
     };
   };
 
@@ -326,7 +319,7 @@ test('team_watch wakes Grok Bot on independent floor worker turns, terminal asks
     return f ? { ...f, name: f.def.name } : undefined;
   };
   const hostname = 'office.example.ts.net';
-  const mcpDeps = { answers: new Answers(), owner, remote: office, floor: floorLookup, settings: () => settings };
+  const mcpDeps = { owner, remote: office, floor: floorLookup, settings: () => settings };
   const localMcp = createOfficeMcp(mcpDeps);
   const localUrl = new URL(
     '/office/mcp',
@@ -424,7 +417,6 @@ test('team_watch wakes Grok Bot on independent floor worker turns, terminal asks
   assert.match(watchedRoster.text, /Pixel \(solo-a\) \[watching\]/);
 
   // 5. Independent watched worker asks an AskUser terminal question -> wakes Grok Bot with questionId, answerable via question_answer!
-  survive.setScreen(['Which combat tick rate should we target?', '❯ 1. 60 Hz', '  2. 120 Hz', 'Enter to select · ↑/↓ to navigate · Esc to cancel']);
   now += 1000;
   soloA.status = 'working';
   survive.floor.team.onWorker(soloA);
@@ -432,9 +424,17 @@ test('team_watch wakes Grok Bot on independent floor worker turns, terminal asks
   soloA.status = 'needs_input';
   soloA.waitingSince = now;
   soloA.activity = 'Which combat tick rate should we target?';
+  soloA.menu = {
+    question: soloA.activity,
+    freeText: true,
+    choices: [
+      { number: 1, label: '60 Hz' },
+      { number: 2, label: '120 Hz' },
+    ],
+  };
   soloA.ask = {
     kind: 'question',
-    questions: [{ question: 'Which combat tick rate should we target?', options: ['60 Hz', '120 Hz'] }],
+    questions: [{ question: 'Which combat tick rate should we target?', options: ['60 Hz', '120 Hz'], multiSelect: false }],
   };
   survive.floor.team.onWorker(soloA);
   await waitForWebhookCount(1);
@@ -451,11 +451,12 @@ test('team_watch wakes Grok Bot on independent floor worker turns, terminal asks
 
   const ansRes = await callGrok('question_answer', { questionId: qId, optionId: '2' });
   assert.equal(ansRes.isError, false, ansRes.text);
-  assert.ok(survive.getAnswered().length > 0, 'question_answer writes selection to watched worker terminal');
+  assert.equal(survive.getAnswered(), 2, 'question_answer sends the selected choice to the watched worker');
 
   // 6. Watched worker finishes turn -> wakes Grok Bot with done + summary!
   received.length = 0;
   delete soloA.ask;
+  delete soloA.menu;
   now += 1000;
   soloA.status = 'done';
   soloA.task = { name: 'Combat loop', summary: '60 Hz fixed timestep shipped with tests' };

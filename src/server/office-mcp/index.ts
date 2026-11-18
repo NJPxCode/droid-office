@@ -15,6 +15,7 @@ import {
   WebStandardStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
+import type { AskReply } from '../factory/cloud-ask.js';
 import type { Menu } from '../../shared/asks.js';
 import type { QueuedMessageItem, SubagentSettings, WorkerInfo, WorkerQueueState } from '../../shared/protocol.js';
 import { ORCHESTRATOR_ID } from '../../shared/mission-control.js';
@@ -48,7 +49,7 @@ const PROBE_HEADER = 'x-droid-office-mcp';
 const HOP_HEADERS = ['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding'];
 
 export interface OfficeMcpWorkers extends Pick<WorkerManager, 'authenticate' | 'get' | 'list'>, Partial<Pick<WorkerManager, 'queueState' | 'blockingTool' | 'stagedPicture'>> {
-  answerQuestion?(id: string, reply: { menu?: Menu; choice?: number; choices?: number[]; text?: string }): Promise<{ error?: string } | string | undefined> | { error?: string } | string | undefined;
+  answerQuestion?(id: string, menu: Menu, reply: AskReply): Promise<{ error?: string } | string | undefined> | { error?: string } | string | undefined;
   manageQueue?(
     id: string,
     action: 'promote' | 'delete' | 'clear',
@@ -111,8 +112,6 @@ export interface OfficeMcpDeps {
   deepLinkBase?: () => string | undefined;
   settings(): SubagentSettings;
   floor(workerId: string): OfficeMcpFloor | undefined;
-  /** @deprecated Legacy pre-daemon compatibility slot; unused. */
-  answers?: unknown;
   /** The office's Linear workspace: the linear_* tools are listed only while it's connected. */
   linear?: LinearOffice;
   /** The inter-agent noise gate for lead_notify updates and visit tells (docs/office-mcp.md#inter-agent-noise-gate). */

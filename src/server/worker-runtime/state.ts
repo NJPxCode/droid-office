@@ -1,13 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import type headless from '@xterm/headless';
 import type serialize from '@xterm/addon-serialize';
-import type { WorkerAsk, WorkerInfo, WorkerStatus } from '../../shared/protocol.js';
+import type { WorkerInfo, WorkerStatus } from '../../shared/protocol.js';
 import { stripKittyPlaceholders } from '../../shared/kitty.js';
-import type { ActiveToolCall, DaemonQueuedEntry, SentPendingMessage } from '../worker-queue.js';
+import type { ActiveToolCall, DaemonQueuedEntry } from '../worker-queue.js';
 import type { WorktreeOwnership } from '../worktrees.js';
 import type { WorkerRetryStatus, WorkerToolSpan } from '../worker-status.js';
 import type { Pty } from '../ptys.js';
-import type { DroidScreen } from '../droid-screen.js';
 import type { TodoItem } from '../../shared/todos.js';
 import { CloudStreamMessages } from '../factory/cloud-stream-messages.js';
 import type { CloudAsk } from '../factory/cloud-ask.js';
@@ -33,11 +32,8 @@ export interface Worker {
   snapshot?: () => string;
   screenDirty: boolean;
   lastLines: string[];
-  leftNeedsInputAt: number;
   keyframeAt: number;
   needsKeyframe: boolean;
-  termSeq: number;
-  screenParse?: { term: HeadlessTerminal; seq: number; state: DroidScreen | undefined };
   hookToken: string;
   /** True while this agent's session is live or starting on the local droid-daemon. */
   daemonActive: boolean;
@@ -79,14 +75,7 @@ export interface Worker {
   stopNudged?: boolean;
   /** Saved daemon session state across a graceful Office restart (`keep = true`). */
   savedDaemon?: { status: WorkerStatus; acked: boolean; waitingSince?: number; outbox?: string[] };
-  /** Droid never reported SessionStart: it's stuck on a login or hooks screen. */
-  bootBlocked?: boolean;
-  /** The first message for this run of its droid, typed in once droid can take it (see launch), and when the run started. */
-  launchPrompt?: { text: string; at: number };
-  /**
-   * Sessions of the subagents its droid started with the Task tool. Their hooks come with this
-   * worker's token but their own session id, and their SessionStart and Stop are theirs, not its.
-   */
+  /** Child sessions reported by the daemon; their events do not update the parent turn. */
   subSessions: Set<string>;
   /** The latest tool each session started (PreToolUse), and its input, to know which call a permission prompt is about. */
   lastTool: Map<string, { tool: string; input: unknown }>;
@@ -102,33 +91,20 @@ export interface Worker {
   /** When its last hook came in, and its terminal last printed something (see reconcile). */
   hookAt: number;
   outputAt: number;
-  /** When its own session's Stop came, with no hook since: a finish waiting out STOP_GRACE_MS. */
-  stopAt?: number;
-  /** The version of the hook command its droid runs (see HOOK_VERSION), as its last hook said. */
-  hookVersion: number;
   /** Its session's conversation file, as its hooks name it (transcript_path). */
   transcript?: string;
   /** Office notices for its next tool call or Stop (see notice). */
   outbox: string[];
-  /** When the owner (or a visit) last pressed Escape or Ctrl+C in its terminal: a Stop right after is a cancel, never blocked. */
+  /** When the owner or a visit last requested a daemon interrupt. */
   cancelAt?: number;
-  /** Notices left in its outbox when it came to rest wait for the owner to stop typing (see flushOutbox). */
-  outboxTimer?: NodeJS.Timeout;
-  /** Messages queued with Ctrl+Enter during this turn: each runs after the turn's Stop, as a turn with no UserPromptSubmit. */
-  queued: number;
-  /** Full texts of messages queued with Ctrl+Enter through the office during this turn. */
-  sentQueue: SentPendingMessage[];
-  sentQueueSeq: number;
   /** Bracketed-paste prompts whose 120ms submit keystroke has not fired yet. */
-  inFlight: Set<{ timer: NodeJS.Timeout; text: string; submit: string; queued: boolean }>;
-  /** What its screen has shown since when (see droid-screen.ts). */
-  screenSeen?: { state: DroidScreen; since: number };
+  inFlight: Set<{ timer: NodeJS.Timeout }>;
   /** Test runs and builds that have failed in a row (see FAILS_TO_DESPAIR). */
   failStreak: number;
   /** Bumped by /clear: a new conversation, so a new task. */
   taskEpoch: number;
   /** Its terminal in the host as of the last save, and how it was doing, to pick back up after a restart. */
-  saved?: { ptyId: string; status: WorkerStatus; acked: boolean; waitingSince?: number; ask?: WorkerAsk; launchPrompt?: { text: string; at: number }; outbox?: string[] };
+  saved?: { ptyId: string; status: WorkerStatus; acked: boolean; waitingSince?: number };
   /** Its process went away mid-turn with the office or the terminal host: its next start carries on (CARRY_ON_PROMPT). */
   interrupted?: boolean;
   /** Output since its scrollback was last saved to disk. */
@@ -143,18 +119,15 @@ export interface Worker {
   setupPlan?: string;
   /** Its terminal is running that plan; when it finished, so the agent gets its own time to start after it. */
   settingUp?: boolean;
-  setupDoneAt?: number;
-  /** Until SessionStart gives the twin its own id, restarts must fork, never resume the source. */
+  /** Until the daemon gives the fork its own id, restarts must fork, never resume the source. */
   pendingFork?: { sessionId: string; prompt?: string };
-  /** The rewind the office is driving in this terminal (worker.rewind). */
+  /** The rewind the office is running on this session (worker.rewind). */
   rewind?: { entryId: string; since: number };
-  /** A completed rewind whose asynchronous SessionStart hook has not arrived yet. */
-  rewindFork?: { from: string; until: number };
 }
 
-/** Cut off if it stopped now. A turn that already sent its Stop has finished, even before its screen confirms it. */
-export function midTurn({ info, bootBlocked, stopAt }: Pick<Worker, 'info' | 'bootBlocked' | 'stopAt'>): boolean {
-  return info.kind === 'agent' && stopAt === undefined && (info.status === 'working' || (info.status === 'needs_input' && !bootBlocked));
+/** Whether startup should recover a turn after a lost daemon session. */
+export function midTurn({ info }: Pick<Worker, 'info'>): boolean {
+  return info.kind === 'agent' && (info.status === 'working' || info.status === 'needs_input');
 }
 
 /** The rows a terminal shows now, its scrollback left out. */
@@ -170,10 +143,8 @@ export function newWorker(info: WorkerInfo, hookToken = randomBytes(16).toString
     info,
     screenDirty: true,
     lastLines: [],
-    leftNeedsInputAt: 0,
     keyframeAt: 0,
     needsKeyframe: false,
-    termSeq: 0,
     hookToken,
     daemonActive: false,
     daemonLaunching: false,
@@ -193,11 +164,7 @@ export function newWorker(info: WorkerInfo, hookToken = randomBytes(16).toString
     activeTool: new Map(),
     hookAt: 0,
     outputAt: 0,
-    hookVersion: 0,
     outbox: [],
-    queued: 0,
-    sentQueue: [],
-    sentQueueSeq: 0,
     inFlight: new Set(),
   };
 }

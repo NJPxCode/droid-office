@@ -912,7 +912,6 @@ type ClientMessage =
   /** Changes the session's reasoning effort (an effort id) or model (a model id, with an optional effort) through Droid's Tab key and /model picker. */
   | { t: 'worker.setting'; workerId: string; setting: 'effort' | 'model'; value: string; effort?: string }
   /** Closes Droid's side chat (/btw) when the terminal shows it. */
-  | { t: 'worker.side'; workerId: string; close: true }
   | { t: 'term.resize'; workerId: string; cols: number; rows: number }
   /** Open the boss monitor's shell (see OFFICE_SHELL_ID). It is not a worker. */
   | { t: 'shell.attach' }
@@ -1148,7 +1147,7 @@ export type ServerMsg =
       workerLabels?: WorkerLabelState;
       /** Confirmed worker.answer supports a complete checkbox selection and optional custom text. */
       workerAnswerMultiSelect?: boolean;
-      /** The office drives worker.rewind, worker.queue, worker.setting and worker.side in a worker's terminal. An older one leaves them unanswered. */
+      /** The office supports structured worker.rewind, worker.queue and worker.setting actions. An older office leaves them unanswered. */
       threadActions?: boolean;
       /** The office's prompts, and the worker a new one starts on when nobody picks. */
       prompts: PromptsState;

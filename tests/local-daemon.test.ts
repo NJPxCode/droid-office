@@ -971,6 +971,21 @@ test('real @factory/droid-sdk createWebSocketDaemonClient wire round-trip over l
   assert.equal('oauth' in wireMcp, false);
 });
 
+test('a failed spawn without a PID rejects instead of leaking an unhandled child error', async (t) => {
+  const { dataDir, home } = makeTempWorkspace(t);
+  const missing = path.join(home, 'missing-droid');
+  const daemon = new LocalDaemon({
+    dataDir,
+    home,
+    apiKey: () => 'fk-missing-binary',
+    env: () => ({ PATH: '/usr/bin' }),
+    resolveDroidPath: () => missing,
+    pickPort: async () => 55101,
+  });
+  await assert.rejects(daemon.ensureStarted(), /Failed to spawn detached droid daemon/);
+  assert.equal(existsSync(path.join(dataDir, 'droid-daemon.json')), false);
+});
+
 test('handles early child exit, connect deadline cleanup, concurrent ensureStarted deduplication under random delays, and remaining session RPCs', async (t) => {
   const { dataDir, home } = makeTempWorkspace(t);
 

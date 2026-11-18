@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { AskedQuestion, TeamBadge, TeamEmblem, WorkerAsk, WorkerInfo, WorkerRepo, WorkerStatus, WorkerTask } from '../../shared/protocol.js';
+import type { TeamBadge, TeamEmblem, WorkerInfo, WorkerRepo, WorkerStatus, WorkerTask } from '../../shared/protocol.js';
 import { isAgentEffort } from '../../shared/protocol.js';
 import { TEAM_EMBLEMS, settleTeams } from '../../shared/team.js';
 import { DESK_BY_ID } from '../../shared/layout.js';
@@ -41,7 +41,7 @@ export class WorkerStateStore {
     if (state.closing && !state.onShutdown) return;
     const saved = [...workers]
       .filter((w) => !w.info.remote)
-      .map(({ info, hookToken, pty, daemonActive, bootBlocked, stopAt, interrupted, worktreeOwnership, launchPrompt, pendingFork, outbox }) => ({
+      .map(({ info, hookToken, pty, daemonActive, interrupted, worktreeOwnership, pendingFork, outbox }) => ({
         id: info.id,
         kind: info.kind,
         model: info.model,
@@ -71,13 +71,11 @@ export class WorkerStateStore {
         // A session still running in droid-daemon or the PTY host keeps its Office MCP bearer token across restarts.
         hookToken,
         // A shell still running in the PTY host, to pick back up after a restart.
-        pty: pty?.id
-          ? { id: pty.id, status: info.status, acked: info.acked, waitingSince: info.waitingSince, ...(info.status === 'needs_input' && info.ask ? { ask: info.ask } : {}), launchPrompt, ...(outbox.length ? { outbox } : {}) }
-          : undefined,
+        pty: pty?.id ? { id: pty.id, status: info.status, acked: info.acked, waitingSince: info.waitingSince } : undefined,
         // A daemon agent session kept running across a graceful restart (`keep = true`).
         daemon: !state.stopping && daemonActive && info.kind === 'agent' ? { status: info.status, acked: info.acked, waitingSince: info.waitingSince, ...(outbox.length ? { outbox } : {}) } : undefined,
         // In the middle of something: if its daemon or terminal doesn't make it through a restart, it carries on after.
-        midTurn: !state.stopping && (!!interrupted || midTurn({ info, bootBlocked, stopAt })),
+        midTurn: !state.stopping && (!!interrupted || midTurn({ info })),
       }));
     try {
       writeFileSync(this.statePath, JSON.stringify([...saved, ...this.retired], null, 2), { mode: 0o600 });
@@ -143,15 +141,11 @@ export class WorkerStateStore {
         w.screenDirty = false;
         if (shell && typeof s.pty?.id === 'string') {
           const status: WorkerStatus = RUNNING.has(s.pty.status) ? s.pty.status : 'idle';
-          const launch = s.pty.launchPrompt;
           w.saved = {
             ptyId: s.pty.id,
             status,
             acked: s.pty.acked !== false,
             waitingSince: typeof s.pty.waitingSince === 'number' ? s.pty.waitingSince : undefined,
-            ask: status === 'needs_input' ? validAsk(s.pty.ask) : undefined,
-            launchPrompt: typeof launch?.text === 'string' && launch.text && typeof launch.at === 'number' ? { text: launch.text, at: launch.at } : undefined,
-            outbox: Array.isArray(s.pty.outbox) ? s.pty.outbox.filter((n: unknown): n is string => typeof n === 'string' && !!n) : undefined,
           };
         } else if (!shell && (s.daemon || s.pty)) {
           const d = s.daemon ?? s.pty;
@@ -203,23 +197,6 @@ function validTeam(t: unknown): TeamBadge | undefined {
   if (!v || typeof v.id !== 'string' || !v.id || (v.role !== 'lead' && v.role !== 'member') || typeof v.leadName !== 'string') return undefined;
   if (typeof v.accent !== 'string' || !/^#[0-9a-f]{6}$/i.test(v.accent) || !TEAM_EMBLEMS.includes(v.emblem as TeamEmblem)) return undefined;
   return { id: v.id, role: v.role, accent: v.accent, emblem: v.emblem as TeamEmblem, leadName: v.leadName.slice(0, 80) };
-}
-
-function validAsk(a: unknown): WorkerAsk | undefined {
-  const v = a as Record<string, unknown> | null | undefined;
-  if (!v || typeof v !== 'object') return undefined;
-  const sub = v.sub === true ? { sub: true as const } : {};
-  if (v.kind === 'question' && Array.isArray(v.questions)) {
-    const questions = v.questions.flatMap((q: Partial<AskedQuestion> | null) =>
-      q && typeof q.question === 'string' && Array.isArray(q.options) && q.options.every((o) => typeof o === 'string') && typeof q.multiSelect === 'boolean'
-        ? [{ question: q.question, ...(typeof q.topic === 'string' ? { topic: q.topic } : {}), options: [...q.options], multiSelect: q.multiSelect }]
-        : [],
-    );
-    return questions.length ? { kind: 'question', questions, ...sub } : undefined;
-  }
-  if (v.kind !== 'permission' || typeof v.tool !== 'string') return undefined;
-  const text = (key: 'command' | 'file' | 'risk' | 'summary') => (typeof v[key] === 'string' ? { [key]: v[key] as string } : {});
-  return { kind: 'permission', tool: v.tool, ...text('command'), ...text('file'), ...text('risk'), ...text('summary'), ...sub };
 }
 
 function validTask(t: unknown): WorkerTask | undefined {

@@ -1,21 +1,7 @@
 import { stat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { WorkerAsk, WorkerStatus } from '../shared/protocol.js';
-import {
-  effortId,
-  effortName,
-  liveStatus,
-  modelOnScreen,
-  readLiveScreen,
-  readScreenStream,
-  readScreenToolOutput,
-  sameCommand,
-  textSignature,
-  type ThreadLive,
-  type ThreadLiveTool,
-  type ThreadLiveWorking,
-  type ThreadSessionSettings,
-} from '../shared/thread-live.js';
+import { liveStatus, textSignature, type ThreadLive, type ThreadLiveTool, type ThreadLiveWorking, type ThreadSessionSettings } from '../shared/thread-live.js';
 import type { ThreadEntry } from '../shared/worker-thread.js';
 import type { ActiveToolCall } from './worker-queue.js';
 
@@ -42,7 +28,7 @@ export interface ThreadLiveInputs {
   status: WorkerStatus;
   /** When its current working stretch started. */
   workingSince?: number;
-  /** Its activity line: compaction says so (hooks' COMPACTING). */
+  /** Its activity line: compaction can set it. */
   activity?: string;
   ask?: WorkerAsk;
   /** The session raising its needs_input, and the tool it asks about. */
@@ -51,12 +37,8 @@ export interface ThreadLiveInputs {
   activeTool: ReadonlyMap<string, ActiveToolCall>;
   /** Live session state pushed directly by droid-daemon notifications. */
   daemon?: DaemonLiveInput;
-  /** Its terminal's rows now (legacy fallback when daemon state is absent). */
-  screen?: readonly string[];
   /** The office's name for a model id. */
   modelName?(id: string): string | undefined;
-  /** The model id the office knows by this name. */
-  modelId?(name: string): string | undefined;
   /** A rewind the office is driving on this session. */
   rewind?: { entryId: string; since: number };
 }
@@ -69,7 +51,6 @@ const COMPACTING = /compacting/i;
 
 const str = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
 const object = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
-const leaf = (name = '') => name.split(/[.:/]/).at(-1)?.toLowerCase() ?? '';
 
 /** A session's `<id>.settings.json`, as Droid 1.12 writes it beside the conversation file. */
 export function readSessionSettings(raw: unknown): ThreadSessionSettings {
@@ -129,7 +110,6 @@ export class ThreadLiveTracker {
       this.workers.set(workerId, state);
     }
     const daemon = inputs.daemon;
-    const screen = !daemon && inputs.screen ? readLiveScreen(inputs.screen) : undefined;
     const busy = !inputs.rewind && (inputs.status === 'working' || inputs.status === 'starting' || inputs.status === 'needs_input');
     const waitingFor = busy ? this.waiting(inputs) : undefined;
     let working: ThreadLiveWorking = 'idle';
@@ -137,7 +117,6 @@ export class ThreadLiveTracker {
     else if (waitingFor) working = 'waiting_for_tool_confirmation';
     else if (busy && inputs.activity && COMPACTING.test(inputs.activity)) working = 'compacting_conversation';
     else if (busy && daemon) working = daemon.working !== 'idle' ? daemon.working : inputs.activeTool.size || daemon.tools?.length ? 'executing_tool' : 'thinking';
-    else if (busy && screen?.working) working = screen.working;
     else if (busy && inputs.activeTool.size) working = 'executing_tool';
     else if (busy) working = 'thinking';
     if (working !== state.working) {
@@ -145,7 +124,7 @@ export class ThreadLiveTracker {
       state.phaseSince = now;
     }
 
-    const tools = busy ? (daemon ? this.daemonTools(daemon, entries) : this.tools(inputs, entries, screen?.transcript)) : [];
+    const tools = busy ? (daemon ? this.daemonTools(daemon, entries) : this.tools(inputs, entries)) : [];
     let waiting: ThreadLive['waiting'];
     if (waitingFor) {
       const tool = [...entries].reverse().find((e) => e.kind === 'tool' && e.resultSeq === undefined && (!waitingFor.tool || e.name === waitingFor.tool));
@@ -162,36 +141,18 @@ export class ThreadLiveTracker {
         if (state.stream?.key !== key) state.stream = { key, since: ds.since || now };
         stream = { kind: ds.kind, text: ds.text, since: state.stream.since };
       }
-    } else if (busy && screen && !screen.side && (working === 'thinking' || working === 'streaming_assistant_message')) {
-      const shown = readScreenStream(screen.transcript);
-      if (shown && !landed(shown.text, entries)) {
-        const key = `${shown.kind}:${textSignature(shown.text).slice(0, 40)}`;
-        if (state.stream?.key !== key) state.stream = { key, since: now };
-        stream = { ...shown, since: state.stream.since };
-      }
     }
     if (!stream) state.stream = undefined;
 
     const filedSettings = daemon?.settings ? undefined : await this.settings(state, file, now);
     const baseSettings = daemon?.settings ?? filedSettings;
-    const shown = screen?.model ? modelOnScreen(screen.model) : undefined;
-    const merged: ThreadSessionSettings | undefined = baseSettings || shown ? { ...baseSettings } : undefined;
-    if (merged && shown) {
-      // Droid rewrites the settings file a while after /model or Tab; its mode line shows the change at once.
-      const filed = merged.model ? inputs.modelName?.(merged.model) : undefined;
-      if (!merged.model || (filed !== undefined && filed !== shown.name)) {
-        const id = inputs.modelId?.(shown.name);
-        if (id) merged.model = id;
-      }
-      const effort = shown.effort ? effortId(shown.effort) : undefined;
-      if (effort && effortName(merged.reasoningEffort ?? '') !== shown.effort) merged.reasoningEffort = effort;
-    }
+    const merged = baseSettings ? { ...baseSettings } : undefined;
     if (merged) {
       const name = merged.model ? inputs.modelName?.(merged.model) : undefined;
-      if (name ?? merged.modelName ?? shown?.name) merged.modelName = name ?? merged.modelName ?? shown?.name;
+      if (name ?? merged.modelName) merged.modelName = name ?? merged.modelName;
     }
 
-    const liveLabel = inputs.rewind ? 'Rewinding conversation...' : working !== 'idle' ? (daemon?.label ?? screen?.label) : undefined;
+    const liveLabel = inputs.rewind ? 'Rewinding conversation...' : working !== 'idle' ? daemon?.label : undefined;
     const body: Omit<ThreadLive, 'rev' | 'at'> = {
       status: inputs.rewind ? 'idle' : liveStatus(working, !!waitingFor),
       working,
@@ -204,7 +165,6 @@ export class ThreadLiveTracker {
       tools,
       ...(waiting ? { waiting } : {}),
       ...(merged ? { settings: merged } : {}),
-      ...(screen?.side ? { side: screen.side } : {}),
     };
     const digest = JSON.stringify(body);
     const changed = digest !== state.digest;
@@ -275,7 +235,7 @@ export class ThreadLiveTracker {
   }
 
   /** The turn's calls still without a result, and the subagents' running ones. */
-  private tools(inputs: ThreadLiveInputs, entries: readonly ThreadEntry[], transcript?: readonly string[]): ThreadLiveTool[] {
+  private tools(inputs: ThreadLiveInputs, entries: readonly ThreadEntry[]): ThreadLiveTool[] {
     let start = entries.length;
     while (start > 0 && !(entries[start - 1].role === 'user' && entries[start - 1].kind === 'text')) start--;
     const open = entries.slice(start).filter((e) => e.kind === 'tool' && e.resultSeq === undefined);
@@ -291,17 +251,6 @@ export class ThreadLiveTracker {
     for (const [session, call] of inputs.activeTool) {
       if (claimed.has(call) || session === own) continue;
       out.push({ name: call.tool, startedAt: call.startedAt, phase: 'running', session });
-    }
-    if (transcript) {
-      for (const tool of out) {
-        if (tool.session || (leaf(tool.name) !== 'execute' && leaf(tool.name) !== 'bash')) continue;
-        const entry = open.find((e) => e.id === tool.id);
-        const command = str(object(safeJson(entry?.input)).command);
-        const shown = readScreenToolOutput(transcript, tool.name, command ? (args) => sameCommand(args, command) : undefined);
-        if (!shown) continue;
-        tool.output = shown.output.split('\n').slice(-OUTPUT_LINES).join('\n');
-        if (shown.more !== undefined) tool.more = shown.more;
-      }
     }
     return out;
   }
@@ -325,16 +274,7 @@ export class ThreadLiveTracker {
   }
 }
 
-function safeJson(text: string | undefined): unknown {
-  if (!text) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
-
-/** Whether a message read off the screen is already in the conversation file. */
+/** Whether a message from the daemon stream is already in the conversation file. */
 function landed(text: string, entries: readonly ThreadEntry[]): boolean {
   const shown = textSignature(text);
   if (!shown) return true;

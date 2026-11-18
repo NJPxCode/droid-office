@@ -10,7 +10,7 @@ The Mac app bundles a FinderSync extension and a native Keychain bridge. Finder 
 - Group non-git targets on Home. Limit selections to 100 targets and five groups.
 - Keep normal worker and worktree ownership. Finder creates or reuses an ordinary desk worker with no special brief, branch convention or worktree lifecycle. Like any root worker, it can hire subagents using the [Office MCP](office-mcp.md).
 - Submit the user's task followed by quoted canonical paths to a free desk, reusing the ordinary worker Finder last hired when it is still there. It keeps its conversation. Busy workers and unanswered `AskUser` questions reject dispatch visibly.
-- Apply a chosen model when a ready lead resumes, preserving the conversation. Remember only successful explicit Finder model choices per floor in the office's `finder.json`.
+- Apply the chosen model before sending a task to a ready lead, preserving the conversation. If a live session rejects the change, do not send the task. Remember only successful explicit Finder model choices per floor in the office's `finder.json`.
 
 Opening the resolve preview can register a floor. Cancelling the task does not remove that persistent floor.
 

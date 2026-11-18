@@ -312,7 +312,7 @@ test('mounted limits rechecks throttle failures and coalesce, and Airgap resets/
 
 test('Orchestrator inspection rechecks hosted settled 402/rate-limit failures as well as active retries', async () => {
   const worker = { id: ORCHESTRATOR_ID, kind: 'agent', name: 'Orchestrator', model: 'auto', status: 'done', deskId: '', createdAt: 1 } as WorkerInfo;
-  let screenRows = ['Usage is exhausted for the model request.'];
+  let retry = { retrying: false, detail: 'Usage is exhausted for the model request.' };
   let currentTool: unknown;
   let rechecks = 0;
   const factory = emptyFactoryState();
@@ -320,7 +320,7 @@ test('Orchestrator inspection rechecks hosted settled 402/rate-limit failures as
   factory.limits = limitsOf(capture(), Date.now());
   const owner = createOwnerOffice({
     floors: new Map(),
-    orchestrator: { workers: { get: () => worker, runtime: () => ({ screenRows, currentTool }) } },
+    orchestrator: { workers: { get: () => worker, runtime: () => ({ retry, currentTool }) } },
     factory: {
       state: () => factory,
       recheckLimits: async () => {
@@ -335,10 +335,10 @@ test('Orchestrator inspection rechecks hosted settled 402/rate-limit failures as
     await owner.inspect!(ORCHESTRATOR_ID);
   }
   assert.equal(rechecks, 3);
-  screenRows = ['The model provider rate limited the request.'];
+  retry = { retrying: false, detail: 'The model provider rate limited the request.' };
   await owner.inspect!(ORCHESTRATOR_ID);
   assert.equal(rechecks, 4);
-  screenRows = ['Retrying the model request (attempt 2/5)...'];
+  retry = { retrying: true, detail: 'Retrying the model request (attempt 2/5)...' };
   await owner.inspect!(ORCHESTRATOR_ID);
   assert.equal(rechecks, 5);
   currentTool = { name: 'Execute' };

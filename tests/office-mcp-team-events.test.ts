@@ -78,8 +78,8 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
       const w = people.get(id);
       if (w) w.task = task;
     },
-    answerQuestion: async (id, reply) => {
-      answered.push({ id, reply });
+    answerQuestion: async (id, menu, reply) => {
+      answered.push({ id, reply: { menu, ...reply } });
       if (answerGate) await answerGate;
       return {};
     },

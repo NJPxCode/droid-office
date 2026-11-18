@@ -1,9 +1,8 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync, writeFileSync, readdirSync, rmdirSync, rmSync, unlinkSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import headless from '@xterm/headless';
 import serialize from '@xterm/addon-serialize';
 import unicode11 from '@xterm/addon-unicode11';
@@ -15,7 +14,6 @@ import {
   type QueuedMessageItem,
   type TeamBadge,
   type TerminalHit,
-  type WorkerAsk,
   type WorkerInfo,
   type WorkerKind,
   type WorkerRepo,
@@ -28,13 +26,8 @@ import type { ToolRefresh } from './hook-refresh.js';
 import { leadBadge, memberBadge } from '../shared/team.js';
 import { OFFICE_SHELL_ID } from '../shared/office-shell.js';
 import { withImages } from '../shared/drops.js';
-import { readDroidQueue } from '../shared/droid-queue.js';
 import { buildDaemonQueueState, detectBlockingTool, type BlockingToolState, type WorkerQueueState } from './worker-queue.js';
 import type { ThreadLiveInputs } from './thread-live.js';
-import type { RewindDriveResult, RewindDriveTarget, RewindRestore } from './worker-rewind.js';
-import type { DroidSetting } from './worker-settings.js';
-import { readLiveScreen } from '../shared/thread-live.js';
-import { countCtrlEnterInputs, isCancelInput, isClearQueueInput } from '../shared/kitty.js';
 import { WORKSPACE_FILES, WORKTREES_DIR, Worktrees, describeWork, workspaceOf, type WorktreeCleanup, type WorktreeRef, type WorktreeStart, type WorktreeState } from './worktrees.js';
 import { checkoutDirty, choosePullBase, pushBranch } from './open-pull.js';
 import { normalizeRepo } from '../shared/floors.js';
@@ -57,8 +50,6 @@ import { ScrollbackStore, plainTail, searchTerminal, terminalTail } from './hist
 import { DropStore, type SharedDropImages } from './drops.js';
 import { screenSnapshot, setTerminalResponder } from './screen.js';
 import { snapshotScreen, type ScreenFrame } from './screen-frame.js';
-import { readScreenMenu } from '../shared/asks.js';
-import { SCREEN_SETTLE_MS, readDroidScreen, screenStatus, type DroidScreen } from './droid-screen.js';
 import type { Capacity } from './machine.js';
 import { runWorktreeSetup, setupStep, writePlan, writeSetupScript, type SetupStep } from './worktree-setup.js';
 import type { BuildingAgents } from './building-agent.js';
@@ -68,15 +59,13 @@ import { askAnswer, askMenu, askedQuestions, type AskReply, type CloudAsk } from
 import { CloudStreamMessages } from './factory/cloud-stream-messages.js';
 
 import { newWorker, midTurn, screenRows, type Worker } from './worker-runtime/state.js';
-import { WorkerDelivery } from './worker-runtime/delivery.js';
-import { applyDaemonNotification, applyDaemonSettings, applyDaemonSnapshot, searchDaemonWorker, syncWorkerQueueInfo, tailDaemonWorker, WorkerHooks, STOP_GRACE_MS } from './worker-runtime/hooks.js';
-import { WorkerHookSpool, HOOK_VERSION, SPOOL_MAX_BYTES, safeEq } from './worker-runtime/hook-transport.js';
+import { applyDaemonNotification, applyDaemonSettings, applyDaemonSnapshot, searchDaemonWorker, syncWorkerQueueInfo, tailDaemonWorker } from './worker-runtime/hooks.js';
 import { WorkerLaunchSettings } from './worker-runtime/launch-settings.js';
 import { childEnv, runAsNode, defaultShell, setupLine, setupFailedNote, resolveAgent, WIN, shellRun } from './worker-runtime/process.js';
 import { WorkerStateStore } from './worker-runtime/persistence.js';
 import { truncate } from './worker-runtime/activity.js';
 
-export { STOP_GRACE_MS, HOOK_VERSION, SPOOL_MAX_BYTES, childEnv, runAsNode, defaultShell, setupLine, setupFailedNote, resolveAgent };
+export { childEnv, runAsNode, defaultShell, setupLine, setupFailedNote, resolveAgent };
 
 type HeadlessTerminal = InstanceType<typeof headless.Terminal>;
 type Worktree = NonNullable<WorkerInfo['worktree']>;
@@ -133,17 +122,6 @@ const RELATED_START = '<!-- agent-office:related -->';
 const RELATED_END = '<!-- /agent-office:related -->';
 /** How often every worker's folder is checked for having been deleted. */
 const WATCH_MS = 10_000;
-/** How often each agent's screen is checked against its status (see reconcile). */
-const SCREEN_CHECK_MS = 1000;
-/**
- * How long a launch prompt waits for SessionStart before the input box on its screen is enough to
- * type it in: well past a normal start, so it only matters when the hooks can't reach the office.
- */
-const LAUNCH_PROMPT_FALLBACK_MS = 15_000;
-/** How long a new terminal waits for SessionStart (after its worktree setup, if any) before it looks stuck on a login. */
-const BOOT_BLOCKED_MS = 12_000;
-/** A worker's activity while its terminal looks stuck before SessionStart, with no menu on its screen to answer. */
-const BOOT_BLOCKED = 'Waiting on Droid setup or hooks — open the terminal';
 /** The most of a failed worktree setup's output its worker is told. */
 const SETUP_OUTPUT_MAX = 3000;
 /** How often a terminal with new output is saved to disk, so even a crash loses at most this much. */
@@ -156,6 +134,16 @@ const RESTORED_NOTE = '\x1b[2m──── the office restarted · earlier outpu
  * by itself instead of waiting at every desk for someone to type "continue".
  */
 export const CARRY_ON_PROMPT = 'Droid Office notice: restart recovery\nYour turn was interrupted by an office restart. Continue your existing task. If waiting on an answer or permission, ask again.';
+
+type RewindRestore = 'files' | 'conversation' | { files: readonly string[] };
+type RewindResult = { ok: boolean; error?: string; note?: string; sessionId?: string };
+export type DroidSetting = { setting: 'effort'; value: string } | { setting: 'model'; id?: string; name: string; effort?: string };
+
+function sameToken(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
 
 export interface HookEnv {
   url: string;
@@ -245,7 +233,6 @@ export class WorkerManager {
   /** The system prompt its agents start with, in place of worker.system (the Orchestrator's brief). */
   systemPrompt?: (info: WorkerInfo) => string | undefined;
   /** Tools its agents' droid calls without Droid's permission prompt, by a PreToolUse matcher, and why. */
-  allowTools?: { matcher: string; reason: string };
   /** A worker that stays asleep when the floor wakes everyone (the Orchestrator while it is off). */
   asleep?: (info: WorkerInfo) => boolean;
   /** Whether the authenticated Office MCP HTTP server is exposed to local Droid sessions on this floor. */
@@ -263,7 +250,6 @@ export class WorkerManager {
   /** Closing for good (Ctrl+C), not restarting: whatever the workers were doing is stopped on purpose. */
   private stopping = false;
   private watchTimer: NodeJS.Timeout;
-  private statusTimer: NodeJS.Timeout;
   /** Runs shell terminals outside the office, so they outlive a restart of it (see ptys.ts). */
   private host: PtyHost;
   /** Shared or manager-owned local droid-daemon client for all `kind === 'agent'` workers. */
@@ -286,9 +272,6 @@ export class WorkerManager {
   private scrollback: ScrollbackStore;
   private drops: DropStore;
   private saveTimer: NodeJS.Timeout;
-  private delivery: WorkerDelivery;
-  private hooks: WorkerHooks;
-  private spool: WorkerHookSpool;
   private settings: WorkerLaunchSettings;
 
   constructor(
@@ -326,8 +309,6 @@ export class WorkerManager {
       heldDesk: (id) => !!this.holds?.desk(id),
     });
     this.settings = new WorkerLaunchSettings(dataDir, {
-      denyTask: () => this.denyTask?.() ?? true,
-      allowTools: () => this.allowTools,
       systemPrompt: () => this.systemPrompt,
       visitsOn: () => this.visitsOn?.() ?? false,
       plain,
@@ -353,35 +334,6 @@ export class WorkerManager {
     this.host = new PtyHost(dataDir, () => this.events.toast("The shells' terminal host stopped — restarting them", 'warn'));
     this.scrollback = new ScrollbackStore(dataDir);
     this.drops = new DropStore(dataDir);
-    this.delivery = new WorkerDelivery({
-      get: (id) => this.workers.get(id),
-      closing: () => this.closing,
-      persist: () => this.persist(),
-      update: (w) => this.emitUpdate(w),
-      notePrompt: (w, text) => this.notePrompt(w, text),
-      resume: (id, text) => this.resume(id, text),
-      drops: this.drops,
-    });
-    this.hooks = new WorkerHooks({
-      get: (id) => this.workers.get(id),
-      closing: () => this.closing,
-      persist: () => this.persist(),
-      update: (w) => this.emitUpdate(w),
-      setStatus: (w, status) => this.setStatus(w, status),
-      setup: (w, report) => this.setupHook(w, report),
-      refreshModel: (w) => this.refreshDroidModel(w),
-      syncBranch: (w) => this.syncBranch(w),
-      tool: (id, refresh) => this.events.tool?.(id, refresh),
-      notePrompt: (w, text) => this.notePrompt(w, text),
-      beforeStop: (info) => this.beforeStop?.(info),
-      nextTurn: (info) => this.nextTurn?.(info),
-      delivery: this.delivery,
-    });
-    this.spool = new WorkerHookSpool(dataDir, {
-      get: (id) => this.workers.get(id),
-      workers: () => this.workers.values(),
-      accept: (w, event, payload, from) => this.hooks.accept(w, event, payload, from),
-    });
     this.state.restore(this.workers);
     const shellIds = new Set([...this.workers.values()].filter((w) => w.info.kind === 'shell').map((w) => w.info.id));
     this.scrollback.prune(shellIds);
@@ -392,7 +344,6 @@ export class WorkerManager {
     this.watchTimer = setInterval(() => {
       for (const w of this.workers.values()) this.watchFolder(w);
     }, WATCH_MS);
-    this.statusTimer = setInterval(() => this.reconcile(), SCREEN_CHECK_MS);
     this.saveTimer = setInterval(() => {
       for (const w of this.workers.values()) if (w.info.kind === 'shell' && w.unsaved) this.saveScrollback(w);
     }, SAVE_SCROLLBACK_MS);
@@ -822,7 +773,7 @@ export class WorkerManager {
     if (modelError) return modelError;
     const why = forkRefusal(source.info);
     if (why) return why;
-    if (source.daemonLaunching || source.compacting || source.launchPrompt || source.settingUp) {
+    if (source.daemonLaunching || source.compacting || source.settingUp) {
       return 'Wait for its first prompt and worktree setup to finish';
     }
     const full = this.capacity?.full();
@@ -1152,7 +1103,11 @@ export class WorkerManager {
     w.info.status = 'starting';
     w.info.exitCode = undefined;
     const prepared = w.info.kind === 'agent' && images?.length ? this.prepareDaemonImages(id, images) : undefined;
-    const rawPrompt = prompt?.trim();
+    // A graceful restart can happen while initializeSession is still pending.
+    // If no daemon session was recorded, the first text was never sent.
+    const interruptedStart = !w.info.sessionId && w.savedDaemon?.status === 'starting' && w.info.prompt !== 'See the attached images' ? w.info.prompt : undefined;
+    w.savedDaemon = undefined;
+    const rawPrompt = prompt?.trim() || interruptedStart;
     // A subagent with no session to carry on starts over, so it needs telling what it's for again.
     const first = w.info.sessionId ? rawPrompt : this.briefed(w, rawPrompt || (w.info.lead && prepared?.daemonImages.length ? 'See the attached images.' : undefined));
     const shown = (rawPrompt && withoutReminders(rawPrompt)) || (prepared?.daemonImages.length ? 'See the attached images' : undefined);
@@ -1214,12 +1169,9 @@ export class WorkerManager {
       const proc = w.pty;
       if (!proc) return false;
       w.pty = undefined;
-      w.launchPrompt = undefined;
       for (const entry of w.inFlight) clearTimeout(entry.timer);
       w.inFlight.clear();
       w.activeTool.clear();
-      w.sentQueue = [];
-      w.queued = 0;
       try {
         proc.kill();
       } catch {
@@ -1276,7 +1228,6 @@ export class WorkerManager {
     w.pty = undefined;
     for (const entry of w.inFlight) clearTimeout(entry.timer);
     w.inFlight.clear();
-    clearTimeout(w.outboxTimer);
     try {
       proc?.kill();
     } catch {
@@ -1305,28 +1256,29 @@ export class WorkerManager {
     return undefined;
   }
 
-  /** Finder reuses an ordinary worker it hired; never overwrite a running turn or CLI question. */
-  dispatchWorker(text: string, model?: string): { info: WorkerInfo; hired: boolean } | string {
+  /** Finder reuses an ordinary worker it hired; never overwrite a running turn or AskUser. */
+  async dispatchWorker(text: string, model?: string): Promise<{ info: WorkerInfo; hired: boolean } | string> {
     if (this.closing) return 'The office is closing';
     if (!text.trim()) return 'Empty prompt';
     const w = [...this.workers.values()].find((x) => x.info.createdBy === 'Finder' && x.info.kind === 'agent' && !x.info.lead && !x.info.remote);
     if (w) {
-      if (isBusy(w.info.status) || w.daemonLaunching || w.launchPrompt || (w.info.lastInputAt !== undefined && Date.now() - w.info.lastInputAt < 2000)) {
-        return 'The Finder worker is busy or waiting on input. Open its thread and try again when it is ready.';
-      }
+      const busy = () => isBusy(w.info.status) || w.daemonLaunching || this.settingDrives.has(w.info.id) || (w.info.lastInputAt !== undefined && Date.now() - w.info.lastInputAt < 2000);
+      const busyError = 'The Finder worker is busy or waiting on input. Open its thread and try again when it is ready.';
+      if (busy()) return busyError;
       const effectiveModel = model ?? w.info.activeModel ?? w.info.model;
-      const error = validateWorkerModel('agent', effectiveModel) ?? this.modelGate?.(effectiveModel);
-      if (error) return error;
+      const invalid = validateWorkerModel('agent', effectiveModel) ?? this.modelGate?.(effectiveModel);
+      if (invalid) return invalid;
       if (model && model !== (w.info.activeModel ?? w.info.model)) {
         if (this.checkLost(w, true)) return lostMessage(w.info);
         if (this.running(w.info.id) && w.info.sessionId) {
-          void this.setting(w.info.id, { setting: 'model', id: model, name: model });
+          const settingError = await this.setting(w.info.id, { setting: 'model', id: model, name: model });
+          if (settingError) return settingError;
+          if (this.closing || this.workers.get(w.info.id) !== w) return 'The Finder worker is no longer available';
+          if (busy()) return busyError;
         } else {
           this.choose(w.info.id, model, undefined);
         }
       }
-    }
-    if (w) {
       w.info.lastInputAt = Date.now();
       const error = this.running(w.info.id) ? this.prompt(w.info.id, text) : this.resume(w.info.id, text);
       return error ?? { info: w.info, hired: false };
@@ -1374,7 +1326,7 @@ export class WorkerManager {
   /** The worker whose session holds this hook token: how a worker proves it's asking for itself. */
   authenticate(id: string, token: string): WorkerInfo | undefined {
     const w = this.workers.get(id);
-    if (!w || !token || !safeEq(token, w.hookToken)) return undefined;
+    if (!w || !token || !sameToken(token, w.hookToken)) return undefined;
     return (w.info.kind === 'shell' ? !!w.pty : w.daemonActive) ? w.info : undefined;
   }
 
@@ -1456,7 +1408,6 @@ export class WorkerManager {
     w.pty = undefined; // so the exit handler knows this worker is gone and stays quiet
     for (const entry of w.inFlight) clearTimeout(entry.timer);
     w.inFlight.clear();
-    clearTimeout(w.outboxTimer);
     try {
       proc?.kill();
     } catch {
@@ -1834,16 +1785,16 @@ export class WorkerManager {
       void this.daemon.interruptSession(w.info.sessionId).catch(() => {});
       return true;
     }
-    return this.delivery.cancelTurn(id);
+    return false;
   }
 
-  /** Cancels a Droid agent's running turn via `interruptSession` (or Escape fallback). */
+  /** Cancels a Droid agent's running turn via `interruptSession`. */
   cancelTurn(id: string): boolean {
     return this.interrupt(id);
   }
 
   /** What a Droid agent's session state shows now: busy on a turn, asking, or at rest. */
-  turnScreen(id: string): DroidScreen | undefined {
+  turnScreen(id: string): 'busy' | 'asking' | 'idle' | undefined {
     const w = this.workers.get(id);
     if (w?.info.kind !== 'agent') return undefined;
     if (w.daemonActive) {
@@ -1852,7 +1803,7 @@ export class WorkerManager {
       if (w.info.status === 'idle' || w.info.status === 'done') return 'idle';
       return undefined;
     }
-    return this.delivery.turnScreen(id);
+    return undefined;
   }
 
   /** Keystrokes from an attached browser into a shell worker's PTY. */
@@ -1860,12 +1811,6 @@ export class WorkerManager {
     const w = this.workers.get(id);
     if (!w?.pty) return false;
     w.pty.write(data);
-    if (w.info.kind === 'agent' && w.info.status === 'working') w.queued += countCtrlEnterInputs(data);
-    if (isClearQueueInput(data)) {
-      w.queued = 0;
-      w.sentQueue = [];
-    }
-    if (isCancelInput(data)) w.cancelAt = Date.now();
     let changed = this.typed(w);
     if (w.info.status === 'needs_input' && w.info.acked === false) {
       w.info.acked = true;
@@ -1899,8 +1844,29 @@ export class WorkerManager {
     }
     const w = this.workers.get(id);
     if (!w) return 'No such worker';
-    if (w.info.kind === 'shell') return this.delivery.prompt(id, text, images, queue);
+    if (w.info.kind === 'shell') return this.promptShell(w, text, images);
     return this.promptDaemon(w, text, images, queue);
+  }
+
+  /** Paste and submit a prompt to an explicit shell, never to a Droid session. */
+  private promptShell(w: Worker, text: string, images?: readonly string[]): string | undefined {
+    const pty = w.pty;
+    if (!pty) return 'Worker is not running';
+    const typed = text.replace(/\r\n?/g, '\n').trim();
+    const clean = images?.length ? withImages(typed, this.drops.adopt(w.info.id, images)) : typed;
+    if (!clean) return 'Empty prompt';
+    pty.write(`\x1b[200~${clean}\x1b[201~`);
+    const entry = {
+      timer: setTimeout(() => {
+        w.inFlight.delete(entry);
+        if (w.pty === pty) pty.write('\r');
+      }, 120),
+    };
+    w.inFlight.add(entry);
+    w.info.activity = truncate(withoutReminders(typed) || 'See the attached images', 80);
+    w.info.lastInputAt = Date.now();
+    this.emitUpdate(w);
+    return undefined;
   }
 
   /** Alias for `prompt`. */
@@ -1915,10 +1881,9 @@ export class WorkerManager {
   }
 
   /** Pending notices and Droid messages, in their delivery order. */
-  queueState(id: string, now = Date.now()): WorkerQueueState | undefined {
+  queueState(id: string): WorkerQueueState | undefined {
     const w = this.workers.get(id);
     if (w?.info.kind !== 'agent' || w.info.cloud || w.info.remote) return undefined;
-    if (w.pty && !w.daemonActive) return this.delivery.queueState(id, now);
     return buildDaemonQueueState(w.daemonQueue, w.outbox);
   }
 
@@ -1927,7 +1892,7 @@ export class WorkerManager {
     if (this.building && this.buildingIdentity(id)) return { error: this.prompt(id, text, images, false) };
     const w = this.workers.get(id);
     if (!w) return { error: 'No such worker' };
-    if (w.info.kind === 'shell') return this.delivery.urgentPrompt(id, text, images);
+    if (w.info.kind === 'shell') return { error: w.pty ? this.promptShell(w, text, images) : this.resume(id, text, images) };
     if (w.info.status === 'starting' || w.daemonLaunching) {
       return { error: `${w.info.name} is still starting up: try again in a few seconds` };
     }
@@ -1957,7 +1922,7 @@ export class WorkerManager {
   }
 
   /** Rewinds before `entryId` via `getRewindInfo` + `executeRewind`, swapping the worker onto `result.newSessionId`. */
-  async rewind(id: string, entryId: string, sessionId: string, _target: RewindDriveTarget, restore: RewindRestore): Promise<RewindDriveResult & { sessionId?: string }> {
+  async rewind(id: string, entryId: string, sessionId: string, restore: RewindRestore): Promise<RewindResult> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'No such worker' };
     if (w.info.kind !== 'agent' || w.info.cloud || w.info.remote) return { ok: false, error: `${w.info.name} has no local conversation to rewind` };
@@ -2051,20 +2016,24 @@ export class WorkerManager {
   private settingDrives = new Set<string>();
 
   /** Changes a session's model or reasoning effort directly via `LocalDaemon.updateSessionSettings`. */
-  async setting(id: string, want: DroidSetting | { setting: 'model'; id?: string; name: string; effort?: string }): Promise<string | undefined> {
+  async setting(id: string, want: DroidSetting): Promise<string | undefined> {
     const w = this.workers.get(id);
     if (!w) return 'No such worker';
     if (w.info.kind !== 'agent' || w.info.cloud || w.info.remote) return `${w.info.name} has no local Droid session to change`;
-    if (!w.daemonActive || !w.info.sessionId) return `${w.info.name} is not running`;
+    const sessionId = w.info.sessionId;
+    if (!w.daemonActive || !sessionId) return `${w.info.name} is not running`;
     if (w.rewind) return `${w.info.name} is rewinding its conversation`;
     if (w.info.status === 'starting' || w.daemonLaunching) return `${w.info.name} is still starting up: try again in a few seconds`;
     if (this.settingDrives.has(id)) return `${w.info.name} is already changing a setting`;
 
+    const generation = w.daemonGeneration;
+    const current = () => !this.closing && this.workers.get(id) === w && w.daemonActive && w.daemonGeneration === generation && w.info.sessionId === sessionId;
     this.settingDrives.add(id);
     try {
       if (want.setting === 'effort') {
         if (!isAgentEffort(want.value)) return `Unsupported reasoning effort "${want.value}"`;
-        await this.daemon.updateSessionSettings({ sessionId: w.info.sessionId, reasoningEffort: want.value });
+        await this.daemon.updateSessionSettings({ sessionId, reasoningEffort: want.value });
+        if (!current()) return `${w.info.name}'s session changed before the setting could be applied`;
         w.info.effort = want.value;
         w.info.activeEffort = want.value;
         w.liveSettings = { ...w.liveSettings, reasoningEffort: want.value };
@@ -2072,15 +2041,17 @@ export class WorkerManager {
         this.persist();
         return undefined;
       }
-      const modelId = 'id' in want && typeof want.id === 'string' && want.id ? want.id : want.name;
+      const modelId = want.id || want.name;
       const effortVal = want.effort && isAgentEffort(want.effort) ? want.effort : undefined;
-      const invalid = validateWorkerModel('agent', modelId) ?? (want.effort ? validateWorkerEffort('agent', effortVal) : undefined) ?? this.modelGate?.(modelId);
+      if (want.effort && !effortVal) return `Unsupported reasoning effort "${want.effort}"`;
+      const invalid = validateWorkerModel('agent', modelId) ?? validateWorkerEffort('agent', effortVal) ?? this.modelGate?.(modelId);
       if (invalid) return invalid;
       await this.daemon.updateSessionSettings({
-        sessionId: w.info.sessionId,
+        sessionId,
         modelId,
         ...(effortVal ? { reasoningEffort: effortVal } : {}),
       });
+      if (!current()) return `${w.info.name}'s session changed before the setting could be applied`;
       w.info.model = modelId;
       w.info.activeModel = modelId;
       if (effortVal) {
@@ -2174,18 +2145,6 @@ export class WorkerManager {
     return undefined;
   }
 
-  /** No-op for daemon sessions (which have no TUI `/btw` overlay); kept for protocol compatibility. */
-  closeSideChat(id: string): string | undefined {
-    const w = this.workers.get(id);
-    if (!w) return 'No such worker';
-    if (w.info.kind === 'agent' && !w.pty) return this.running(id) ? undefined : 'Worker is not running';
-    if (!w.pty || !w.term) return 'Worker is not running';
-    if (w.rewind || this.settingDrives.has(id)) return `${w.info.name} is busy in its terminal. Try again in a moment.`;
-    if (!readLiveScreen(screenRows(w.term)).side) return undefined;
-    w.pty.write('\x1b');
-    return undefined;
-  }
-
   /** Clears all pending messages, or a single item by 1-based `index` or daemon `requestId`. */
   async clearQueue(id: string, index?: number, requestId?: string): Promise<{ error?: string; cleared: QueuedMessageItem[]; remaining: WorkerQueueState }> {
     const empty: WorkerQueueState = { count: 0, items: [], moreSteering: 0, moreQueued: 0 };
@@ -2193,7 +2152,6 @@ export class WorkerManager {
     if (!w) return { error: 'No such worker', cleared: [], remaining: empty };
     if (w.info.kind === 'shell') return { error: `${w.info.name} is a shell: shells have no Droid message queue`, cleared: [], remaining: empty };
     if (w.info.cloud || w.info.remote) return { error: `${w.info.name} runs remotely and has no local message queue`, cleared: [], remaining: empty };
-    if (w.pty && !w.daemonActive) return this.delivery.clearQueue(id, index);
 
     const state = buildDaemonQueueState(w.daemonQueue, w.outbox);
     if (index !== undefined || requestId !== undefined) {
@@ -2228,8 +2186,6 @@ export class WorkerManager {
     const cleared = [...state.items];
     if (w.outbox.length) {
       w.outbox = [];
-      clearTimeout(w.outboxTimer);
-      w.outboxTimer = undefined;
     }
     if (w.info.sessionId && w.daemonQueue.length) {
       for (const entry of [...w.daemonQueue]) {
@@ -2263,7 +2219,6 @@ export class WorkerManager {
     if (!w) return { error: 'No such worker', promoted: [], stillPending: false, remaining: empty };
     if (w.info.kind === 'shell') return { error: `${w.info.name} is a shell: shells have no Droid message queue`, promoted: [], stillPending: false, remaining: empty };
     if (w.info.cloud || w.info.remote) return { error: `${w.info.name} runs remotely and has no local message queue`, promoted: [], stillPending: false, remaining: empty };
-    if (w.pty && !w.daemonActive) return this.delivery.promoteQueue(id, opts);
 
     const failWithPending = (baseError: string) => {
       const remaining = buildDaemonQueueState(w.daemonQueue, w.outbox);
@@ -2537,20 +2492,11 @@ export class WorkerManager {
     this.emitUpdate(w);
   }
 
-  /**
-   * A hook from a worker's droid, with the version of the command that sent it (see HOOK_VERSION).
-   * Resolves to what the command prints back to Droid ('' for nothing), or undefined when the hook
-   * isn't this worker's. It answers at once: Droid waits for each hook before it carries on.
-   */
-  hookReply(workerId: string, token: string, event: string, payload: unknown, version = 0): string | undefined {
-    const w = this.workers.get(workerId);
-    if (!w?.pty || !safeEq(token, w.hookToken)) return undefined;
-    return this.hooks.accept(w, event, payload, { version });
-  }
-
-  /** Every running worker's spooled hooks, replayed. */
-  replaySpools() {
-    this.spool.replayAll();
+  /** Reports setup progress from the helper launched inside a shell desk's PTY. */
+  shellSetupReport(id: string, token: string, payload: unknown): boolean {
+    const w = this.workers.get(id);
+    if (!w?.pty || w.info.kind !== 'shell' || !sameToken(token, w.hookToken) || !payload || typeof payload !== 'object') return false;
+    return this.setupHook(w, payload as Record<string, unknown>);
   }
 
   /**
@@ -2560,7 +2506,6 @@ export class WorkerManager {
   notice(id: string, text: string, images?: readonly string[]): boolean {
     const w = this.workers.get(id);
     if (!w) return false;
-    if (w.pty && !w.daemonActive) return this.delivery.notice(id, text, images);
     const typed = text.replace(/\r\n?/g, '\n').trim();
     if (w.info.kind !== 'agent' || !w.daemonActive || w.daemonLaunching || w.compacting || w.rewind || w.info.status !== 'working' || !w.info.sessionId) {
       return false;
@@ -2587,7 +2532,6 @@ export class WorkerManager {
   hold(id: string, text: string): string | undefined {
     const w = this.workers.get(id);
     if (!w) return 'No such worker';
-    if (w.pty && !w.daemonActive) return this.delivery.hold(id, text);
     if (!w.daemonActive) return 'Worker is not running';
     const clean = text.replace(/\r\n?/g, '\n').trim();
     if (!clean) return 'Empty prompt';
@@ -2624,60 +2568,18 @@ export class WorkerManager {
     if (!w.settingUp) return false;
     if (report.phase === 'start') {
       const commands = Array.isArray(report.commands) ? report.commands.filter((c): c is string => typeof c === 'string') : [];
-      if (commands.length && info.kind === 'agent' && info.status === 'starting') info.activity = truncate(`Setting up its worktree: ${commands.join(' · ')}`, 80);
+      if (commands.length) info.activity = truncate(`Setting up its worktree: ${commands.join(' · ')}`, 80);
     } else if (report.phase === 'done') {
       w.settingUp = false;
-      w.setupDoneAt = Date.now();
       if (info.activity?.startsWith('Setting up its worktree')) info.activity = undefined;
       const failed = (Array.isArray(report.failed) ? report.failed : []).filter((f): f is { command: string; code: number; label?: string; output?: string } => !!f && typeof f.command === 'string');
       if (failed.length) {
         const what = failed.map((f) => `${f.label ? `${f.label}: ` : ''}\`${f.command}\` (exit ${f.code})`).join(', ');
-        const output = failed
-          .map((f) => (typeof f.output === 'string' ? f.output.slice(-SETUP_OUTPUT_MAX) : ''))
-          .filter(Boolean)
-          .join('\n\n');
-        if (w.launchPrompt) {
-          w.launchPrompt.text = `${setupFailedNote(what, output)}\n\n${w.launchPrompt.text}`;
-          this.persist();
-        }
-        this.events.toast(`🌿 ${info.name}'s worktree setup failed: ${what}.${w.launchPrompt ? ` ${info.name}'s first message says so, with the error.` : ''}`, 'warn', info.id);
+        this.events.toast(`🌿 ${info.name}'s worktree setup failed: ${what}.`, 'warn', info.id);
       }
     } else return false;
     this.emitUpdate(w);
     return true;
-  }
-
-  private droidScreen(w: Worker): DroidScreen | undefined {
-    const term = w.term;
-    if (!term) return undefined;
-    if (w.screenParse && w.screenParse.term === term && w.screenParse.seq === w.termSeq) return w.screenParse.state;
-    const state = readDroidScreen(screenRows(term));
-    w.screenParse = { term, seq: w.termSeq, state };
-    return state;
-  }
-
-  reconcile(now = Date.now()) {
-    for (const w of this.workers.values()) {
-      const { info } = w;
-      if (w.launchPrompt && w.pty && w.term && now - w.launchPrompt.at >= LAUNCH_PROMPT_FALLBACK_MS && this.droidScreen(w) === 'idle') this.delivery.sendLaunchPrompt(w);
-      if (info.kind !== 'agent' || !w.pty || !w.term || w.bootBlocked || !info.sessionId || info.status === 'starting') {
-        w.screenSeen = undefined;
-        continue;
-      }
-      if (w.stopAt !== undefined && now - w.stopAt >= STOP_GRACE_MS) this.hooks.settleStop(w, w.stopAt, now);
-      const state = this.droidScreen(w);
-      if (!state) {
-        w.screenSeen = undefined;
-        continue;
-      }
-      if (w.screenSeen?.state !== state) w.screenSeen = { state, since: now };
-      if (now - w.screenSeen.since < SCREEN_SETTLE_MS || now - w.hookAt < SCREEN_SETTLE_MS) continue;
-      const next = screenStatus(info.status, state, now - w.outputAt >= SCREEN_SETTLE_MS);
-      if (!next) continue;
-      console.log(`  🖥️  ${info.name}'s screen corrected its status from ${info.status} to ${next}: no hook said so`);
-      if (next === 'needs_input') info.activity = 'Waiting for input';
-      this.setStatus(w, next);
-    }
   }
 
   /** Looks up the model and effort droid says a restored worker's session runs on disk. */
@@ -2711,12 +2613,10 @@ export class WorkerManager {
     this.officeShell?.shutdown(keep);
     clearInterval(this.screenTimer);
     clearInterval(this.watchTimer);
-    clearInterval(this.statusTimer);
     clearInterval(this.saveTimer);
     for (const w of this.workers.values()) {
       for (const entry of w.inFlight) clearTimeout(entry.timer);
       w.inFlight.clear();
-      clearTimeout(w.outboxTimer);
       if (!keep) {
         w.setupAbort?.abort();
         w.setupAbort = undefined;
@@ -2770,7 +2670,7 @@ export class WorkerManager {
 
   private findDaemonWorker(sessionId: string): { worker: Worker; sub: boolean } | undefined {
     for (const w of this.workers.values()) {
-      if (w.info.kind !== 'agent') continue;
+      if (w.info.kind !== 'agent' || !w.daemonActive) continue;
       if (w.info.sessionId === sessionId) return { worker: w, sub: false };
       if (w.subSessions.has(sessionId)) return { worker: w, sub: true };
     }
@@ -2804,6 +2704,7 @@ export class WorkerManager {
     if (!hit) return;
     const { worker: w, sub } = hit;
     if (!ask) {
+      if (w.asking?.session !== sessionId) return;
       w.askState = undefined;
       w.asking = undefined;
       delete w.info.menu;
@@ -2948,8 +2849,6 @@ export class WorkerManager {
     for (const entry of w.inFlight) clearTimeout(entry.timer);
     w.inFlight.clear();
     w.outbox = [];
-    w.queued = 0;
-    w.sentQueue = [];
     const env = childEnv();
     Object.assign(env, {
       TERM: 'xterm-256color',
@@ -2986,6 +2885,10 @@ export class WorkerManager {
   private async launchDaemon(w: Worker, initialPrompt: string | undefined, resumeSessionId: string | undefined, initialImages?: LocalImageInput[]): Promise<void> {
     const { info } = w;
     const gen = ++w.daemonGeneration;
+    const current = () => !this.closing && this.workers.get(info.id) === w && w.daemonGeneration === gen;
+    const discardNewSession = (id: string) => {
+      if (!this.closing) void this.daemon.closeSession(id).catch(() => {});
+    };
     w.daemonActive = true;
     w.daemonLaunching = true;
     w.subSessions.clear();
@@ -3021,10 +2924,9 @@ export class WorkerManager {
       else if (this.trees.ceiling) env.GIT_CEILING_DIRECTORIES = [this.trees.ceiling, env.GIT_CEILING_DIRECTORIES].filter(Boolean).join(path.delimiter);
 
       const setupRes = await runWorktreeSetup(this.setupScript, plan, env, abort.signal);
-      if (this.closing || this.workers.get(info.id) !== w || w.daemonGeneration !== gen) return;
+      if (!current()) return;
       w.settingUp = false;
       w.setupAbort = undefined;
-      w.setupDoneAt = Date.now();
       if (info.activity?.startsWith('Setting up its worktree')) {
         info.activity = info.prompt ? truncate(info.prompt, 80) : undefined;
       }
@@ -3055,7 +2957,7 @@ export class WorkerManager {
           cwd,
           loadOptions: { mcp, denyTask },
         });
-        if (this.closing || this.workers.get(info.id) !== w || w.daemonGeneration !== gen) return;
+        if (!current()) return discardNewSession(res.newSessionId);
         w.pendingFork = undefined;
         info.sessionId = res.newSessionId;
         if (res.snapshot) applyDaemonSnapshot(w, res.snapshot);
@@ -3075,7 +2977,7 @@ export class WorkerManager {
           mcp,
           denyTask,
         });
-        if (this.closing || this.workers.get(info.id) !== w || w.daemonGeneration !== gen) return;
+        if (!current()) return;
         info.sessionId = resumeSessionId;
         applyDaemonSnapshot(w, snap);
         if ((info.model && info.model !== info.activeModel) || (info.effort && info.effort !== info.activeEffort)) {
@@ -3098,12 +3000,12 @@ export class WorkerManager {
           mcp,
           denyTask,
         });
-        if (this.closing || this.workers.get(info.id) !== w || w.daemonGeneration !== gen) return;
+        if (!current()) return discardNewSession(init.sessionId);
         info.sessionId = init.sessionId;
         applyDaemonSettings(w, init.settings);
       }
 
-      if (this.closing || this.workers.get(info.id) !== w || w.daemonGeneration !== gen) return;
+      if (!current()) return;
       w.daemonLaunching = false;
       this.persist();
 
@@ -3125,6 +3027,7 @@ export class WorkerManager {
         clockWork(info, 'working');
         this.setStatus(w, 'working');
         for (const msg of toSend) {
+          if (!current()) return;
           await this.sendDaemonMessage(w, msg.text, msg.images, msg.queue);
         }
       } else {
@@ -3138,9 +3041,9 @@ export class WorkerManager {
           this.flushDaemonOutbox(w);
         }
       }
-      this.emitUpdate(w);
+      if (current()) this.emitUpdate(w);
     } catch (err) {
-      if (this.closing || this.workers.get(info.id) !== w || w.daemonGeneration !== gen) return;
+      if (!current()) return;
       this.daemonStartFailed(w, (err as Error).message);
     }
   }
@@ -3389,8 +3292,6 @@ export class WorkerManager {
   }
 
   private flushDaemonOutbox(w: Worker) {
-    clearTimeout(w.outboxTimer);
-    w.outboxTimer = undefined;
     if (!w.outbox.length || this.closing || this.workers.get(w.info.id) !== w || !w.daemonActive || !w.info.sessionId) return;
     if (w.info.status !== 'done' && w.info.status !== 'idle') return;
     const text = officeSays(w.outbox.splice(0).join('\n\n'));
@@ -3419,8 +3320,6 @@ export class WorkerManager {
   private adopt(w: Worker, adopted: Adopted, saved: NonNullable<Worker['saved']>) {
     const { info } = w;
     w.interrupted = false;
-    w.launchPrompt = saved.launchPrompt;
-    w.outbox = saved.outbox ?? [];
     info.cols = adopted.cols;
     info.rows = adopted.rows;
     const term = this.newTerm(w);
@@ -3432,7 +3331,6 @@ export class WorkerManager {
       info.status = saved.status;
       info.acked = saved.acked;
       info.waitingSince = saved.waitingSince;
-      if (saved.status === 'needs_input' && saved.ask) info.ask = saved.ask;
     }
     this.follow(w, adopted.pty, term);
     this.emitUpdate(w);
@@ -3447,18 +3345,12 @@ export class WorkerManager {
     term.unicode.activeVersion = '11';
     term.onTitleChange((title: string) => this.setTitle(w, title));
     term.onWriteParsed(() => {
-      w.termSeq++;
       w.screenDirty = true;
-    });
-    term.onResize(() => {
-      w.termSeq++;
     });
     w.term?.dispose();
     w.term = term;
     w.ser = ser;
     w.snapshot = screenSnapshot(term, ser);
-    w.termSeq++;
-    w.screenParse = undefined;
     w.lastLines = [];
     w.screenDirty = true;
     w.needsKeyframe = false;
@@ -3516,35 +3408,6 @@ export class WorkerManager {
       this.persist();
       void this.syncBranch(w);
     });
-    const check = () => {
-      if (info.status !== 'starting' || w.pty !== proc) return;
-      const left = w.settingUp ? BOOT_BLOCKED_MS : (w.setupDoneAt ?? 0) + BOOT_BLOCKED_MS - Date.now();
-      if (left > 0) return void setTimeout(check, Math.min(left, 3000)).unref();
-      if (info.kind === 'agent') {
-        w.bootBlocked = true;
-        info.activity = BOOT_BLOCKED;
-        this.setStatus(w, 'needs_input');
-        this.bootAsk(w);
-      } else this.setStatus(w, 'idle');
-    };
-    setTimeout(check, BOOT_BLOCKED_MS).unref();
-  }
-
-  private bootAsk(w: Worker) {
-    if (!w.bootBlocked || w.info.status !== 'needs_input') return;
-    const menu = this.screenMenu(w.info.id);
-    const question = menu?.question?.trim();
-    const ask: WorkerAsk | undefined =
-      menu?.choices.length && !menu.multiSelect ? { kind: 'question', questions: [{ question: question || 'Droid asks before it starts', options: menu.choices.map((c) => c.label), multiSelect: false }] } : undefined;
-    if (isDeepStrictEqual(ask, w.info.ask)) return;
-    if (ask) {
-      w.info.ask = ask;
-      w.info.activity = question ? `Droid asks: ${truncate(question, 60)}` : 'Droid asks something before it starts';
-    } else {
-      delete w.info.ask;
-      w.info.activity = BOOT_BLOCKED;
-    }
-    this.emitUpdate(w);
   }
 
   private startFailed(w: Worker, message: string) {
@@ -3574,12 +3437,8 @@ export class WorkerManager {
 
   private setStatus(w: Worker, status: WorkerStatus) {
     if (w.info.status === status) return;
-    if (w.info.status === 'needs_input') w.leftNeedsInputAt = Date.now();
     w.info.status = status;
-    if (status !== 'working') {
-      w.stopAt = undefined;
-      w.currentTool = undefined;
-    }
+    if (status !== 'working') w.currentTool = undefined;
     if (status !== 'needs_input') {
       w.asking = undefined;
       w.askState = undefined;
@@ -3592,8 +3451,6 @@ export class WorkerManager {
       w.activeTool.clear();
       w.liveTools.clear();
       w.liveStream = undefined;
-      w.queued = 0;
-      w.sentQueue = [];
       w.daemonQueue = [];
       syncWorkerQueueInfo(w);
     }
@@ -3612,10 +3469,7 @@ export class WorkerManager {
     // At rest: it may have made a branch of its own this turn, and opened its PR from there.
     if (status === 'done' || status === 'idle') {
       void this.syncBranch(w);
-      if (w.outbox.length) {
-        if (w.daemonActive) this.flushDaemonOutbox(w);
-        else this.delivery.flushOutbox(w);
-      }
+      if (w.daemonActive && w.outbox.length) this.flushDaemonOutbox(w);
     }
   }
 
@@ -3640,16 +3494,8 @@ export class WorkerManager {
   runtime(id: string): (WorkerRuntimeSnapshot & { retry?: WorkerRetryStatus; menu?: Menu }) | undefined {
     const w = this.workers.get(id);
     if (!w) return undefined;
-    const rows = w.term ? screenRows(w.term) : w.retryState ? [w.retryState.detail, ...(w.retryState.retrying ? ['Press ESC to stop'] : [])] : undefined;
-    let queuedMessages: string[] | undefined;
-    if (w.daemonQueue.length > 0) {
-      queuedMessages = w.daemonQueue.map((q) => q.text);
-    } else if (w.term && rows) {
-      const droidQueue = readDroidQueue(rows);
-      if (droidQueue?.length) {
-        queuedMessages = droidQueue.map((item) => `${item.text}${item.cut ? '…' : ''}${item.more > 0 ? ` (+${item.more} line${item.more === 1 ? '' : 's'})` : ''}`);
-      }
-    }
+    const rows = w.term ? screenRows(w.term) : undefined;
+    const queuedMessages = w.daemonQueue.length ? w.daemonQueue.map((q) => q.text) : undefined;
     return {
       ...(w.todoSteps?.length ? { todoSteps: w.todoSteps.map((s) => ({ ...s })) } : {}),
       ...(w.currentTool ? { currentTool: { ...w.currentTool } } : {}),
@@ -3667,22 +3513,6 @@ export class WorkerManager {
   /** Alias for `runtime(id)`. */
   runtimeSnapshot(id: string) {
     return this.runtime(id);
-  }
-
-  /** One worker's current visible rows, for shell PTYs. */
-  screenLines(id: string): string[] | undefined {
-    const term = this.workers.get(id)?.term;
-    const frame = term && snapshotScreen(term, []);
-    return frame ? Array.from({ length: frame.rows }, (_, row) => (frame.lines[row] ?? []).map((r) => r[0]).join('')) : undefined;
-  }
-
-  /** Pending AskUser menu on a daemon agent, or parsed TUI menu on a legacy PTY. */
-  screenMenu(id: string) {
-    const w = this.workers.get(id);
-    if (w?.info.menu) return w.info.menu;
-    const term = w?.term;
-    const frame = term && snapshotScreen(term, []);
-    return frame ? readScreenMenu(Array.from({ length: frame.rows }, (_, row) => frame.lines[row] ?? [])) : undefined;
   }
 
   private computeDaemonScreen(w: Worker): ScreenFrame | undefined {
@@ -3735,7 +3565,6 @@ export class WorkerManager {
           if (frame.full) w.keyframeAt = now;
           if (this.events.screen(w.info.id, frame) === true) w.needsKeyframe = true;
         }
-        if (w.bootBlocked) this.bootAsk(w);
         continue;
       }
       if (w.info.kind !== 'agent' || w.info.remote || !w.screenDirty) continue;

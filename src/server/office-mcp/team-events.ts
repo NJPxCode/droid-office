@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import type { AskReply } from '../factory/cloud-ask.js';
 import { menuTakesText, sameMenu, type Menu } from '../../shared/asks.js';
 import { permissionLine, questionPresentation } from '../../shared/ask-question.js';
 import { DESK_BY_ID } from '../../shared/layout.js';
@@ -21,7 +22,7 @@ export interface TeamScope {
   id: string;
   team: Pick<Team, 'handle' | Exclude<TeamViews, 'isWatching'>> & Partial<Pick<Team, 'isWatching'>>;
   workers: Pick<WorkerManager, 'get' | 'list'> & {
-    answerQuestion?(id: string, reply: { menu?: Menu; choice?: number; choices?: number[]; text?: string }): Promise<{ error?: string } | string | undefined> | { error?: string } | string | undefined;
+    answerQuestion?(id: string, menu: Menu, reply: AskReply): Promise<{ error?: string } | string | undefined> | { error?: string } | string | undefined;
   };
 }
 
@@ -662,7 +663,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
           return officeError('The question changed or was already answered, so nothing was sent.');
         }
         if (!w.cloud && scope.workers.answerQuestion) {
-          const outcome = await scope.workers.answerQuestion(w.id, { menu: shown, ...reply });
+          const outcome = await scope.workers.answerQuestion(w.id, shown, reply);
           const error = typeof outcome === 'string' ? outcome : outcome?.error;
           return error ? officeError(error) : done(w.name, w.id);
         }
@@ -671,7 +672,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
           return outcome.error ? officeError(outcome.error) : done(w.name, w.id);
         }
         if (scope.workers.answerQuestion) {
-          const outcome = await scope.workers.answerQuestion(w.id, { menu: shown, ...reply });
+          const outcome = await scope.workers.answerQuestion(w.id, shown, reply);
           const error = typeof outcome === 'string' ? outcome : outcome?.error;
           return error ? officeError(error) : done(w.name, w.id);
         }

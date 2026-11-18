@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { nativeCopy, nativeLimits, sideQuestion, SLASH_COMMANDS, slashCommands, slashKind, slashOf, slashRefusal, slashSuggestions } from '../src/shared/slash-commands.js';
+import { copyTurns, nativeCopy, nativeLimits, SLASH_COMMANDS, slashCommands, slashKind, slashOf, slashRefusal, slashSuggestions } from '../src/shared/slash-commands.js';
 
 test('the Android app lists the same slash commands', () => {
   const kotlin = readFileSync(new URL('../android/app/src/main/java/ai/factory/droidoffice/core/SlashCommands.kt', import.meta.url), 'utf8');
@@ -166,11 +166,13 @@ test('refuses ending the CLI, and while a turn runs every command not marked mid
   assert.ok(slashRefusal('/deploy', 'Byte', true, custom));
 });
 
-test('a bare /copy opens the Thread’s copy menu and /btw is no longer offered', () => {
+test('/copy opens the Thread’s copy menu and prefills an optional turn count', () => {
   assert.equal(nativeCopy('/copy'), true);
   assert.equal(nativeCopy('  /COPY  '), true);
-  assert.equal(nativeCopy('/copy 3'), false);
+  assert.equal(nativeCopy('/copy 3'), true);
+  assert.equal(copyTurns('/copy'), '1');
+  assert.equal(copyTurns(' /COPY 3 '), '3');
+  assert.equal(copyTurns('/copy 12345'), '1234');
+  assert.equal(copyTurns('/copy nope'), '1');
   assert.equal(nativeCopy('/copyright'), false);
-  assert.equal(sideQuestion('/btw what is this repo?'), undefined);
-  assert.equal(sideQuestion('/side why?'), undefined);
 });

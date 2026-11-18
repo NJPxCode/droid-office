@@ -432,7 +432,7 @@ export class Floor {
         urgentPrompt: (id, text, images) => workers.urgentPrompt(id, text, images),
         notice: (id, text, images) => workers.notice(id, text, images),
         hasImage: (id) => workers.hasImage(id),
-        queueState: (id, now) => workers.queueState(id, now),
+        queueState: (id) => workers.queueState(id),
         blockingTool: (id, now) => workers.blockingTool(id, now),
         resume: (id, text, images) => workers.resume(id, text, images),
         switchModel: (id, model, effort) => workers.switchModel(id, model, effort),

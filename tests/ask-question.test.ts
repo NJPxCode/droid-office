@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { askedQuestions, inputQuestions, parseQuestionnaire, pendingQuestions, permissionLine, questionPresentation, questionSteps, replySummary, reviewAnswers } from '../src/shared/ask-question.js';
-import { readMenu } from '../src/shared/asks.js';
+import type { Menu } from '../src/shared/asks.js';
 import type { ThreadEntry } from '../src/shared/worker-thread.js';
 
 const question = 'What design direction should the web and Android companions follow?';
@@ -13,47 +12,13 @@ const options = [
   'Propose a balanced design and show me mockups before implementation',
 ];
 const entry = (input: unknown): ThreadEntry => ({ id: 'ask', seq: 1, kind: 'tool', role: 'assistant', name: 'AskUser', input: JSON.stringify(input) });
-const screen = readMenu([
-  '  companions follow?',
-  '',
-  '  1. Dense operations console: compact rows,',
-  '  2. Conversation-first: agent sidebar and clean chat',
-  '  3. Attention-first dashboard: summaries and',
-  '  4. Propose a balanced design and show me',
-  '  Or type your own answer...',
-  '',
-  '  Space/Enter/1-9 Select',
-])!;
-
-test('terminal questions retain the explanation after a question mark without thread history', () => {
-  const lines = [
-    '  Ask User',
-    '  ● Memories → ● Sessions → ○ Analytics → ○ CI-and-Appwrite',
-    '',
-    "  Install the analytics plugin on example.com for droid-office? It's free token-usage analytics",
-    '  across your agent sessions.',
-    '',
-    '  1. Yes, install it',
-    '  2. No, skip',
-    '  Or type your own answer...',
-    '',
-    '  Tab/ShiftTab or ←/→ Questions · ↑/↓ Navigate · Space/Enter/1-9 Select · ESC stop agent',
-  ];
-  const expected = "Install the analytics plugin on example.com for droid-office? It's free token-usage analytics across your agent sessions.";
-  const menu = readMenu(lines)!;
-  assert.equal(menu.question, expected);
-  assert.equal(questionPresentation(menu, []).question, expected);
-  assert.deepEqual(
-    menu.choices.map((choice) => choice.label),
-    ['Yes, install it', 'No, skip'],
-  );
-  assert.equal(questionPresentation(menu, []).complete, false);
-
-  // A different terminal width can wrap immediately after the question mark.
-  assert.equal(readMenu([...lines.slice(0, 3), '  Install the analytics plugin on example.com for droid-office?', "  It's free token-usage analytics across your agent sessions.", ...lines.slice(5)])?.question, expected);
-  assert.equal(readMenu([...lines.slice(0, 6), '  https://example.com/questions/1?tab=changes', '', ...lines.slice(6)])?.question, expected);
-  assert.equal(readMenu(['Do you trust the files in this folder?', '/tmp/do-qa-test', '', '> 1. Yes, proceed', '  2. No, exit'])?.question, 'Do you trust the files in this folder?');
+const menuOf = (question: string, labels: string[], multiSelect = false): Menu => ({
+  question,
+  choices: labels.map((label, i) => ({ label, number: i + 1 })),
+  freeText: true,
+  ...(multiSelect ? { multiSelect: true } : {}),
 });
+const screen = menuOf('companions follow?', ['Dense operations console: compact rows,', 'Conversation-first: agent sidebar and clean chat', 'Attention-first dashboard: summaries and', 'Propose a balanced design and show me']);
 
 test('pending questionnaire restores the complete question and every numbered answer from the owner’s capture', () => {
   const call = entry({ questionnaire: `1. [question] ${question}\n[topic] Design direction\n${options.map((option) => `[option] ${option}`).join('\n')}` });
@@ -118,13 +83,13 @@ test('multi-select metadata, multiline questions and malformed calls stay safe',
   assert.equal(parsed[0].multiSelect, true);
   assert.equal(parsed[0].question, 'What does managing agents\nsimultaneously mean to you?');
   for (const invalid of [{ ...call, input: 'not json' }, entry({ questions: [null, { question: 4 }, { question: question, options: null }] })]) assert.deepEqual(askedQuestions([invalid]), []);
-  const multi = readMenu(['  What does managing agents simultaneously mean to you?', '  1. [ ] Persistent roster', '  2. [x] Several conversations', '  [ ] Or type your own answer...', '  Submit', '  Space/Enter/1–9 Toggle'])!;
+  const multi = menuOf('What does managing agents simultaneously mean to you?', ['Persistent roster', 'Several conversations'], true);
   const array = entry({ questions: [{ question: 'Complete question?', options: ['Persistent roster', 'Several conversations'], multiSelect: true }] });
   assert.equal(questionPresentation(multi, [array]).question, 'Complete question?');
   assert.equal(questionPresentation(multi, [entry({ questions: [{ question, options: ['Persistent roster', 'Several conversations'] }] })]).complete, false);
 });
 
-test("the hook's pending ask names the question without any Thread history, and a permission prompt's tool call", () => {
+test("the daemon's pending ask names the question without any Thread history, and a permission prompt's tool call", () => {
   const ask = { kind: 'question' as const, questions: parseQuestionnaire(`1. [question] ${question}\n[topic] Design direction\n${options.map((option) => `[option] ${option}`).join('\n')}`) };
   assert.equal(ask.questions[0].topic, 'Design direction');
   const shown = questionPresentation(screen, [], ask);
@@ -137,15 +102,7 @@ test("the hook's pending ask names the question without any Thread history, and 
   // An ask whose options don't match what's on screen can't relabel the answers.
   assert.equal(questionPresentation(screen, [], { kind: 'question', questions: [{ question, options: ['red', 'green'], multiSelect: false }] }).complete, false);
 
-  const permission = readMenu([
-    '  Execute: git push origin HEAD',
-    '',
-    '> 1. Yes, allow',
-    '  2. Yes, and always allow low risk commands',
-    '  3. No, cancel',
-    '',
-    '  ↑↓ navigate   Enter select   Esc cancel   Alt/Option+E to inspect approval details',
-  ])!;
+  const permission = { ...menuOf('Approve git push?', ['Yes, allow', 'Yes, and always allow low risk commands', 'No, cancel']), freeText: false };
   const asked = questionPresentation(permission, [], { kind: 'permission', tool: 'Execute', command: 'git push origin HEAD', risk: 'medium', summary: 'Push the fix' });
   assert.equal(asked.question, 'Approve medium-risk command: git push origin HEAD');
   assert.deepEqual(
@@ -177,7 +134,7 @@ test('a questionnaire becomes steps: each question by topic, then the review wit
       ].join('\n'),
     ),
   };
-  const second = readMenu(['  Which Windows licence features should the virtual machines have for agents?', '  1. [ ] Evaluation', '  2. [x] Pro', '  3. [ ] Enterprise', '  [ ] Or type your own answer...', '  Submit'])!;
+  const second = menuOf('Which Windows licence features should the virtual machines have for agents?', ['Evaluation', 'Pro', 'Enterprise'], true);
   const display = questionPresentation(second, [], ask);
   assert.equal(display.position, 2);
   const steps = questionSteps(second, display, pendingQuestions([], ask), { 1: 'Parallels', 2: 'Stale' });
@@ -190,12 +147,16 @@ test('a questionnaire becomes steps: each question by topic, then the review wit
   ]);
   assert.equal(replySummary(display, { choices: [1, 3], text: 'Keep  shortcuts\nhandy' }), 'Evaluation, Enterprise + Keep shortcuts handy');
   assert.equal(replySummary(display, { choices: [2] }), 'Pro');
-  const first = readMenu(['  Which hypervisor should we use?', '', '  1. UTM', '  2. Parallels', '  Or type your own answer...'])!;
+  const first = menuOf('Which hypervisor should we use?', ['UTM', 'Parallels']);
   const firstDisplay = questionPresentation(first, [], ask);
   assert.equal(replySummary(firstDisplay, { choice: 2 }), 'Parallels');
   assert.equal(replySummary(firstDisplay, { text: 'Hyper-V' }), 'Hyper-V');
 
-  const review = readMenu(readFileSync(new URL('../android/app/src/test/resources/askuser-1.7.1-review.txt', import.meta.url), 'utf8').split('\n'))!;
+  const review: Menu = {
+    ...menuOf('Review your answers', ['Submit answers']),
+    freeText: false,
+    review: ['Which hypervisor should we use?', '→ UTM', 'Which Windows licence should we use?', '→ Evaluation', 'How should agents connect?', '→ SSH'],
+  };
   assert.deepEqual(reviewAnswers(review.review!), [
     { question: 'Which hypervisor should we use?', answer: 'UTM' },
     { question: 'Which Windows licence should we use?', answer: 'Evaluation' },

@@ -11,7 +11,7 @@
  * The Android app has the same built-in list (core/SlashCommands.kt), checked by tests/slash-commands.test.ts.
  */
 
-export type SlashKind = 'thread' | 'tty' | 'blocked';
+export type SlashKind = 'thread' | 'blocked';
 
 export interface SlashCommand {
   name: string;
@@ -79,16 +79,21 @@ export function nativeLimits(draft: string, factoryConnected: boolean): boolean 
   return factoryConnected && slashOf(draft)?.command?.name === 'limits';
 }
 
-/** A bare `/copy` opens the Thread's own copy choices instead of sending a prompt. */
+/** `/copy` (optionally with a turn count) opens the Thread's own copy choices instead of sending a prompt. */
 export function nativeCopy(draft: string): boolean {
-  return slashOf(draft)?.command?.name === 'copy' && !/\s\S/.test(draft.trim());
+  return slashOf(draft)?.command?.name === 'copy';
 }
 
-/** Kept for Wave 2/3 transition until delivery.ts removes `/btw` side-chat handling; always undefined now that `/btw` is dropped. */
-export function sideQuestion(draft: string): string | undefined {
-  const slash = slashOf(draft);
-  if (slash?.command?.name !== 'btw') return undefined;
-  return draft.trim().replace(/^\/\S+\s*/, '');
+/** The initial turn count for the native copy dialog, matching Android. */
+export function copyTurns(draft: string): string {
+  const text = draft.trim();
+  const separator = text.indexOf(' ');
+  return separator < 0
+    ? '1'
+    : text
+        .slice(separator + 1)
+        .replace(/[^\p{Nd}]/gu, '')
+        .slice(0, 4) || '1';
 }
 
 /**

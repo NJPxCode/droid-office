@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,43 +10,10 @@ import { WebSocket } from 'ws';
 import { Store } from '../src/client/state.js';
 import { loadConfig } from '../src/server/config.js';
 import { startServer } from '../src/server/server.js';
-import { HOOK_VERSION } from '../src/server/workers.js';
-import { readScreenMenu } from '../src/shared/asks.js';
+import { TestDaemon } from './daemon-fixture.js';
 import type { ClientMsg, ServerMsg } from '../src/shared/protocol.js';
 
-// Real Droid AskUser fixture shared with tests/asks.test.ts and Android's AsksTest.
-const ASK_MENU = [
-  '  Ask User',
-  '  Which greeting should I write into HELLO.md?',
-  '  1. hi',
-  '     Short and friendly',
-  '  2. hello',
-  '  3. hey',
-  '  Or type your own answer...',
-  '',
-  '  ↑/↓ Navigate · Space/Enter/1-9 Select · ESC stop agent',
-].join('\r\n');
-
-type Launch = { workerId: string; hookToken: string; hookUrl: string; stdin?: string };
-
-const fakeDroid = `#!/usr/bin/env node
-const fs = require('node:fs');
-const args = process.argv.slice(2);
-if (args[0] === '--version') { console.log('0.249.0'); process.exit(0); }
-if (args[0] === 'doctor') { process.stdout.write('{"ok":true,"results":[{"id":"auth.verify","status":"pass","detail":"authenticated as o***@example.com via stored login session"}]}'); process.exit(0); }
-if (args.includes('--output-format')) process.exit(0);
-fs.appendFileSync(process.env.FAKE_AGENT_LOG, JSON.stringify({ workerId: process.env.DROID_OFFICE_WORKER_ID, hookToken: process.env.DROID_OFFICE_HOOK_TOKEN, hookUrl: process.env.DROID_OFFICE_HOOK_URL }) + '\\n');
-if (process.env.FAKE_ASK_MENU_FILE && fs.existsSync(process.env.FAKE_ASK_MENU_FILE)) {
-  process.stdout.write(fs.readFileSync(process.env.FAKE_ASK_MENU_FILE, 'utf8') + '\\r\\n');
-}
-if (process.stdin.isTTY) process.stdin.setRawMode(true);
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (chunk) => {
-  fs.appendFileSync(process.env.FAKE_AGENT_LOG, JSON.stringify({ workerId: process.env.DROID_OFFICE_WORKER_ID, stdin: chunk }) + '\\n');
-  process.stdout.write('\\x1b[2J\\x1b[HWorking on HELLO.md...\\r\\n');
-});
-process.stdin.resume();
-`;
+const question = 'Which greeting should I write into HELLO.md?';
 
 function initGitRepo(dir: string) {
   mkdirSync(dir, { recursive: true });
@@ -86,7 +53,7 @@ function socket(t: { after(fn: () => void): void }, base: string, query: string)
   return { ws, messages, wait, send };
 }
 
-test('companions receive the full building roster, off-floor AskUser screens, and cross-floor answer/fork/dismiss/thread actions', { skip: process.platform === 'win32' }, async (t) => {
+test('companions receive the full building roster, off-floor AskUser questions, and cross-floor answer/fork/dismiss/thread actions', { skip: process.platform === 'win32' }, async (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'building-roster-'));
   const cleanups: (() => void | Promise<void>)[] = [];
   const rig = { after: (fn: () => void | Promise<void>) => void cleanups.push(fn) };
@@ -102,27 +69,10 @@ test('companions receive the full building roster, off-floor AskUser screens, an
   initGitRepo(repoA);
   initGitRepo(repoB);
 
-  const agent = path.join(root, 'droid');
-  writeFileSync(agent, fakeDroid, { mode: 0o700 });
-  const log = path.join(root, 'launches.jsonl');
-  writeFileSync(log, '');
-  const menuFile = path.join(root, 'ask-menu.txt');
-  writeFileSync(menuFile, ASK_MENU);
-
-  const prevLog = process.env.FAKE_AGENT_LOG;
-  const prevMenu = process.env.FAKE_ASK_MENU_FILE;
-  process.env.FAKE_AGENT_LOG = log;
-  process.env.FAKE_ASK_MENU_FILE = menuFile;
-  rig.after(() => {
-    if (prevLog === undefined) delete process.env.FAKE_AGENT_LOG;
-    else process.env.FAKE_AGENT_LOG = prevLog;
-    if (prevMenu === undefined) delete process.env.FAKE_ASK_MENU_FILE;
-    else process.env.FAKE_ASK_MENU_FILE = prevMenu;
-  });
-
-  const cfg = loadConfig(['--home', root, '--projects', root, repoA, '--weather', 'clear', '--host', '127.0.0.1', '--agent', agent]);
+  const cfg = loadConfig(['--home', root, '--projects', root, repoA, '--weather', 'clear', '--host', '127.0.0.1', '--agent', '/not-a-real-droid']);
   cfg.port = 0;
-  const server = await startServer(cfg);
+  const daemon = new TestDaemon(cfg.dataDir);
+  const server = await startServer(cfg, { localDaemon: daemon });
   rig.after(async () => {
     const closing = once(server.server, 'close');
     server.shutdown();
@@ -131,29 +81,6 @@ test('companions receive the full building roster, off-floor AskUser screens, an
   });
   const port = (server.server.address() as AddressInfo).port;
   const base = `http://127.0.0.1:${port}`;
-
-  const records = (): Launch[] =>
-    readFileSync(log, 'utf8')
-      .split('\n')
-      .slice(0, -1)
-      .map((line) => JSON.parse(line) as Launch);
-  const waitLaunch = async (workerId: string): Promise<Launch> => {
-    const end = Date.now() + 8000;
-    for (;;) {
-      const hit = records().find((l) => l.workerId === workerId && l.stdin === undefined);
-      if (hit) return hit;
-      if (Date.now() > end) assert.fail(`timed out waiting for launch of ${workerId}`);
-      await new Promise((r) => setTimeout(r, 25));
-    }
-  };
-  const hook = async (launch: Launch, event: string, extra: Record<string, unknown> = {}) => {
-    const res = await fetch(`${launch.hookUrl}/hooks/droid?worker=${launch.workerId}&event=${event}&v=${HOOK_VERSION}`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${launch.hookToken}` },
-      body: JSON.stringify({ session_id: `session-${launch.workerId}`, hook_event_name: event, ...extra }),
-    });
-    assert.equal(res.status, 200, event);
-  };
 
   const pair = (await (await fetch(`${base}/api/mobile/pair`, { method: 'POST', body: '{"device":"Pixel"}' })).json()) as { token: string };
   const phoneA = socket(rig, base, `d=${pair.token}`);
@@ -195,48 +122,42 @@ test('companions receive the full building roster, off-floor AskUser screens, an
     true,
   );
 
-  const launch = await waitLaunch(workerB);
-  await hook(launch, 'SessionStart', { source: 'startup' });
-  await hook(launch, 'Notification', { message: 'Droid needs your permission or answer' });
-  await phoneA.wait('building.worker', (m) => m.floor === floorB && m.worker.id === workerB && m.worker.status === 'needs_input');
-  const offFloorScreen = await phoneA.wait('screen', (m) => m.workerId === workerB && m.full === true);
-  clientState.apply(offFloorScreen);
-  const parsedMenu = readScreenMenu(clientState.screens.get(workerB)!.lines);
-  assert.equal(parsedMenu?.question, 'Which greeting should I write into HELLO.md?');
+  const ready = await phoneA.wait('building.worker', (m) => m.floor === floorB && m.worker.id === workerB && !!m.worker.sessionId);
+  const sid = ready.worker.sessionId!;
+  daemon.ask(sid, { requestId: 'ask-1', toolCallId: 'call-1', questions: [{ index: 1, question, options: ['hi', 'hello', 'hey'], multiSelect: false }] });
+  const asking = await phoneA.wait('building.worker', (m) => m.floor === floorB && m.worker.id === workerB && m.worker.status === 'needs_input');
+  clientState.apply(asking);
+  const parsedMenu = clientState.building.get(floorB)?.workers.find((w) => w.id === workerB)?.menu;
+  assert.equal(parsedMenu?.question, question);
+  assert.equal(
+    phoneA.messages.some((m) => m.t === 'screen' && m.workerId === workerB),
+    false,
+  );
 
-  // A brand-new connection landing on floorA immediately receives both floors in welcome.building and the off-floor needs_input screen.
+  // A new connection on floorA gets both floors and the outstanding question in welcome.building.
   const freshPhone = socket(rig, base, `d=${pair.token}`);
   const freshWelcome = await freshPhone.wait('welcome');
   assert.equal(freshWelcome.floor, floorA);
-  assert.equal(freshWelcome.building?.find((r) => r.floor === floorB)?.workers.find((w) => w.id === workerB)?.status, 'needs_input');
-  const initialOffFloorScreen = await freshPhone.wait('screen', (m) => m.workerId === workerB && m.full === true);
   const freshState = new Store();
   freshState.apply(freshWelcome);
-  freshState.apply(initialOffFloorScreen);
-  assert.equal(readScreenMenu(freshState.screens.get(workerB)!.lines)?.question, 'Which greeting should I write into HELLO.md?');
+  const freshWorker = freshState.building.get(floorB)?.workers.find((w) => w.id === workerB);
+  assert.equal(freshWorker?.status, 'needs_input');
+  assert.equal(freshWorker?.menu?.question, question);
 
   // Answering from phoneA (on floorA) with a mismatched requestFloor is refused.
   phoneA.send({ t: 'worker.answer', workerId: workerB, menu: parsedMenu!, choice: 2, requestId: 'ans-wrong-floor', requestFloor: floorA });
   const wrongFloorAns = await phoneA.wait('action.result', (m) => m.requestId === 'ans-wrong-floor');
   assert.equal(wrongFloorAns.ok, false);
+  assert.deepEqual(daemon.answers, []);
 
-  // Answering from phoneA (on floorA) with requestFloor: floorB succeeds and delivers keys to floorB's PTY!
+  // Answering from phoneA (on floorA) with requestFloor: floorB succeeds and sends a structured reply.
   phoneA.send({ t: 'worker.answer', workerId: workerB, menu: parsedMenu!, choice: 2, requestId: 'ans-ok', requestFloor: floorB });
   const okAns = await phoneA.wait('action.result', (m) => m.requestId === 'ans-ok');
   assert.equal(okAns.ok, true, okAns.error);
-  const end = Date.now() + 8000;
-  for (;;) {
-    const inputs = records()
-      .filter((l) => l.workerId === workerB && l.stdin !== undefined)
-      .map((l) => l.stdin)
-      .join('');
-    if (inputs.length > 0) break;
-    if (Date.now() > end) assert.fail('expected answer keystrokes on floorB worker');
-    await new Promise((r) => setTimeout(r, 25));
-  }
+  assert.deepEqual(daemon.answers, [{ sessionId: sid, answers: [{ index: 1, question, answer: 'hello' }] }]);
 
-  // Mark workerB idle/done via Stop hook so we can fork it cross-floor from phoneA.
-  await hook(launch, 'Stop');
+  // Finish workerB's turn so we can fork it cross-floor from phoneA.
+  daemon.notify(sid, { type: 'agent_turn_completed' });
   await phoneA.wait('building.worker', (m) => m.floor === floorB && m.worker.id === workerB && m.worker.status === 'done');
 
   // Reading workerB's thread from phoneA (on floorA) addresses floorB rather than failing as off-floor.

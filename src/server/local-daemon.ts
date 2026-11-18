@@ -1244,9 +1244,6 @@ export class LocalDaemon {
 
     const args = ['daemon', '--port', String(port), '--host', '127.0.0.1'];
     const child = this.spawnDaemon(droidPath, args, daemonEnv, this.logFile);
-    child.unref();
-    if (!child.pid) throw new Error('Failed to spawn detached droid daemon (missing PID)');
-
     let earlyExitError: Error | undefined;
     child.once('error', (err) => {
       earlyExitError = err instanceof Error ? err : new Error(String(err));
@@ -1254,6 +1251,9 @@ export class LocalDaemon {
     child.once('exit', (code, signal) => {
       earlyExitError = new Error(`droid daemon exited early (code=${String(code)}, signal=${String(signal)})`);
     });
+    child.unref();
+    // A failed spawn may not have a PID, but still emits an async 'error' event.
+    if (!child.pid) throw new Error('Failed to spawn detached droid daemon (missing PID)');
 
     const recordInfo: PersistedDaemonInfo = {
       pid: child.pid,

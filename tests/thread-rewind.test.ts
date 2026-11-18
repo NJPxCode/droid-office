@@ -9,190 +9,10 @@ import test from 'node:test';
 import { WebSocket } from 'ws';
 import { loadConfig } from '../src/server/config.js';
 import { startServer } from '../src/server/server.js';
-import { driveDroidRewind } from '../src/server/worker-rewind.js';
 import { newWorker } from '../src/server/worker-runtime/state.js';
 import { WorkerThreadReader } from '../src/server/worker-thread.js';
 import { WorkerManager } from '../src/server/workers.js';
 import type { ServerMsg } from '../src/shared/protocol.js';
-import { readRewindMenu, readRewindRestore, rewindProcessing, rewindWithoutFiles, rewound } from '../src/shared/thread-rewind.js';
-
-// Droid 1.12.1, Haiku 5.5 at 120x40, from the approved scratch run. Unrelated transcript rows are
-// trimmed, but the menu cells and previews are verbatim.
-const MENU = [
-  ' ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮',
-  ' │ Select a user message to rewind before                                                                               │',
-  ' │                                                                                                                      │',
-  ' │ #     Message Preview                                                                                                │',
-  ' │ > 12   Reply with just the word: two                                                                                 │',
-  ' │   4    Use the Create tool to create notes.txt containing the single line: hello. Then reply wit…                    │',
-  ' ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯',
-  '   ↑↓ to navigate   Enter to select   Esc/Q to close   Showing 1-2 of 2',
-];
-const MENU_OLDER = MENU.map((line) => line.replace('> 12', '  12').replace('  4    Use', '> 4    Use'));
-const RESTORE = [
-  ' ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮',
-  ' │ Rewind File Restoration                                                                                              │',
-  ' │ This rewind point has 1 file change(s) that can be undone:                                                           │',
-  ' │   • 1 created file(s) to delete                                                                                      │',
-  ' │ > Restore all files                                                                                                  │',
-  ' │     Restore 0 file(s), delete 1 created file(s)                                                                      │',
-  ' │   Choose files to restore...                                                                                         │',
-  ' │     Select which files to restore or delete individually                                                             │',
-  " │   Don't restore files                                                                                                │",
-  ' │     Rewind conversation only, keep files as they are                                                                 │',
-  ' ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯',
-  '   ↑↓ navigate   Enter select   Esc cancel',
-];
-const RESTORE_CHOOSE = RESTORE.map((line) => line.replace('> Restore all files', '  Restore all files').replace('  Choose files to restore...', '> Choose files to restore...'));
-const RESTORE_NONE = RESTORE.map((line) => line.replace('> Restore all files', '  Restore all files').replace("  Don't restore files", "> Don't restore files"));
-const REWOUND = [' ●  Rewound conversation to before: "Use the Create tool to create notes.txt containing the single line: hello. Then', '    reply wit…"'];
-
-test('golden rewind menu and file restoration screens', () => {
-  assert.deepEqual(readRewindMenu(MENU), {
-    rows: [
-      { number: 12, preview: 'Reply with just the word: two', selected: true },
-      { number: 4, preview: 'Use the Create tool to create notes.txt containing the single line: hello. Then reply wit…', selected: false },
-    ],
-    empty: false,
-    total: 2,
-  });
-  assert.equal(readRewindMenu(MENU_OLDER)?.rows[1].selected, true);
-  assert.deepEqual(readRewindRestore(RESTORE), [
-    { label: 'Restore all files', selected: true },
-    { label: 'Choose files to restore...', selected: false },
-    { label: "Don't restore files", selected: false },
-  ]);
-  assert.equal(rewound(REWOUND), true);
-  assert.equal(rewindProcessing(['Auto (High) (Please wait)']), true);
-  assert.equal(rewindWithoutFiles([' │ No file changes found for this rewind point │', ' Press Esc to continue without restoration']), true);
-});
-test('old completion text cannot bypass restoration or submit its choice more than once', async () => {
-  let phase = 'input';
-  let restorationPolls = 0;
-  let submitted = 0;
-  const result = await driveDroidRewind(
-    {
-      write(data) {
-        if (data !== '\r') return;
-        if (phase === 'input') phase = 'menu';
-        else if (phase === 'menu') phase = 'restore';
-        else if (phase === 'restore') submitted++;
-      },
-      rows: () => {
-        if (phase === 'menu') return [...REWOUND, ...MENU_OLDER];
-        if (phase === 'restore') {
-          if (submitted && ++restorationPolls >= 4) phase = 'done';
-          else return [...REWOUND, ...RESTORE_NONE];
-        }
-        return phase === 'done' ? REWOUND : [];
-      },
-    },
-    { number: 4, preview: 'Use the Create tool to create notes.txt' },
-    'conversation',
-  );
-  assert.deepEqual(result, { ok: true });
-  assert.equal(submitted, 1);
-});
-
-test('no-files continuation sends one Escape even when its screen persists across polls', async () => {
-  let phase = 'input';
-  let polls = 0;
-  let escapes = 0;
-  const result = await driveDroidRewind(
-    {
-      write(data) {
-        if (data === '\r') phase = phase === 'input' ? 'menu' : 'no-files';
-        if (data === '\x1b') escapes++;
-      },
-      rows: () => (phase === 'menu' ? MENU_OLDER : phase === 'no-files' && ++polls < 5 ? [' │ No file changes found for this rewind point │', ' Press Esc to continue without restoration'] : phase === 'no-files' ? REWOUND : []),
-    },
-    { number: 4, preview: 'Use the Create tool to create notes.txt' },
-    'conversation',
-  );
-  assert.deepEqual(result, { ok: true });
-  assert.equal(escapes, 1);
-});
-
-test('a preview sharing only its first sixty characters is not the same rewind point', async () => {
-  const prefix = 'This deliberately long common prefix belongs to two different conversation forks ';
-  const changed = MENU.map((line) => line.replace('Reply with just the word: two', `${prefix}wrong ending`));
-  let opened = false;
-  let enters = 0;
-  const result = await driveDroidRewind(
-    {
-      write(data) {
-        if (data === '/rewind-conversation') opened = true;
-        if (data === '\r') enters++;
-      },
-      rows: () => (opened ? changed : []),
-    },
-    { number: 12, preview: `${prefix}correct ending` },
-    'conversation',
-  );
-  assert.equal(result.ok, false);
-  assert.match(result.error ?? '', /conversation changed/);
-  assert.equal(enters, 1);
-});
-
-test('the driver selects the older message, conversation-only, and clears the prefilled prompt', async () => {
-  let screen: string[] = [];
-  const writes: string[] = [];
-  const io = {
-    write(data: string) {
-      writes.push(data);
-      if (data === '\r' && writes.includes('/rewind-conversation')) {
-        if (readRewindMenu(screen) && screen === MENU_OLDER) {
-          writes.push('picked');
-          screen = RESTORE;
-        } else if (readRewindRestore(screen)) {
-          screen = REWOUND;
-        }
-      }
-      if (data === '\x1b[B' && readRewindMenu(screen)) screen = MENU_OLDER;
-      else if (data === '\x1b[B' && screen === RESTORE) screen = RESTORE_CHOOSE;
-      else if (data === '\x1b[B' && screen === RESTORE_CHOOSE) screen = RESTORE_NONE;
-    },
-    rows: () => screen,
-  };
-  // Open the menu after the slash command's Enter.
-  const open = io.write;
-  io.write = (data: string) => {
-    open(data);
-    if (data === '/rewind-conversation') screen = MENU;
-  };
-  const result = await driveDroidRewind(io, { number: 4, preview: 'Use the Create tool to create notes.txt' }, 'conversation');
-  assert.deepEqual(result, { ok: true });
-  assert.ok(writes.includes('/rewind-conversation'));
-  assert.ok(writes.includes('\x1b[B'));
-  assert.equal(writes.at(-1), '\x15');
-});
-
-test('a menu number whose preview belongs to another fork is never selected', async () => {
-  let screen: string[] = [];
-  const writes: string[] = [];
-  const result = await driveDroidRewind(
-    {
-      write(data) {
-        writes.push(data);
-        if (data === '/rewind-conversation') screen = MENU;
-      },
-      rows: () => screen,
-    },
-    { number: 12, preview: 'A different prompt from another session' },
-    'conversation',
-  );
-  assert.equal(result.ok, false);
-  assert.match(result.error ?? '', /conversation changed/);
-  assert.equal(writes.filter((data) => data === '\r').length, 1, 'only the slash command was submitted');
-});
-
-test('a menu that never opens is a clean failure', async () => {
-  const writes: string[] = [];
-  const result = await driveDroidRewind({ write: (data) => writes.push(data), rows: () => [] }, { number: 4, preview: 'Hello' }, 'files');
-  assert.equal(result.ok, false);
-  assert.match(result.error ?? '', /did not open/);
-  assert.ok(writes.includes('\x1b'));
-});
 
 test('reader-generated ids resolve duplicate prompts to their own seq, including string content', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'office-rewind-point-'));
@@ -231,7 +51,7 @@ test('a session fork during the async entry lookup refuses before touching the t
   const worker = { info: { kind: 'agent', name: 'Ada', sessionId: 'forked-session', status: 'idle' }, pty: { write: (data: string) => writes.push(data) } };
   const manager = Object.create(WorkerManager.prototype) as WorkerManager;
   Reflect.set(manager, 'workers', new Map([['worker', worker]]));
-  const result = await manager.rewind('worker', 'first:0', 'original-session', { number: 3, preview: 'Repeat this exact prompt' }, 'conversation');
+  const result = await manager.rewind('worker', 'first:0', 'original-session', 'conversation');
   assert.equal(result.ok, false);
   assert.match(result.error ?? '', /conversation changed/);
   assert.equal(worker.info.sessionId, 'forked-session');
@@ -239,76 +59,12 @@ test('a session fork during the async entry lookup refuses before touching the t
   assert.deepEqual(writes, []);
 });
 
-test('a rewind point beyond 120 prompts remains reachable in the descending picker', async () => {
-  let number = 132;
-  let phase = 'input';
-  let down = 0;
-  let selected: number | undefined;
-  const result = await driveDroidRewind(
-    {
-      write(data) {
-        if (data === '\r') {
-          if (phase === 'input') phase = 'menu';
-          else if (phase === 'menu') {
-            selected = number;
-            phase = 'restore';
-          } else if (phase === 'restore') phase = 'done';
-        } else if (data === '\x1b[B' && phase === 'menu') {
-          down++;
-          number--;
-        }
-      },
-      rows: () =>
-        phase === 'menu'
-          ? MENU.map((line) =>
-              line
-                .replace('> 12', `> ${number}`)
-                .replace('  4    Use the Create tool to create notes.txt containing the single line: hello. Then reply wit…', `  ${number - 1}    Reply with just the word: two`)
-                .replace('Showing 1-2 of 2', 'Showing 1-2 of 132'),
-            )
-          : phase === 'restore'
-            ? RESTORE_NONE
-            : phase === 'done'
-              ? REWOUND
-              : [],
-    },
-    { number: 1, preview: 'Reply with just the word: two' },
-    'conversation',
-  );
-  assert.deepEqual(result, { ok: true });
-  assert.equal(selected, 1, 'select the exact oldest duplicate prompt');
-  assert.ok(down > 120);
-});
-
-test('a slow fork keeps waiting past five seconds without mistaking a previous completion for success', async () => {
-  let phase = 'input';
-  let processingSince = 0;
-  const started = Date.now();
-  const result = await driveDroidRewind(
-    {
-      write(data) {
-        if (data !== '\r') return;
-        if (phase === 'input') phase = 'menu';
-        else if (phase === 'menu') {
-          phase = 'processing';
-          processingSince = Date.now();
-        }
-      },
-      rows: () => (phase === 'menu' ? MENU_OLDER : phase === 'processing' && Date.now() - processingSince < 6_000 ? [...REWOUND, 'Auto (High) (Please wait)'] : phase === 'processing' ? REWOUND : []),
-    },
-    { number: 4, preview: 'Use the Create tool to create notes.txt' },
-    'conversation',
-  );
-  assert.deepEqual(result, { ok: true });
-  assert.ok(Date.now() - started >= 6_000);
-});
-
 test('WebSocket worker.rewind and group-scoped worker.queue defer action.result until async completion', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'office-rewind-ws-'));
   execFileSync('git', ['init', '-q'], { cwd: dir });
   const cfg = loadConfig(['--home', dir, '--projects', dir, dir, '--weather', 'clear']);
   cfg.port = 0;
-  const running = await startServer(cfg);
+  const running = await startServer(cfg, { droidSessionsDir: dir });
   let stopped = false;
   t.after(async () => {
     if (!stopped) {
@@ -321,9 +77,7 @@ test('WebSocket worker.rewind and group-scoped worker.queue defer action.result 
     await rm(dir, { recursive: true, force: true });
   });
 
-  const transcript = path.join(os.homedir(), '.factory', 'sessions', `office-rewind-ws-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
-  await mkdir(path.dirname(transcript), { recursive: true });
-  t.after(() => rm(transcript, { force: true }));
+  const transcript = path.join(dir, 'session.jsonl');
   const sessionId = path.basename(transcript, '.jsonl');
   await writeFile(transcript, `${[JSON.stringify({ type: 'session_start', id: sessionId, cwd: dir }), JSON.stringify({ type: 'message', id: 'u1', seq: 2, message: { role: 'user', content: 'First line\nSecond line' } })].join('\n')}\n`);
 
@@ -331,12 +85,12 @@ test('WebSocket worker.rewind and group-scoped worker.queue defer action.result 
   const workersMap = Reflect.get(floor.workers, 'workers') as Map<string, unknown>;
   workersMap.set('w1', {
     ...newWorker({ id: 'w1', name: 'Ada', kind: 'agent', status: 'idle', sessionId, deskId: 'desk-1', color: '#ff5a00', cols: 120, rows: 40 }),
-    pty: { write() {}, kill() {}, resize() {}, onData() {}, onExit() {} },
+    daemonActive: true,
     transcript,
   });
 
-  const rewoundCalls: { entryId: string; sessionId: string; restore: string }[] = [];
-  floor.workers.rewind = async (_id, entryId, sid, _target, restore) => {
+  const rewoundCalls: { entryId: string; sessionId: string; restore: unknown }[] = [];
+  floor.workers.rewind = async (_id, entryId, sid, restore) => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     rewoundCalls.push({ entryId, sessionId: sid, restore });
     return { ok: true };

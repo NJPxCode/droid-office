@@ -30,7 +30,6 @@ import {
   toggleMax,
   visibleSlots,
   workedFor,
-  workerView,
 } from '../src/client/dashboard-workspace.js';
 
 const workers = (ids: readonly string[]) => ids.map((id, createdAt) => ({ id, createdAt, status: 'working' as WorkerInfo['status'], lead: undefined as string | undefined }));
@@ -47,7 +46,6 @@ test('closing any pane compacts every layout without revealing parked workers or
         ws.auto = true;
         ws.focused = focused;
         ws.maximized = count > 1 ? focused : null;
-        ws.views = { a: 'thread', b: 'terminal' };
         const disposed: string[] = [];
         const panes = ids.slice(0, count).map((id, index) => ({
           id,
@@ -74,7 +72,6 @@ test('closing any pane compacts every layout without revealing parked workers or
         assert.equal(ws.slots[count - 1], null);
         assert.equal(ws.slots.length, MAX_SLOTS);
         assert.equal(ws.auto, false);
-        assert.deepEqual(ws.views, { a: 'thread', b: 'terminal' });
         reconcilePanes(panes, visibleSlots(ws));
         assert.deepEqual(disposed, [ids[slot]]);
         survivors.forEach((pane, i) => {
@@ -185,11 +182,9 @@ test('a saved pane on a building agent survives reloading the floor while Missio
   saved.auto = false;
   saved.slots[0] = 'a';
   saved.slots[1] = 'orchestrator';
-  saved.views.orchestrator = 'thread';
   const previous = new Map<string, number>();
   const ws = restoreWorkspace(serializeWorkspace(saved), workers(['a']), previous, (id) => id === 'orchestrator');
   assert.deepEqual(visibleSlots(ws), ['a', 'orchestrator']);
-  assert.equal(ws.views.orchestrator, 'thread');
   assert.deepEqual([...previous.keys()], ['a']);
   assert.deepEqual(visibleSlots(restoreWorkspace(serializeWorkspace(saved), workers(['a']), new Map(), () => false)), ['a', null], 'gone once Mission Control loses it');
   assert.deepEqual(visibleSlots(restoreWorkspace('', workers(['a', 'b']), new Map(), () => false)), ['a', 'b'], 'a floor with nothing saved seeds its workers');
@@ -313,19 +308,6 @@ test('open in a new pane reveals its target while another pane is maximized', ()
   assert.equal(ws.layout, 'triple');
   assert.equal(ws.focused, 2);
   assert.equal(ws.maximized, null);
-});
-
-test('pane views keep their initial default when another worker changes the default', () => {
-  const ws = seedWorkspace(['a', 'b']);
-  assert.equal(workerView(ws, 'a', 'terminal'), 'terminal');
-  assert.equal(workerView(ws, 'b', 'terminal'), 'terminal');
-  ws.views.a = 'thread';
-  assert.equal(workerView(ws, 'a', 'thread'), 'thread');
-  assert.equal(workerView(ws, 'b', 'thread'), 'terminal');
-  assert.equal(workerView(ws, 'c', 'thread'), 'thread');
-  const restored = parseWorkspace(serializeWorkspace(ws))!;
-  assert.equal(workerView(restored, 'a', 'terminal'), 'thread');
-  assert.equal(workerView(restored, 'b', 'thread'), 'terminal');
 });
 
 test('swapping retains live panes without detaching their workers', () => {
@@ -459,14 +441,12 @@ test('maximize toggles, needs two panes, and closing the maximized pane restores
   assert.deepEqual(visibleSlots(ws), ['a', 'c']);
 });
 
-test('workers who left the floor leave their panes and views', () => {
+test('workers who left the floor leave their panes', () => {
   const ws = seedWorkspace(['a', 'b', 'c']);
-  ws.views = { a: 'thread', b: 'terminal' };
   toggleMax(ws, 1);
   const gone = prune(ws, (id) => id !== 'b');
   assert.deepEqual(gone, ['b']);
   assert.deepEqual(ws.slots, ['a', null, 'c', null, null, null, null, null]);
-  assert.deepEqual(ws.views, { a: 'thread' });
   assert.equal(ws.maximized, null);
 });
 
@@ -553,7 +533,6 @@ test('dividers stay away from the edges', () => {
 test('a saved workspace round-trips, and a damaged one is cleaned or refused', () => {
   const ws = seedWorkspace(['a', 'b', 'c']);
   ws.col = 0.3;
-  ws.views.a = 'thread';
   toggleMax(ws, 2);
   assert.deepEqual(parseWorkspace(serializeWorkspace(ws)), ws);
   assert.equal(parseWorkspace(null), undefined);
@@ -561,7 +540,7 @@ test('a saved workspace round-trips, and a damaged one is cleaned or refused', (
   assert.equal(parseWorkspace('"triple"'), undefined);
   assert.equal(parseWorkspace(JSON.stringify({ layout: 'mosaic', slots: [] })), undefined);
   const cleaned = parseWorkspace(JSON.stringify({ layout: 'split', slots: ['a', 'a', 7, 'b', 'c'], focused: 3, maximized: 1, col: 4, row: 'x', views: { a: 'thread', b: 'grid' } }));
-  assert.deepEqual(cleaned, { layout: 'split', auto: true, slots: ['a', null, null, 'b', 'c', null, null, null], focused: 0, maximized: 1, col: 0.78, row: 0.5, views: { a: 'thread' } });
+  assert.deepEqual(cleaned, { layout: 'split', auto: true, slots: ['a', null, null, 'b', 'c', null, null, null], focused: 0, maximized: 1, col: 0.78, row: 0.5 });
   assert.equal(parseWorkspace(JSON.stringify({ layout: 'single', slots: ['a'], maximized: 0 }))?.maximized, null);
 });
 
@@ -576,7 +555,6 @@ test('legacy four-pane saves expand safely and all eight slots survive shrink an
   setLayout(legacy, 'single');
   setLayout(legacy, 'eight');
   assert.deepEqual(visibleSlots(legacy), ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
-  assert.equal(legacy.views.d, 'terminal');
 });
 
 test('worked time adds the current stretch and reads short', () => {
@@ -676,14 +654,13 @@ test('priority changes replace lower-priority workers without shuffling equal-pr
   assert.deepEqual(visibleSlots(ws), ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
 });
 
-test('Auto keeps focus, maximization, views and ratios when compacting after a dismissal', () => {
+test('Auto keeps focus, maximization and ratios when compacting after a dismissal', () => {
   const all = workers(['a', 'b', 'c', 'd']);
   const ws = emptyWorkspace();
   const previous = new Map<string, number>();
   syncWorkspace(ws, all, previous);
   ws.col = 0.35;
   ws.row = 0.65;
-  ws.views = { b: 'thread', d: 'terminal' };
   toggleMax(ws, 3);
   syncWorkspace(
     ws,
@@ -693,7 +670,6 @@ test('Auto keeps focus, maximization, views and ratios when compacting after a d
   assert.deepEqual(visibleSlots(ws), ['a', 'd', 'c']);
   assert.equal(ws.focused, 1);
   assert.equal(ws.maximized, 1);
-  assert.deepEqual(ws.views, { d: 'terminal' });
   assert.equal(ws.col, 0.35);
   assert.equal(ws.row, 0.65);
   syncWorkspace(ws, all.slice(0, 1), previous);

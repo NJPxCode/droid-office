@@ -216,12 +216,5 @@ test('enrichPage stamps daemon thinking durations and subagent child links onto 
   children.set('call-sub', 'sub-session-42');
   hub.notifyWorker('worker');
 
-  await waitUntil(() =>
-    sent.some(
-      (m) =>
-        m.t === 'thread.snapshot' &&
-        m.entries.some((e) => e.kind === 'thinking' && e.tookMs === 4321) &&
-        m.entries.some((e) => e.kind === 'tool' && e.child === 'sub-session-42'),
-    ),
-  );
+  await waitUntil(() => sent.some((m) => m.t === 'thread.snapshot' && m.entries.some((e) => e.kind === 'thinking' && e.tookMs === 4321) && m.entries.some((e) => e.kind === 'tool' && e.child === 'sub-session-42')));
 });

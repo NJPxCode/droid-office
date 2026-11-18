@@ -1,7 +1,7 @@
 import { ORCHESTRATOR_ID } from '../../shared/mission-control';
 import { PROMPT_MAX } from '../../shared/prompts';
 import type { ClientMsg, ServerMsg, WorkerInfo } from '../../shared/protocol';
-import { nativeCopy, nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
+import { copyTurns, nativeCopy, nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
 import { isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
 import { IMAGE_PLACEHOLDER, latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
 import { statusMode, thinkingSeconds, thoughtLabel } from '../../shared/thread-status';
@@ -1930,7 +1930,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       return;
     }
     if (live && !cloud && nativeCopy(text)) {
-      openThreadCopy({ entries: history.entries, sessionId: worker.sessionId });
+      openThreadCopy({ entries: history.entries, sessionId: worker.sessionId, initialTurns: copyTurns(text) });
       clearDraft();
       updateControls();
       return;
