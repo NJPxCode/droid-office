@@ -12,6 +12,7 @@ import { missionTeam } from './building-agent.js';
 import type { AskReply } from './factory/cloud-ask.js';
 import type { LocalDaemon } from './local-daemon.js';
 import { officePrompt, type PromptSource } from './prompts.js';
+import { PtyHost } from './ptys.js';
 import { floorHint } from '../shared/prompts.js';
 import type { Team } from './team.js';
 import { WorkerManager, type HookEnv } from './workers.js';
@@ -113,9 +114,10 @@ export class Orchestrator {
     };
   }
 
-  /** Picks its terminal back up, or resumes its conversation, as a floor does its workers. */
-  start(): Promise<void> {
-    return this.workers.start();
+  /** Retire our old TUI process group before adopting its conversation in the daemon. */
+  async start(): Promise<void> {
+    await new PtyHost(path.join(this.cwd, '.droid-office'), () => {}).stopExisting();
+    await this.workers.start();
   }
 
   shutdown(keep = false) {
