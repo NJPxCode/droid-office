@@ -1117,6 +1117,26 @@ test('a working daemon session and a pending AskUser keep their state across an 
   );
   assert.equal(f.daemon.messages.slice(2).filter((m) => m.text.includes('Look at the board')).length, 1);
 });
+test('a turn that finished while the office was down comes back done and unread', async (t) => {
+  const f = carryOnFixture(t);
+  const before = manager(f, []);
+  const working = await hireInState(f, before, 'desk-1', 'finished-while-down', 'working');
+  f.daemon.notify(working.sessionId!, { type: 'droid_working_state_changed', newState: 'thinking' });
+  before.shutdown(true);
+  f.daemon.notify(working.sessionId!, { type: 'agent_turn_completed', reason: 'completed' });
+  const reopened = manager(f, []);
+  t.after(() => reopened.shutdown());
+  await reopened.start();
+  assert.equal(reopened.get(working.id)?.status, 'done');
+  assert.equal(reopened.get(working.id)?.acked, false);
+  assert.equal(typeof reopened.get(working.id)?.waitingSince, 'number');
+  assert.equal(
+    f.daemon.messages.some((m) => m.text.includes(CARRY_ON_PROMPT)),
+    false,
+    'a session that stayed open is never told to carry on',
+  );
+});
+
 test('an upgrade retires the four kiosk seats and preserves ordinary workers, subworkers and their worktrees', async (t) => {
   const f = carryOnFixture(t);
   const before = manager(f, []);

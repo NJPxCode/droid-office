@@ -413,10 +413,12 @@ export class WorkerManager {
               clockWork(w.info, 'working');
               this.setStatus(w, 'working');
             } else {
-              const targetStatus: WorkerStatus = saved?.status === 'done' ? 'done' : 'idle';
+              // A turn the still-open session finished while the office was down is done and unread.
+              const finishedUnseen = wasOpen && (saved?.status === 'working' || saved?.status === 'needs_input');
+              const targetStatus: WorkerStatus = saved?.status === 'done' || finishedUnseen ? 'done' : 'idle';
               w.info.status = targetStatus;
-              w.info.acked = targetStatus === 'done' ? (saved?.acked ?? true) : true;
-              w.info.waitingSince = targetStatus === 'done' ? saved?.waitingSince : undefined;
+              w.info.acked = finishedUnseen ? false : targetStatus === 'done' ? (saved?.acked ?? true) : true;
+              w.info.waitingSince = finishedUnseen ? Date.now() : targetStatus === 'done' ? saved?.waitingSince : undefined;
               this.emitUpdate(w);
             }
             if (wasOpen) {
