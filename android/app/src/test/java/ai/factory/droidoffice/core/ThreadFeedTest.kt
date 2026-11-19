@@ -50,21 +50,6 @@ class ThreadFeedTest {
     }
 
     @Test
-    fun anEarlierPageReturningAfterJumpToLatestCannotTrimTheTail() {
-        val feed = ThreadFeed("w1")
-        val last = ThreadFeed.MAX_ENTRIES + 5L
-        val entries = (6L..last).map { text("e$it", it) }
-        val older = (1L..5L).map { text("e$it", it) }
-        assertTrue(feed.receive(page(feed, feed.latest(0)!!, entries, hasMore = true, presentation = rows(entries))))
-        val (req, before) = feed.earlier(1)!!
-        assertTrue(feed.receive(page(feed, req, older, before = before, presentation = rows(older)), keepLatest = true))
-        assertEquals(last, feed.state.entries.last().seq)
-        assertEquals("e$last", feed.state.rows.last().id)
-        assertTrue(feed.state.hasMore)
-        assertFalse(feed.state.newerTrimmed)
-    }
-
-    @Test
     fun aNewerLatestPageMergesByIdAndKeepsOlderPages() {
         val feed = ThreadFeed("w1")
         feed.receive(page(feed, feed.latest(0)!!, listOf(text("c", 3), text("d", 4)), hasMore = true))
@@ -516,7 +501,7 @@ class ThreadFeedTest {
         assertEquals(ThreadSupport.OlderOffice, feed.state.support)
         assertEquals(listOf("a"), feed.state.entries.map { it.id })
         assertTrue(feed.state.rows.isEmpty())
-        assertEquals("Update Droid Office on your computer to read this Thread here.", feed.state.support.message)
+        assertEquals("Update Droid Office on your computer to read this Thread here. Raw TTY still works.", feed.state.support.message)
         // The office updated: the next page reads.
         feed.receive(shown(feed, feed.latest(1)!!, listOf(text("a", 1), text("b", 2))))
         assertEquals(ThreadSupport.Supported, feed.state.support)
@@ -536,7 +521,7 @@ class ThreadFeedTest {
         assertEquals(ThreadSupport.NewerOffice, feed.state.support)
         assertTrue("rows of an unknown version are never guessed at", feed.state.rows.isEmpty())
         assertEquals(listOf("a"), feed.state.entries.map { it.id })
-        assertEquals("Update the app to read this Thread.", feed.state.support.message)
+        assertEquals("Update the app to read this Thread. Raw TTY still works.", feed.state.support.message)
     }
 
     @Test

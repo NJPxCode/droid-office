@@ -1,6 +1,6 @@
 import type { TodoProgress } from './protocol.js';
 
-// A worker's todo list from its latest TodoWrite call, cut down to what its card shows: how many
+// A worker's todo list as its hooks report it (TodoWrite), cut down to what its card shows: how many
 // items are done, of how many, and the one in progress. Every client words it the same way from here.
 
 const CURRENT_CHARS = 120;

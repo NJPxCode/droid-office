@@ -1,12 +1,12 @@
+import { readDroidPending } from '../../shared/droid-queue';
 import { ORCHESTRATOR_ID } from '../../shared/mission-control';
 import { PROMPT_MAX } from '../../shared/prompts';
 import type { ClientMsg, ServerMsg, WorkerInfo } from '../../shared/protocol';
-import { copyTurns, nativeCopy, nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
-import { daemonStartFailure, isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
-import { settledMarkdownEnd } from '../../shared/live-markdown';
-import { REVEAL_JOIN_AGE_MS, StreamReveal } from '../../shared/stream-reveal';
-import { IMAGE_PLACEHOLDER, latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
-import { thinkingSeconds, thoughtLabel, threadStatus } from '../../shared/thread-status';
+import { nativeCopy, nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
+import { isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
+import { latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
+import { statusMode, thinkingSeconds, thoughtLabel } from '../../shared/thread-status';
+import { ThreadQueue } from '../../shared/thread-queue';
 import { rewindFilesSince } from '../../shared/thread-rewind';
 import { threadPrompts } from '../../shared/thread-turns';
 import { todosFinished } from '../../shared/todos';
@@ -19,10 +19,9 @@ import { ThreadHistory } from '../thread-history';
 import { cloudStarting, threadSnapshotError, threadStarting } from '../thread-startup';
 import { withToken } from '../token';
 import { applyHorizontalScrollCue, measureHorizontalScrollCue, type HorizontalScrollCueMeasurement } from './code-highlight';
-import { claimEscape, h, STATUS_LABEL } from './dom';
+import { h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
-import { followsTail, keepAtTail, rememberSelection } from './thread-live-output';
-import { liveAppend, liveFrom, entryAt, entryTook, type LiveTool, type LiveView } from './thread-live-view';
+import { liveFrom, entryAt, entryTook, type LiveTool, type LiveView } from './thread-live-view';
 import { openThreadCopy } from './thread-copy';
 import { mountThreadSettings } from './thread-settings';
 import { refreshMessageTimes, threadMessageActions } from './thread-message-actions';
@@ -47,7 +46,6 @@ export interface WorkerThread {
   entries(): readonly ThreadEntry[];
   update(worker: WorkerInfo, connected: boolean): void;
   activate(active: boolean): void;
-  search(query: string): void;
   /** Takes pictures dropped on `zone` too, marking `mark` while they're over it. */
   dropZone(zone: HTMLElement, mark?: HTMLElement): void;
   dispose(): void;
@@ -56,12 +54,16 @@ export interface WorkerThread {
 export interface ThreadOptions {
   worker: WorkerInfo;
   question: HTMLElement;
-  queueKey?: string;
+  queueKey: string;
   draft: string;
   onDraft(text: string): void;
   send(msg: ClientMsg): Promise<string | undefined>;
+  /** Opens the worker's terminal. A cloud worker has none. */
+  raw?(): void;
   /** The window around the thread already shows a cloud worker's `cloud.error`. */
   cloudErrorShown?: boolean;
+  /** The worker's terminal as text, one string per row, or undefined before it has drawn one. */
+  screen?(): readonly string[] | undefined;
   onEntries?(): void;
   /** Current floor only; return no workers once the mounted floor is no longer current. */
   team?(): readonly WorkerInfo[];
@@ -78,6 +80,8 @@ export interface ThreadOptions {
   /** Why the worker can't take a message now, shown in place of the composer with `blockedAction` beside it. */
   blocked?(): string | undefined;
   blockedAction?: HTMLElement;
+  /** Stop asks the office to stop the turn (`worker.interrupt`) instead of typing Esc into the terminal. */
+  interrupt?: boolean;
   /** A prompt starts the worker from rest: the composer stays open while it's asleep, with no Resume. */
   promptWakes?: boolean;
 }
@@ -97,11 +101,11 @@ function entryDigest(entry: ThreadEntry | undefined): string {
   let digest = digests.get(entry);
   if (digest === undefined) {
     let hash = 2166136261;
-    for (const field of [entry.text, entry.input, entry.output, entry.outputRef, entry.images?.map((image) => image.id).join()]) {
+    for (const field of [entry.text, entry.input, entry.output, entry.images?.map((image) => image.id).join()]) {
       if (field === undefined) continue;
       for (let at = 0; at < field.length; at++) hash = Math.imul(hash ^ field.charCodeAt(at), 16777619);
     }
-    digest = `${hash}:${entry.error ? 1 : 0}:${entryTook(entry) ?? ''}`;
+    digest = `${hash}:${entry.error ? 1 : 0}`;
     digests.set(entry, digest);
   }
   return digest;
@@ -112,6 +116,8 @@ const rowContent = (row: ThreadRow, loaded: ReadonlyMap<string, ThreadEntry>) =>
   (row.kind === 'activity' ? row.blocks.flatMap((block) => (block.kind === 'thought' ? [block.id] : block.actions.map((item) => item.id))) : [row.id]).map((id) => entryDigest(loaded.get(id)));
 
 const hasDelegateCard = (row: ThreadRow) => row.kind === 'activity' && row.blocks.some((b) => b.kind === 'tools' && b.card === 'delegate');
+
+const localQueues = new Map<string, ThreadQueue>();
 
 const shortcut = (key: string, label: string) => h('span.wt-shortcut', {}, h('span.key', {}, key), label);
 
@@ -124,13 +130,16 @@ interface WorkspaceFilesCache {
 }
 
 /**
- * A Droid session's conversation: a local daemon session's JSONL + live notifications, or a cloud
- * worker's Factory session, projected into the same entries and controls.
+ * A worker's conversation: a local session's JSONL, or a cloud worker's Factory session, which the
+ * office projects into the same entries. It uses the existing worker actions, never a second Droid.
+ * A cloud worker has no terminal here: no Raw TTY, slash commands or screen to read its queue from,
+ * Stop interrupts its session, and Factory holds a message sent during a turn until the turn is over.
  */
 export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let worker = opts.worker;
   const cloud = !!worker.cloud;
-  const errorHint = cloud ? 'Retry below, or open it in Factory.' : 'Retry below.';
+  const screen = cloud ? undefined : opts.screen;
+  const fallback = cloud ? 'open it in Factory' : 'open Raw TTY';
   let connected = false;
   let active = false;
   let disposed = false;
@@ -140,14 +149,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let received = false;
   let watchedWorkerId = '';
   let attachedWorkerId = '';
-  let rewoundFromSessionId: string | undefined;
   let hasPushed = false;
   let liveView: LiveView | undefined;
-  /** Reveals the live stream word by word, however its text arrives. */
-  const reveal = new StreamReveal();
-  let revealFrame = 0;
-  let revealAt = 0;
-  let resyncAt = 0;
   const liveTools = new Map<string, LiveTool>();
   let paintedOnce = false;
   const floorDirs = new Map<string, string>();
@@ -159,11 +162,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let pending: { request: string; before?: number; at: number } | undefined;
   let lastReadAt = 0;
   const history = new ThreadHistory();
-  let cloudQueueSeq = 0;
-  let cloudQueueSession = worker.sessionId;
-  let cloudQueueMaxSeq = -1;
-  const cloudConsumed = new Set<string>();
-  let cloudPending: { id: number; text: string; hasImage: boolean; after: number }[] = [];
+  let savedQueue: unknown;
+  try {
+    savedQueue = JSON.parse(sessionStorage.getItem(opts.queueKey) ?? 'null');
+  } catch {}
+  const queued = localQueues.get(opts.queueKey) ?? new ThreadQueue(savedQueue);
 
   const resolveFloorDir = (): string | undefined => {
     if (!opts.floor) return undefined;
@@ -251,136 +254,67 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     latest.title = label;
   };
   let queueKey = '';
+  // Keys go straight to the attached terminal, as Raw TTY types them: an office before term.input
+  // confirmations would answer a confirmed send with a refusal after typing the keys anyway.
+  const typeKeys = (data: string) => net.send({ t: 'term.input', workerId: worker.id, data });
   let queueActionBusy = false;
-  interface QueueRowView {
-    key: string;
-    id?: string;
-    index: number;
-    group: 'steering' | 'queued';
-    text: string;
-    hasImage: boolean;
-    preview: boolean;
-    more: number;
-  }
-  const syncCloudQueue = () => {
-    if (!cloud) return;
-    if (worker.sessionId && cloudQueueSession && worker.sessionId !== cloudQueueSession) {
-      cloudPending = [];
-      cloudConsumed.clear();
-      cloudQueueMaxSeq = -1;
-    }
-    if (worker.sessionId) cloudQueueSession = worker.sessionId;
-    for (const entry of history.entries) cloudQueueMaxSeq = Math.max(cloudQueueMaxSeq, entry.seq);
-    for (const entry of [...history.entries].sort((a, b) => a.seq - b.seq)) {
-      if (entry.role !== 'user' || cloudConsumed.has(entry.id)) continue;
-      const at = cloudPending.findIndex(
-        (item) =>
-          entry.seq > item.after &&
-          (item.text
-            ? entry.kind === 'text' && entry.text?.trim() === item.text
-            : item.hasImage && ((entry.kind === 'notice' && entry.text === IMAGE_PLACEHOLDER) || (entry.kind === 'text' && !entry.text?.trim() && !!entry.images?.length))),
-      );
-      if (at >= 0) {
-        cloudPending.splice(at, 1);
-        cloudConsumed.add(entry.id);
-      }
-    }
-    if (!cloudPending.length) cloudConsumed.clear();
-  };
-  const queueAction = async (action: 'promote' | 'delete' | 'clear', item?: { id?: string; index: number; group: 'steering' | 'queued'; text?: string }) => {
+  const queueAction = async (action: 'promote' | 'delete' | 'clear', item?: { index: number; group: 'steering' | 'queued'; text?: string }) => {
     if (queueActionBusy || !connected || cloud) return '';
     queueActionBusy = true;
     updateControls();
-    const msg: ClientMsg = {
+    const msg = {
       t: 'worker.queue',
+      id: worker.id,
       workerId: worker.id,
       action,
-      ...(item
-        ? {
-            ...(item.id ? { id: item.id } : {}),
-            index: item.index,
-            group: item.group,
-            ...(item.text ? { text: item.text } : {}),
-          }
-        : {}),
-    };
+      ...(item ? { index: item.index, group: item.group, ...(item.text ? { text: item.text } : {}) } : {}),
+    } as unknown as ClientMsg;
     const why = await opts.send(msg);
     queueActionBusy = false;
+    if (!why && action === 'clear') queued.clear();
     told = why ?? '';
     queueKey = '';
     updateControls();
     return why;
   };
   const clearQueue = () => void queueAction('clear');
-  // Structured `worker.queue` from droid-daemon: Steering messages above Queued messages.
+  // Droid's steering and queued lists are the truth; our receipts fill in text the narrow TUI cut short.
   const paintQueue = () => {
-    let steering: QueueRowView[] = [];
-    let queuedRows: QueueRowView[] = [];
-    let moreSteering = 0;
-    let moreQueued = 0;
-    let total = 0;
-    if (cloud) {
-      syncCloudQueue();
-      queuedRows = cloudPending.map((item, i) => ({
-        key: `cloud:${item.id}`,
-        index: i + 1,
-        group: 'queued',
-        text: item.text,
-        hasImage: item.hasImage,
-        preview: false,
-        more: 0,
-      }));
-      total = queuedRows.length;
-    } else if (worker.queue) {
-      const serverItems = worker.queue.items ?? [];
-      steering = serverItems
-        .filter((item) => item.delivery !== 'after_turn')
-        .map((item, i) => ({
-          key: item.id ? `steer:${item.id}` : `steer:${i}:${item.text}`,
-          id: item.id,
-          index: item.index > 0 ? item.index : i + 1,
-          group: 'steering',
-          text: item.text,
-          hasImage: Boolean(item.hasImage),
-          preview: item.preview || item.moreLines > 0,
-          more: item.moreLines,
-        }));
-      queuedRows = serverItems
-        .filter((item) => item.delivery === 'after_turn')
-        .map((item, i) => ({
-          key: item.id ? `queued:${item.id}` : `queued:${i}:${item.text}`,
-          id: item.id,
-          index: item.index > 0 ? item.index : i + 1,
-          group: 'queued',
-          text: item.text,
-          hasImage: Boolean(item.hasImage),
-          preview: item.preview || item.moreLines > 0,
-          more: item.moreLines,
-        }));
-      moreSteering = worker.queue.moreSteering ?? 0;
-      moreQueued = worker.queue.moreQueued ?? 0;
-      total = Math.max(worker.queue.count ?? 0, steering.length + queuedRows.length + moreSteering + moreQueued);
-    }
-    const hasSteering = steering.length > 0 || moreSteering > 0;
-    const hasQueued = queuedRows.length > 0 || moreQueued > 0;
-    const canClear = connected && !cloud && total > 0;
-    const key = JSON.stringify([steering, queuedRows, moreSteering, moreQueued, total, canClear, queueActionBusy]);
+    queued.sync(worker.sessionId, history.entries);
+    const rows = screen?.();
+    const pending = rows ? readDroidPending(rows) : undefined;
+    const steering = (pending?.items.filter((row) => row.group === 'steering') ?? []).map((row, i) => ({
+      message: { key: `steer:${i}:${row.text}`, text: row.text, hasImage: false, preview: row.cut || row.more > 0, more: row.more },
+      group: 'steering' as const,
+      index: i + 1,
+    }));
+    const shownQueued = queued.shown(pending ? pending.items.filter((row) => row.group === 'queued') : undefined).map((message, i) => ({
+      message,
+      group: 'queued' as const,
+      index: i + 1,
+    }));
+    if (queued.pending.length) localQueues.set(opts.queueKey, queued);
+    else localQueues.delete(opts.queueKey);
+    try {
+      if (queued.pending.length) sessionStorage.setItem(opts.queueKey, JSON.stringify(queued));
+      else sessionStorage.removeItem(opts.queueKey);
+    } catch {}
+    const items = [...steering, ...shownQueued];
+    const canClear = connected && !cloud && items.length > 0;
+    const key = JSON.stringify([items, canClear, queueActionBusy]);
     if (key === queueKey) return;
     queueKey = key;
-    queuedBox.hidden = total <= 0;
-    if (total <= 0) {
-      queuedBox.replaceChildren();
-      return;
-    }
-    const section = (group: 'steering' | 'queued', rowsInGroup: QueueRowView[], moreCount: number, title: string, clear: boolean) => {
-      if (!rowsInGroup.length && moreCount <= 0) return null;
+    queuedBox.hidden = !items.length;
+    const section = (group: 'steering' | 'queued', title: string, clear: boolean) => {
+      const rowsInGroup = items.filter((item) => item.group === group);
+      if (!rowsInGroup.length) return null;
       return h(
         'section.wt-queue-group',
         { 'aria-label': title },
         h('div.wt-queue-heading', {}, h('span', {}, title), clear && canClear ? h('button.wt-queue-clear', { type: 'button', title: 'Clear all pending messages', disabled: queueActionBusy, onclick: clearQueue }, 'Clear all') : null),
-        ...rowsInGroup.map((row) => {
-          const more = row.more > 0 ? `${row.more} more line${row.more === 1 ? '' : 's'}` : row.preview ? 'Shortened' : row.hasImage && row.text ? 'Image attached' : '';
-          const target = { ...(row.id ? { id: row.id } : {}), index: row.index, group, ...(row.preview ? {} : { text: row.text }) };
+        ...rowsInGroup.map(({ message, index }) => {
+          const more = message.more > 0 ? `${message.more} more line${message.more === 1 ? '' : 's'}` : message.preview ? 'Shortened' : message.hasImage && message.text ? 'Image attached' : '';
+          const target = { index, group, ...(message.preview ? {} : { text: message.text }) };
           const action = (label: string, glyph: 'arrowUp' | 'x' | 'file', onclick: () => void) => h('button.wt-queue-action', { type: 'button', 'aria-label': label, title: label, disabled: queueActionBusy, onclick }, icon(glyph, 12));
           const actions = cloud
             ? null
@@ -388,11 +322,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
                 'div.wt-queue-actions',
                 {},
                 group === 'queued' ? action('Send now', 'arrowUp', () => void queueAction('promote', target)) : null,
-                !row.preview
+                !message.preview
                   ? action('Edit message', 'file', () => {
                       void queueAction('delete', target).then((why) => {
                         if (why) return;
-                        input.value = row.text;
+                        input.value = message.text;
                         edited();
                         input.focus();
                       });
@@ -400,16 +334,15 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
                   : null,
                 action('Remove from queue', 'x', () => void queueAction('delete', target)),
               );
-          return h('div.wt-entry.user.wt-queued-message', { 'data-queued': row.key }, h('div.wt-queue-line', {}, h('div.wt-user-text', {}, row.text || 'Image attached'), actions), more ? h('div.wt-queued-more', {}, more) : null);
+          return h('div.wt-entry.user.wt-queued-message', { 'data-queued': message.key }, h('div.wt-queue-line', {}, h('div.wt-user-text', {}, message.text || 'Image attached'), actions), more ? h('div.wt-queued-more', {}, more) : null);
         }),
-        moreCount > 0 ? h('div.wt-queued-more', {}, `+${moreCount} more`) : null,
       );
     };
     queuedBox.replaceChildren(
       ...[
-        hasSteering ? section('steering', steering, moreSteering, 'Steering messages', true) : null,
-        hasQueued ? section('queued', queuedRows, moreQueued, 'Queued messages', !hasSteering) : null,
-        h('div.wt-queued-foot', {}, h('span', {}, `${total} message${total === 1 ? '' : 's'} queued`)),
+        section('steering', 'Steering messages', true),
+        section('queued', 'Queued messages', !items.some((item) => item.group === 'steering')),
+        h('div.wt-queued-foot', {}, h('span', {}, `${items.length} message${items.length === 1 ? '' : 's'} queued`)),
       ].filter((node): node is HTMLElement => !!node),
     );
   };
@@ -426,6 +359,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     },
     'Retry',
   );
+  const raw = opts.raw && !cloud ? h('button.btn.sm', { type: 'button', onclick: opts.raw }, 'Open Raw TTY') : null;
   const resume = h(
     'button.btn.wt-resume',
     {
@@ -473,7 +407,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const busy = isBusy(worker.status);
     const fromEntries = latestThreadPlan(history.entries, busy);
     if (fromEntries) return fromEntries;
-    if (busy && worker.todos && !todosFinished(worker.todos)) {
+    if (worker.todos && !todosFinished(worker.todos)) {
       return {
         steps: [],
         done: worker.todos.done,
@@ -734,6 +668,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
           },
           h('span.wt-slash-name', {}, `/${command.name}`),
           h('span.wt-slash-desc', { title: command.argumentHint ? `${command.description}\n/${command.name} ${command.argumentHint}` : command.description }, command.description),
+          command.kind === 'tty' && !nativeLimits(`/${command.name}`, store.factory.connection.connected && !store.factory.connection.rejected)
+            ? h('span.wt-slash-tag', { title: 'Opens one of Droid’s dialogs, in Raw TTY' }, 'Raw TTY')
+            : null,
           command.source ? h('span.wt-slash-tag', { title: command.source === 'skill' ? 'One of this worker’s skills' : 'A custom command' }, command.source === 'skill' ? 'Skill' : 'Command') : null,
         ),
       ),
@@ -853,7 +790,28 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       updateControls();
     },
   });
-  const paintSettings = () => settingsUi.paint(liveView?.settings, !cloud && connected && (worker.kind === 'agent' || worker.id === ORCHESTRATOR_ID));
+  const paintSettings = () => settingsUi.paint(liveView?.settings, !cloud && connected && worker.kind === 'agent');
+  // Droid's side chat (/btw): its question and answer, over the composer until it is closed.
+  const sideText = h('div.wt-side-text');
+  const sideClose = h('button.btn.icon.sm.ghost', { type: 'button', 'aria-label': 'Close side chat', title: 'Close side chat  Esc', onclick: () => void closeSide() }, icon('x', 14));
+  const sidePanel = h(
+    'section.wt-side',
+    { 'aria-label': 'Side chat', hidden: true },
+    h('header.wt-side-head', {}, h('b', {}, 'Side chat'), h('span.wt-side-hint', {}, 'Ask a follow-up with /btw. It stays out of the conversation.'), sideClose),
+    sideText,
+  );
+  const paintSide = () => {
+    const side = liveView?.side;
+    sidePanel.hidden = !side;
+    if (side && sideText.textContent !== side.text) sideText.textContent = side.text || 'Thinking…';
+  };
+  const closeSide = async () => {
+    const why = await opts.send({ t: 'worker.side', workerId: worker.id, close: true });
+    if (why) {
+      told = why;
+      updateControls();
+    }
+  };
   // While a turn runs, Send steers it (Droid reads the message now) and Queue holds it for after the turn.
   const queue = h('button.btn.sm.wt-queue', { type: 'button', title: 'Send once this turn is over', onclick: () => void submit(true) }, 'Queue');
   const sendLabel = h('span', {}, 'Send');
@@ -864,7 +822,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   box.addEventListener('click', (event) => {
     if (!input.disabled && event.target instanceof Element && !event.target.closest('button, .pimgs, textarea')) input.focus();
   });
-  const form = h('form.wt-composer', {}, mentionMenu, slashMenu, settingsUi.menu, file, queuedBox, box);
+  const form = h('form.wt-composer', {}, mentionMenu, slashMenu, settingsUi.menu, sidePanel, file, queuedBox, box);
   const progress = mountThreadStatusRow();
   const blockedText = h('p.wt-blocked-text');
   const blockedNote = h('div.wt-blocked.note.warn', { role: 'status', hidden: true }, icon('lock', 15), blockedText, opts.blockedAction ?? null);
@@ -877,38 +835,12 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     scroll,
     latestAnchor,
     progress.element,
-    h('div.wt-feedback', {}, notice, retry, resume),
+    h('div.wt-feedback', {}, notice, retry, raw, resume),
     limitsBar,
     blockedNote,
     planBar,
     form,
   );
-  const releaseEscape = claimEscape(element, () => {
-    if (!active || disposed) return false;
-    if (mentionShown.length) {
-      if (activeMention) mentionDismissedKey = `${activeMention.start}:${activeMention.query}`;
-      paintMention();
-      return true;
-    }
-    if (slashShown.length) {
-      slashClosed = true;
-      paintSlash();
-      return true;
-    }
-    if (settingsUi.isOpen) {
-      settingsUi.close();
-      return true;
-    }
-    if (search.isOpen) {
-      search.close();
-      return true;
-    }
-    if (document.activeElement === input && isBusy(worker.status) && !stop.disabled) {
-      stopTurn();
-      return true;
-    }
-    return false;
-  });
   const applyViewPrefs = () => {
     for (const [name, value] of Object.entries(threadViewVars(threadViewPrefs()))) element.style.setProperty(name, value);
   };
@@ -921,7 +853,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   });
   images.dropZone(form);
   const detachQuote = attachQuoteReply(
-    scroll,
+    element,
     (_quote, text) => {
       const next = insertQuote(input.value, input.selectionStart ?? input.value.length, input.selectionEnd ?? input.value.length, text);
       if (!next) return;
@@ -982,20 +914,15 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let viewportHeight = scroll.clientHeight;
   const resize = new ResizeObserver(() => {
     updateClamps();
-    const resized = viewportWidth !== scroll.clientWidth || viewportHeight !== scroll.clientHeight;
-    if (followingLayout && !inspecting && !history.historical) {
-      if (resized || !paintedOnce) follow();
-      else motion.follow();
-    }
+    if (followingLayout && !inspecting && !history.historical) follow();
     viewportWidth = scroll.clientWidth;
     viewportHeight = scroll.clientHeight;
     updateLatest();
   });
   resize.observe(scroll);
-  // Off-screen rows hold estimated heights until they render, and Markdown, pictures and diagrams lay
-  // out late, so the transcript grows without a scroll: keep following it, and the live stream too.
+  // Off-screen rows hold estimated heights until they render, so the transcript grows after a jump
+  // to the bottom: keep following it.
   resize.observe(list);
-  resize.observe(streamNode);
   let inspecting = false;
   // While the pane shows the raw terminal the transcript is detached and measures 0×0, which reads as
   // "at the bottom": answer from where the reader was until it is back and laid out, and put a scrolled-up
@@ -1040,8 +967,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   };
   const updateLatest = () => {
     const distance = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
-    // While following the bottom the reader is where the newest text lands, even mid-glide.
-    latest.classList.toggle('hidden', !history.historical && !inspecting && (followingLayout || distance <= 120));
+    latest.classList.toggle('hidden', !history.historical && !inspecting && distance <= 120);
     labelLatest(history.historical ? 'Back to the latest' : inspecting && atBottom() ? 'Follow latest' : 'Scroll to bottom');
   };
   const updatePin = () => {
@@ -1070,30 +996,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     if (active && needsOwnerInput(worker) && !opts.question.hidden) requestAnimationFrame(() => opts.question.scrollIntoView({ block: 'nearest' }));
   });
   questionChanges.observe(opts.question, { childList: true, subtree: true });
-  // Only the owner's own scroll lets go of the bottom: growth, late layout and the office's own scrolls
-  // fire scroll events too, and must never read as one.
-  let ownerScrollAt = -Infinity;
-  let ownerHolding = false;
-  const ownerScroll = () => {
-    ownerScrollAt = performance.now();
-  };
-  const ownerScrolling = () => ownerHolding || performance.now() - ownerScrollAt < 400;
-  scroll.addEventListener('wheel', ownerScroll, { passive: true });
-  scroll.addEventListener('touchmove', ownerScroll, { passive: true });
-  scroll.addEventListener('keydown', (event) => {
-    // Tab counts too: moving focus to a control above scrolls it into view.
-    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'].includes(event.key)) ownerScroll();
-  });
-  // A press on the scroll bar itself, held while dragging it.
-  scroll.addEventListener('pointerdown', (event) => {
-    if (event.target !== scroll) return;
-    ownerHolding = true;
-    ownerScroll();
-  });
-  const ownerReleased = () => {
-    ownerHolding = false;
-  };
-  window.addEventListener('pointerup', ownerReleased);
   let lastScrollTop = scroll.scrollTop;
   scroll.addEventListener('scroll', () => {
     const top = scroll.scrollTop;
@@ -1101,10 +1003,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     lastScrollTop = top;
     if (viewportWidth === scroll.clientWidth && viewportHeight === scroll.clientHeight) {
       const distance = scroll.scrollHeight - top - scroll.clientHeight;
-      if (ownerScrolling() && ((delta < -1 && distance > 1) || distance > 120)) {
-        followingLayout = false;
-        motion.cancel();
-      } else if (distance <= 16 && !inspecting) followingLayout = true;
+      if ((delta < -1 && distance > 1) || distance > 80) followingLayout = false;
+      else if (distance <= 16 && !inspecting) followingLayout = true;
     }
     updateLatest();
     updatePin();
@@ -1157,7 +1057,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
 
   /** An entry's pictures, each opening at full size, read from `owner`'s session. A cloud worker's session has none here. */
   const pictures = (entry: ThreadEntry | undefined, title: string, about?: string, owner: WorkerInfo = worker) => {
-    const imgs = canOpenFiles(owner) ? (entry?.images ?? []) : [];
+    const imgs = !owner.cloud && opts.floor ? (entry?.images ?? []) : [];
     if (!imgs.length) return null;
     const gallery = imgs.map((image, i) => ({
       src: withToken(`/api/thread/image?${new URLSearchParams({ floor: opts.floor ?? '', worker: owner.id, image: image.id })}`),
@@ -1243,24 +1143,22 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         return node;
       }
       // The live stretch and one the worker is asking in stay as steps; the fold is for work that is done.
-      const answered = row.blocks.some((block) => block.kind === 'tools' && block.actions.some((action) => action.answers?.length));
-      return work === 'fold' && !row.live && !asking && !answered ? foldActivity(node, row, toggles) : node;
+      return work === 'fold' && !row.live && !asking ? foldActivity(node, row, toggles) : node;
     }
 
     node.classList.add(row.role, row.kind === 'message' ? 'text' : 'notice');
-    const entry = loaded.get(row.id);
     if (row.kind === 'notice') {
-      const compaction = entry?.name === 'compaction' || row.id.startsWith('compaction:');
+      const compaction = loaded.get(row.id)?.name === 'compaction' || row.id.startsWith('compaction:');
       if (compaction) {
         node.append(h('div.wt-compact-divider', { role: 'separator' }, h('span', {}, 'Compacted')));
         return node;
       }
-      const imgs = pictures(entry, row.role === 'user' ? 'Picture you sent' : `Picture from ${author.name}`, undefined, author);
-      if (imgs) node.append(imgs);
-      if (!imgs || row.tone !== 'attachment') node.append(h('p.wt-turn', { class: row.tone }, row.text));
+      const imgs = row.tone === 'attachment' ? pictures(loaded.get(row.id), row.role === 'user' ? 'Picture you sent' : `Picture from ${author.name}`, undefined, author) : null;
+      node.append(imgs ?? h('p.wt-turn', { class: row.tone }, row.text));
       return node;
     }
 
+    const entry = loaded.get(row.id);
     const text = entry?.text ?? '';
     if (row.role === 'assistant') {
       if (row.startsTurn) {
@@ -1275,9 +1173,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         onOpenPath: onOpenPathFor(author),
         ...(canOpenFiles(author) ? { imageUrl: (path: string) => threadFileImageUrl({ floor: opts.floor ?? '', workerId: author.id, path }) } : {}),
       });
-      const sent = pictures(entry, `Picture from ${author.name}`, undefined, author);
-      if (sent) node.append(sent);
-      if (text || !sent) node.append(body);
+      node.append(body);
       if (renderOpts.turnEnd) node.append(threadMessageActions({ text: () => text, at: entryAt(entry) }));
       return node;
     }
@@ -1497,15 +1393,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       net.send({ t: 'thread.watch', workerId: watchedWorkerId, on: false });
       watchedWorkerId = '';
     }
-    if (watchedWorkerId !== worker.id && net.send({ t: 'thread.watch', workerId: worker.id, on: true, stream: true })) {
+    if (watchedWorkerId !== worker.id && net.send({ t: 'thread.watch', workerId: worker.id, on: true })) {
       watchedWorkerId = worker.id;
     }
-  };
-  /** An append that doesn't fit what is held: watch again, which sends a whole live state. */
-  const resyncLive = () => {
-    if (watchedWorkerId !== worker.id || Date.now() - resyncAt < 1000) return;
-    resyncAt = Date.now();
-    net.send({ t: 'thread.watch', workerId: worker.id, on: true, stream: true });
   };
 
   const syncAttach = () => {
@@ -1531,8 +1421,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   };
 
   const syncTeam = () => {
-    const scope = opts.queueKey ?? `${opts.floor ?? 'mission'}:${worker.id}`;
-    team.sync(`${scope}:${worker.id}:${worker.sessionId ?? ''}`, worker.id, opts.team?.() ?? []);
+    team.sync(`${opts.queueKey}:${worker.id}:${worker.sessionId ?? ''}`, worker.id, opts.team?.() ?? []);
     team.enable(teamThreadVisible(active && !disposed, connected, !document.hidden && element.isConnected, teamSection.open));
     if (connected) team.syncWatches((msg) => net.send(msg));
     else team.resetWatches();
@@ -1568,20 +1457,15 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const starting = threadStarting(worker);
     const cloudWaiting = received && cloudStarting(worker, Date.now());
     const intro = introNow();
-    const startFailed = daemonStartFailure(worker);
-    const retained = startFailed && !worker.sessionId ? worker.prompt : undefined;
-    const key = JSON.stringify([error, received, starting, cloudWaiting, connected, !!intro, startFailed, retained]);
+    const key = JSON.stringify([error, received, starting, cloudWaiting, connected, !!intro]);
     if (key === emptyKey) return;
     emptyKey = key;
     empty.classList.toggle('wt-intro', !!intro);
     if (intro) empty.removeAttribute('role');
     else empty.setAttribute('role', 'status');
     empty.setAttribute('aria-busy', String(!intro && connected && !error && !received));
-    if (connected && startFailed) {
-      empty.setAttribute('aria-busy', 'false');
-      empty.replaceChildren(h('b', {}, 'Droid could not start.'), ...(retained ? [h('p', {}, 'Unsent prompt'), h('div.wt-user-text', {}, retained)] : []));
-    } else if (intro) empty.replaceChildren(intro);
-    else if (error) empty.textContent = `Conversation unavailable. ${errorHint}`;
+    if (intro) empty.replaceChildren(intro);
+    else if (error) empty.textContent = `Conversation unavailable. Retry below, or ${fallback}.`;
     else if (!connected) empty.textContent = 'Waiting for the office to reconnect…';
     else if (!received)
       empty.replaceChildren(
@@ -1594,171 +1478,34 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     else empty.replaceChildren(h('span.wt-empty-mark', { 'aria-hidden': true }), h('b', {}, 'No messages yet. Start a conversation!'));
   };
 
-  /**
-   * The live reply's Markdown, kept in one root: its settled blocks render once and stay (so a selection in
-   * them survives), and only the block still being written renders again on each update.
-   */
-  let liveMd: { key: string; after: string; root: HTMLElement; settled: string; tail: ChildNode[]; tailText: string; tailKey: string } | undefined;
-  const renderStreamMarkdown = (text: string, { since, after }: ShownStream) => {
-    const key = `live:stream:${since}`;
-    if (!liveMd || liveMd.key !== key || !text.startsWith(liveMd.settled)) {
-      resetStreamMarkdown();
-      liveMd = { key, after, root: threadMarkdown('', { key }), settled: '', tail: [], tailText: '', tailKey: '' };
-    }
-    const md = liveMd;
-    const mdOpts = {
-      onOpenPath: onOpenPathFor(worker),
-      ...(canOpenFiles(worker) ? { imageUrl: (path: string) => threadFileImageUrl({ floor: opts.floor ?? '', workerId: worker.id, path }) } : {}),
-    };
-    const end = Math.max(md.settled.length, settledMarkdownEnd(text));
-    if (end > md.settled.length) {
-      for (const node of md.tail) node.remove();
-      md.tail = [];
-      md.tailText = '';
-      md.root.append(...threadMarkdown(text.slice(md.settled.length, end), mdOpts).childNodes);
-      md.settled = text.slice(0, end);
-    }
-    const tail = text.slice(end);
-    if (tail !== md.tailText || !md.tail.length) {
-      if (md.tailKey && md.tailKey !== `${key}:${end}`) threadMarkdown('', { key: md.tailKey, streaming: false });
-      md.tailKey = `${key}:${end}`;
-      const nodes = [...threadMarkdown(tail, { ...mdOpts, key: md.tailKey, streaming: true }).childNodes];
-      for (const node of md.tail) node.remove();
-      md.root.append(...nodes);
-      md.tail = nodes;
-      md.tailText = tail;
-    }
-    return md.root;
-  };
-
-  const resetStreamMarkdown = () => {
-    if (!liveMd) return;
-    threadMarkdown('', { key: liveMd.key, streaming: false });
-    if (liveMd.tailKey) threadMarkdown('', { key: liveMd.tailKey, streaming: false });
-    liveMd = undefined;
-  };
-
-  type ShownStream = NonNullable<LiveView['stream']> & { after: string };
-  /**
-   * A stream that ended before its entry landed in the transcript (the daemon writes a message once it
-   * is whole, so a reply's thinking lands with its text): still shown until it does, so nothing vanishes
-   * and then jumps back in. Thinking shows as the finished thought it becomes.
-   */
-  let heldThoughts: (ShownStream & { tookMs?: number; endedAt: number })[] = [];
-  let heldText: (ShownStream & { endedAt: number }) | undefined;
-  const HELD_IDLE_MS = 2500;
-  let heldTimer: ReturnType<typeof setTimeout> | undefined;
-  const streamKey = (s: { kind: string; since: number; entryId?: string }) => `${s.kind}:${s.entryId ?? s.since}`;
-  const liveStreamOf = (view: LiveView | undefined): ShownStream | undefined => (view?.stream && view.after !== undefined && view.status !== 'idle' ? { ...view.stream, after: view.after } : undefined);
-  /** Before `next` replaces the live view: keeps the stream it ends. */
-  const holdEnded = (next: LiveView) => {
-    for (const thought of heldThoughts) {
-      if (thought.entryId) thought.tookMs = next.completedThinking?.[thought.entryId] ?? thought.tookMs;
-    }
-    const ended = liveStreamOf(liveView);
-    const still = liveStreamOf(next);
-    if (!ended || (still && streamKey(still) === streamKey(ended)) || ended.after !== history.entries.at(-1)?.id) return;
-    const endedAt = performance.now();
-    if (ended.kind === 'thinking') heldThoughts = [...heldThoughts, { ...ended, tookMs: ended.entryId ? next.completedThinking?.[ended.entryId] : undefined, endedAt }].slice(-4);
-    else heldText = { ...ended, endedAt };
-  };
-  const dropHeld = () => {
-    heldThoughts = [];
-    heldText = undefined;
-  };
-  let revealJoin = false;
-  let revealKey = '';
-
-  let liveText = '';
-  const revealTick = (now: number) => {
-    revealFrame = 0;
-    const dt = revealAt ? now - revealAt : 16;
-    revealAt = now;
-    if (streamNode.hidden || !revealKey) {
-      revealAt = 0;
-      return;
-    }
-    paintLive(dt);
-  };
-
-  const paintLive = (dt = 0) => {
-    const lastId = history.entries.at(-1)?.id;
-    const showing = active && connected && !history.historical;
-    const current = showing && !!liveView && liveView.after !== undefined && liveView.after === lastId;
-    const live = current ? liveStreamOf(liveView) : undefined;
-    // Held streams go once their entries land, or once the turn has been over a while without them.
-    const stale = (held: { after: string; endedAt: number }) => held.after !== lastId || (liveView?.status === 'idle' && performance.now() - held.endedAt > HELD_IDLE_MS);
-    if (heldThoughts.some(stale)) heldThoughts = heldThoughts.filter((held) => !stale(held));
-    if (heldText && (stale(heldText) || live?.kind === 'text')) heldText = undefined;
-    clearTimeout(heldTimer);
-    const heldUntil = Math.min(...heldThoughts.map((held) => held.endedAt), heldText?.endedAt ?? Infinity) + HELD_IDLE_MS;
-    if (liveView?.status === 'idle' && heldUntil < Infinity) heldTimer = setTimeout(() => paintLive(), Math.max(0, heldUntil - performance.now()) + 1);
-    const thinkingHidden = threadViewPrefs().thinking === 'hidden';
-    const thoughts = showing && !thinkingHidden ? heldThoughts : [];
-    const stream = live ?? (showing ? heldText : undefined);
-    const ended = !live && !!stream;
-    const showStream = !!stream;
-    const pendingTools = current ? (liveView?.tools.filter((tool) => !tool.id) ?? []) : [];
-    const previousMd = liveMd;
-    if (!showStream || stream.kind !== 'text') resetStreamMarkdown();
-    const key = stream ? streamKey(stream) : '';
-    if (key !== revealKey) {
-      // A stream already well under way when this Thread first sees it shows what it has at once.
-      revealJoin = !!stream && Date.now() - (liveView?.skew ?? 0) - stream.since > REVEAL_JOIN_AGE_MS;
-      revealKey = key;
-      if (!stream) reveal.reset();
-    }
-    if (!showStream) revealAt = 0;
-    const hide = !showStream && !thoughts.length && !pendingTools.length;
-    const landedMarkdown = () => {
-      if (!showing || !previousMd || previousMd.after === lastId) return [];
-      const after = history.entries.findIndex((entry) => entry.id === previousMd.after);
-      return history.entries.slice(after + 1).flatMap((entry) => {
-        const body = nodes.get(entry.id)?.node.querySelector('.wt-md');
-        return body && entry.role === 'assistant' && entry.kind === 'text' ? [body] : [];
-      });
-    };
-    if (hide) rememberSelection(previousMd?.root)?.(landedMarkdown);
-    streamNode.hidden = hide;
+  const paintLive = () => {
+    const stream = liveView?.stream;
+    const current = !!liveView && liveView.after !== undefined && liveView.after === history.entries.at(-1)?.id && !history.historical;
+    const showStream = active && connected && current && liveView?.status !== 'idle' && !!stream;
+    const pendingTools = active && connected && current ? (liveView?.tools.filter((tool) => !tool.id) ?? []) : [];
+    streamNode.hidden = !showStream && !pendingTools.length;
     streamNode.className = streamNode.hidden ? 'wt-stream' : 'wt-entry assistant text wt-stream';
     if (streamNode.hidden) return;
-    const shown = stream ? stream.text.slice(0, reveal.advance(key, stream.text, dt, { join: revealJoin, ended })) : '';
-    if (stream && reveal.pending && !revealFrame) revealFrame = requestAnimationFrame(revealTick);
-    if (!reveal.pending) revealAt = 0;
-    const structureKey = JSON.stringify([
-      thoughts.map((thought) => [thought.since, thoughtLabel(thought.tookMs)]),
-      stream ? [stream.kind, stream.since] : undefined,
-      pendingTools.map((tool) => [tool.name, tool.output, tool.more]),
-      thinkingHidden,
-      threadViewPrefs().thinking,
-    ]);
-    const grew = liveText !== shown;
-    const rebuild = streamNode.dataset.liveStructure !== structureKey;
-    const restore = rebuild || (grew && stream?.kind === 'text') ? rememberSelection(previousMd?.root) : undefined;
-    if (rebuild) {
+    const thinkingHidden = threadViewPrefs().thinking === 'hidden';
+    const structureKey = JSON.stringify([showStream ? [stream?.kind, stream?.since] : undefined, pendingTools.map((tool) => [tool.name, tool.output, tool.more]), thinkingHidden]);
+    const textKey = showStream && stream ? stream.text : '';
+    if (streamNode.dataset.liveStructure !== structureKey) {
       streamNode.dataset.liveStructure = structureKey;
-      liveText = shown;
+      streamNode.dataset.liveText = textKey;
       const children: HTMLElement[] = [];
-      for (const thought of thoughts) {
-        const label = thoughtLabel(thought.tookMs);
-        const open = threadViewPrefs().thinking === 'open';
-        const summary = h('summary', { 'aria-label': `${open ? 'Collapse' : 'Expand'} ${label}` }, h('span.wt-thought-label', {}, label), chevron());
-        children.push(setDisclosureOpen(h('details.wt-thinking.wt-held-thinking', {}, summary, h('div.wt-thinking-text', {}, thought.text)), open));
-      }
-      if (stream) {
+      if (showStream && stream) {
         if (stream.kind === 'thinking') {
           const time = h('span.wt-live-time.wt-thought-duration', { 'data-since': stream.since }, `for ${thinkingSeconds(Date.now() - (liveView?.skew ?? 0) - stream.since)}`);
           children.push(
             h(
               'details.wt-thinking.wt-live-thinking',
-              // Marked as the office's own opening so the toggle it fires doesn't read as the owner inspecting it.
-              { open: !thinkingHidden, 'data-expected-open': String(!thinkingHidden), class: thinkingHidden ? 'is-textless' : '' },
+              { open: !thinkingHidden, class: thinkingHidden ? 'is-textless' : '' },
               h('summary', {}, h('span.wt-thought-label.wt-shimmer', {}, 'Thinking'), time, chevron()),
-              thinkingHidden ? null : followsTail(h('div.wt-thinking-text', {}, shown)),
+              thinkingHidden ? null : h('div.wt-thinking-text', {}, stream.text),
             ),
           );
         } else {
-          children.push(h('div.wt-stream-copy', {}, renderStreamMarkdown(shown, stream)));
+          children.push(h('div.wt-stream-copy', {}, ...stream.text.split(/\n{2,}/).map((paragraph) => h('p', {}, paragraph))));
         }
       }
       for (const tool of pendingTools) {
@@ -1775,30 +1522,16 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         );
       }
       streamNode.replaceChildren(...children);
-      updateClamps(streamNode);
-      const body = streamNode.querySelector<HTMLElement>('.wt-live-thinking .wt-thinking-text');
-      if (body) keepAtTail(body);
-    } else if (grew && stream) {
-      liveText = shown;
+    } else if (streamNode.dataset.liveText !== textKey && showStream && stream) {
+      streamNode.dataset.liveText = textKey;
       if (stream.kind === 'thinking') {
-        const body = streamNode.querySelector<HTMLElement>('.wt-live-thinking .wt-thinking-text');
-        if (body) {
-          // Added to in place, so a selection in what is already there survives.
-          const node = body.firstChild;
-          if (node instanceof Text && body.childNodes.length === 1 && shown.startsWith(node.data)) node.appendData(shown.slice(node.data.length));
-          else body.textContent = shown;
-          keepAtTail(body);
-        }
+        const body = streamNode.querySelector<HTMLElement>('.wt-thinking-text');
+        if (body) body.textContent = stream.text;
       } else {
         const copy = streamNode.querySelector<HTMLElement>('.wt-stream-copy');
-        const root = renderStreamMarkdown(shown, stream);
-        if (copy && copy.firstChild !== root) copy.replaceChildren(root);
-        updateClamps(streamNode);
+        copy?.replaceChildren(...stream.text.split(/\n{2,}/).map((paragraph) => h('p', {}, paragraph)));
       }
     }
-    // The tail can be replaced on any reveal frame; a completed reply moves to a recorded row.
-    restore?.(() => (liveMd && liveMd.key === previousMd?.key ? [liveMd.root] : landedMarkdown()));
-    if (grew && followingLayout && !inspecting && !history.historical) motion.follow();
     for (const el of streamNode.querySelectorAll<HTMLElement>('.wt-live-time[data-since]')) {
       const since = Number(el.dataset.since);
       const elapsed = thinkingSeconds(Date.now() - (liveView?.skew ?? 0) - since);
@@ -1806,9 +1539,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       if (el.textContent !== text) el.textContent = text;
     }
   };
+
   const rowJson = new WeakMap<object, string>();
   const paintEntries = (older: boolean) => {
-    const stick = !received || (!older && !inspecting && ((followingLayout && !history.historical) || atBottom()));
+    const stick = !received || (!older && !inspecting && atBottom());
     const top = scroll.scrollTop;
     const height = scroll.scrollHeight;
     const want: HTMLElement[] = [];
@@ -1909,9 +1643,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   // The JSONL isn't a token stream: don't infer "Thinking" or "Generating" from its last entry.
   const paintProgress = () => {
     const show = active && connected && !disposed && !document.hidden && !worker.lost && !error && isBusy(worker.status);
+    const label = !show ? '' : worker.status === 'starting' ? 'Starting worker…' : worker.status === 'needs_input' ? 'Waiting for you' : 'Working…';
     const last = history.rows.at(-1);
     const detail = show && worker.status === 'working' && !history.historical && history.sessionId === worker.sessionId && last?.kind === 'activity' && last.live ? (last.running ?? '') : '';
-    progress.paint(show ? threadStatus(worker, liveView, history.entries, detail) : undefined);
+    progress.paint({ show, running: show && worker.status !== 'needs_input', label, mode: statusMode(liveView?.status, worker.status), detail: liveView?.label || detail });
   };
 
   const updateControls = () => {
@@ -1942,7 +1677,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     stop.hidden = !busy && !waiting;
     stop.disabled = !allowed || sending || stopping;
     const label = sending ? 'Sending…' : busy ? (cloud ? 'Queue' : 'Send now') : 'Send';
-    sendLabel.textContent = !sending && !busy ? '' : label;
+    sendLabel.textContent = label;
     send.classList.toggle('icon', !sending && !busy);
     send.setAttribute('aria-label', busy || sending ? label : 'Send message');
     send.title = busy ? (cloud ? `Sent to ${worker.name} once this turn is over` : `Steer ${worker.name}: it reads this now, during the turn`) : 'Send ⏎';
@@ -1960,20 +1695,18 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     else if (worker.kind === 'agent') hint.replaceChildren(shortcut('Enter', 'send'), shortcut('⇧ Enter', 'new line'), shortcut('@', 'files'), shortcut('/', 'commands'));
     else hint.replaceChildren(shortcut('Enter', 'send'), shortcut('⇧ Enter', 'new line'), shortcut('/', 'commands'));
     earlier.disabled = !!pending || !connected;
-    const startFailed = !opts.promptWakes ? daemonStartFailure(worker) : undefined;
-    retry.classList.toggle('hidden', !error || !!startFailed);
+    retry.classList.toggle('hidden', !error);
     retry.disabled = !connected || !!pending;
     empty.classList.toggle('error', !!error && !history.entries.length);
     if (!history.entries.length) paintEmpty();
     notice.textContent = connected
-      ? (startFailed ? told || startFailed : error || told) ||
-        (broken && !opts.cloudErrorShown ? `${worker.name} can’t work: ${broken}` : '') ||
-        (isAsleep(worker.status) && !opts.promptWakes ? 'Resume this worker to send another message.' : '')
+      ? error || told || (broken && !opts.cloudErrorShown ? `${worker.name} can’t work: ${broken}` : '') || (isAsleep(worker.status) && !opts.promptWakes ? 'Resume this worker to send another message.' : '')
       : '';
+    raw?.classList.toggle('hidden', !connected || !error);
     // A cloud worker's Resume reads its Factory session again, which is also how one that broke is checked.
     resume.hidden = (!isAsleep(worker.status) || !!opts.promptWakes) && !broken;
     resume.disabled = !active || !connected || !!worker.lost || resuming;
-    resume.textContent = broken ? (resuming ? 'Checking…' : 'Check again') : resuming ? 'Resuming…' : startFailed ? 'Retry' : 'Resume';
+    resume.textContent = broken ? (resuming ? 'Checking…' : 'Check again') : resuming ? 'Resuming…' : 'Resume';
     element.classList.toggle('has-feedback', !!notice.textContent);
     paintPlan();
     paintQueue();
@@ -2002,23 +1735,16 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       floorDirs.clear();
       for (const f of msg.floors) floorDirs.set(f.id, f.dir);
     }
-    const appended = liveAppend(msg, worker.id, worker.sessionId, liveView);
-    if (appended === 'stale') return resyncLive();
-    if (appended) {
-      liveView = appended;
-      paintLive();
-      return;
-    }
     const nextLive = liveFrom(msg, worker.id, worker.sessionId, liveView);
     if (nextLive) {
-      const stick = received && !inspecting && !history.historical && (followingLayout || atBottom());
-      holdEnded(nextLive);
+      const stick = received && !inspecting && atBottom();
       liveView = nextLive;
       liveTools.clear();
       for (const tool of nextLive.tools) if (tool.id) liveTools.set(tool.id, tool);
       refreshLiveOutput(element, (id) => liveTools.get(id));
       paintLive();
       paintSettings();
+      paintSide();
       paintProgress();
       if (stick) motion.follow();
       return;
@@ -2026,18 +1752,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const rewound = msg;
     if (rewound.t === 'worker.rewound' && rewound.workerId === worker.id) {
       if (rewound.ok) {
-        const nextSessionId = rewound.sessionId ?? worker.sessionId;
-        if (rewound.sessionId && rewound.sessionId !== worker.sessionId) {
-          rewoundFromSessionId = worker.sessionId;
-          worker = { ...worker, sessionId: rewound.sessionId };
-        }
-        history.clear(nextSessionId);
+        history.clear(worker.sessionId);
         nodes.clear();
         list.replaceChildren();
         received = false;
         liveView = undefined;
-        dropHeld();
-        resetStreamMarkdown();
         liveTools.clear();
         if (rewound.text) {
           input.value = rewound.text;
@@ -2096,7 +1815,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     error = threadSnapshotError(worker, msg.error, !received && Date.now() < startupReadUntil);
     if (!msg.error) {
       history.apply(msg);
-      if (history.unsupported) error = `This office sent a Thread this page can’t read. ${cloud ? 'Reload the page, or open it in Factory.' : 'Reload the page.'}`;
+      if (history.unsupported) error = `This office sent a Thread this page can’t read. Reload the page, or ${fallback}.`;
       opts.onEntries?.();
       received = true;
       paintEntries(older);
@@ -2124,7 +1843,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       return;
     }
     if (live && !cloud && nativeCopy(text)) {
-      openThreadCopy({ entries: history.entries, sessionId: worker.sessionId, initialTurns: copyTurns(text) });
+      openThreadCopy({ entries: history.entries, sessionId: worker.sessionId });
       clearDraft();
       updateControls();
       return;
@@ -2149,13 +1868,13 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       updateControls();
       return;
     }
-    const queueReceipt = cloud && isBusy(worker.status);
-    const after = cloudQueueMaxSeq;
+    const queueReceipt = (queueSend || cloud) && isBusy(worker.status);
+    const after = queued.sequence;
     const hasImage = images.ids().length > 0;
     const result = await opts.send({ t: 'worker.prompt', workerId: worker.id, prompt: text, images: images.ids(), queue: queueSend });
     sending = false;
     if (!result) {
-      if (queueReceipt) cloudPending = [...cloudPending, { id: ++cloudQueueSeq, text, hasImage, after }].slice(-32);
+      if (queueReceipt) queued.sent(text, hasImage, after);
       images.take();
       clearDraft();
       if (history.historical) history.clear(worker.sessionId);
@@ -2164,6 +1883,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     }
     error = result ?? '';
     updateControls();
+    // Droid answers most of its slash commands with a dialog, which only its terminal shows.
+    if (!result && !cloud && slashOf(text)?.command?.kind === 'tty') opts.raw?.();
   };
 
   const rewindConversation = (entryId: string) => {
@@ -2180,13 +1901,19 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
 
   const stopTurn = () => {
     if (stop.disabled) return;
-    stopping = true;
-    updateControls();
-    void opts.send({ t: 'worker.interrupt', workerId: worker.id }).then((why) => {
-      stopping = false;
-      told = why ?? '';
+    if (cloud || opts.interrupt) {
+      stopping = true;
       updateControls();
-    });
+      void opts.send({ t: 'worker.interrupt', workerId: worker.id }).then((why) => {
+        stopping = false;
+        told = why ?? '';
+        updateControls();
+      });
+      return;
+    }
+    // Escape is the CLI's own cancel path, and requires the normal worker attachment.
+    told = typeKeys('\u001b') ? '' : 'Disconnected. Nothing was sent.';
+    updateControls();
   };
 
   form.addEventListener('submit', (event) => {
@@ -2244,10 +1971,12 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       event.preventDefault();
       return;
     }
-    if (event.key === 'Escape' && !event.shiftKey && isBusy(worker.status)) {
+    if (event.key === 'Escape' && !event.shiftKey && (!sidePanel.hidden || isBusy(worker.status))) {
       event.preventDefault();
       event.stopPropagation();
-      stopTurn();
+      // An open side chat takes Escape first, as it does in Droid.
+      if (!sidePanel.hidden) void closeSide();
+      else stopTurn();
       return;
     }
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -2279,7 +2008,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         // A cloud worker's conversation is a read of its Factory session, which can take a while.
         if (pending && now - pending.at > (cloud ? 20_000 : 8000)) {
           pending = undefined;
-          error = cloud ? 'The office did not return this conversation. Retry, or open it in Factory.' : 'The office did not return this conversation. Retry below.';
+          error = cloud ? 'The office did not return this conversation. Retry, or open it in Factory.' : 'The office did not return this conversation. Retry, or use Raw TTY on an older office.';
           updateControls();
         }
         if (!error) read(undefined, received ? RECONCILE_INTERVAL_MS : STARTUP_RETRY_MS);
@@ -2315,15 +2044,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   return {
     element,
     entries: () => history.entries,
-    search(query) {
-      search.open(query);
-    },
     update(next, online) {
       const reconnected = online && !connected;
-      if (rewoundFromSessionId) {
-        if (next.id === worker.id && next.sessionId === rewoundFromSessionId) next = { ...next, sessionId: worker.sessionId };
-        else rewoundFromSessionId = undefined;
-      }
       const workerChanged = next.id !== worker.id;
       const sessionChanged = next.sessionId !== worker.sessionId || workerChanged;
       if (sessionChanged) {
@@ -2336,8 +2058,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         error = '';
         nodes.clear();
         liveView = undefined;
-        dropHeld();
-        resetStreamMarkdown();
         liveTools.clear();
         streamNode.hidden = true;
         paintedOnce = false;
@@ -2398,8 +2118,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       if (disposed) return;
       disposed = true;
       active = false;
-      releaseEscape();
-      resetStreamMarkdown();
       syncTimer();
       syncAttach();
       syncWatch();
@@ -2408,9 +2126,6 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       paintProgress();
       progress.dispose();
       motion.dispose();
-      if (revealFrame) cancelAnimationFrame(revealFrame);
-      clearTimeout(heldTimer);
-      window.removeEventListener('pointerup', ownerReleased);
       search.dispose();
       settingsUi.dispose();
       document.removeEventListener('visibilitychange', visibility);

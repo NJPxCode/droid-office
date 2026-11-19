@@ -76,6 +76,7 @@ import ai.factory.droidoffice.core.OfficeJson
 import ai.factory.droidoffice.core.OfficeRouteCandidate
 import ai.factory.droidoffice.core.Pairing
 import ai.factory.droidoffice.core.PairingInvite
+import ai.factory.droidoffice.core.WorkerLinkView
 import ai.factory.droidoffice.notify.Banner
 import ai.factory.droidoffice.notify.StayConnectedService
 import ai.factory.droidoffice.session.Phase
@@ -117,6 +118,7 @@ sealed interface Incoming {
     val id: String,
     val draft: String? = null,
     val floorHint: String? = null,
+    val view: WorkerLinkView? = null,
     val openQuestion: Boolean = false,
     val questionId: String? = null,
     val launchId: Int = 0,
@@ -270,7 +272,7 @@ fun AppRoot(graph: AppGraph, incoming: MutableStateFlow<Incoming?>) {
             is DeepLinkTarget.Worker -> {
                 val launch = ++deepLaunchId
                 setPendingDeepLink(null)
-                val nextKey = WorkerKey(id = t.workerId, floorHint = t.floorId, launchId = launch)
+                val nextKey = WorkerKey(id = t.workerId, floorHint = t.floorId, view = t.view, launchId = launch)
                 if ((nav.top as? WorkerKey)?.id == t.workerId) nav.replaceTop(nextKey) else {
                     nav.home()
                     nav.push(nextKey)
@@ -405,6 +407,7 @@ fun AppRoot(graph: AppGraph, incoming: MutableStateFlow<Incoming?>) {
                             draft = key.draft,
                             onOpenWorker = { nav.push(WorkerKey(it)) },
                             floorHint = key.floorHint,
+                            initialView = key.view,
                             openQuestion = key.openQuestion,
                             questionId = key.questionId,
                             launchId = key.launchId,

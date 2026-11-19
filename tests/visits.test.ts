@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ASK_REPLY_MS, TALK_MAX_MS, TALK_MIN_MS, URGENT_WAIT_MS, Visits, independent, waitWords, type VisitWorkers } from '../src/server/visits.js';
+import type { DroidScreen } from '../src/server/droid-screen.js';
 import { Team, type TeamWorkers } from '../src/server/team.js';
 import { SUBAGENT_DEFAULTS, type AgentChoice, type ServerMsg, type WorkerInfo, type WorkerStatus } from '../src/shared/protocol.js';
 import { visitRoute, visitWalkMs, type Visit } from '../src/shared/visits.js';
@@ -16,12 +17,12 @@ class Fake implements VisitWorkers {
   ws = new Map<string, WorkerInfo>();
   typed: { id: string; text: string }[] = [];
   resumed: { id: string; text: string }[] = [];
-  /** Every turn-interrupt the office sent to cancel a turn. */
+  /** Every Escape the office sent to cancel a turn. */
   escapes: string[] = [];
-  /** Interrupts and prompts in the order they went in, with the clock. */
+  /** Escapes and prompts in the order they went in, with the clock: what the host's terminal got. */
   keys: { id: string; key: 'escape' | 'prompt'; at: number }[] = [];
-  /** Optional per-worker override for whether cancelTurn reports an active turn to interrupt. */
-  cancels = new Map<string, boolean>();
+  /** What each host's screen shows; by default droid's spinner while it works, its input box otherwise. */
+  screens = new Map<string, DroidScreen | undefined>();
   tails = new Map<string, string>();
   refuse?: string;
   clock = () => 0;
@@ -53,10 +54,13 @@ class Fake implements VisitWorkers {
     this.resumed.push({ id, text });
     return undefined;
   }
-  /** As WorkerManager.cancelTurn: only a host actively working without an open question/ask is interrupted. */
+  turnScreen(id: string) {
+    if (this.screens.has(id)) return this.screens.get(id);
+    return this.ws.get(id)?.status === 'working' ? 'busy' : 'idle';
+  }
+  /** As WorkerManager.cancelTurn: only a host that works and shows the spinner gets Escape. */
   cancelTurn(id: string) {
-    const w = this.ws.get(id);
-    if (w?.status !== 'working' || w.menu || w.cloud?.menu || w.ask || this.cancels.get(id) === false) return false;
+    if (this.ws.get(id)?.status !== 'working' || this.turnScreen(id) !== 'busy') return false;
     this.escapes.push(id);
     this.keys.push({ id, key: 'escape', at: this.clock() });
     return true;
@@ -306,8 +310,8 @@ test('an urgent message to a busy host: one Escape, then the message as a new pr
   assert.equal(r.fake.typed.length, 0, 'not while the turn is still on screen');
   r.advance(1000);
   assert.equal(r.fake.typed.length, 0);
-  // Once the interrupted daemon turn settles out of working, the urgent prompt is delivered.
-  r.set('nibble', 'idle');
+  // Droid prints "Request cancelled by user" and shows its input box; the status follows seconds later.
+  r.fake.screens.set('nibble', 'idle');
   r.advance(250);
   assert.equal(r.fake.typed.length, 1);
   assert.deepEqual(
@@ -361,9 +365,9 @@ test('an urgent message to a host at rest goes straight in, with no Escape befor
   assert.equal(r.fake.typed.length, 1);
   assert.deepEqual(r.fake.escapes, []);
 
-  // Its status still says working, but cancelTurn reports nothing running to interrupt: goes straight in.
+  // Its status still says working, but its screen is back at the input box: no Escape either.
   r.set('dot', 'working');
-  r.fake.cancels.set('dot', false);
+  r.fake.screens.set('dot', 'idle');
   r.advance(TALK_MIN_MS + walk('desk-3', 'desk-9', 0));
   r.call('pixel', { action: 'visit', kind: 'tell', worker: 'Dot', text: 'now', urgent: true });
   r.advance(walk('desk-3', 'desk-10', 0));
@@ -371,22 +375,21 @@ test('an urgent message to a host at rest goes straight in, with no Escape befor
   assert.deepEqual(r.fake.escapes, []);
 });
 
-test('an urgent message waits for a permission or question prompt, even one while status still says working', (t) => {
+test('an urgent message waits for a permission prompt, even one the status has not caught', (t) => {
   const r = rig(t);
   r.set('nibble', 'needs_input');
   r.call('pixel', { action: 'visit', kind: 'tell', worker: 'Nibble', text: 'again', urgent: true });
   r.advance(walk('desk-3', 'desk-9', 0) + URGENT_WAIT_MS + 1000);
   assert.equal(r.fake.typed.length, 0);
   assert.deepEqual(r.fake.escapes, []);
-  r.fake.get('nibble')!.ask = { kind: 'permission', tool: 'Execute', command: 'npm publish' };
   r.set('nibble', 'working');
+  r.fake.screens.set('nibble', 'asking');
   r.advance(URGENT_WAIT_MS + 1000);
-  assert.equal(r.fake.typed.length, 0, 'held while an ask is open');
+  assert.equal(r.fake.typed.length, 0, 'Enter would answer the dialog');
   assert.deepEqual(r.fake.escapes, []);
-  r.fake.get('nibble')!.ask = undefined;
-  r.visits.onWorker({ ...r.fake.get('nibble')! });
+  r.fake.screens.set('nibble', 'busy');
   r.advance(250);
-  assert.deepEqual(r.fake.escapes, ['nibble'], 'answered, the turn goes on, and cancellation goes in');
+  assert.deepEqual(r.fake.escapes, ['nibble'], 'answered, the turn goes on, and the Escape goes in');
 });
 
 test('an ask walks home without an answer or polling; a later answer is delivered into its session', (t) => {
@@ -423,11 +426,11 @@ test('a queued answer that later fails to go in reopens the question for the hos
   const id = r.call('pixel', { action: 'visit', kind: 'ask', worker: 'Nibble', text: 'Which port?' }).body.visit;
   r.advance(walk('desk-3', 'desk-9', 0) + TALK_MIN_MS + walk('desk-3', 'desk-9', 0) + 250);
   assert.deepEqual(r.lastList(), [], 'the asker is home');
-  r.fake.get('pixel')!.menu = { question: 'Which port?', choices: [{ number: 1, label: '5173' }], freeText: false };
-  assert.equal(r.call('nibble', { action: 'reply', visit: id, text: '5173' }).body.queued, true, 'an open menu holds the answer back');
-  r.fake.get('pixel')!.menu = undefined;
+  r.fake.screens.set('pixel', 'asking');
+  assert.equal(r.call('nibble', { action: 'reply', visit: id, text: '5173' }).body.queued, true, 'a dialog holds the answer back');
   r.set('pixel', 'exited');
   r.fake.refuseResume = 'its worktree is missing';
+  r.fake.screens.set('pixel', 'idle');
   r.advance(250);
   assert.match(r.toasts.at(-1) ?? '', /Couldn't get Nibble's answer to Pixel: its worktree is missing\. The question is open again/);
   r.fake.refuseResume = undefined;
@@ -612,16 +615,15 @@ test('turning visits off mid-walk cancels delivery and a pending next visit', (t
   );
 });
 
-test('an open structured menu blocks normal and urgent delivery even while the status still says done', (t) => {
+test('a dialog on screen blocks normal and urgent delivery even while the status still says done', (t) => {
   for (const urgent of [false, true]) {
     const r = rig(t);
-    r.fake.get('nibble')!.menu = { question: 'Approve?', choices: [{ number: 1, label: 'Yes' }], freeText: false };
+    r.fake.screens.set('nibble', 'asking');
     r.call('pixel', { action: 'visit', kind: 'tell', worker: 'Nibble', text: 'wait for the owner', urgent });
     r.advance(walk('desk-3', 'desk-9', 0) + 1000);
     assert.equal(r.fake.typed.length, 0);
     assert.deepEqual(r.fake.escapes, []);
-    r.fake.get('nibble')!.menu = undefined;
-    r.visits.onWorker({ ...r.fake.get('nibble')! });
+    r.fake.screens.set('nibble', 'idle');
     r.advance(250);
     assert.equal(r.fake.typed.length, 1);
   }

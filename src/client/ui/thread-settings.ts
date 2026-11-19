@@ -20,16 +20,16 @@ export interface ThreadSettingsOptions {
 export interface ThreadSettings {
   chips: HTMLElement[];
   menu: HTMLElement;
-  readonly isOpen: boolean;
-  /** Repaints the model chip; `editable` is false where the Thread cannot change session settings (a cloud worker). */
+  /** Repaints the chips; `editable` is false where the Thread cannot drive Droid's keys (a cloud worker). */
   paint(settings: LiveSettings | undefined, editable: boolean): void;
   close(): void;
   dispose(): void;
 }
 
 /**
- * The composer's model and reasoning-effort chip. Clicking it opens a menu that updates the live
- * daemon session settings (`worker.setting`).
+ * The composer's Spec mark and model chip, as Droid's mode line shows them. The model chip opens a
+ * menu that changes the model or reasoning effort through Droid's own /model picker and Tab key
+ * (worker.setting).
  */
 export function mountThreadSettings(opts: ThreadSettingsOptions): ThreadSettings {
   let settings: LiveSettings | undefined;
@@ -38,6 +38,7 @@ export function mountThreadSettings(opts: ThreadSettingsOptions): ThreadSettings
   let changing = false;
   let models: DroidModelOption[] | undefined;
   let unlisted = false;
+  const modeChip = h('span.wt-setting.wt-mode', { hidden: true }, 'Spec');
   const modelChip = h('button.wt-setting.wt-model', { type: 'button', hidden: true, 'aria-haspopup': 'menu', 'aria-expanded': 'false', title: 'Model and reasoning effort', onclick: () => toggle() });
   const menu = h('div.wt-recent.wt-settings-menu', { role: 'menu', 'aria-label': 'Model and reasoning effort', hidden: true });
 
@@ -62,12 +63,12 @@ export function mountThreadSettings(opts: ThreadSettingsOptions): ThreadSettings
     const out: { title: string; items: MenuItem[] }[] = [];
     const efforts: AgentEffort[] = models?.find((model) => model.id === settings?.model)?.supportedReasoningEfforts ?? [];
     if (efforts.length > 1) {
-      out.push({ title: 'Reasoning effort', items: efforts.map((effort) => ({ label: EFFORT_LABEL[effort], current: settings?.reasoningEffort === effort, pick: () => void change('effort', effort) })) });
+      out.push({ title: 'Reasoning effort  Tab', items: efforts.map((effort) => ({ label: EFFORT_LABEL[effort], current: settings?.reasoningEffort === effort, pick: () => void change('effort', effort) })) });
     }
     if (!models) out.push({ title: 'Model', items: [{ label: unlisted ? 'Could not load Droid models' : 'Loading Droid models…', current: false }] });
     else {
       const offered = models.filter((model) => !model.legacy || model.id === settings?.model);
-      out.push({ title: 'Model', items: offered.map((model) => ({ label: model.displayName, current: model.id === settings?.model, pick: () => void change('model', model.id) })) });
+      out.push({ title: 'Model  /model', items: offered.map((model) => ({ label: model.displayName, current: model.id === settings?.model, pick: () => void change('model', model.id) })) });
     }
     return out;
   };
@@ -149,6 +150,7 @@ export function mountThreadSettings(opts: ThreadSettingsOptions): ThreadSettings
     const model = settings?.modelName ?? settings?.model;
     const rawEffort = effortLabel(settings?.reasoningEffort);
     const effort = rawEffort && !model?.toLowerCase().includes(rawEffort.toLowerCase()) ? rawEffort : undefined;
+    modeChip.hidden = settings?.interactionMode !== 'spec';
     modelChip.hidden = !model;
     if (model) modelChip.replaceChildren(h('span', {}, model), effort ? h('span.wt-model-effort', {}, effort) : '');
     modelChip.disabled = editable && changing;
@@ -157,11 +159,8 @@ export function mountThreadSettings(opts: ThreadSettingsOptions): ThreadSettings
   };
 
   return {
-    chips: [modelChip],
+    chips: [modeChip, modelChip],
     menu,
-    get isOpen() {
-      return open;
-    },
     paint(next, canEdit) {
       settings = next;
       editable = canEdit;

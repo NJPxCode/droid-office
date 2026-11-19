@@ -1,5 +1,5 @@
 // Mission Control: the building's agents, which belong to no floor and have no desk. The Orchestrator is the
-// one the office launches and owns, a session on the local Droid daemon. External bots (Settings → Tailscale MCP) run
+// one the office launches and owns, a Droid session in a PTY. External bots (Settings → Tailscale MCP) run
 // elsewhere. Both sign in to the Office MCP's external surface (office_roster, office_worker_*,
 // office_send_home, team_* across floors), sit in Mission Control on every floor, and hire onto any floor by
 // naming it. See docs/mission-control.md.
@@ -7,7 +7,7 @@
 import type { AgentEffort, WorkerInfo, WorkerStatus } from './protocol.js';
 
 /**
- * The Orchestrator's worker id everywhere: `worker.attach` with `stream: false`, `thread.read` and `worker.answer`
+ * The Orchestrator's worker id everywhere: `worker.attach`, `term.*`, `thread.read` and `worker.answer`
  * addressed to it from any floor, and `WorkerInfo.lead` on the subagents it hires.
  */
 export const ORCHESTRATOR_ID = 'orchestrator';

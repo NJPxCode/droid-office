@@ -58,6 +58,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
 import ai.factory.droidoffice.core.Asks
+import ai.factory.droidoffice.core.Choices
 import ai.factory.droidoffice.core.ClientMsg
 import ai.factory.droidoffice.core.Menu
 import ai.factory.droidoffice.core.MissionControl
@@ -100,7 +101,7 @@ private fun OfficeData.askIdentity(workerId: String, sessionId: String?): String
     return "$officeId/${MissionControl.floorScope(ownerFloor, workerId)}/$workerId/$sessionId"
 }
 
-/** Structured AskUser card in Thread and the Workers tab. */
+/** The same compact entry in Thread, Workers and Raw TTY. No option tap sends terminal input. */
 @Composable
 fun AskCard(
     worker: WorkerInfo,
@@ -115,7 +116,7 @@ fun AskCard(
     connected: Boolean = enabled,
     entries: List<ThreadEntry> = emptyList(),
     questionTag: String = Tags.Asks.QUESTION,
-    openLabel: String = "Open thread",
+    openLabel: String = "Raw TTY",
     onAnswered: ((String) -> Unit)? = null,
 ) {
     val graph = LocalGraph.current
@@ -142,41 +143,48 @@ fun AskCard(
         Text(question, style = MaterialTheme.typography.bodyLarge, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.tagged(questionTag))
         if (menu != null) {
             SecondaryButton(
-                "Answer questions", { opened = OfficeJson.encodeToString(Menu.serializer(), menu) },
+                if (menu.review != null) "Review answers" else "Answer questions", { opened = OfficeJson.encodeToString(Menu.serializer(), menu) },
                 Modifier.tagged(Tags.Answer.OPEN), enabled = enabled && connected && !worker.isShell, color = ThreadPalette.Accent,
             )
         } else {
-            Text(if (worker.isCloud) "Answer it in its Factory session." else "Waiting for question options from the office…", style = MaterialTheme.typography.bodySmall, modifier = Modifier.tagged(Tags.Asks.WAITING))
+            Text(if (worker.isCloud) "Answer it in its Factory session." else "This question needs Raw TTY.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.tagged(Tags.Asks.WAITING))
         }
         onOpenThread?.let { SecondaryButton(openLabel, it, Modifier.tagged(Tags.Asks.OPEN_THREAD)) }
     }
     opened?.let { encoded ->
         val shown = remember(encoded) { OfficeJson.decodeFromString(Menu.serializer(), encoded) }
+        // Lazy Asks items save and restore their subtree between questionnaire steps. Scope the
+        // registry itself, not only rememberSaveable inputs, to avoid restoring the last answer.
         key(identity, encoded) {
-            AnswerWorkspace(worker, shown, entries, identity, onAnswered, onDismiss = { opened = null })
+            AnswerWorkspace(worker, shown, entries, identity, onAnswered, onDismiss = { opened = null }, onRaw = {
+                opened = null
+                onOpenThread?.invoke()
+            })
         }
     }
 }
 
 /** Opens the full-screen AskUser workspace directly when arriving from a question deep link. */
 @Composable
-fun QuestionWorkspaceDialog(worker: WorkerInfo, menu: Menu, onDismiss: () -> Unit) {
+fun QuestionWorkspaceDialog(worker: WorkerInfo, menu: Menu, onDismiss: () -> Unit, onRaw: () -> Unit) {
     val data by LocalGraph.current.connection.data.collectAsStateWithLifecycle()
     val identity = remember(data.officeId, worker.id, worker.sessionId) { data.askIdentity(worker.id, worker.sessionId) }
     key(identity, menu) {
-        AnswerWorkspace(worker, menu, emptyList(), identity, onAnswered = null, onDismiss = onDismiss)
+        AnswerWorkspace(worker, menu, emptyList(), identity, onAnswered = null, onDismiss = onDismiss, onRaw = onRaw)
     }
 }
 
 /**
- * A full-height answer workspace for a structured AskUser questionnaire (`1..N`). After each answer
- * it advances to the worker's next question and closes once the worker resumes its turn.
+ * A full-height answer workspace for a whole questionnaire. After each answer it follows the
+ * worker to its next question (and the final review) and closes once the worker stops asking.
+ * Dismiss only closes it; the draft belongs to its screen menu.
  */
 @Composable
-private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<ThreadEntry>, identity: String, onAnswered: ((String) -> Unit)?, onDismiss: () -> Unit) {
+private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<ThreadEntry>, identity: String, onAnswered: ((String) -> Unit)?, onDismiss: () -> Unit, onRaw: () -> Unit) {
     val graph = LocalGraph.current
     val connection = graph.connection
     val data by connection.data.collectAsStateWithLifecycle()
+    val screens by connection.screens.collectAsStateWithLifecycle()
     val link by connection.link.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
@@ -206,8 +214,9 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
     var shown by rememberSaveable(identity, stateSaver = menuSaver) { mutableStateOf(initial) }
     /** What this dialog sent for earlier questions, by position, for the step bar. */
     var answers by rememberSaveable(identity, stateSaver = answersSaver) { mutableStateOf(emptyMap()) }
-    /** Sent, and waiting for the worker to publish its next question. */
+    /** Sent, and waiting for the worker to show its next question. */
     var advancing by rememberSaveable(identity) { mutableStateOf(false) }
+    // Saveable fields cover recreation; the bounded process cache also covers dismissal and other views.
     val draftKey = OfficeJson.encodeToString(Menu.serializer(), shown.copy(pointer = null, choices = shown.choices.map { it.copy(selected = null) }))
     val draft = remember(identity, draftKey) { answerDrafts.getOrPut(identity to draftKey) { AnswerDraft(shown.choices.filter { it.selected == true }.map { it.number }) } }
     var selected by rememberSaveable(identity, draftKey) { mutableStateOf(ArrayList(draft.selected)) }
@@ -222,18 +231,19 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
     LaunchedEffect(connected) { if (!connected) interrupted = true }
     val now = data.worker(worker.id)
     val currentIdentity = data.askIdentity(worker.id, now?.sessionId)
-    val currentMenu = now?.let(Asks::menu)
+    val currentMenu = now?.let { Asks.menu(it, screens[worker.id]) }
     val asking = currentIdentity == identity && now?.state == ai.factory.droidoffice.core.WorkerStatus.NeedsInput
-    val same = asking && Asks.sameMenu(shown, currentMenu)
+    val same = asking && Choices.same(shown, currentMenu)
     val supported = !shown.multiSelect || data.workerAnswerMultiSelect
     val active = connected && same && !interrupted && !uncertain && supported && !advancing
     var epoch by remember { mutableStateOf(connection.answerEpoch) }
     val pendingAsk = now?.ask ?: worker.ask
     val display = remember(shown, metadata, pendingAsk) { Asks.display(shown, metadata, pendingAsk) }
-    val steps = remember(shown, metadata, pendingAsk, answers) { Asks.steps(shown, metadata, pendingAsk, answers) }
-    val questionCount = steps.size
+    val steps = remember(shown, metadata, pendingAsk, answers, worker.isCloud) { Asks.steps(shown, metadata, pendingAsk, answers, hasReview = !worker.isCloud) }
+    val questionCount = steps.count { !it.review }
     val at = steps.indexOfFirst { it.state == Asks.StepState.Current }
     val following = steps.getOrNull(at + 1)
+    // The bar moves on as soon as an answer is sent, before the worker draws its next question.
     val bar = if (advancing && following != null) steps.mapIndexed { index, step ->
         when (index) {
             at -> step.copy(state = Asks.StepState.Done, answer = answers[at + 1] ?: step.answer)
@@ -241,9 +251,11 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
             else -> step
         }
     } else steps
+    // Follow the questionnaire: after an answer, or when the owner hasn't started on the shown
+    // question (it was answered in Raw TTY), the next menu replaces it. A started draft waits.
     LaunchedEffect(currentMenu, asking, advancing, pending) {
         val next = currentMenu ?: return@LaunchedEffect
-        if (pending || !asking || Asks.sameMenu(shown, next)) return@LaunchedEffect
+        if (pending || !asking || Choices.same(shown, next)) return@LaunchedEffect
         if (advancing || !draft.touched) {
             shown = next
             advancing = false
@@ -281,6 +293,8 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
             Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 SecondaryButton("Back", { dismiss() }, Modifier.tagged(Tags.Answer.CLOSE), enabled = !delivering)
                 Text("Answer ${worker.name}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                // A cloud worker has no terminal to fall back on.
+                if (!worker.isCloud) SecondaryButton("Raw TTY", { keep(); onRaw() }, Modifier.tagged(Tags.Answer.RAW_TTY), enabled = !pending)
             }
             if (bar.isNotEmpty()) StepBar(bar)
             LazyColumn(
@@ -289,19 +303,23 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (at >= 0) item {
-                    Eyebrow("Question ${at + 1} of $questionCount", Modifier.tagged(Tags.Answer.PROGRESS), color = ThreadPalette.Accent)
+                if (shown.review != null || at >= 0) item {
+                    Eyebrow(if (shown.review != null) "Final review" else "Question ${at + 1} of $questionCount", Modifier.tagged(Tags.Answer.PROGRESS), color = ThreadPalette.Accent)
                 }
                 item {
                     Text(display.question ?: "Choose your answer", style = MaterialTheme.typography.titleLarge, modifier = Modifier.tagged(Tags.Answer.QUESTION))
                 }
                 item {
                     Text(
-                        if (shown.multiSelect) "Select all that apply, then submit." else "Select one answer, then submit.",
+                        if (shown.review != null) (if (worker.isCloud) "Check your answers, then submit them to the worker." else "Check your answers, then submit them to the worker. To edit them, open Raw TTY.")
+                        else if (shown.multiSelect) "Select all that apply, then submit." else "Select one answer, then submit.",
                         style = MaterialTheme.typography.bodyMedium, color = ThreadPalette.Accent, modifier = Modifier.tagged(Tags.Answer.INSTRUCTION),
                     )
                 }
-                items(display.choices, key = { it.number }) { choice ->
+                shown.review?.let { summary ->
+                    item { ReviewSummary(summary) }
+                }
+                items(if (shown.review != null) emptyList() else display.choices, key = { it.number }) { choice ->
                     val checked = (shown.multiSelect || !typed) && choice.number in selected
                     val change = {
                         if (!shown.multiSelect) typed = false
@@ -323,7 +341,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
                         }
                     }
                 }
-                if (Asks.takesText(shown)) item {
+                if (Choices.takesText(shown)) item {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
                             Modifier.fillMaxWidth().then(
@@ -346,10 +364,10 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val status = when {
                     !connected -> "Disconnected. Your draft is kept. Nothing will be sent automatically."
-                    advancing -> if (following == null) "Sent. ${worker.name} is continuing." else "Answer sent. Opening question ${at + 2} of $questionCount…"
+                    advancing -> if (following == null) "Sent. ${worker.name} is continuing." else if (following.review) "Answer sent. Opening the review…" else "Answer sent. Opening question ${at + 2} of $questionCount…"
                     interrupted -> "The connection changed. Reopen this question before submitting. Your draft is kept."
-                    !same -> "This question changed or was answered. Your draft is kept."
-                    !supported -> "Update the host office to answer checkbox questions here. Your draft is kept."
+                    !same -> if (worker.isCloud) "This question changed or was answered. Your draft is kept." else "This question changed or was answered. Your draft is kept; check Raw TTY."
+                    !supported -> if (worker.isCloud) "Update the host office to answer checkbox questions here. Your draft is kept." else "Update the host office to answer checkbox questions here, or use Raw TTY. Your draft is kept."
                     delivering -> "Waiting for the office to confirm your answer…"
                     uncertain -> error
                     else -> error
@@ -359,7 +377,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
                     SecondaryButton("Show current question", { shown = currentMenu; epoch = connection.answerEpoch }, Modifier.fillMaxWidth().tagged(Tags.Answer.CURRENT))
                 }
                 SecondaryButton(
-                    if (delivering) "Submitting…" else if (following != null) "Submit and continue" else "Submit answer",
+                    if (delivering) "Submitting…" else if (shown.review != null) "Submit answers" else if (following != null) "Submit and continue" else "Submit answer",
                     {
                         keep()
                         pending = true
@@ -374,25 +392,26 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
                                     interrupted = true
                                     return@launch
                                 }
-                                val fallback = if (worker.isCloud) "its Factory session" else "the thread"
+                                val fallback = if (worker.isCloud) "its Factory session" else "Raw TTY"
                                 delivering = true
                                 uncertain = true
                                 error = "An answer was submitted. Check $fallback for its result before trying again."
-                                val choice = if (!typed && !shown.multiSelect) selected.singleOrNull() else null
+                                val choice = if (shown.review != null) 1 else if (!typed && !shown.multiSelect) selected.singleOrNull() else null
                                 val choices = if (shown.multiSelect) selected.toList() else null
                                 val answer = if (typed) text else null
                                 val result = graph.answers.submit(worker.id, shown, choice = choice, choices = choices, text = answer)
                                 if (result == Answered.Sent) {
                                     answerDrafts.remove(identity to draftKey)
                                     graph.alerts.cancel(worker.id)
-                                    if (following != null) {
+                                    if (shown.review == null && following != null) {
+                                        // Mid-questionnaire: stay open for the next question. The receipt comes with the final submit.
                                         answers = answers + ((at + 1) to Asks.replySummary(display, choice, choices, answer))
                                         uncertain = false
                                         error = null
                                         advancing = true
                                     } else {
                                         onAnswered?.invoke(
-                                            if (answers.isNotEmpty()) "Answers submitted" else if (typed) text else if (shown.multiSelect) "${selected.size} choices selected"
+                                            if (shown.review != null || answers.isNotEmpty()) "Answers submitted" else if (typed) text else if (shown.multiSelect) "${selected.size} choices selected"
                                             else display.choices.firstOrNull { it.number in selected }?.label.orEmpty(),
                                         )
                                         onDismiss()
@@ -403,7 +422,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
                                         Answered.Changed -> "The question changed. Check $fallback. Your draft is kept."
                                         Answered.Unreachable -> "Disconnected. Nothing was sent. Your draft is kept."
                                         Answered.Unconfirmed -> "The office did not confirm this answer. Check $fallback before trying again; it was not replayed. Your draft is kept."
-                                        Answered.NeedsThread -> if (worker.isCloud) "This office cannot safely accept this answer here. Answer it in its Factory session. Your draft is kept." else "This office cannot safely accept this answer here. Your draft is kept."
+                                        Answered.NeedsThread -> if (worker.isCloud) "This office cannot safely accept this answer here. Answer it in its Factory session. Your draft is kept." else "This office cannot safely accept this answer here. Use Raw TTY. Your draft is kept."
                                         else -> "The office refused this answer. Check $fallback. Your draft is kept."
                                     }
                                 }
@@ -414,7 +433,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
                         }
                     },
                     Modifier.fillMaxWidth().tagged(Tags.Answer.SUBMIT),
-                    enabled = active && !pending && if (typed) text.isNotBlank() else if (shown.multiSelect) selected.isNotEmpty() else selected.size == 1,
+                    enabled = active && !pending && if (shown.review != null) true else if (typed) text.isNotBlank() else if (shown.multiSelect) selected.isNotEmpty() else selected.size == 1,
                     color = ThreadPalette.Accent,
                 )
             }
@@ -422,7 +441,7 @@ private fun AnswerWorkspace(worker: WorkerInfo, initial: Menu, entries: List<Thr
     }
 }
 
-/** Every question of the questionnaire (`1..N`): done ones with their answer, the current one marked. */
+/** Every question of the questionnaire, then its review: done ones with their answer, the current one marked. */
 @Composable
 private fun StepBar(steps: List<Asks.Step>) {
     val state = rememberLazyListState()
@@ -464,7 +483,28 @@ private fun StepBar(steps: List<Asks.Step>) {
     }
 }
 
-/** Process-local drafts survive dialog dismissal and switching between Workers and a thread. */
+/** The review screen's own summary, one question and its answer per row. */
+@Composable
+private fun ReviewSummary(summary: List<String>) {
+    val pairs = remember(summary) { Asks.reviewAnswers(summary) }
+    if (pairs.isEmpty() || pairs.any { it.first.isBlank() }) {
+        Text(summary.joinToString("\n"), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.tagged(Tags.Answer.REVIEW))
+        return
+    }
+    Column(Modifier.fillMaxWidth().tagged(Tags.Answer.REVIEW), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        pairs.forEach { (question, answer) ->
+            Column(
+                Modifier.fillMaxWidth().border(1.dp, ThreadPalette.BorderStrong, RoundedCornerShape(4.dp)).semantics(mergeDescendants = true) {}.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(question, style = MaterialTheme.typography.bodyMedium, color = ThreadPalette.TextSecondary)
+                Text(answer.ifEmpty { "No answer" }, style = MaterialTheme.typography.bodyLarge)
+            }
+        }
+    }
+}
+
+/** Process-local drafts survive dialog dismissal and switching between Asks and a worker. */
 private class AnswerDraft(var selected: List<Int>, var text: String = "", var typed: Boolean = false, var touched: Boolean = false)
 private val answerDrafts = object : LinkedHashMap<Pair<String, String>, AnswerDraft>(16, 0.75f, true) {
     override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, String>, AnswerDraft>?): Boolean = size > 32

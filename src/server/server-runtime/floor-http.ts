@@ -35,15 +35,7 @@ export function isFloorHttpPath(p: string, method: string | undefined): boolean 
     p.startsWith('/api/docs') ||
     p.startsWith('/api/whiteboard/') ||
     (method === 'GET' &&
-      (p === '/api/thread/image' ||
-        p === '/api/thread/output' ||
-        p === '/api/thread/files' ||
-        p === '/api/thread/file' ||
-        p === '/api/linear/issue' ||
-        p === '/api/linear/image' ||
-        p === '/api/jira/ticket' ||
-        p === '/api/search' ||
-        p.startsWith('/api/gh/')))
+      (p === '/api/thread/image' || p === '/api/thread/files' || p === '/api/thread/file' || p === '/api/linear/issue' || p === '/api/linear/image' || p === '/api/jira/ticket' || p === '/api/search' || p.startsWith('/api/gh/')))
   );
 }
 
@@ -147,26 +139,6 @@ export function createFloorHttp({ floors, orchestrator, workerFloor, workerThrea
       }
       const result = await threadWorkspace.readPreview(cwd, filename);
       return 'error' in result ? send(res, result.status, result) : send(res, 200, { ...result, path: target.displayPath ?? target.path });
-    }
-    if (p === '/api/thread/output' && req.method === 'GET') {
-      const workerId = str(url.searchParams.get('worker'), 32);
-      const id = str(url.searchParams.get('output'), 160);
-      const child = str(url.searchParams.get('child'), 160);
-      const owner = workerId === ORCHESTRATOR_ID ? orchestrator.workers : (workerFloor(workerId)?.workers ?? floor?.workers);
-      const parent = owner?.threadSession(workerId);
-      const source = parent && child ? await workerThreads.childSession(parent, child) : parent;
-      const output = source && (await workerThreads.toolOutput(source, id));
-      if (output === undefined) return send(res, 404, { error: 'That output is no longer in the conversation.' });
-      return res
-        .writeHead(200, {
-          'content-type': 'text/plain; charset=utf-8',
-          'content-length': Buffer.byteLength(output),
-          'cache-control': 'no-store',
-          'x-content-type-options': 'nosniff',
-          'content-security-policy': "default-src 'none'; sandbox",
-          'cross-origin-resource-policy': 'same-origin',
-        })
-        .end(output);
     }
     if (p === '/api/thread/image' && req.method === 'GET') {
       // A picture a worker read or was sent, shown in its Thread (worker-thread.ts reads it from the session).

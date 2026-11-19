@@ -1,4 +1,3 @@
-import { answeredQuestions, type ThreadQuestionAnswer } from './ask-question.js';
 import { extractThreadChanges, threadShortPath, toolLeaf, type ThreadFileChange, type ThreadFileText } from './thread-diff.js';
 import { todoItems } from './todos.js';
 import type { ThreadEntry } from './worker-thread.js';
@@ -108,8 +107,6 @@ export interface ThreadModelAction {
   changes?: ThreadFileChange[];
   command?: ThreadCommandMeta;
   delegation?: ThreadDelegationMeta;
-  /** The owner's recorded answers, shown inline for a completed AskUser. */
-  answers?: ThreadQuestionAnswer[];
   /** The row's icon. */
   icon?: ThreadToolIcon;
   /** The row's action words in the tool-label color ("Read", "Grepped for", "Edit 12 lines"); empty for Execute. */
@@ -560,7 +557,7 @@ export function latestThreadPlan(entries: readonly ThreadEntry[], busy: boolean)
   const done = steps.filter((step) => step.done).length;
   const current = steps.find((step) => step.active)?.text;
   const allDone = done === total;
-  const stale = (!busy && !allDone) || entries.some((entry) => entry.seq > planSeq && ((entry.kind === 'text' && entry.role === 'user') || (!allDone && entry.kind === 'notice' && entry.id.startsWith('turn:'))));
+  const stale = allDone && !busy && entries.some((entry) => entry.seq > planSeq && entry.kind === 'text' && entry.role === 'user');
   return {
     steps,
     done,
@@ -619,7 +616,6 @@ function modelAction(action: ThreadAction, fileText?: ThreadFileText): ThreadMod
   }
   const delegation = card === 'delegate' ? extractDelegationMeta(action.entry) : undefined;
   const face = toolFace(action, changes);
-  const answers = face.icon === 'ask' && action.state === 'complete' ? answeredQuestions(action.entry.output ?? '') : [];
 
   return {
     id: action.entry.id,
@@ -636,7 +632,6 @@ function modelAction(action: ThreadAction, fileText?: ThreadFileText): ThreadMod
     ...(changes?.length ? { changes } : {}),
     ...(command ? { command } : {}),
     ...(delegation ? { delegation } : {}),
-    ...(answers.length ? { answers } : {}),
     ...(face.icon ? { icon: face.icon } : {}),
     verb: face.verb ?? '',
     ...(face.subject ? { subject: face.subject } : {}),

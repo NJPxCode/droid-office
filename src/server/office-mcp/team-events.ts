@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import type { AskReply } from '../factory/cloud-ask.js';
-import { menuTakesText, sameMenu, type Menu } from '../../shared/asks.js';
+import { canAnswer, menuTakesText, type Menu } from '../../shared/asks.js';
 import { permissionLine, questionPresentation } from '../../shared/ask-question.js';
 import { DESK_BY_ID } from '../../shared/layout.js';
 import type { WorkerInfo } from '../../shared/protocol.js';
@@ -21,9 +20,7 @@ import { floorNamed } from '../remote-office.js';
 export interface TeamScope {
   id: string;
   team: Pick<Team, 'handle' | Exclude<TeamViews, 'isWatching'>> & Partial<Pick<Team, 'isWatching'>>;
-  workers: Pick<WorkerManager, 'get' | 'list'> & {
-    answerQuestion?(id: string, menu: Menu, reply: AskReply): Promise<{ error?: string } | string | undefined> | { error?: string } | string | undefined;
-  };
+  workers: Pick<WorkerManager, 'get' | 'list'> & Partial<Pick<WorkerManager, 'screenLines' | 'screenMenu' | 'write'>>;
 }
 
 /** What a filter or wait may name: every event kind, plus blocked (a subagent needs input in its own terminal). */
@@ -241,7 +238,7 @@ const deskLabel = (w: WorkerInfo) => DESK_BY_ID.get(w.deskId)?.label ?? w.deskId
 const desk = (w: WorkerInfo | undefined) => (w ? { desk: deskLabel(w) } : {});
 
 function menuHash(menu: Menu): string {
-  const shape = { q: menu.question ?? '', m: !!menu.multiSelect, f: menu.freeText, c: menu.choices.map((c) => [c.number, c.label, c.description ?? '']) };
+  const shape = { q: menu.question ?? '', m: !!menu.multiSelect, f: menu.freeText, c: menu.choices.map((c) => [c.number, c.label, c.description ?? '']), ...(menu.review ? { review: menu.review } : {}) };
   return createHash('sha256').update(JSON.stringify(shape)).digest('hex').slice(0, 12);
 }
 
@@ -255,7 +252,7 @@ export interface QuestionOption {
 /** A question waiting on the lead, as questions_list shows it, like the phone's Asks inbox. */
 export interface OpenQuestion {
   id: string;
-  /** team: asked with team_report. terminal: the existing wire label for AskUser. permission: owner-only. */
+  /** team: asked with team_report. terminal: an AskUser menu in its terminal. permission: a permission prompt only the person at the desk can answer. */
   kind: 'team' | 'terminal' | 'permission';
   worker: string;
   name: string;
@@ -270,31 +267,33 @@ export interface OpenQuestion {
   why?: string;
 }
 
-export function terminalQuestion(scope: TeamScope, w: WorkerInfo, canAnswerMenu = true): OpenQuestion | undefined {
-  if (w.status !== 'needs_input' || (w.kind !== 'agent' && w.kind !== 'cloud')) return undefined;
+export function terminalQuestion(scope: TeamScope, w: WorkerInfo): OpenQuestion | undefined {
+  if (w.status !== 'needs_input' || w.kind !== 'agent' || w.cloud) return undefined;
   const base = { worker: w.id, name: w.name, floor: scope.id, desk: deskLabel(w), ...(w.waitingSince ? { at: iso(w.waitingSince) } : {}) };
   const atDesk = `Someone has to answer it at ${w.name}'s desk: tell whoever asked you.`;
   if (w.ask?.kind === 'permission')
     return { ...base, id: `ask:${scope.id}:${w.id}:permission`, kind: 'permission', question: permissionLine(w.ask), options: [], multiSelect: false, takesText: false, answerable: false, why: `A permission prompt. ${atDesk}` };
-  const menu = w.menu ?? w.cloud?.menu;
-  if (!menu || !canAnswerMenu)
+  const lines = scope.workers.screenLines?.(w.id);
+  const menu = w.ask?.kind === 'question' && canAnswer(w, lines) ? scope.workers.screenMenu?.(w.id) : undefined;
+  if (!menu || !scope.workers.write)
     return {
       ...base,
       id: `ask:${scope.id}:${w.id}:terminal`,
       kind: 'terminal',
-      question: w.activity ?? 'Waiting for input',
+      question: w.activity ?? 'Waiting for input in its terminal',
       options: [],
       multiSelect: false,
       takesText: false,
       answerable: false,
-      why: w.ask?.kind === 'question' && !menu ? `Its question menu is not ready yet: list questions again in a moment. ${atDesk}` : atDesk,
+      // The hook says it asks before the menu has drawn.
+      why: w.ask?.kind === 'question' ? `Its menu is not on screen yet: list questions again in a moment. ${atDesk}` : atDesk,
     };
   const shown = questionPresentation(menu, [], w.ask);
   return {
     ...base,
     id: `ask:${scope.id}:${w.id}:${menuHash(menu)}`,
     kind: 'terminal',
-    question: shown.question,
+    question: menu.review ? `${shown.question}\n${menu.review.join('\n')}` : shown.question,
     options: shown.choices.map((c) => ({ id: String(c.number), label: c.label, ...(c.description ? { description: c.description } : {}), ...(c.selected !== undefined ? { selected: c.selected } : {}) })),
     multiSelect: !!menu.multiSelect,
     takesText: menuTakesText(menu),
@@ -302,10 +301,9 @@ export function terminalQuestion(scope: TeamScope, w: WorkerInfo, canAnswerMenu 
   };
 }
 
-/** Every question waiting on `lead` across scopes: its subagents' team_report questions and their structured AskUser questions. */
-function openQuestions(scopes: TeamScope[], lead: string, watched?: ReadonlySet<string>, hasOwnerBridge = false): OpenQuestion[] {
+/** Every question waiting on `lead` across scopes: its subagents' team_report questions and their terminal questions. */
+function openQuestions(scopes: TeamScope[], lead: string, watched?: ReadonlySet<string>): OpenQuestion[] {
   return scopes.flatMap((s) => {
-    const canAnswerFloor = Boolean(s.workers.answerQuestion || hasOwnerBridge);
     const asked = s.team
       .questions(lead)
       .filter((e) => !watched || watched.has(e.worker))
@@ -328,7 +326,7 @@ function openQuestions(scopes: TeamScope[], lead: string, watched?: ReadonlySet<
     const terminal = s.workers
       .list()
       .filter((w) => (w.lead === lead || s.team.isWatching?.(lead, w.id)) && (!watched || watched.has(w.id)))
-      .flatMap((w) => terminalQuestion(s, w, w.cloud ? Boolean(hasOwnerBridge || s.workers.answerQuestion) : canAnswerFloor) ?? []);
+      .flatMap((w) => terminalQuestion(s, w) ?? []);
     return [...asked, ...terminal];
   });
 }
@@ -387,7 +385,6 @@ const mayWait: OfficeMcpAccess = (c) => officeAccess.team(c) ?? (c.worker.remote
 
 export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
   const waiting = new Map<string, number>();
-  const inFlightAnswers = new Set<string>();
 
   server.tool(
     {
@@ -445,14 +442,9 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
         const news = () => scopes.flatMap((s) => s.team.news(lead, { after: after.get(s.id), unread: after.get(s.id) === undefined, kinds, workers: watched }).map((e) => ({ e, floor: s.id })));
         const reasonOf = (events: Matched['events']) => (events[0].e.kind === 'needs_input' && !until.has('needs_input') ? 'blocked' : events[0].e.kind);
         const team = () => scopes.flatMap((s) => s.workers.list().filter((w) => (w.lead === lead || s.team.isWatching?.(lead, w.id)) && (!watched || watched.has(w.id))));
-        const asks = () =>
-          team().flatMap((w) => {
-            if (w.status !== 'needs_input' || (w.kind !== 'agent' && w.kind !== 'cloud') || w.ask?.kind === 'permission') return [];
-            const menu = w.menu ?? w.cloud?.menu;
-            if (!menu && w.ask?.kind !== 'question') return [];
-            return [`${w.id}:${w.waitingSince ?? 0}:${menu ? menuHash(menu) : ''}:${w.ask?.kind === 'question' ? JSON.stringify(w.ask.questions) : ''}`];
-          });
-        // An AskUser question or a settled team counts only when it comes about during the wait: one that was
+        // From the hooks' account of the question, not the screen: its menu may draw after the last signal a wait hears.
+        const asks = () => team().flatMap((w) => (w.status === 'needs_input' && w.kind === 'agent' && !w.cloud && w.ask?.kind === 'question' ? [`${w.id}:${w.waitingSince ?? 0}:${JSON.stringify(w.ask.questions)}`] : []));
+        // A terminal question or a settled team counts only when it comes about during the wait: one that was
         // already so would end every default wait at once. Team questions are news, which since already orders.
         const askedBefore = new Set(asks());
         let busy = !team().every(settled);
@@ -494,7 +486,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
         const imageOrigin = caller.remoteOrigin ?? (deps.images ?? deps.remote?.images)?.origin();
         const linkBase = mcpDeepLinkBase(deps);
         const events = found.map(({ e, floor }) => compactEvent(e, floor, args.verbose, imageOrigin));
-        const questions = openQuestions(scopes, lead, watched, Boolean(deps.owner)).map((q) => withQuestionDeepLink(q, linkBase));
+        const questions = openQuestions(scopes, lead, watched).map((q) => withQuestionDeepLink(q, linkBase));
         const workers = scopes.flatMap((s) =>
           s.team
             .roster(lead)
@@ -591,7 +583,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
       if (typeof scopes === 'string') return officeError(scopes);
       const watched = watchedWorkers(scopes, caller.worker.id, args.workers);
       if (typeof watched === 'string') return officeError(watched);
-      const questions = openQuestions(scopes, caller.worker.id, watched, Boolean(deps.owner)).map((q) => withQuestionDeepLink(q, mcpDeepLinkBase(deps)));
+      const questions = openQuestions(scopes, caller.worker.id, watched).map((q) => withQuestionDeepLink(q, mcpDeepLinkBase(deps)));
       return officeResult(questions.length ? questions.map(questionText).join('\n\n') : 'No questions are waiting on you.', { questions });
     },
   );
@@ -636,50 +628,26 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
       const scope = ask ? scopes.find((s) => s.id === ask[1]) : undefined;
       const w = ask && scope?.workers.get(ask[2]);
       if (!ask || !scope || !w || (w.lead !== lead && !(caller.building && scope.team.isWatching?.(lead, w.id)))) return officeError('No question with that id is waiting on you. questions_list shows the open ones.');
-      const canAnswerTarget = Boolean(scope.workers.answerQuestion || deps.owner);
-      const now = terminalQuestion(scope, w, canAnswerTarget);
+      const now = terminalQuestion(scope, w);
       if (now?.kind === 'permission') return officeError(now.why ?? 'Only the person at its desk can answer a permission prompt.');
       if (!now?.answerable || now.id !== args.questionId) return officeError('The question changed or was already answered, so nothing was sent. questions_list shows the current one.');
       if (args.optionId !== undefined && args.text !== undefined) return officeError('A terminal question takes optionId or text, not both: text alone types your own answer, and a multi-select takes optionIds with text.');
-      const shown = w.menu ?? w.cloud?.menu;
+      const shown = scope.workers.screenMenu?.(w.id);
       // The menu answered must be the one the id names, not one that replaced it since.
       if (!shown || menuHash(shown) !== args.questionId.slice(args.questionId.lastIndexOf(':') + 1)) return officeError('The question changed or was already answered, so nothing was sent.');
-      if (!shown.multiSelect && args.optionIds !== undefined) return officeError('This question takes one optionId, not optionIds.');
-      if (shown.multiSelect && args.optionId !== undefined) return officeError('This multi-select question takes optionIds, not optionId.');
-      if (args.text !== undefined && !menuTakesText(shown)) return officeError('This question does not accept a typed text answer; choose one of its options.');
-      if (shown.multiSelect && args.optionIds !== undefined && args.optionIds.length === 0 && args.text === undefined) return officeError('Pick at least one option in optionIds, or supply text.');
       const number = (id: string) => (/^\d+$/.test(id) ? Number(id) : NaN);
       const reply = args.optionId !== undefined ? { choice: number(args.optionId) } : { ...(args.optionIds !== undefined ? { choices: args.optionIds.map(number) } : {}), ...(args.text !== undefined ? { text: args.text } : {}) };
       if (reply.choice !== undefined && !shown.choices.some((c) => c.number === reply.choice)) return officeError(`${args.optionId} is not one of this question's options.`);
       const unknown = args.optionIds?.find((id) => !shown.choices.some((c) => c.number === number(id)));
       if (unknown !== undefined) return officeError(`${unknown} is not one of this question's options.`);
-      if (inFlightAnswers.has(w.id)) return officeError(`${w.name}'s question is already being answered.`);
-      if (signal.aborted) return officeError('Cancelled before sending the answer.');
-      inFlightAnswers.add(w.id);
-      try {
-        const latest = scope.workers.get(w.id);
-        const latestMenu = latest?.menu ?? latest?.cloud?.menu;
-        if (latest?.status !== 'needs_input' || !latestMenu || !sameMenu(shown, latestMenu)) {
-          return officeError('The question changed or was already answered, so nothing was sent.');
-        }
-        if (!w.cloud && scope.workers.answerQuestion) {
-          const outcome = await scope.workers.answerQuestion(w.id, shown, reply);
-          const error = typeof outcome === 'string' ? outcome : outcome?.error;
-          return error ? officeError(error) : done(w.name, w.id);
-        }
-        if (deps.owner) {
-          const outcome = await deps.owner.act(caller.worker, { t: 'worker.answer', workerId: w.id, menu: shown, ...reply }, { floor: scope.id, signal });
-          return outcome.error ? officeError(outcome.error) : done(w.name, w.id);
-        }
-        if (scope.workers.answerQuestion) {
-          const outcome = await scope.workers.answerQuestion(w.id, shown, reply);
-          const error = typeof outcome === 'string' ? outcome : outcome?.error;
-          return error ? officeError(error) : done(w.name, w.id);
-        }
-        return officeError('Answering questions is unavailable on this floor.');
-      } finally {
-        inFlightAnswers.delete(w.id);
-      }
+      const error = await deps.answers.answer(w.id, shown, reply, {
+        worker: () => scope.workers.get(w.id),
+        lines: () => scope.workers.screenLines?.(w.id),
+        menu: () => scope.workers.screenMenu?.(w.id),
+        write: (data) => scope.workers.write?.(w.id, data),
+        live: () => !signal.aborted,
+      });
+      return error ? officeError(error) : done(w.name, w.id);
     },
   );
 }

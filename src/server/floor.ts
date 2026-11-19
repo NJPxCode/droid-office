@@ -41,7 +41,6 @@ import type { WhiteboardRenderers } from './whiteboard-render.js';
 import { boardReaders } from './whiteboard-agent.js';
 import { waitingStatus } from './office-status.js';
 import type { BuildingAgents } from './building-agent.js';
-import type { LocalDaemon } from './local-daemon.js';
 
 type ToastLevel = 'info' | 'warn' | 'error';
 
@@ -61,7 +60,6 @@ export interface FloorContext {
   agentCmd: string;
   agentArgs: string[];
   hook: HookEnv;
-  daemon?: LocalDaemon;
   /** The office's worker limit, across every floor. */
   capacity: Capacity;
   /** The office's Jira connection, which every floor's epic goes through. */
@@ -79,18 +77,16 @@ export interface FloorContext {
   emit(floor: Floor, msg: ServerMsg, droppable?: boolean): unknown;
   /** To everyone on this floor; `workerId` names the worker it is about, when one is. */
   toast(floor: Floor, text: string, level?: ToastLevel, workerId?: string): void;
-  /** A shell desk's terminal output, for whoever has that terminal open. */
+  /** A worker's terminal output, for whoever has that terminal open. */
   termData(workerId: string, data: string, connectionIds: string[]): void;
   /** What a worker changed, for whoever has its Changes window open. */
   changes(state: ChangesState, clients: string[]): void;
   /** A worker on this floor changed, or left (then just its id). */
   workerChanged(floor: Floor, w: WorkerInfo | string): void;
-  /** A worker needing input updated its laptop preview for off-floor companions. */
+  /** A worker needing input updated its terminal screen, so off-floor companions keep its menu live. */
   offFloorScreen?(floor: Floor, workerId: string): void;
-  /** A local worker's laptop preview changed, so its watched Thread may need a refresh. */
+  /** A local worker repainted: its watched Thread's live output may have moved without a hook. */
   screenChanged?(workerId: string): void;
-  /** A local worker's live thinking or reply text grew. */
-  streamChanged?(workerId: string): void;
   /** How many owner connections are on this floor right now. */
   connections(floor: Floor): number;
   /** ⚙️ Settings: a worker whose pull request merged goes home by itself. */
@@ -219,7 +215,7 @@ export class Floor {
   readonly cloud: CloudWorkers;
   /** The floor's Whiteboard, in its checkout's .droid-office/whiteboard (see whiteboard.ts). */
   readonly whiteboard: WhiteboardStore;
-  /** Settles after reattaching saved daemon sessions and shell PTYs, and waking the rest. */
+  /** Settles once the workers whose terminals outlived the last office are picked back up, and the rest woken. */
   readonly ready: Promise<void>;
   private timer: NodeJS.Timeout;
   /** Pull requests merging, to ring the gong for. */
@@ -330,7 +326,6 @@ export class Floor {
           if (this.workers.get(workerId)?.status === 'needs_input') ctx.offFloorScreen?.(this, workerId);
           return dropped;
         },
-        stream: (workerId) => ctx.streamChanged?.(workerId),
         toast: (text, level, workerId) => ctx.toast(this, text, level, workerId),
         checkout: (branch) => {
           this.project.branch = branch;
@@ -348,8 +343,6 @@ export class Floor {
       ctx.prompts,
       this.plain,
       ctx.building ? { agents: ctx.building, floor: this.id } : undefined,
-      false,
-      ctx.daemon,
     );
     this.branchInfo = { baseBranch: this.workers.baseBranch, selectedBranch: this.workers.selectedBranch };
 
@@ -393,7 +386,6 @@ export class Floor {
     this.workers.pullList = () => this.board.pulls.items;
     this.workers.modelGate = (model) => ctx.modelGate?.(model);
     // Only while subagents can be hired through the Office MCP: the refusal points the worker there.
-    this.workers.officeMcpEnabled = () => ctx.subagents().officeMcp;
     this.workers.denyTask = () => {
       const s = ctx.subagents();
       return s.denyTask && s.on && s.officeMcp;
@@ -435,7 +427,7 @@ export class Floor {
         urgentPrompt: (id, text, images) => workers.urgentPrompt(id, text, images),
         notice: (id, text, images) => workers.notice(id, text, images),
         hasImage: (id) => workers.hasImage(id),
-        queueState: (id) => workers.queueState(id),
+        queueState: (id, now) => workers.queueState(id, now),
         blockingTool: (id, now) => workers.blockingTool(id, now),
         resume: (id, text, images) => workers.resume(id, text, images),
         switchModel: (id, model, effort) => workers.switchModel(id, model, effort),
@@ -745,7 +737,7 @@ export class Floor {
     };
   }
 
-  /** With `keep` (a restart), daemon sessions and shell PTYs stay up for the next office. */
+  /** With `keep` (a restart), the workers' terminals keep running for the next office to pick up. */
   shutdown(keep = false) {
     clearInterval(this.timer);
     clearTimeout(this.landedTimer);

@@ -42,7 +42,7 @@ deploy/aws.sh update               # install the latest droid-office and restart
 deploy/aws.sh ssh | logs           # get on the box / follow the office logs
 ```
 
-**Upgrading from the office.** **⬆️ Upgrade the office** in the **☰** menu checks GitHub for new commits on the branch the office was installed from. When there are any, an orange **⬆️ Update** button shows up on the top bar, and it lists them. **Upgrade now** builds the new version next to the running one. Meanwhile the office keeps working and a banner says so. A failed build changes nothing. Once the build succeeds, the office swaps it in and restarts, and you get an *Upgrading the office* dialog, which you can close. The page still reloads onto the new version a few seconds after the office comes back. Workers keep working through it: local Droid sessions stay alive in the detached `droid daemon` and shell desks stay in `ptyhost`, and the new version reattaches both when it starts.
+**Upgrading from the office.** **⬆️ Upgrade the office** in the **☰** menu checks GitHub for new commits on the branch the office was installed from. When there are any, an orange **⬆️ Update** button shows up on the top bar, and it lists them. **Upgrade now** builds the new version next to the running one. Meanwhile the office keeps working and a banner says so. A failed build changes nothing. Once the build succeeds, the office swaps it in and restarts, and you get an *Upgrading the office* dialog, which you can close. The page still reloads onto the new version a few seconds after the office comes back. Workers keep working through it: their terminals run in a process of their own, which the new version picks back up. (An office set up before this lets them keep running from its next upgrade on; the first one resumes them with *continue*. One upgrade that does restart the terminals is the move to the Droid-only office: its terminal-host protocol changed, so every worker's terminal is ended once by the new version and each worker is resumed where it left off.)
 
 An office created before the SSH tunnel served HTTPS on port 443 with a self-signed certificate. Run `deploy/aws.sh up` once to move it over: 443 closes and the office moves behind the tunnel.
 
@@ -58,7 +58,7 @@ Useful options for `up`:
 **Droid sign-in.** Workers run Droid on the machine, so it has to be signed in there. You can do this either way:
 
 - Pass `--factory-api-key <key>`, which writes it to `/etc/droid-office/env` for Droid's sessions.
-- Do nothing, and use the office's welcome sign-in step (or get on the box with `deploy/aws.sh ssh`, run `droid`, and log in).
+- Do nothing, and the first worker waits for sign-in. Get on the box with `deploy/aws.sh ssh` (or open the worker's terminal in the office), run `droid`, and log in.
 
 **GitHub.** By default, your local `gh auth token` is used to sign in the GitHub CLI on the machine. It's needed for private repos, the issue and PR boards, and for workers to push branches and open PRs. Anyone who reaches the office can use that token, so pass `--github-token <fine-grained token>` or `--no-github-token` if that's too much.
 
@@ -108,7 +108,7 @@ User=dev
 WorkingDirectory=/home/dev
 ExecStart=/usr/bin/node /home/dev/droid-office/bin/droid-office.js --host 127.0.0.1 --trust-proxy
 Restart=on-failure
-# Restarting the office leaves droid daemon and shell terminals running for the next process to reattach.
+# Restarting the office leaves the workers' terminals running for the next one to pick up.
 KillMode=process
 
 [Install]

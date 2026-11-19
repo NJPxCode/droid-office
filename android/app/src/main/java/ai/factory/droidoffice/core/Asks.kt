@@ -5,52 +5,43 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 
-/** A worker waiting on an AskUser question, with the structured menu the office holds for it. */
+/** A worker waiting on a question, with the menu its terminal shows when one can be read. */
 data class PendingAsk(val worker: WorkerInfo, val menu: Menu?)
 
-/** Structured AskUser questionnaires: who is waiting on an answer, oldest first, and what to show for each. */
+/** The Asks tab: who is waiting on an answer, oldest first, and what to show for each. */
 object Asks {
-    private val OTHER = Regex("""^other\b|type (your|an?) (own )?answer""", RegexOption.IGNORE_CASE)
-
     /** Workers waiting on the owner, whoever has waited longest first. */
-    fun queue(workers: Collection<WorkerInfo>): List<PendingAsk> =
-        workers.filter { it.state == WorkerStatus.NeedsInput && !it.isShell }
+    fun queue(workers: Collection<WorkerInfo>, screens: Map<String, ScreenState>): List<PendingAsk> =
+        workers.filter { it.state == WorkerStatus.NeedsInput }
             .sortedWith(compareBy<WorkerInfo> { it.waitingSince ?: Long.MAX_VALUE }.thenBy { it.createdAt }.thenBy { it.id })
-            .map { w -> PendingAsk(w, menu(w)) }
+            .map { w -> PendingAsk(w, menu(w, screens[w.id])) }
 
-    /** The structured AskUser menu held by the office (`w.menu` for local Droid and Orchestrator, `w.cloud?.menu` for cloud). */
-    fun menu(w: WorkerInfo): Menu? = if (w.isShell) null else w.menu ?: w.cloud?.menu
-
-    /** The thread can answer a waiting Droid worker when the office holds a structured AskUser menu for it. */
-    fun canAnswer(w: WorkerInfo): Boolean =
-        w.state == WorkerStatus.NeedsInput && !w.isShell && menu(w) != null
-
-    /** Whether [menu] accepts a free-text answer (explicit free-text row or an "Other" / "Type your own answer" option). */
-    fun takesText(menu: Menu): Boolean = menu.freeText || menu.choices.any { OTHER.containsMatchIn(it.label) }
-
-    /** Identity comparison across updates: ignores cursor pointer and selection toggles so live drafting stays intact. */
-    fun sameMenu(a: Menu?, b: Menu?): Boolean {
-        if (a == null || b == null) return false
-        if (a.question != b.question || a.multiSelect != b.multiSelect || a.freeText != b.freeText) return false
-        if (a.choices.size != b.choices.size) return false
-        return a.choices.indices.all { i ->
-            val x = a.choices[i]
-            val y = b.choices[i]
-            x.number == y.number && x.label == y.label && x.description == y.description
-        }
+    /**
+     * The numbered menu on its screen: a shell's numbered output is never an ask. A cloud worker has
+     * no screen here: its menu is the waiting AskUser question the office holds for it.
+     */
+    fun menu(w: WorkerInfo, screen: ScreenState?): Menu? = when {
+        w.isCloud -> w.cloud?.menu
+        w.isShell || screen == null -> null
+        else -> Choices.read(screen)
     }
+
+    /** The thread can answer only a waiting question with a readable menu (or a cloud worker's held AskUser). */
+    fun canAnswer(w: WorkerInfo, screen: ScreenState?): Boolean =
+        w.state == WorkerStatus.NeedsInput && !w.isShell && menu(w, screen) != null
 
     /** One line of what it's on, above the question: its task or title, else the start of its prompt. */
     fun context(w: WorkerInfo): String? =
         (Workers.title(w) ?: w.prompt?.lineSequence()?.firstOrNull { it.isNotBlank() })?.trim()?.take(140)?.takeIf { it.isNotBlank() }
 
     /**
-     * The question to show: the matching open questionnaire entry, else [PendingAsk.menu]'s question,
-     * else what the office says it's waiting on. Generic notices ("Factory CLI is asking the user 1
-     * question(s)") never stand in.
+     * The question to show: the one on the screen, else the one its open ask call in the thread
+     * carries, else what the office says it's waiting on. The CLI's own notice ("Factory CLI is
+     * asking the user 1 question(s)") says nothing a reader can answer, so it never stands in.
      */
     fun question(ask: PendingAsk, entries: List<ThreadEntry> = emptyList()): String =
-        matching(pending(ask.worker.ask, entries), ask.menu)?.question
+        ask.worker.ask?.takeIf { it.isPermission }?.let(::permissionLine)
+            ?: matching(pending(ask.worker.ask, entries), ask.menu)?.question
             ?: ask.menu?.question
             ?: Workers.detail(ask.worker)?.takeUnless(::generic)
             ?: "${ask.worker.name.ifBlank { "It" }} is waiting on an answer"
@@ -108,7 +99,8 @@ object Asks {
                         if (question != null) trimmed.removePrefix("[topic]").trim().takeIf { it.isNotEmpty() }?.let { topic = it }
                         lastOption = false
                         continuingQuestion = false
-                    } else if (question != null) {
+                    }
+                    else if (question != null) {
                         if (lastOption && options.isNotEmpty()) options[options.lastIndex] += "\n$line"
                         else if (continuingQuestion) {
                             if (MULTI.containsMatchIn(line)) multiSelect = true
@@ -137,13 +129,13 @@ object Asks {
 
     /**
      * The open ask call's question whose ordered options and mode match [menu].
-     * Ambiguous or mismatching questions never replace [menu]'s text.
+     * Ambiguous or mismatching questions never replace the screen's text.
      */
     fun asked(entries: List<ThreadEntry>, menu: Menu?): String? = matching(questions(entries), menu)?.question
 
     /**
-     * The whole questionnaire being asked (src/shared/ask-question.ts pendingQuestions): [WorkerAsk]
-     * has the structured questionnaire; the thread's open call is the fallback when none was sent.
+     * The whole questionnaire being asked (src/shared/ask-question.ts pendingQuestions): the hook's
+     * questionnaire has the exact text; the thread's open call is the fallback when none was sent.
      */
     fun pending(ask: WorkerAsk?, entries: List<ThreadEntry>): List<Asked> =
         ask?.takeIf { it.kind == "question" && it.questions.isNotEmpty() }?.questions
@@ -152,8 +144,8 @@ object Asks {
 
     enum class StepState { Done, Current, Upcoming }
 
-    /** One step of a multi-question AskUser step bar. */
-    data class Step(val label: String, val state: StepState, val answer: String? = null)
+    /** One step of a questionnaire's step bar (src/shared/ask-question.ts QuestionStep). */
+    data class Step(val label: String, val state: StepState, val answer: String? = null, val review: Boolean = false)
 
     private const val STEP_LABEL = 28
     private val TRAILING_WORD = Regex("""\s+\S*$""")
@@ -167,24 +159,57 @@ object Asks {
         return cut.replace(TRAILING_WORD, "").ifEmpty { cut } + "…"
     }
 
+    /** AskUser's review summary as question to answer pairs: each `→` line answers the lines above it. */
+    fun reviewAnswers(review: List<String>): List<Pair<String, String>> {
+        val pairs = ArrayList<Pair<String, String>>()
+        val question = ArrayList<String>()
+        for (raw in review) {
+            val line = raw.trim()
+            val answer = REVIEW_ANSWER.matchEntire(line)?.groupValues?.get(1)?.trim()
+            when {
+                answer != null && question.isEmpty() && pairs.isNotEmpty() -> if (answer.isNotEmpty()) {
+                    pairs[pairs.lastIndex] = pairs.last().let { (q, prev) -> q to if (prev.isEmpty()) answer else "$prev, $answer" }
+                }
+                answer != null -> {
+                    pairs += question.joinToString(" ") to answer
+                    question.clear()
+                }
+                line.isNotEmpty() -> question += line
+            }
+        }
+        if (question.isNotEmpty()) pairs += question.joinToString(" ") to ""
+        return pairs
+    }
+
+    private val REVIEW_ANSWER = Regex("""^→\s*(.*)$""")
+
     /**
-     * Where [menu] sits in its multi-question AskUser questionnaire (`1..N`, with no terminal review
-     * step). Empty for a lone question or a menu matching no single question. [answers] is what this
-     * app sent, by 1-based question position.
+     * Where [menu] sits in its questionnaire: one step per question, plus the terminal review when
+     * [hasReview] is true. Empty for a lone question or a menu matching no single question.
+     * [answers] is what this app sent, by position.
      */
-    fun steps(menu: Menu, entries: List<ThreadEntry>, ask: WorkerAsk?, answers: Map<Int, String> = emptyMap()): List<Step> {
+    fun steps(menu: Menu, entries: List<ThreadEntry>, ask: WorkerAsk?, answers: Map<Int, String> = emptyMap(), hasReview: Boolean = true): List<Step> {
+        if (ask?.isPermission == true) return emptyList()
         val all = pending(ask, entries)
-        if (all.size < 2) return emptyList()
-        val at = matching(all, menu)?.let { all.indexOf(it) + 1 } ?: return emptyList()
-        return all.mapIndexed { index, asked ->
+        if (all.isEmpty() || (all.size < 2 && menu.review == null)) return emptyList()
+        val at = if (menu.review != null) all.size + 1 else matching(all, menu)?.let { all.indexOf(it) + 1 } ?: return emptyList()
+        val reviewed = menu.review?.let(::reviewAnswers).orEmpty()
+        val questionSteps = all.mapIndexed { index, asked ->
             val state = when {
                 index + 1 < at -> StepState.Done
                 index + 1 == at -> StepState.Current
                 else -> StepState.Upcoming
             }
-            val answer = if (state == StepState.Done) answers[index + 1]?.ifEmpty { null } else null
+            val answer = when {
+                state != StepState.Done -> null
+                reviewed.size == all.size && reviewed[index].second.isNotEmpty() -> reviewed[index].second
+                else -> answers[index + 1]?.ifEmpty { null }
+            }
             Step(stepLabel(asked), state, answer)
         }
+        if (!hasReview && menu.review == null) return questionSteps
+        val reviewState = if (menu.review != null) StepState.Current else StepState.Upcoming
+        return questionSteps + Step("Review", reviewState, review = true)
     }
 
     /** One line for what a reply answered, in the question's own words (src/shared/ask-question.ts replySummary). */
@@ -193,6 +218,16 @@ object Asks {
         val typed = text?.replace(WHITESPACE, " ")?.trim()?.ifEmpty { null }
         if (choices != null) return listOfNotNull(choices.joinToString(", ") { label(it) }.ifEmpty { null }, typed).joinToString(" + ")
         return typed ?: choice?.let(::label).orEmpty()
+    }
+
+    private val RISK = Regex("^(low|medium|high)$")
+
+    /** What a permission prompt asks, in one line (src/shared/ask-question.ts permissionLine): "Approve high-risk command: rm -rf build". */
+    fun permissionLine(ask: WorkerAsk): String {
+        val risk = ask.risk?.takeIf { RISK.matches(it) }?.let { "$it-risk " }.orEmpty()
+        val what = if (ask.tool == "Execute") "command" else ask.tool.orEmpty()
+        val detail = (ask.command ?: ask.file ?: ask.summary)?.let { ": $it" }.orEmpty()
+        return "Approve $risk$what$detail"
     }
 
     private fun norm(s: String) = s.lowercase().replace(WHITESPACE, " ").trim().trimEnd('…', '.')
@@ -217,21 +252,36 @@ object Asks {
         }.singleOrNull()
     }
 
-    /** Full pending-call metadata is for display only. Send the original menu in worker.answer, never this copy. */
+    /** Full pending-call metadata is for display only. Send the original screen menu, never this copy. */
     fun display(menu: Menu, entries: List<ThreadEntry>, ask: WorkerAsk? = null): Menu {
+        if (menu.review != null) return menu
+        if (ask?.isPermission == true) return menu.copy(question = permissionLine(ask))
         val asked = matching(pending(ask, entries), menu) ?: return menu
         return menu.copy(
             question = asked.question,
+            // A description stays only beside its option's exact label: a screen's wrapped one might belong to a cut-off label.
             choices = menu.choices.map { c ->
                 val full = asked.options.getOrNull(c.number - 1)?.trim() ?: c.label
                 c.copy(label = full, description = c.description.takeIf { c.label == full })
             },
         )
     }
+    /** The bottom line of its terminal with the box drawing taken off: the live line under a thread. */
+    fun liveLine(screen: ScreenState?): String? = screen?.lines
+        ?.map { row -> row.joinToString("") { it.text }.trim('│', '┃', '║', '|', '╭', '╮', '╰', '╯', '─', ' ', '\u00A0') }
+        ?.lastOrNull { it.isNotBlank() && it.any(Char::isLetterOrDigit) }
 
     /** A choice's label short enough for a notification button: "1 · Wait for drawer". */
     fun buttonLabel(choice: Choice, max: Int = 22): String {
         val label = if (choice.label.length <= max) choice.label else choice.label.take(max - 1).trimEnd() + "…"
         return "${choice.number} · $label"
+    }
+
+    /** A reply typed into a notification: a bare digit picks that choice, anything else is the owner's own answer. */
+    fun replyKeys(menu: Menu?, text: String): String? {
+        val t = text.trim()
+        if (menu == null || menu.multiSelect || t.isEmpty()) return null
+        t.toIntOrNull()?.let { n -> menu.choices.firstOrNull { it.number == n }?.let { return Choices.keys(menu, it) } }
+        return Choices.textKeys(menu, t)
     }
 }

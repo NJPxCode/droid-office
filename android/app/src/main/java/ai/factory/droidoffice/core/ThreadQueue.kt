@@ -4,33 +4,20 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 
 /**
- * The messages this phone sent to Droid's queue, held until the conversation shows them, paired with
- * the authoritative [WorkerQueueState] from `WorkerInfo.queue` (`src/shared/thread-queue.ts`).
- * Local receipts fill in full text or image markers when a server item is a cut-short preview, and
- * stand in briefly ([GRACE_MS]) before the next `worker.update` reflects a newly queued send.
+ * The messages this phone sent to Droid's queue, held until the conversation shows them, as the web
+ * holds them (src/shared/thread-queue.ts). Droid's own queue, read off its screen ([DroidQueue]), is
+ * what the thread shows: these only fill in the whole text of a row Droid cut short, and stand in
+ * for it while the screen can't be read.
  */
 class ThreadQueue(saved: String? = null) {
-    enum class Group(val wire: String) {
-        Steering("steering"),
-        Queued("queued"),
-    }
-
     @Serializable
     data class Prompt(val id: Int, val text: String, val hasImage: Boolean, val after: Long, val at: Long = 0) {
-        /** When [WorkerQueueState] last included this message. */
+        /** When Droid's queue last showed it on the screen. */
         @Transient var seen: Long = 0
     }
 
-    /** One message waiting for its turn, as the thread shows it. [preview] when only a cut-short preview is known. */
-    data class Shown(
-        val key: String,
-        val text: String,
-        val hasImage: Boolean,
-        val preview: Boolean,
-        val more: Int,
-        val id: String? = null,
-        val serverIndex: Int? = null,
-    )
+    /** One message waiting for its turn, as the thread shows it. [preview] when only Droid's cut-short row is known. */
+    data class Shown(val key: String, val text: String, val hasImage: Boolean, val preview: Boolean, val more: Int)
 
     @Serializable
     private data class Saved(val session: String?, val sequence: Long, val items: List<Prompt>, val consumed: List<String>)
@@ -59,13 +46,6 @@ class ThreadQueue(saved: String? = null) {
         pending = (pending + Prompt(++serial, text, hasImage, after, at)).takeLast(32)
     }
 
-    /** Drops one local receipt when the user deletes or edits a queued message from the composer. */
-    fun remove(text: String) {
-        val idx = pending.indexOfFirst { it.text == text }
-        if (idx >= 0) pending = pending.filterIndexed { i, _ -> i != idx }
-        if (pending.isEmpty()) consumed.clear()
-    }
-
     /** Forgets every message here, after Droid's queue was cleared. */
     fun clear() {
         pending = emptyList()
@@ -89,8 +69,9 @@ class ThreadQueue(saved: String? = null) {
                 for (end in start until pending.size) {
                     val item = pending[end]
                     if (entry.seq <= item.after) break
-                    // Consecutive queued text sends can drain into one user message without a separator.
+                    // Droid can drain consecutive queued text sends as one user message, without a separator.
                     joined += item.text
+                    // A prompt the office sent with pictures arrives as its own text, the pictures beside it (or alone).
                     val match = if (item.text.isNotEmpty()) entry.kind == ThreadKind.Text && entry.text?.trim() == joined
                     else start == end && item.hasImage &&
                         ((entry.kind == ThreadKind.Notice && entry.text == ThreadView.IMAGE_PLACEHOLDER) || (entry.kind == ThreadKind.Text && entry.text.isNullOrBlank() && entry.images.isNotEmpty()))
@@ -109,40 +90,23 @@ class ThreadQueue(saved: String? = null) {
     }
 
     /**
-     * Queued messages waiting for their turn, oldest first. When [queuedItems] is null (an older office
-     * that did not send `WorkerInfo.queue`), falls back to local [pending] receipts; when present,
-     * enriches [queuedItems] with local receipts and appends receipts still within [GRACE_MS].
+     * What waits in the queue now, oldest first. With Droid's queue read off the screen, its rows,
+     * each with the whole text of the message here it previews, then messages sent too recently for
+     * Droid to have drawn them. A message here that Droid hasn't shown for [GRACE_MS] has left the
+     * queue, drained or cleared, and is forgotten. Without the screen ([droid] null), every message here.
      */
-    fun shown(queuedItems: List<QueuedMessageItem>?, now: Long = System.currentTimeMillis()): List<Shown> =
-        mergeQueued(queuedItems, used = HashSet(), now = now)
-
-    private fun mergeQueued(queuedItems: List<QueuedMessageItem>?, used: MutableSet<Int>, now: Long): List<Shown> {
-        fun own(p: Prompt, item: QueuedMessageItem? = null) = Shown(
-            key = item?.id?.let { "id:$it" } ?: "sent:${p.id}",
-            text = p.text,
-            hasImage = p.hasImage || (item?.hasImage == true),
-            preview = false,
-            more = 0,
-            id = item?.id,
-            serverIndex = item?.index?.takeIf { it > 0 },
-        )
-        if (queuedItems == null) return pending.filter { it.id !in used }.map { own(it) }
-        val out = queuedItems.mapIndexed { i, item ->
-            val p = pending.firstOrNull { it.id !in used && matchesPrompt(item, it) }
+    fun shown(droid: List<DroidQueue.Row>?, now: Long = System.currentTimeMillis()): List<Shown> {
+        fun own(p: Prompt) = Shown("sent:${p.id}", p.text, p.hasImage, preview = false, more = 0)
+        if (droid == null) return pending.map(::own)
+        val used = HashSet<Int>()
+        val out = droid.mapIndexed { i, row ->
+            val p = pending.firstOrNull { it.id !in used && DroidQueue.showsAs(row, it.text) }
             if (p == null) {
-                Shown(
-                    key = item.id?.let { "id:$it" } ?: "droid:$i:${item.text}",
-                    text = item.text,
-                    hasImage = item.hasImage,
-                    preview = item.preview || item.moreLines > 0,
-                    more = item.moreLines,
-                    id = item.id,
-                    serverIndex = item.index.takeIf { it > 0 },
-                )
+                Shown("droid:$i:${row.text}", row.text, hasImage = false, preview = row.cut || row.more > 0, more = row.more)
             } else {
                 used += p.id
                 p.seen = now
-                own(p, item)
+                own(p)
             }
         }.toMutableList()
         pending = pending.filter { it.id in used || now - maxOf(it.at, it.seen) < GRACE_MS }
@@ -152,27 +116,13 @@ class ThreadQueue(saved: String? = null) {
     }
 
     /**
-     * Factory's queued messages panel: mid-turn steering messages (`next_step` / `steering`) above
-     * end-of-turn queued messages (`after_turn`), carrying daemon `requestId` (`id`) for exact actions.
+     * Factory's queued messages panel: what Droid's screen shows as sent mid-turn (steering, read at
+     * its next step) and, after it, what waits for the turn's end, each queued one with the whole
+     * text sent from here when this phone sent it.
      */
-    data class Panel(
-        val steering: List<Item>,
-        val queued: List<Item>,
-        val moreSteering: Int = 0,
-        val moreQueued: Int = 0,
-    ) {
-        /** [index] is 0-based within [group]; [id] is the daemon requestId when present. */
-        data class Item(
-            val key: String,
-            val group: Group,
-            val index: Int,
-            val text: String,
-            val hasImage: Boolean,
-            val preview: Boolean,
-            val more: Int,
-            val id: String? = null,
-            val serverIndex: Int? = null,
-        )
+    data class Panel(val steering: List<Item>, val queued: List<Item>, val moreSteering: Int = 0, val moreQueued: Int = 0, val review: Boolean = false) {
+        /** [index] is its place in its [group], from 0, as Droid's queue review counts it. */
+        data class Item(val key: String, val group: DroidQueue.Group, val index: Int, val text: String, val hasImage: Boolean, val preview: Boolean, val more: Int)
         val items get() = steering + queued
         val total get() = steering.size + queued.size + moreSteering + moreQueued
         val isEmpty get() = total == 0
@@ -182,55 +132,18 @@ class ThreadQueue(saved: String? = null) {
         }
     }
 
-    /** Splits structured [server] queue items into steering and queued groups; when [server] is null, shows local [pending] receipts. */
-    fun panel(server: WorkerQueueState?, now: Long = System.currentTimeMillis()): Panel {
-        val used = HashSet<Int>()
-        val steeringItems = server?.items?.filter { it.isSteering }.orEmpty()
-        val steering = steeringItems.mapIndexed { i, item ->
-            val p = pending.firstOrNull { it.id !in used && matchesPrompt(item, it) }
-            if (p != null) {
-                used += p.id
-                p.seen = now
-            }
-            Panel.Item(
-                key = item.id?.let { "steer:$it" } ?: "steer:$i:${item.text}",
-                group = Group.Steering,
-                index = i,
-                text = p?.text ?: item.text,
-                hasImage = (p?.hasImage == true) || item.hasImage,
-                preview = if (p != null) false else item.preview || item.moreLines > 0,
-                more = if (p != null) 0 else item.moreLines,
-                id = item.id,
-                serverIndex = item.index.takeIf { it > 0 },
-            )
+    /** [shown] split into Droid's groups: [droid] null when its screen doesn't say, so all that is known is what was queued from here. */
+    fun panel(droid: DroidQueue.PendingSnapshot?, now: Long = System.currentTimeMillis()): Panel {
+        val steering = droid?.steering.orEmpty().mapIndexed { i, p ->
+            Panel.Item("steer:$i:${p.row.text}", DroidQueue.Group.Steering, i, p.row.text, false, p.row.cut || p.row.more > 0, p.row.more)
         }
-        val queuedServer = server?.items?.filterNot { it.isSteering }
-        val queued = mergeQueued(queuedServer, used, now).mapIndexed { i, s ->
-            Panel.Item(
-                key = s.key,
-                group = Group.Queued,
-                index = i,
-                text = s.text,
-                hasImage = s.hasImage,
-                preview = s.preview,
-                more = s.more,
-                id = s.id,
-                serverIndex = s.serverIndex,
-            )
+        val queued = shown(droid?.queued?.map { it.row }, now).mapIndexed { i, s ->
+            Panel.Item(s.key, DroidQueue.Group.Queued, i, s.text, s.hasImage, s.preview, s.more)
         }
-        return Panel(steering, queued, server?.moreSteering ?: 0, server?.moreQueued ?: 0)
+        return Panel(steering, queued, droid?.moreSteering ?: 0, droid?.moreQueued ?: 0, droid?.reviewActive ?: false)
     }
-
     companion object {
-        /** Grace window for an optimistic local send before the next `worker.update` or `thread.snapshot` reflects it. */
+        /** How long a message sent to the queue shows without Droid's screen showing it: for Droid to draw it, or, once drained, for the conversation to pick it up. */
         const val GRACE_MS = 4_000L
-
-        internal fun matchesPrompt(item: QueuedMessageItem, prompt: Prompt): Boolean {
-            if (prompt.text.isEmpty() && item.text.isEmpty()) return prompt.hasImage && item.hasImage
-            if (!item.preview && item.moreLines <= 0) return prompt.text.trim() == item.text.trim()
-            val firstLine = prompt.text.lineSequence().firstOrNull()?.trim().orEmpty()
-            val prefix = item.text.trim().trimEnd('…', '.').trimEnd()
-            return prefix.isNotEmpty() && firstLine.startsWith(prefix)
-        }
     }
 }

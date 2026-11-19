@@ -7,18 +7,12 @@ export function isAsleep(status: WorkerStatus): boolean {
   return status === 'exited' || status === 'offline';
 }
 
-export const DAEMON_START_FAILED_PREFIX = 'Failed to start: ';
-
-export function daemonStartFailure(w: Pick<WorkerInfo, 'kind' | 'status' | 'activity' | 'lost'>): string | undefined {
-  return w.kind === 'agent' && !w.lost && isAsleep(w.status) && w.activity?.startsWith(DAEMON_START_FAILED_PREFIX) ? w.activity : undefined;
-}
-
 /** In the middle of a turn: booting, working, or waiting on an answer. */
 export function isBusy(status: WorkerStatus): boolean {
   return status === 'starting' || status === 'working' || status === 'needs_input';
 }
 
-/** Pending questions or permissions require the owner, including those from subagents. */
+/** Terminal prompts require the owner, including prompts from subagents. */
 export function needsOwnerInput(w: Pick<WorkerInfo, 'status' | 'lead'>): boolean {
   return w.status === 'needs_input';
 }

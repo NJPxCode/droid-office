@@ -1,4 +1,3 @@
-import { thinkingDuration, type ThreadLiveStream } from '../../shared/thread-live';
 import type { ThreadEntry } from '../../shared/worker-thread';
 
 /**
@@ -18,6 +17,7 @@ export interface LiveSettings {
   model?: string;
   modelName?: string;
   reasoningEffort?: string;
+  interactionMode?: string;
 }
 
 export interface LiveView {
@@ -31,11 +31,12 @@ export interface LiveView {
   turnStartedAt?: number;
   phaseSince?: number;
   after?: string;
-  stream?: ThreadLiveStream;
-  completedThinking?: Record<string, number>;
+  stream?: { kind: 'thinking' | 'text'; text: string; since: number };
   tools: LiveTool[];
   waiting?: { kind: string; toolId?: string };
   settings?: LiveSettings;
+  /** Droid's side chat (/btw) as the terminal shows it, while it is open. */
+  side?: { text: string };
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
@@ -49,6 +50,7 @@ function settingsOf(raw: unknown): LiveSettings | undefined {
     model: str(s.model),
     modelName: str(s.modelName),
     reasoningEffort: str(s.reasoningEffort),
+    interactionMode: str(s.interactionMode),
   };
 }
 
@@ -69,14 +71,8 @@ export function liveFrom(msg: unknown, workerId: string, sessionId: string | und
   const stream = obj(live.stream);
   const streamKind = stream?.kind === 'thinking' || stream?.kind === 'text' ? stream.kind : undefined;
   const streamText = str(stream?.text);
-  const entryId = str(stream?.entryId);
   const waiting = obj(live.waiting);
-  const completedThinking = Object.fromEntries(
-    Object.entries(obj(live.completedThinking) ?? {}).flatMap(([id, value]) => {
-      const ms = thinkingDuration(value);
-      return ms === undefined ? [] : [[id, ms]];
-    }),
-  );
+  const sideText = str(obj(live.side)?.text);
   const tools = Array.isArray(live.tools)
     ? live.tools.flatMap((raw): LiveTool[] => {
         const t = obj(raw);
@@ -96,31 +92,12 @@ export function liveFrom(msg: unknown, workerId: string, sessionId: string | und
     turnStartedAt: num(live.turnStartedAt),
     phaseSince: num(live.phaseSince),
     after: str(live.after),
-    ...(streamKind && streamText !== undefined ? { stream: { kind: streamKind, text: streamText, since: num(stream?.since) ?? at, ...(entryId ? { entryId } : {}) } } : {}),
-    ...(Object.keys(completedThinking).length ? { completedThinking } : {}),
+    ...(streamKind && streamText !== undefined ? { stream: { kind: streamKind, text: streamText, since: num(stream?.since) ?? at } } : {}),
     tools,
     ...(waiting ? { waiting: { kind: str(waiting.kind) ?? 'other', toolId: str(waiting.toolId) } } : {}),
     settings: settingsOf(live.settings),
+    ...(sideText !== undefined ? { side: { text: sideText } } : {}),
   };
-}
-
-/**
- * [previous] with the `thread.stream` append in [msg] put on its stream, or `'stale'` when it is one
- * for [workerId] and [sessionId] that doesn't fit what is held (watch again for a whole `thread.live`).
- * Undefined when [msg] is not one for them.
- */
-export function liveAppend(msg: unknown, workerId: string, sessionId: string | undefined, previous: LiveView | undefined): LiveView | 'stale' | undefined {
-  const m = obj(msg);
-  if (m?.t !== 'thread.stream' || m.workerId !== workerId || m.sessionId !== sessionId) return undefined;
-  const rev = num(m.rev);
-  const base = num(m.base);
-  const from = num(m.from);
-  const text = str(m.text);
-  if (rev === undefined || base === undefined || from === undefined || text === undefined) return undefined;
-  if (previous && rev <= previous.rev) return undefined;
-  const stream = previous?.stream;
-  if (!previous || !stream || previous.rev !== base || stream.text.length !== from) return 'stale';
-  return { ...previous, rev, stream: { ...stream, text: stream.text + text } };
 }
 
 /** Epoch ms an entry was written, once the office sends it. */

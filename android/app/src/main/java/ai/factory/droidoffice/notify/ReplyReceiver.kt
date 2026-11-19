@@ -54,7 +54,7 @@ class ReplyReceiver : BroadcastReceiver() {
         }
     }
 
-    /** Holds the connection open until the office is connected and synced, then runs [block]. */
+    /** Holds the connection open until the office is in and the worker's screen has come, then runs [block]. */
     private suspend fun withOffice(connection: OfficeConnection, workerId: String, block: suspend () -> Answered): Answered {
         val tag = "answer-$workerId"
         connection.hold(tag)
@@ -62,6 +62,7 @@ class ReplyReceiver : BroadcastReceiver() {
             withTimeoutOrNull(10_000) {
                 connection.link.first { it.phase == Phase.Connected }
                 connection.data.first { it.synced }
+                connection.screens.first { it.containsKey(workerId) }
             } ?: return Answered.Unreachable
             return block()
         } finally {

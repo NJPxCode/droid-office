@@ -461,12 +461,12 @@ object Tags {
         /** Readable state when there are no messages to show: its text says loading, empty, unavailable or why not. */
         const val THREAD_STATE = "worker.thread.state"
         const val THREAD_RETRY = "worker.thread.retry"
-        /** Reserved: former switch to Raw TTY (all Droid workers are now Thread-only). */
+        /** Switches to Raw TTY from a state, notice or question the thread can't handle. */
         const val THREAD_RAW_TTY = "worker.thread.raw_tty"
         const val THREAD_CODE_HINT = "worker.thread.code.hint"
         /** The messages waiting in Droid's queue, after the conversation. */
         const val THREAD_QUEUED = "worker.thread.queued"
-        /** Clears Droid's queue, shown while queued messages are present. */
+        /** Clears Droid's queue (Ctrl+X), shown while its screen shows one. */
         const val THREAD_QUEUED_CLEAR = "worker.thread.queued.clear"
         const val THREAD_EARLIER = "worker.thread.earlier"
         const val THREAD_START = "worker.thread.start"
@@ -474,17 +474,16 @@ object Tags {
         const val THREAD_JUMP = "worker.thread.jump"
         /** An error from the office shown over messages already here. */
         const val THREAD_ERROR = "worker.thread.error"
-        /** In place of the composer while the worker waits on an AskUser question. */
+        /** In place of the composer while the worker waits on its terminal: prompts aren't sent into a question. */
         const val THREAD_WAITING = "worker.thread.waiting"
-        fun threadAnsweredQuestion(id: String) = "worker.thread.answered_question/$id"
-        /** Reserved: former Raw TTY button in [THREAD_WAITING]. */
+        /** The Raw TTY button in [THREAD_WAITING]. */
         const val THREAD_WAITING_TTY = "worker.thread.waiting.raw_tty"
         /** After Load earlier pushed the newest entries out: loads the newest page again. */
         const val THREAD_NEWER = "worker.thread.newer"
-        /** In place of the conversation when the office's Thread can't be read here: update the office or the app. */
+        /** In place of the conversation when the office's Thread can't be read here: update the office or the app, or use Raw TTY. */
         const val THREAD_UPDATE = "worker.thread.update"
 
-        /** The row in the Thread view with session search, Resume, PR and branch chips. */
+        /** The row in the Thread view with the Thread and Raw TTY switch, the PR and the branch. */
         const val THREAD_BAR = "worker.thread.bar"
         /** The [THREAD_JUMP] arrow, described as "Jump to latest" or the new-message count. */
         const val THREAD_JUMP_LABEL = "worker.thread.jump.label"
@@ -573,9 +572,6 @@ object Tags {
         fun threadChangeFull(id: String) = "worker.thread.change.full/$id"
         /** Copies a top-level Command card's shell command. */
         fun threadCommandCopy(id: String) = "worker.thread.command.copy/$id"
-        /** Opens the full result when a tool card only has a preview. */
-        fun threadOutput(id: String) = "worker.thread.output/$id"
-        const val THREAD_OUTPUT_SHEET = "worker.thread.output.sheet"
         /** Opens the delegated subagent's own worker Thread from a Delegation card. */
         fun threadDelegateOpen(id: String) = "worker.thread.delegate.open/$id"
 

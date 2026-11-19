@@ -1,56 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { CARRY_ON_PROMPT, NAMES, WorkerManager, type WorkerEvents } from '../src/server/workers.js';
+import { CARRY_ON_PROMPT, HOOK_VERSION, NAMES, SPOOL_MAX_BYTES, STOP_GRACE_MS, WorkerManager, setupFailedNote, type WorkerEvents } from '../src/server/workers.js';
+import { Orchestrator } from '../src/server/orchestrator.js';
+import { Team } from '../src/server/team.js';
+import { BUILDING_TOOLS } from '../src/server/office-mcp/index.js';
 import type { ToolRefresh } from '../src/server/hook-refresh.js';
 import { Worktrees } from '../src/server/worktrees.js';
 import type { PromptSource } from '../src/server/prompts.js';
+import { CLEAR_DROID_QUEUE } from '../src/shared/droid-queue.js';
 import { PROMPTS, WORKER_TEAM_LEAD, WORKER_VISITS } from '../src/shared/prompts.js';
-import type { AgentChoice, AgentEffort, GhPull, WorkerInfo } from '../src/shared/protocol.js';
+import { SUBAGENT_DEFAULTS, type AgentChoice, type AgentEffort, type GhPull, type WorkerInfo } from '../src/shared/protocol.js';
 import { nextFreeSeat } from '../src/shared/layout.js';
-import { TestDaemon } from './daemon-fixture.js';
-import type { LocalInitializeSessionOptions } from '../src/server/local-daemon.js';
+import { SCREEN_SETTLE_MS } from '../src/server/droid-screen.js';
 import { airgappedModelError } from '../src/server/droid-models.js';
-
-test('retry after a daemon start timeout sends the hire prompt and buffered follow-up exactly once', async (t) => {
-  const f = fixture();
-  isolateAgentEnvironment(f, t);
-  t.after(() => f.close());
-  const workers = manager(f, []);
-  const timeout = Promise.withResolvers<void>();
-  f.daemon.beforeInitialize = () => timeout.promise;
-  const prompt = 'Reply with exactly the retained hire prompt.';
-  const worker = workers.spawn('desk-2', 'owner', prompt);
-  assert.ok(typeof worker === 'object');
-  assert.equal(workers.prompt(worker.id, 'And check the notes.'), undefined);
-  timeout.reject(new Error('Timed out connecting to droid daemon on 127.0.0.1:49152'));
-  await waitFor(
-    () => worker.status,
-    (state) => state === 'exited',
-  );
-  assert.match(worker.activity ?? '', /^Failed to start: Timed out connecting/);
-  assert.equal(worker.prompt, prompt);
-  assert.deepEqual(f.daemon.messages, []);
-  workers.wakeAll();
-  assert.equal(worker.status, 'exited', 'reopening the floor leaves Retry available');
-
-  f.daemon.beforeInitialize = undefined;
-  assert.equal(workers.resume(worker.id), undefined);
-  await waitFor(
-    () => f.daemon.messages.length,
-    (count) => count === 2,
-  );
-  assert.deepEqual(
-    f.daemon.messages.map((m) => m.text),
-    [prompt, 'And check the notes.'],
-  );
-  assert.equal(worker.activity, undefined);
-  assert.equal(worker.exitCode, undefined);
-  assert.equal(worker.status, 'working');
-});
 
 type Invocation = {
   pid: number;
@@ -73,7 +40,6 @@ type Fixture = {
   log: string;
   droid: string;
   managers: WorkerManager[];
-  daemon: TestDaemon;
   read(): Invocation[];
   close(): void;
 };
@@ -170,7 +136,6 @@ function fixture(): Fixture {
     log,
     droid,
     managers,
-    daemon: new TestDaemon(data),
     read() {
       if (!existsSync(log)) return [];
       // A poll can land mid-append. A finished record always ends with a newline, so a trailing segment without one is not a record yet.
@@ -199,7 +164,6 @@ function events(updates: WorkerInfo[]): WorkerEvents {
 }
 
 function managed(f: Fixture, ...args: ConstructorParameters<typeof WorkerManager>) {
-  args[12] ??= f.daemon;
   const workers = new WorkerManager(...args);
   f.managers.push(workers);
   return workers;
@@ -227,9 +191,9 @@ test('airgapped worker launches pin a configured custom model and reject hosted 
   assert.equal(workers.list().length, 0);
   const result = workers.spawn('desk-1', 'owner', undefined, false, 'agent', id);
   assert.notEqual(typeof result, 'string');
-  const [launch] = f.daemon.launches;
-  assert.ok('cwd' in launch.options);
-  assert.equal(launch.options.modelId, id);
+  const invocation = (await waitFor(f.read, (records) => records.some((r) => r.kind === 'droid' && r.args.includes('--settings')))).find((r) => r.kind === 'droid' && r.args.includes('--settings'))!;
+  const settingsPath = invocation.args[invocation.args.indexOf('--settings') + 1];
+  assert.equal(JSON.parse(readFileSync(settingsPath, 'utf8')).sessionDefaultSettings.model, id, 'the real worker entry point receives the custom-model overlay');
   if (typeof result === 'string') return;
   // A worker created before the switch must not restart or fork on a now-ineligible model.
   workers.halt(result.id);
@@ -261,6 +225,67 @@ test('a plain shell gets its hook identity for worktree setup reporting; Office 
   assert.equal(launch.env.hookUrl, 'http://127.0.0.1:1');
 });
 
+test('a menu Droid shows before its session starts is the worker’s question until it is answered or Droid starts', async (t) => {
+  const f = fixture();
+  isolateAgentEnvironment(f, t);
+  const TRUST = ['Do you trust the files in this folder?', '/tmp/project', '', '> 1. Yes, proceed', '  2. No, exit', '', 'Enter to confirm · Esc to exit'];
+  const CHECKBOXES = ['Which tools may Droid use here?', '', '> 1. [ ] Shell', '  2. [x] Edits', '', 'Space to toggle · Enter to confirm'];
+  const SIGN_IN = ['How do you want to sign in?', '', '> 1. Browser', '  2. API key'];
+  const BROWSER = ['Finish signing in at https://app.factory.ai/device'];
+  const PLAN = ['Proceed with the plan?', '', '> 1. Proceed', '  2. Keep planning'];
+  const previous = { FAKE_AGENT_LOG: process.env.FAKE_AGENT_LOG, FAKE_AGENT_SCREENS: process.env.FAKE_AGENT_SCREENS };
+  process.env.FAKE_AGENT_LOG = f.log;
+  process.env.FAKE_AGENT_SCREENS = JSON.stringify([TRUST, CHECKBOXES, SIGN_IN, BROWSER, PLAN]);
+  t.after(() => {
+    f.close();
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const frames: string[] = [];
+  const workers = managed(f, f.root, f.data, f.droid, [], { url: 'http://127.0.0.1:1', token: '' }, { ...events([]), screen: (_id, frame) => frames.push(JSON.stringify(frame)) });
+  const WAITING = 'Waiting on Droid setup or hooks — open the terminal';
+  const question = (text: string, options: string[]) => ({ kind: 'question', questions: [{ question: text, options, multiSelect: false }] });
+  const shown = () => {
+    const { status, activity, ask } = workers.get(id)!;
+    return { status, activity, ask };
+  };
+  // The boot wait runs on a mocked clock, which the terminal emulator's own timers need kept moving.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const until = async (ok: () => boolean, what: string) => {
+    for (const end = Date.now() + 15_000; !ok() && Date.now() < end; ) {
+      t.mock.timers.tick(20);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.ok(ok(), what);
+  };
+  /** Presses a key and waits for the screen it brings to go out: the pass that sent it has read its menu. */
+  const key = async (next: string) => {
+    frames.length = 0;
+    workers.write(id, '\r');
+    await until(() => frames.some((frame) => frame.includes(next)), `the screen never showed ${next}`);
+  };
+
+  const { id } = workers.spawn('desk-1', 'test') as WorkerInfo;
+  assert.equal(shown().status, 'starting');
+  await until(() => !!shown().ask, 'the menu never became a question');
+  assert.deepEqual(shown(), { status: 'needs_input', activity: `Droid asks: ${TRUST[0]}`, ask: question(TRUST[0], ['Yes, proceed', 'No, exit']) });
+
+  await key(CHECKBOXES[0]);
+  assert.deepEqual(shown(), { status: 'needs_input', activity: WAITING, ask: undefined }, 'answered: the question is gone, and checkboxes are for the terminal');
+  await key(SIGN_IN[0]);
+  assert.deepEqual(shown(), { status: 'needs_input', activity: `Droid asks: ${SIGN_IN[0]}`, ask: question(SIGN_IN[0], ['Browser', 'API key']) });
+  await key(BROWSER[0]);
+  assert.deepEqual(shown(), { status: 'needs_input', activity: WAITING, ask: undefined }, 'a screen with nothing to choose leaves no question');
+
+  const launch = f.read().find((record) => record.env.workerId === id)!;
+  workers.hookReply(id, launch.env.hookToken!, 'SessionStart', { session_id: 'session-1', hook_event_name: 'SessionStart' });
+  assert.deepEqual(shown(), { status: 'idle', activity: undefined, ask: undefined });
+  await key(PLAN[0]);
+  assert.deepEqual(shown(), { status: 'idle', activity: undefined, ask: undefined }, 'once its session started, its hooks say what it asks, not its screen');
+});
+
 async function waitFor<T>(read: () => T, predicate: (value: T) => boolean, timeout = 4000): Promise<T> {
   const end = Date.now() + timeout;
   let value = read();
@@ -273,67 +298,149 @@ async function waitFor<T>(read: () => T, predicate: (value: T) => boolean, timeo
 }
 
 /** The messages the office pasted into one launch's terminal, oldest first. */
-async function initializedWorker(f: Fixture, id: string) {
-  const launch = await waitFor(() => f.daemon.launches.find((entry) => entry.options.mcp?.workerId === id && 'cwd' in entry.options), Boolean);
-  if (!launch || !('cwd' in launch.options)) throw new Error(`No initialization for worker ${id}`);
-  return { ...launch, options: launch.options as LocalInitializeSessionOptions };
+function pastedInto(f: Fixture, launch: Invocation): string[] {
+  const stdin = f
+    .read()
+    .filter((r) => r.stdin !== undefined && r.env.hookToken === launch.env.hookToken)
+    .map((r) => r.stdin)
+    .join('');
+  return [...stdin.matchAll(/\x1b\[200~([\s\S]*?)\x1b\[201~/g)].map((m) => m[1]);
 }
 
-test('the initial prompt waits for daemon initialization and a resume uses the same conversation', async (t) => {
-  const f = carryOnFixture(t);
+/**
+ * Droid says it can take input (SessionStart), and the office types in the message that launch was
+ * started for: that message, or undefined when none comes.
+ */
+async function startedWith(f: Fixture, workers: WorkerManager, launch: Invocation, session: string): Promise<string | undefined> {
+  const before = pastedInto(f, launch).length;
+  assert.equal(workers.hookReply(launch.env.workerId!, launch.env.hookToken!, 'SessionStart', { session_id: session, hook_event_name: 'SessionStart' }) !== undefined, true);
+  const end = Date.now() + 1000;
+  while (pastedInto(f, launch).length === before && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 25));
+  return pastedInto(f, launch)[before];
+}
+
+test('Droid workers launch with their own hook overlay and resume the correct session', async (t) => {
+  const f = fixture();
   const updates: WorkerInfo[] = [];
+  isolateAgentEnvironment(f, t);
+  const previousExit = process.env.FAKE_AGENT_EXIT_MS;
+  const previousLog = process.env.FAKE_AGENT_LOG;
+  delete process.env.FAKE_AGENT_EXIT_MS;
+  process.env.FAKE_AGENT_LOG = f.log;
+  t.after(() => {
+    if (previousExit === undefined) delete process.env.FAKE_AGENT_EXIT_MS;
+    else process.env.FAKE_AGENT_EXIT_MS = previousExit;
+    if (previousLog === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = previousLog;
+    f.close();
+  });
+
   const workers = manager(f, updates);
-  const init = Promise.withResolvers<void>();
-  t.after(() => init.resolve());
-  f.daemon.beforeInitialize = () => init.promise;
+  t.after(() => workers.shutdown());
   const worker = workers.spawn('desk-2', 'test', '- inspect this code');
-  if (typeof worker === 'string') return assert.fail(worker);
-  assert.equal(worker.task?.summary, '- inspect this code');
+  assert.equal(typeof worker, 'object');
+  if (typeof worker === 'string') return;
+  assert.equal(worker.task?.summary, '- inspect this code', 'local workers have a prompt card without a model or API key');
   assert.equal(worker.task?.generated, undefined);
-  const first = await initializedWorker(f, worker.id);
-  assert.equal(first.options.mcp?.workerId, worker.id);
-  assert.ok(first.options.mcp?.workerHookToken);
-  assert.equal(workers.authenticate(worker.id, 'wrong-token'), undefined);
-  assert.equal(workers.authenticate(worker.id, first.options.mcp!.workerHookToken)?.id, worker.id);
-  assert.match(first.options.workerSystemPrompt ?? '', new RegExp(`^You're ${worker.name}, a worker in Droid Office`));
-  assert.match(first.options.workerSystemPrompt ?? '', /team_hire/);
-  assert.match(first.options.workerSystemPrompt ?? '', /whiteboard_card/);
-  assert.doesNotMatch(first.options.workerSystemPrompt ?? '', /\{\{/);
-  assert.deepEqual(f.daemon.messages, []);
-  init.resolve();
+  const first = (
+    await waitFor(
+      () => f.read(),
+      (records) => records.some((r) => r.kind === 'droid' && r.args.includes('--settings')),
+    )
+  ).find((r) => r.kind === 'droid' && r.args.includes('--settings'))!;
+  const systemFile = path.join(f.data, `system-${worker.id}.md`);
+  assert.deepEqual(first.args.slice(0, 5), ['--settings', path.join(f.data, 'droid-hooks.json'), '--append-system-prompt-file', systemFile, '--from-test']);
+  const system = readFileSync(systemFile, 'utf8');
+  assert.match(system, new RegExp(`^You're ${worker.name}, a worker in Droid Office`));
+  assert.match(system, /team_hire/);
+  assert.match(system, /whiteboard_card/);
+  assert.doesNotMatch(system, /\{\{/, 'every placeholder is filled in');
+  // Droid started with a prompt argument never opens /rewind-conversation: the prompt is typed in instead.
+  assert.equal(first.args.at(-1), '--from-test');
+  assert.equal(first.env.workerId, worker.id);
+  assert.ok(first.env.hookToken);
+  const settings = JSON.parse(readFileSync(path.join(f.data, 'droid-hooks.json'), 'utf8'));
+  assert.match(settings.hooks.SessionStart[0].hooks[0].command, /\/hooks\/droid/);
+  assert.ok(!settings.hooks.PermissionRequest, 'Droid only receives supported hook events');
+
+  const hook = (event: string, data: Record<string, unknown> = {}, token = first.env.hookToken!) => workers.hookReply(worker.id, token, event, { session_id: 'droid-1', hook_event_name: event, ...data }) !== undefined;
+  assert.equal(hook('SessionStart', { source: 'startup' }, 'wrong-token'), false);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(pastedInto(f, first), [], 'nothing is typed before droid can take it');
+  assert.equal(hook('SessionStart', { source: 'startup' }), true);
+  assert.equal(workers.get(worker.id)?.status, 'idle');
   await waitFor(
-    () => f.daemon.messages.length,
-    (n) => n === 1,
+    () => pastedInto(f, first),
+    (typed) => typed.length > 0,
   );
-  assert.deepEqual(
-    f.daemon.messages.map((m) => [m.sessionId, m.text]),
-    [[first.sessionId, '- inspect this code']],
+  // Typed in once: a later SessionStart in the same run doesn't send it again.
+  assert.equal(hook('SessionStart', { source: 'startup' }), true);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(pastedInto(f, first), ['- inspect this code']);
+  assert.equal(hook('UserPromptSubmit', { prompt: 'inspect this code' }), true);
+  assert.equal(workers.get(worker.id)?.status, 'working');
+  assert.equal(hook('PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'src/main.ts' } }), true);
+  assert.equal(workers.get(worker.id)?.action, 'read');
+  assert.equal(hook('PreToolUse', { tool_name: 'Execute', tool_input: { command: 'git push' } }), true);
+  assert.equal(hook('Notification', { notification_type: 'permission_prompt' }), true);
+  assert.equal(workers.get(worker.id)?.status, 'needs_input');
+  assert.equal(hook('PostToolUse', { tool_name: 'Read' }), true);
+  assert.equal(workers.get(worker.id)?.status, 'needs_input', 'unrelated tools cannot dismiss a permission prompt');
+  assert.equal(hook('PostToolUse', { tool_name: 'Execute' }), true);
+  assert.equal(workers.get(worker.id)?.status, 'working', 'the tool it asked about ran: the prompt was answered');
+  assert.equal(hook('UserPromptSubmit', { prompt: 'continue' }), true);
+  assert.equal(hook('Stop', {}), true);
+  // Simulate a loaded runner taking longer than the fake agent's former 1.5s lifetime.
+  await new Promise((resolve) => setTimeout(resolve, 1600));
+  await settleIdle(workers, worker.id);
+  assert.equal(workers.get(worker.id)?.status, 'done');
+  // A hook payload without its event name, or one from another session, is turned away.
+  assert.equal(workers.hookReply(worker.id, first.env.hookToken!, 'Stop', { session_id: 'droid-1' }) !== undefined, false);
+  assert.equal(workers.hookReply(worker.id, first.env.hookToken!, 'Stop', { session_id: 'other', hook_event_name: 'Stop' }) !== undefined, false);
+
+  // Exit only after the hook/terminal assertions, not on a wall-clock deadline.
+  process.kill(first.pid, 'SIGTERM');
+  await waitFor(
+    () => workers.get(worker.id)?.status,
+    (status) => status === 'exited',
   );
-  f.daemon.notify(first.sessionId, { type: 'agent_turn_completed' });
-  assert.equal(worker.status, 'done');
-  assert.equal(workers.halt(worker.id), true);
-  f.daemon.notify(first.sessionId, { type: 'droid_working_state_changed', newState: 'thinking' });
-  assert.equal(worker.status, 'exited', 'late events do not wake a closed worker');
   assert.equal(workers.resume(worker.id), undefined);
-  await waitFor(
-    () => f.daemon.launches.length,
-    (n) => n === 2,
-  );
-  assert.equal(f.daemon.launches[1].sessionId, first.sessionId);
-  assert.equal(worker.task?.summary, '- inspect this code', 'resuming does not replace the initial preview');
-  workers.setTask(worker.id, { name: 'Worker sessions', summary: 'Verified resume handling', generated: true, textHash: 'a'.repeat(64) });
-  f.daemon.notify(first.sessionId, { type: 'create_message', message: { id: 'u', role: 'user', content: 'continue with another check' } });
-  assert.equal(worker.task?.summary, 'Verified resume handling');
+  const second = (
+    await waitFor(
+      () => launchesOf(f),
+      (launches) => launches.length >= 2,
+    )
+  )[1];
+  assert.deepEqual(second.args.slice(-2), ['--resume', 'droid-1']);
+  assert.equal(second.args[second.args.indexOf('--append-system-prompt-file') + 1], systemFile, 'a resume gets the system prompt too');
+  assert.notEqual(second.env.hookToken, first.env.hookToken);
+  assert.equal(hook('Stop', {}), false, 'hooks from the old process must not control a resumed worker');
+  assert.equal(hook('SessionStart', { source: 'resume' }, second.env.hookToken!), true);
+
+  assert.equal(workers.get(worker.id)?.task?.summary, '- inspect this code', 'tools and follow-up prompts do not replace the initial preview');
+  workers.setTask(worker.id, { name: 'Worker Hooks', summary: 'Verified resume handling', generated: true, textHash: 'a'.repeat(64) });
+  hook('UserPromptSubmit', { prompt: 'continue with another check' }, second.env.hookToken!);
+  assert.equal(workers.get(worker.id)?.task?.summary, 'Verified resume handling', 'a prompt preview cannot overwrite generated labels');
   const pull = { number: 42, url: 'https://github.com/example/project/pull/42' };
   workers.recordPull(worker.id, pull);
-  assert.deepEqual(updates.at(-1)?.pr, pull);
+  assert.deepEqual(updates.at(-1)?.pr, pull, 'an MCP-created PR updates the live worker card');
   workers.shutdown();
   const restored = manager(f, []);
+  t.after(() => restored.shutdown());
   await restored.start();
-  assert.equal(restored.get(worker.id)?.sessionId, first.sessionId);
+  assert.equal(restored.get(worker.id)?.sessionId, 'droid-1');
+  assert.equal(restored.get(worker.id)?.task?.generated, true);
   assert.equal(restored.get(worker.id)?.task?.textHash, 'a'.repeat(64));
-  assert.deepEqual(restored.get(worker.id)?.pr, pull);
+  assert.deepEqual(restored.get(worker.id)?.pr, pull, 'an MCP-created PR survives a restart');
+  const third = (
+    await waitFor(
+      () => launchesOf(f),
+      (launches) => launches.length >= 3,
+    )
+  )[2];
+  assert.deepEqual(third.args.slice(-2), ['--resume', 'droid-1']);
 });
+
 test('the office’s hires treat a desk and name held as taken', (t) => {
   const f = fixture();
   isolateAgentEnvironment(f, t);
@@ -371,23 +478,126 @@ test('a named desk ignores other floors while automatic seats avoid them', (t) =
   assert.equal(workers.spawn('desk-1', 'owner'), 'That desk is taken');
 });
 
-test('daemon workers pin their model and effort and keep the choice across restart', async (t) => {
-  const f = carryOnFixture(t);
-  const workers = manager(f, []);
-  const model = 'custom:droidproxy:gpt-6-sol';
-  const worker = workers.spawn('desk-3', 'test', 'do the thing', false, 'agent', model, 'high');
-  if (typeof worker === 'string') return assert.fail(worker);
-  assert.deepEqual([worker.model, worker.effort], [model, 'high']);
-  const launch = await initializedWorker(f, worker.id);
-  assert.deepEqual([launch.options.modelId, launch.options.reasoningEffort], [model, 'high']);
-  assert.equal(existsSync(path.join(f.data, `droid-${worker.id}.json`)), false, 'no per-worker PTY overlay is written');
-  await waitFor(() => worker.sessionId, Boolean);
+test('Droid workers pin their model and effort in a per-worker settings overlay, kept across a restart', async (t) => {
+  const f = fixture();
+  const updates: WorkerInfo[] = [];
+  isolateAgentEnvironment(f, t);
+  const previousLog = process.env.FAKE_AGENT_LOG;
+  process.env.FAKE_AGENT_LOG = f.log;
+  t.after(() => {
+    if (previousLog === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = previousLog;
+    f.close();
+  });
+  const workers = manager(f, updates);
+  assert.match(workers.spawn('desk-4', 'test', 'bad', false, 'agent', 'has a space') as string, /Droid model/i);
+  const worker = workers.spawn('desk-3', 'test', 'do the thing', false, 'agent', 'custom:droidproxy:gpt-6-sol', 'high');
+  assert.equal(typeof worker, 'object');
+  if (typeof worker === 'string') return;
+  assert.equal(worker.model, 'custom:droidproxy:gpt-6-sol');
+  assert.equal(worker.effort, 'high');
+  const launch = (
+    await waitFor(
+      () => f.read(),
+      (records) => records.some((r) => r.kind === 'droid' && r.args.includes('--settings')),
+    )
+  ).find((r) => r.kind === 'droid' && r.args.includes('--settings'))!;
+  const overlayPath = path.join(f.data, `droid-${worker.id}.json`);
+  assert.deepEqual(launch.args.slice(0, 2), ['--settings', overlayPath]);
+  assert.ok(launch.args.includes('--from-test'), 'the office’s own --agent-args still go through');
+  const overlay = JSON.parse(readFileSync(overlayPath, 'utf8'));
+  assert.equal(overlay.sessionDefaultSettings.model, 'custom:droidproxy:gpt-6-sol');
+  assert.equal(overlay.sessionDefaultSettings.reasoningEffort, 'high');
+  assert.match(overlay.hooks.SessionStart[0].hooks[0].command, /\/hooks\/droid/);
+  // The shared hooks file stays model-free for workers without an override.
+  const shared = JSON.parse(readFileSync(path.join(f.data, 'droid-hooks.json'), 'utf8'));
+  assert.equal(shared.sessionDefaultSettings, undefined);
+
   workers.shutdown();
   const restored = manager(f, []);
+  t.after(() => restored.shutdown());
   await restored.start();
-  assert.deepEqual([restored.get(worker.id)?.model, restored.get(worker.id)?.effort], [model, 'high']);
-  assert.equal(restored.get(worker.id)?.sessionId, launch.sessionId);
+  assert.equal(restored.get(worker.id)?.model, 'custom:droidproxy:gpt-6-sol');
+  assert.equal(restored.get(worker.id)?.effort, 'high');
+  await workers.kill(worker.id);
+  assert.equal(existsSync(overlayPath), false, 'a worker going home takes its overlay with it');
 });
+
+test('the Orchestrator approves only Office MCP tools; its shell, edits and other MCP servers keep their prompts', (t) => {
+  const f = fixture();
+  const orchestrator = new Orchestrator({
+    dataDir: f.data,
+    agentCmd: f.droid,
+    agentArgs: ['--from-test'],
+    hook: { url: 'http://127.0.0.1:1', token: '' },
+    floors: () => [],
+    unready: () => undefined,
+    changed() {},
+    data() {},
+    screen() {},
+    toast() {},
+  });
+  t.after(() => {
+    orchestrator.shutdown();
+    f.close();
+  });
+  const dormant = orchestrator.rosterAgent();
+  assert.equal(dormant?.worker.id, 'orchestrator');
+  assert.equal(dormant?.worker.color, '#ee6018');
+  assert.equal(dormant?.worker.activity, 'Ready for its first prompt');
+  assert.equal(orchestrator.info, undefined, 'discovery does not create a worker or launch a PTY');
+  assert.equal(orchestrator.authenticate('orchestrator', 'another-worker-token'), undefined);
+  assert.equal(orchestrator.prompt('Hire a worker'), undefined);
+  const hooks = JSON.parse(readFileSync(path.join(orchestrator.cwd, '.droid-office', 'droid-hooks.json'), 'utf8')) as {
+    hooks: { PreToolUse: { matcher: string; hooks: { command: string }[] }[] };
+  };
+  const entries = hooks.hooks.PreToolUse;
+  const allows = entries.filter((entry) => entry.hooks[0]?.command.includes('"permissionDecision":"allow"'));
+  assert.equal(allows.length, 1, 'one hook approves anything');
+  const [allow] = allows;
+  const said = JSON.parse(execFileSync('sh', ['-c', allow.hooks[0].command], { encoding: 'utf8' })) as { hookSpecificOutput: Record<string, string> };
+  assert.deepEqual(Object.keys(said.hookSpecificOutput), ['hookEventName', 'permissionDecision', 'permissionDecisionReason']);
+  assert.equal(said.hookSpecificOutput.hookEventName, 'PreToolUse');
+  const approved = new RegExp(allow.matcher);
+  for (const tool of BUILDING_TOOLS) {
+    assert.match(`droid-office___${tool}`, approved, 'the name Droid sends today');
+    assert.match(`mcp__droid-office__${tool}`, approved, 'and the one its hooks reference documents');
+  }
+  for (const gated of [
+    'Execute',
+    'Edit',
+    'MultiEdit',
+    'Create',
+    'ApplyPatch',
+    'Task',
+    'mcp__github__create_issue',
+    'droidproxy___run',
+    // The office's own tools a building agent has no use of, and names that only start or end like one of its own.
+    'droid-office___whiteboard_apply',
+    'droid-office___team_hire_anything',
+    'droid-office___other___team_hire',
+    'mcp__droid-office__other__team_hire',
+    'x-droid-office___team_hire',
+  ]) {
+    assert.doesNotMatch(gated, approved, `${gated} keeps its own permission prompt`);
+  }
+  const denies = entries.filter((entry) => entry.hooks[0]?.command.includes('"permissionDecision":"deny"'));
+  assert.deepEqual(
+    denies.map((entry) => entry.matcher),
+    ['Task'],
+    'only the built-in Task tool is refused; edits and shell keep their ordinary prompts',
+  );
+
+  const floor = manager(f, []);
+  const floorHooks = JSON.parse(readFileSync(path.join(f.data, 'droid-hooks.json'), 'utf8')) as { hooks: { PreToolUse: { matcher?: string }[] } };
+  assert.equal(
+    floorHooks.hooks.PreToolUse.some((entry) => entry.matcher?.includes('droid-office')),
+    false,
+    'a floor worker keeps its permission prompts',
+  );
+  floor.shutdown();
+});
+
 test('opening a git floor creates the branch setting in its checkout before any workers launch', (t) => {
   const f = fixture();
   t.after(() => f.close());
@@ -415,10 +625,22 @@ test('the worker system prompt is the office’s as rewritten, filled in for eac
   const prompts: PromptSource = { text: (id) => (id === 'worker.system' ? system : PROMPTS[id].text), agent: () => undefined };
   const workers = managed(f, f.root, f.data, f.droid, [], { url: 'http://127.0.0.1:1', token: '' }, events([]), undefined, undefined, prompts);
   t.after(() => workers.shutdown());
+  const launchOf = async (id: string) =>
+    (
+      await waitFor(
+        () => f.read(),
+        (records) => records.some((r) => r.kind === 'droid' && r.env.workerId === id && r.args.includes('--settings')),
+      )
+    ).find((r) => r.kind === 'droid' && r.env.workerId === id && r.args.includes('--settings'))!;
+
   const a = workers.spawn('desk-2', 'test', 'look around');
   if (typeof a === 'string') return assert.fail(a);
-  assert.equal((await initializedWorker(f, a.id)).options.workerSystemPrompt, `You are ${a.name}, at a desk.`);
+  const file = path.join(f.data, `system-${a.id}.md`);
+  const first = await launchOf(a.id);
+  assert.equal(first.args[first.args.indexOf('--append-system-prompt-file') + 1], file);
+  assert.equal(readFileSync(file, 'utf8'), `You are ${a.name}, at a desk.\n`);
   await workers.kill(a.id);
+  assert.equal(existsSync(file), false, 'a worker going home takes its system prompt with it');
 
   new Worktrees(f.root).saveBranch('release/next');
   const overridden = workers.spawn('desk-2', 'test', 'work on the floor branch', true);
@@ -426,7 +648,8 @@ test('the worker system prompt is the office’s as rewritten, filled in for eac
   assert.equal(typeof overridden, 'string');
   const custom = workers.spawn('desk-2', 'test', 'read only');
   if (typeof custom === 'string') return assert.fail(custom);
-  const customSystem = (await initializedWorker(f, custom.id)).options.workerSystemPrompt!;
+  await launchOf(custom.id);
+  const customSystem = readFileSync(path.join(f.data, `system-${custom.id}.md`), 'utf8');
   assert.match(customSystem, new RegExp(`^You are ${custom.name}, at a desk\\.`));
   assert.match(customSystem, /floor branch is currently `release\/next`/);
   assert.match(customSystem, /floor-branch\.json/);
@@ -435,7 +658,8 @@ test('the worker system prompt is the office’s as rewritten, filled in for eac
   system = '';
   const b = workers.spawn('desk-3', 'test', 'look around');
   if (typeof b === 'string') return assert.fail(b);
-  assert.equal((await initializedWorker(f, b.id)).options.workerSystemPrompt, undefined, 'an empty prompt adds nothing');
+  const second = await launchOf(b.id);
+  assert.ok(!second.args.includes('--append-system-prompt-file'), 'an empty prompt adds nothing');
   assert.equal(existsSync(path.join(f.data, `system-${b.id}.md`)), false);
 });
 
@@ -455,48 +679,58 @@ test('only a worker with no lead is told about the visit tools, and only while v
   const workers = managed(f, f.root, f.data, f.droid, [], { url: 'http://127.0.0.1:1', token: '' }, events([]), undefined, undefined, prompts);
   workers.visitsOn = () => on;
   t.after(() => workers.shutdown());
-  const systemOf = async (id: string) => (await initializedWorker(f, id)).options.workerSystemPrompt ?? '';
+  const launched = (id: string) =>
+    waitFor(
+      () => f.read(),
+      (records) => records.some((r) => r.kind === 'droid' && r.env.workerId === id && r.args.includes('--settings')),
+    );
+  const systemOf = (id: string) => readFileSync(path.join(f.data, `system-${id}.md`), 'utf8');
 
   const lead = workers.spawn('desk-2', 'test', 'look around');
   if (typeof lead === 'string') return assert.fail(lead);
-  assert.match(await systemOf(lead.id), /`visit_roster`, `visit_look` and `visit_message`/);
-  assert.match(await systemOf(lead.id), /when your task needs something from an independent worker/);
-  assert.match(await systemOf(lead.id), /Use the Droid Office MCP tools/);
-  assert.match(await systemOf(lead.id), /`team_hire`/);
-  assert.match(await systemOf(lead.id), /`team_models`/);
-  assert.match(await systemOf(lead.id), /`worker_model`/);
+  await launched(lead.id);
+  assert.match(systemOf(lead.id), /`visit_roster`, `visit_look` and `visit_message`/);
+  assert.match(systemOf(lead.id), /when your task needs something from an independent worker/);
+  assert.match(systemOf(lead.id), /Use the Droid Office MCP tools/);
+  assert.match(systemOf(lead.id), /`team_hire`/);
+  assert.match(systemOf(lead.id), /`team_models`/);
+  assert.match(systemOf(lead.id), /`worker_model`/);
 
   const sub = workers.spawn('desk-3', 'test', 'help out', false, 'agent', undefined, undefined, [], lead.id);
   if (typeof sub === 'string') return assert.fail(sub);
+  await launched(sub.id);
   for (const allowed of [/`team_board`/, /`team_note`/, /`team_report`/, /`lead_notify`/, /`whiteboard_card`/]) {
-    assert.match(await systemOf(sub.id), allowed);
+    assert.match(systemOf(sub.id), allowed);
   }
   for (const omitted of [/visit_roster/, /team_hire/, /team_models/, /worker_model/, /team_merge/, /team_review/]) {
-    assert.doesNotMatch(await systemOf(sub.id), omitted, 'a subagent is never told lead or visit instructions');
+    assert.doesNotMatch(systemOf(sub.id), omitted, 'a subagent is never told lead or visit instructions');
   }
-  assert.doesNotMatch(await systemOf(sub.id), /\n{3,}/, 'no gap where it would have been');
+  assert.doesNotMatch(systemOf(sub.id), /\n{3,}/, 'no gap where it would have been');
 
   // An owner's own system prompt from before visits still tells a worker about them.
   system = 'You are {{name}}, at a desk.';
   const custom = workers.spawn('desk-4', 'test', 'read');
   if (typeof custom === 'string') return assert.fail(custom);
-  assert.match(await systemOf(custom.id), /^You are .*, at a desk\.\n\n- Use `visit_roster`/);
+  await launched(custom.id);
+  assert.match(systemOf(custom.id), /^You are .*, at a desk\.\n\n- Use `visit_roster`/);
 
   // A saved custom prompt with verbatim lead and visit paragraphs still scrubs both for a subagent.
   system = `You are {{name}}.\n\n${WORKER_TEAM_LEAD}\n\n${WORKER_VISITS}\n\nFinish cleanly.`;
   const legacySub = workers.spawn('desk-6', 'test', 'help out', false, 'agent', undefined, undefined, [], lead.id);
   if (typeof legacySub === 'string') return assert.fail(legacySub);
-  assert.match(await systemOf(legacySub.id), /`team_board`/);
-  assert.doesNotMatch(await systemOf(legacySub.id), /team_hire|visit_roster/);
-  assert.doesNotMatch(await systemOf(legacySub.id), /\n{3,}/);
+  await launched(legacySub.id);
+  assert.match(systemOf(legacySub.id), /`team_board`/);
+  assert.doesNotMatch(systemOf(legacySub.id), /team_hire|visit_roster/);
+  assert.doesNotMatch(systemOf(legacySub.id), /\n{3,}/);
 
   on = false;
   system = PROMPTS['worker.system'].text;
   const off = workers.spawn('desk-5', 'test', 'read');
   if (typeof off === 'string') return assert.fail(off);
-  assert.doesNotMatch(await systemOf(off.id), /visit_roster/);
+  await launched(off.id);
+  assert.doesNotMatch(systemOf(off.id), /visit_roster/);
 });
-test("a plain folder's daemon workers start there with no branch policy or worktrees", async (t) => {
+test("a plain folder's workers get no branch policy, no worktrees, and git that stops at the folder", async (t) => {
   const f = fixture();
   isolateAgentEnvironment(f, t);
   const previousLog = process.env.FAKE_AGENT_LOG;
@@ -521,9 +755,15 @@ test("a plain folder's daemon workers start there with no branch policy or workt
 
   const w = workers.spawn('desk-2', 'test', 'tidy the notes');
   if (typeof w === 'string') return assert.fail(w);
-  const launch = await initializedWorker(f, w.id);
-  assert.equal(launch.options.cwd, folder);
-  const system = launch.options.workerSystemPrompt ?? '';
+  const launch = (
+    await waitFor(
+      () => f.read(),
+      (records) => records.some((r) => r.kind === 'droid' && r.env.workerId === w.id && r.args.includes('--settings')),
+    )
+  ).find((r) => r.kind === 'droid' && r.env.workerId === w.id && r.args.includes('--settings'))!;
+  assert.equal(launch.env.ceiling?.split(path.delimiter)[0], realpathSync(f.root), "git run in the folder doesn't climb into the checkout around it");
+  assert.match(String(await workers.fork(w.id, 'test')), /session to start/);
+  const system = readFileSync(path.join(data, `system-${w.id}.md`), 'utf8');
   assert.match(system, new RegExp(`^You're ${w.name}, a worker in Droid Office`));
   assert.doesNotMatch(system, /floor branch|floor-branch\.json|git fetch/);
   assert.doesNotMatch(system, /\n{3,}/, 'no gap where the branch policy was');
@@ -550,11 +790,16 @@ test('a worker nobody picked for starts on the office default worker', async (t)
   const r = { info };
   if (typeof r === 'string') return assert.fail(r);
   assert.deepEqual([r.info.model, r.info.effort], ['custom:droidproxy:opus-5-5', 'high']);
-  const launch = await initializedWorker(f, r.info.id);
-  await waitFor(() => f.daemon.messages.find((m) => m.sessionId === launch.sessionId)?.text, Boolean);
-  assert.equal(f.daemon.messages[0].text, 'Sum up the open PRs');
-  assert.equal(launch.options.modelId, 'custom:droidproxy:opus-5-5');
-  assert.equal(launch.options.reasoningEffort, 'high');
+  const launch = (
+    await waitFor(
+      () => f.read(),
+      (records) => records.some((x) => x.kind === 'droid' && x.args.includes('--settings')),
+    )
+  ).find((x) => x.kind === 'droid' && x.args.includes('--settings'))!;
+  assert.equal(await startedWith(f, workers, launch, 'pulls-session'), 'Sum up the open PRs');
+  const overlay = JSON.parse(readFileSync(path.join(f.data, `droid-${r.info.id}.json`), 'utf8'));
+  assert.equal(overlay.sessionDefaultSettings.model, 'custom:droidproxy:opus-5-5');
+  assert.equal(overlay.sessionDefaultSettings.reasoningEffort, 'high');
 
   // A picked model wins, and a shell is never given one.
   const picked = workers.spawn('desk-1', 'Ada', 'fix it', false, 'agent', 'glm-5.3-flash');
@@ -628,7 +873,7 @@ test('workers at removed seats are not resumed and their saved work is preserved
   assert.deepEqual(JSON.parse(readFileSync(state, 'utf8')), [retired]);
 });
 
-test('Finder dispatch reuses an ordinary worker session, refuses busy turns, and changes the model in place', async (t) => {
+test('Finder dispatch creates and reuses an ordinary worker session, refuses busy turns, and applies a chosen model on resume', async (t) => {
   const f = fixture();
   isolateAgentEnvironment(f, t);
   const previousLog = process.env.FAKE_AGENT_LOG;
@@ -640,69 +885,50 @@ test('Finder dispatch reuses an ordinary worker session, refuses busy turns, and
   });
   const workers = manager(f, []);
   t.after(() => workers.shutdown());
-  const launches = () => f.daemon.launches;
+  const launches = () => f.read().filter((r) => r.kind === 'droid' && r.args.includes('--settings') && r.stdin === undefined);
   const prompt = 'Inspect token refresh\n\n"/selected/auth.ts"';
-  const hired = await workers.dispatchWorker(prompt, 'gpt-6.1-sol');
+  const hired = workers.dispatchWorker(prompt, 'gpt-6.1-sol');
   assert.equal(typeof hired, 'object');
   if (typeof hired === 'string') return;
   assert.equal(hired.hired, true);
   assert.equal(hired.info.deskId, 'desk-1');
   assert.equal(hired.info.createdBy, 'Finder');
   assert.equal(hired.info.lead, undefined);
-  const first = await initializedWorker(f, hired.info.id);
-  const initial = await waitFor(() => f.daemon.messages[0]?.text, Boolean);
+  const [first] = await waitFor(launches, (l) => l.length === 1);
+  const initial = (await startedWith(f, workers, first, 'finder-lead-session')) ?? '';
   assert.equal(initial, prompt);
   assert.ok(initial.endsWith(prompt));
   assert.doesNotMatch(initial, /Finder orchestrator|finder-specific|Dispatch Flow/);
-  assert.match((await workers.dispatchWorker('Another request')) as string, /busy/);
+  assert.match(workers.dispatchWorker('Another request') as string, /busy/);
   const info = workers.get(hired.info.id)!;
   info.status = 'working';
   info.lastInputAt = Date.now() - 3000;
-  assert.match((await workers.dispatchWorker('Still working')) as string, /busy/);
+  assert.match(workers.dispatchWorker('Still working') as string, /busy/);
   info.status = 'needs_input';
-  assert.match((await workers.dispatchWorker('Not an answer')) as string, /busy/);
+  assert.match(workers.dispatchWorker('Not an answer') as string, /busy/);
   info.status = 'done';
   info.lastInputAt = Date.now() - 3000;
   info.worktree = { path: '.droid-office/worktrees/missing-finder', branch: 'missing-finder', base: 'main' };
-  assert.equal(typeof (await workers.dispatchWorker('Cannot switch a lost checkout', 'glm-5.3-flash')), 'string');
+  assert.equal(typeof workers.dispatchWorker('Cannot switch a lost checkout', 'glm-5.3-flash'), 'string');
   assert.equal(info.model, 'gpt-6.1-sol');
   assert.equal(launches().length, 1);
   info.worktree = undefined;
   info.lost = undefined;
-  const again = await workers.dispatchWorker('Follow up', 'gpt-6.1-sol');
+  const again = workers.dispatchWorker('Follow up', 'gpt-6.1-sol');
   assert.deepEqual(typeof again === 'object' && [again.hired, again.info.id], [false, info.id]);
-  await waitFor(() => f.daemon.messages.some((m) => m.sessionId === first.sessionId && m.text === 'Follow up'), Boolean);
+  await waitFor(
+    () => pastedInto(f, first),
+    (p) => p.includes('Follow up'),
+  );
   info.status = 'done';
   info.lastInputAt = Date.now() - 3000;
-  const setting = Promise.withResolvers<void>();
-  const entered = Promise.withResolvers<void>();
-  t.after(() => setting.resolve());
-  const update = f.daemon.updateSessionSettings.bind(f.daemon);
-  const stub = t.mock.method(f.daemon, 'updateSessionSettings', async (params) => {
-    entered.resolve();
-    await setting.promise;
-    await update(params);
-  });
-  const dispatch = workers.dispatchWorker('Use the other model', 'glm-5.3-flash');
-  await entered.promise;
-  assert.equal(f.daemon.messages.length, 2, 'Finder waits for the daemon to apply the model');
-  assert.match((await workers.dispatchWorker('Overlapping request')) as string, /busy/);
-  setting.resolve();
-  const changed = await dispatch;
+  const changed = workers.dispatchWorker('Use the other model', 'glm-5.3-flash');
   assert.deepEqual(typeof changed === 'object' && [changed.hired, changed.info.id], [false, info.id]);
-  assert.deepEqual(f.daemon.settingsChanges, [{ sessionId: first.sessionId, modelId: 'glm-5.3-flash' }]);
+  const [, second] = await waitFor(launches, (l) => l.length === 2);
+  assert.ok(second.args.includes('--resume') && second.args.includes('finder-lead-session'));
   assert.equal(workers.get(info.id)?.model, 'glm-5.3-flash');
-  await waitFor(() => f.daemon.messages.some((m) => m.sessionId === first.sessionId && m.text === 'Use the other model'), Boolean);
-  assert.equal(launches().length, 1);
-  stub.mock.restore();
-  t.mock.method(f.daemon, 'updateSessionSettings', async () => {
-    throw new Error('The daemon refused that model');
-  });
-  info.status = 'done';
-  info.lastInputAt = Date.now() - 3000;
-  assert.equal(await workers.dispatchWorker('Do not send under the wrong model', 'gpt-6.1-sol'), 'The daemon refused that model');
-  assert.equal(f.daemon.messages.length, 3);
-  assert.equal(info.model, 'glm-5.3-flash');
+  assert.equal(await startedWith(f, workers, second, 'finder-lead-session'), 'Use the other model');
+  assert.equal(launches().length, 2);
 });
 
 test('an office-queue command an older office left behind is cleared away, and ordinary workers get no legacy command', async (t) => {
@@ -731,123 +957,517 @@ test('an office-queue command an older office left behind is cleared away, and o
   assert.equal(typeof hired, 'object');
   if (typeof hired === 'string') return;
   assert.ok(NAMES.includes(hired.info.name));
-  await initializedWorker(f, hired.info.id);
-  assert.equal(existsSync(path.join(bin, 'office-queue')), false);
-  assert.equal(existsSync(path.join(bin, 'team')), false);
-});
-
-test('structured asks revalidate menus, report waiting timestamps and deliver a whole questionnaire', async (t) => {
-  const f = carryOnFixture(t);
-  const workers = manager(f, []);
-  const worker = await hireInState(f, workers, 'desk-1', 'ask-session', 'working');
-  const sid = worker.sessionId!;
-  const clock = t.mock.timers;
-  clock.enable({ apis: ['Date'], now: Date.now() + 1000 });
-  assert.equal(worker.waitingSince, undefined);
-  const questions = [
-    { index: 1, question: 'Which color?', options: ['Red', 'Blue'], multiSelect: false },
-    { index: 2, question: 'Which sizes?', options: ['S', 'M'], multiSelect: true },
-  ];
-  f.daemon.ask(sid, { requestId: 'question', toolCallId: 'ask-tool', questions });
-  const first = worker.menu!;
-  assert.equal(first.question, questions[0].question);
-  assert.equal(worker.waitingSince, Date.now());
-  assert.equal(worker.activity, 'Which color? (+1 more)');
-  assert.equal(workers.open(worker.id, 'thread'), true);
-  assert.equal(worker.acked, false, 'opening does not answer it');
-  assert.equal(workers.answerQuestion(worker.id, { ...first, question: 'An unrelated question' }, { choice: 1 }) !== undefined, true);
-  assert.deepEqual(f.daemon.answers, []);
-  assert.equal(workers.answerQuestion(worker.id, first, { choice: 2 }), undefined);
-  assert.equal(worker.menu?.question, questions[1].question);
-  assert.deepEqual(f.daemon.answers, [], 'Droid gets one reply for the whole questionnaire');
-  assert.equal(workers.answerQuestion(worker.id, worker.menu!, { choices: [1, 2] }), undefined);
-  assert.deepEqual(f.daemon.answers, [
-    {
-      sessionId: sid,
-      answers: [
-        { index: 1, question: 'Which color?', answer: 'Blue' },
-        { index: 2, question: 'Which sizes?', answer: 'S, M' },
-      ],
-    },
-  ]);
-  assert.equal(worker.menu, undefined);
-  const start = Date.now();
-  clock.setTime(start + 1);
-  f.daemon.notify(sid, { type: 'agent_turn_completed' });
-  assert.equal(worker.waitingSince, start + 1, 'finishing starts a new wait');
-  assert.equal(worker.status, 'done');
-  assert.equal(workers.open(worker.id, 'another-thread'), true);
-  assert.equal(worker.acked, true, 'opening a finished Thread acknowledges it');
-});
-
-test('tool notifications animate work, count failed tests and request branch/PR refreshes', async (t) => {
-  const f = carryOnFixture(t);
-  const refreshed: ToolRefresh[] = [];
-  const workers = managed(f, f.root, f.data, f.droid, [], { url: 'http://127.0.0.1:1', token: '' }, { ...events([]), tool: (_id, refresh) => refreshed.push(refresh) });
-  const worker = await hireInState(f, workers, 'desk-1', 'tools', 'working');
-  const sid = worker.sessionId!;
-  let n = 0;
-  const call = (toolName: string, input: Record<string, unknown>) => {
-    const toolUseId = `tool-${++n}`;
-    f.daemon.notify(sid, { type: 'tool_call', toolUse: { name: toolName, id: toolUseId, input } });
-    return (content = '', isError = false) => f.daemon.notify(sid, { type: 'tool_result', toolResult: { tool_use_id: toolUseId, content, is_error: isError } });
-  };
-  const read = call('Read', { file_path: 'src/a.ts' });
-  assert.equal(worker.action, 'read');
-  assert.ok(worker.activity, 'the sidebar shows the running tool');
-  read();
-  assert.equal(worker.activity, undefined, 'the sidebar clears the finished tool');
-  const edit = call('Edit', { file_path: 'src/a.ts' });
-  assert.equal(worker.action, 'edit');
-  edit();
-  call('Execute', { command: 'git push -u origin HEAD' })();
-  assert.deepEqual(refreshed, [{ changes: true }, { changes: true, board: true, pipelines: true }]);
-  const run = () => call('Execute', { command: 'npm test' });
-  run()('# tests 5\n# pass 3\n# fail 2');
-  assert.equal(worker.action, 'test');
-  run()('Exit code 1', true);
-  assert.equal(worker.action, 'failing');
-  run()('# tests 5\n# pass 5\n# fail 0');
-  run()('Exit code 1', true);
-  assert.equal(worker.action, 'test', 'a passing run reset the count');
-  f.daemon.notify(sid, { type: 'agent_turn_completed' });
-  assert.equal(worker.action, undefined);
-});
-
-test('a child session cannot finish the parent, and a new conversation drops its routes and task preview', async (t) => {
-  const f = carryOnFixture(t);
-  const workers = manager(f, []);
-  const worker = await hireInState(f, workers, 'desk-1', 'parent', 'working');
-  f.daemon.notify('parent', { type: 'child_session_available', childSessionId: 'child', toolUseId: 'task' });
-  f.daemon.notify('child', { type: 'agent_turn_completed' });
-  assert.equal(worker.status, 'working');
-  assert.equal(worker.sessionId, 'parent');
-  assert.deepEqual(f.daemon.interrupts, []);
-  assert.equal(workers.cancelTurn(worker.id), true);
-  assert.deepEqual(f.daemon.interrupts, ['parent']);
-  f.daemon.notify('parent', { type: 'agent_turn_completed', reason: 'interrupted' });
-  assert.equal(workers.cancelTurn(worker.id), false);
-  assert.ok(worker.task);
-  assert.equal(workers.prompt(worker.id, '/clear'), undefined);
-  await waitFor(
-    () => worker.sessionId,
-    (sid) => !!sid && sid !== 'parent',
+  const [first] = await waitFor(
+    () => f.read().filter((r) => r.kind === 'droid' && r.args.includes('--settings') && r.stdin === undefined && r.env.workerId === hired.info.id),
+    (l) => l.length === 1,
   );
-  await waitFor(
-    () => worker.status,
-    (status) => status === 'idle',
+  assert.equal((first.env.path ?? '').split(path.delimiter).includes(bin), false);
+});
+
+test('a Droid worker acts out its latest tool call, and puts its head in its hands when its tests keep failing', async (t) => {
+  const f = fixture();
+  isolateAgentEnvironment(f, t);
+  const previousExit = process.env.FAKE_AGENT_EXIT_MS;
+  const previousLog = process.env.FAKE_AGENT_LOG;
+  process.env.FAKE_AGENT_EXIT_MS = '5000';
+  process.env.FAKE_AGENT_LOG = f.log;
+  t.after(() => {
+    if (previousExit === undefined) delete process.env.FAKE_AGENT_EXIT_MS;
+    else process.env.FAKE_AGENT_EXIT_MS = previousExit;
+    if (previousLog === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = previousLog;
+    f.close();
+  });
+  const workers = manager(f, []);
+  t.after(() => workers.shutdown());
+  const worker = workers.spawn('desk-1', 'test', 'make the tests pass');
+  if (typeof worker === 'string') return assert.fail(worker);
+  const [launch] = await waitFor(
+    () => f.read().filter((r) => r.kind === 'droid' && r.args.includes('--settings')),
+    (l) => l.length === 1,
   );
-  assert.equal(worker.task, undefined);
-  assert.ok(worker.taskSince);
-  const answer = { requestId: 'old-ask', toolCallId: 'task', questions: [{ index: 1, question: 'Old question?', options: ['Yes'], multiSelect: false }] };
-  f.daemon.ask('parent', answer);
-  f.daemon.ask('child', answer);
-  assert.equal(worker.menu, undefined, 'neither the old session nor its child is allowed to change the new one');
-  workers.shutdown();
+  const settings = JSON.parse(readFileSync(launch.args[launch.args.indexOf('--settings') + 1], 'utf8'));
+  assert.ok(settings.hooks.PostToolUse, 'tool calls are reported');
+
+  const token = launch.env.hookToken!;
+  const hook = (event: string, payload: object) => assert.equal(workers.hookReply(worker.id, token, event, { session_id: 'acting', hook_event_name: event, ...payload }) !== undefined, true);
+  const action = () => workers.get(worker.id)?.action;
+  const npmTest = { tool_name: 'Bash', tool_input: { command: 'npm test 2>&1 | tail -5' } };
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'make the tests pass' });
+  assert.equal(action(), undefined);
+  hook('PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(action(), 'read');
+  hook('PreToolUse', npmTest);
+  assert.equal(action(), 'test');
+  // Failed once, by the summary it printed through the pipe: still watching.
+  hook('PostToolUse', { ...npmTest, tool_response: { stdout: '# tests 5\n# pass 3\n# fail 2', stderr: '' } });
+  assert.equal(action(), 'test');
+  hook('PreToolUse', { tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' } });
+  assert.equal(action(), 'edit');
+  // Failed again, by its exit code: head in hands, until its next tool call.
+  hook('PreToolUse', npmTest);
+  hook('PostToolUse', { ...npmTest, error: 'Exit code 1\n# fail 2', is_interrupt: false });
+  assert.equal(action(), 'failing');
+  hook('PreToolUse', npmTest);
+  assert.equal(action(), 'test');
+  // A pass ends the streak: one more failure isn't "again and again".
+  hook('PostToolUse', { ...npmTest, tool_response: { stdout: '# tests 5\n# pass 5\n# fail 0', stderr: '' } });
+  hook('PreToolUse', npmTest);
+  hook('PostToolUse', { ...npmTest, error: 'Exit code 1' });
+  assert.equal(action(), 'test');
+  // A failing command that isn't a test run doesn't count.
+  hook('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'git push' }, error: 'Exit code 1' });
+  assert.equal(action(), 'test');
+  hook('Stop', {});
+  await settleIdle(workers, worker.id);
+  assert.equal(workers.get(worker.id)?.status, 'done');
+  assert.equal(action(), undefined);
+});
+
+test('a worker is stamped with when it started waiting on someone, afresh each time', async (t) => {
+  const f = fixture();
+  isolateAgentEnvironment(f, t);
+  const oldLog = process.env.FAKE_AGENT_LOG;
+  process.env.FAKE_AGENT_LOG = f.log;
+  t.after(() => {
+    if (oldLog === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = oldLog;
+    f.close();
+  });
+  const workers = manager(f, []);
+  t.after(() => workers.shutdown());
+  const worker = workers.spawn('desk-1', 'test', 'fix the login');
+  assert.notEqual(typeof worker, 'string');
+  if (typeof worker === 'string') return;
+  const calls = await waitFor(f.read, (x) => x.some((r) => r.kind === 'droid' && r.args.includes('--settings')));
+  const token = calls.find((r) => r.kind === 'droid' && r.args.includes('--settings'))!.env.hookToken!;
+  const hook = (event: string, extra = {}) => workers.hookReply(worker.id, token, event, { session_id: 'waiting', hook_event_name: event, ...extra }) !== undefined;
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'fix the login' });
+  assert.equal(workers.get(worker.id)?.status, 'working');
+  assert.equal(workers.get(worker.id)?.waitingSince, undefined);
+  const before = Date.now();
+  hook('Notification', { notification_type: 'permission_prompt', message: 'Allow git push?' });
+  assert.equal(workers.get(worker.id)?.status, 'needs_input');
+  const asked = worker.waitingSince!;
+  assert.ok(asked >= before && asked <= Date.now());
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  hook('Stop', {});
+  await settleIdle(workers, worker.id);
+  assert.equal(workers.get(worker.id)?.status, 'done');
+  assert.ok(worker.waitingSince! > asked, 'finishing is a new wait');
+});
+
+/** A worker that stays running, and its hooks as `session` (or another session). */
+async function liveWorker(t: { after(fn: () => void): void }, session: string) {
+  const f = fixture();
+  isolateAgentEnvironment(f, t);
+  const oldLog = process.env.FAKE_AGENT_LOG;
+  process.env.FAKE_AGENT_LOG = f.log;
+  t.after(() => {
+    if (oldLog === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = oldLog;
+    f.close();
+  });
+  const updates: WorkerInfo[] = [];
+  const workers = manager(f, updates);
+  t.after(() => workers.shutdown());
+  const worker = workers.spawn('desk-1', 'test', 'fix the login');
+  if (typeof worker === 'string') throw new Error(worker);
+  const token = (await waitFor(f.read, (x) => x.some((r) => r.kind === 'droid' && r.args.includes('--settings')))).find((r) => r.kind === 'droid' && r.args.includes('--settings'))!.env.hookToken!;
+  const hook = (event: string, extra: Record<string, unknown> = {}, from = session) => workers.hookReply(worker.id, token, event, { session_id: from, hook_event_name: event, ...extra }) !== undefined;
+  const status = () => workers.get(worker.id)?.status;
+  return { workers, worker, hook, status, updates, data: f.data, f, token };
+}
+
+test("a prompt answered in the terminal puts the worker back to work, and a cancelled one puts it at rest (droid's own hook order)", async (t) => {
+  const { workers, worker, hook, status } = await liveWorker(t, 'answered');
+  const execute = { tool_name: 'Execute', tool_input: { command: 'sleep 5 && echo done' } };
+  hook('SessionStart', { source: 'startup' });
+  // Approved: droid reports nothing more until the tool it asked about has run.
+  hook('UserPromptSubmit', { prompt: 'run it' });
+  hook('PreToolUse', execute);
+  hook('Notification', { notification_type: 'permission_prompt', message: 'Factory CLI needs permission to execute 1 tool(s)' });
+  assert.equal(status(), 'needs_input');
+  hook('PostToolUse', { ...execute, tool_response: 'done' });
+  assert.equal(status(), 'working');
+  hook('Stop', {});
+  await settleIdle(workers, worker.id);
+  assert.equal(status(), 'done');
+
+  // A question through droid's AskUser tool, answered.
+  hook('UserPromptSubmit', { prompt: 'ask me' });
+  hook('PreToolUse', { tool_name: 'AskUser', tool_input: { questionnaire: '1. [question] red or blue?' } });
+  assert.equal(status(), 'needs_input');
+  hook('Notification', { notification_type: 'elicitation_dialog', message: 'Factory CLI is asking the user 1 question(s)' });
+  assert.equal(status(), 'needs_input');
+  hook('PostToolUse', { tool_name: 'AskUser', tool_response: '[answer] Red' });
+  assert.equal(status(), 'working');
+
+  // Esc while it thinks: droid sends idle_prompt instead of Stop, with or without a prompt up.
+  hook('Notification', { notification_type: 'idle_prompt', message: 'Agent stopped by user and is waiting for input' });
+  assert.equal(status(), 'done');
+  hook('UserPromptSubmit', { prompt: 'run it again' });
+  hook('PreToolUse', execute);
+  hook('Notification', { notification_type: 'permission_prompt' });
+  hook('Notification', { notification_type: 'idle_prompt' });
+  assert.equal(status(), 'done');
+  // An idle_prompt at rest stays at rest.
+  hook('SessionStart', { source: 'startup' });
+  hook('Notification', { notification_type: 'idle_prompt' });
+  assert.equal(status(), 'idle');
+});
+
+test("a subagent's hooks don't take over its worker's session (droid's own hook order)", async (t) => {
+  const { workers, worker, hook, status } = await liveWorker(t, 'lead-session');
+  const sub = (event: string, extra: Record<string, unknown> = {}) => hook(event, extra, 'sub-session');
+  const task = { tool_name: 'Task', tool_input: { subagent_type: 'worker', description: 'Run echo command' } };
+  const execute = { tool_name: 'Execute', tool_input: { command: 'echo from-sub' } };
+  assert.equal(hook('SessionStart', { source: 'startup' }), true);
+  hook('UserPromptSubmit', { prompt: 'fix the login with a subagent' });
+  hook('PreToolUse', task);
+  // Another session nobody started is still turned away.
+  assert.equal(sub('PreToolUse', execute), false);
+  assert.equal(sub('SessionStart', { source: 'startup', calling_session_id: 'someone-else' }), false);
+  assert.equal(sub('SessionStart', { source: 'startup', calling_session_id: 'lead-session' }), true);
+  assert.equal(sub('SessionStart', { source: 'resume', calling_session_id: 'lead-session' }), true);
+  assert.equal(sub('UserPromptSubmit', { prompt: '# Task Tool Invocation\n\nSubagent type: worker' }), true);
+  assert.equal(workers.get(worker.id)?.sessionId, 'lead-session', 'the worker resumes its own session, not the subagent');
+  assert.equal(status(), 'working');
+  assert.doesNotMatch(workers.get(worker.id)?.activity ?? '', /Task Tool Invocation/);
+
+  // Its permission prompt shows in the worker's terminal.
+  assert.equal(sub('PreToolUse', execute), true);
+  assert.equal(sub('Notification', { notification_type: 'permission_prompt', message: 'Factory CLI needs permission to execute 1 tool(s)' }), true);
+  assert.equal(status(), 'needs_input');
+  // The worker's own tools don't answer the subagent's prompt.
+  hook('PostToolUse', { tool_name: 'Read' });
+  assert.equal(status(), 'needs_input');
+  sub('PostToolUse', { ...execute, tool_response: 'from-sub' });
+  assert.equal(status(), 'working');
+
+  // The subagent finishing is not the worker finishing.
+  assert.equal(sub('Stop', {}), true);
+  assert.equal(sub('Notification', { notification_type: 'idle_prompt' }), true);
+  assert.equal(status(), 'working');
+  assert.equal(hook('PostToolUse', { ...task, tool_response: 'session_id: sub-session' }), true);
+  assert.equal(status(), 'working');
+  assert.equal(hook('Stop', {}), true);
+  await settleIdle(workers, worker.id);
+  assert.equal(status(), 'done');
+
+  // A subagent asks, and returns before anyone sees a tool of its finish: the Task coming back answers it.
+  hook('UserPromptSubmit', { prompt: 'again' });
+  sub('SessionStart', { source: 'startup', calling_session_id: 'lead-session' });
+  sub('PreToolUse', execute);
+  sub('Notification', { notification_type: 'permission_prompt' });
+  assert.equal(status(), 'needs_input');
+  hook('PostToolUse', task);
+  assert.equal(status(), 'working');
+
+  // A new conversation (/clear) forgets the old one's subagents.
+  hook('SessionStart', { source: 'clear' }, 'new-session');
+  assert.equal(workers.get(worker.id)?.task, undefined, 'clear removes both generated labels and prompt previews');
+  assert.ok(workers.get(worker.id)?.taskSince, 'clear excludes old text even if Droid reuses the session file');
+  hook('UserPromptSubmit', { prompt: CARRY_ON_PROMPT }, 'new-session');
+  assert.equal(workers.get(worker.id)?.task, undefined, 'restart recovery notices are not owner task previews');
+  hook('UserPromptSubmit', { prompt: '/clear' }, 'new-session');
+  assert.equal(workers.get(worker.id)?.task, undefined, 'slash commands are not task previews');
+  hook('UserPromptSubmit', { prompt: 'Check the new task' }, 'new-session');
+  assert.equal(workers.get(worker.id)?.task?.summary, 'Check the new task', 'the first prompt after clear restores a local preview');
+  assert.equal(sub('PreToolUse', execute), false);
+  hook('SessionStart', { source: 'resume' }, 'earlier-session');
+  assert.equal(workers.get(worker.id)?.taskSince, undefined, 'switching sessions includes that session’s existing visible conversation');
+  assert.equal(workers.get(worker.id)?.task, undefined, 'a different session cannot keep the previous session’s preview');
+});
+
+test('a late rewind SessionStart preserves the task but clear and later switches still reset it', async (t) => {
+  const { workers, worker, hook } = await liveWorker(t, 'original-session');
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'Keep this task over rewind' });
+  const task = workers.get(worker.id)?.task;
+  assert.ok(task);
+  const internal = Reflect.get(workers, 'workers').get(worker.id);
+  internal.rewindFork = { from: 'original-session', until: Date.now() + 30_000 };
+  hook('SessionStart', { source: 'resume' }, 'rewound-session');
+  assert.deepEqual(workers.get(worker.id)?.task, task);
+  assert.equal(internal.rewindFork, undefined);
+  hook('SessionStart', { source: 'clear' }, 'cleared-session');
+  assert.equal(workers.get(worker.id)?.task, undefined);
+  hook('UserPromptSubmit', { prompt: 'Another task' }, 'cleared-session');
+  internal.rewindFork = { from: 'cleared-session', until: Date.now() - 1 };
+  hook('SessionStart', { source: 'resume' }, 'another-session');
+  assert.equal(workers.get(worker.id)?.task, undefined);
+});
+
+test('session switches cannot resurrect the original hire preview after restart', async (t) => {
+  const { workers, worker, hook, f } = await liveWorker(t, 'original-session');
+  hook('SessionStart', { source: 'startup' });
+  assert.ok(workers.get(worker.id)?.task);
+  hook('SessionStart', { source: 'resume' }, 'selected-session');
+  assert.equal(workers.get(worker.id)?.task, undefined);
   const restored = manager(f, []);
-  assert.equal(restored.get(worker.id)?.prompt, 'task for parent', 'the historic hire prompt is still retained');
-  assert.equal(restored.get(worker.id)?.task, undefined, 'restarting does not bring back the old preview');
+  t.after(() => restored.shutdown());
+  assert.equal(restored.get(worker.id)?.prompt, 'fix the login', 'the historic hire prompt is still retained');
+  assert.equal(restored.get(worker.id)?.task, undefined, 'restoring never synthesizes a preview for another session');
 });
+
+/** Types `text` into a worker's terminal, which echoes it back (the fake agent's tty is in cooked mode), and waits to see it. */
+async function show(workers: WorkerManager, id: string, text: string) {
+  const occurrences = () => (workers.tail(id, 2000) ?? '').split(text).length;
+  const before = occurrences();
+  workers.write(id, `${text}\r`);
+  for (let i = 0; i < 200 && occurrences() <= before; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(occurrences() > before, `the terminal shows new output: ${text}`);
+}
+
+async function showIdle(workers: WorkerManager, id: string) {
+  for (const row of [
+    '    ↳ done',
+    '⛬  Done.',
+    ' Auto (Off) · all actions require approval        Sonnet 5.5 (High)',
+    '╭──────────────────────────────────────────────────────────────╮',
+    '│ >                                                            │',
+    '╰──────────────────────────────────────────────────────────────╯',
+    '[⏱ 6s, context: 4%] ? for help                     MCP ✓ | IDE ◌',
+    '/private/tmp/proj | master',
+  ])
+    await show(workers, id, row);
+}
+
+/** Droid has actually returned to its input box, and remains quiet through the settle interval. */
+async function settleIdle(workers: WorkerManager, id: string) {
+  await showIdle(workers, id);
+  const now = Date.now();
+  workers.reconcile(now);
+  workers.reconcile(now + SCREEN_SETTLE_MS);
+}
+
+test('a Stop is done once its grace passes with no other hook, unless the spinner is still going', async (t) => {
+  const { workers, worker, hook, status, updates } = await liveWorker(t, 'premature-stop');
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'fix the login' });
+  hook('PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'a.ts' } });
+  const start = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  await show(workers, worker.id, ' ⠋ Executing...  (Press ESC to stop)');
+  const before = { action: worker.action, acked: worker.acked, waitingSince: worker.waitingSince };
+  hook('Stop', { stop_hook_active: false });
+  assert.equal(status(), 'working', 'Stop starts a grace, in case a Stop hook carries the turn on');
+  assert.deepEqual({ action: worker.action, acked: worker.acked, waitingSince: worker.waitingSince }, before);
+  // Another Stop hook continued it: the spinner keeps printing.
+  t.mock.timers.setTime(start + STOP_GRACE_MS);
+  await show(workers, worker.id, ' ⠙ Thinking...  (Press ESC to stop)');
+  workers.reconcile();
+  assert.equal(status(), 'working', 'a printing spinner is not completion');
+  hook('PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'b.ts' } });
+  hook('PostToolUse', { tool_name: 'Read' });
+  t.mock.timers.setTime(start + 10 * STOP_GRACE_MS);
+  workers.reconcile();
+  assert.equal(status(), 'working', 'a hook after the Stop means the turn went on');
+  assert.ok(!updates.some((info) => info.status === 'done'), 'downstream consumers never receive the premature done state');
+  hook('Stop', { stop_hook_active: true });
+  for (let i = 0; i < 8; i++) await show(workers, worker.id, `Reply line ${i}`);
+  await showIdle(workers, worker.id);
+  t.mock.timers.setTime(start + 11 * STOP_GRACE_MS - 1);
+  workers.reconcile();
+  assert.equal(status(), 'working');
+  t.mock.timers.setTime(start + 11 * STOP_GRACE_MS);
+  workers.reconcile();
+  assert.equal(status(), 'done', 'the Stop with nothing after it finishes the turn');
+  assert.equal(worker.action, undefined);
+  assert.equal(worker.acked, false);
+  assert.equal(updates.filter((info, i) => info.status === 'done' && updates[i - 1]?.status !== 'done').length, 1);
+});
+
+test('a Stop finishes even on a screen the office cannot read, and is never carried on after a restart', async (t) => {
+  const { workers, worker, hook, status, data } = await liveWorker(t, 'unreadable-stop');
+  const midTurn = () => (JSON.parse(readFileSync(path.join(data, 'workers.json'), 'utf8')) as { id: string; midTurn?: boolean }[]).find((s) => s.id === worker.id)?.midTurn;
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'fix the login' });
+  assert.equal(midTurn(), true);
+  // A layout the screen reader doesn't know: no footer, no spinner.
+  await show(workers, worker.id, 'something droid has not shown before');
+  const start = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  hook('Stop', {});
+  assert.equal(status(), 'working');
+  assert.equal(midTurn(), false, 'a turn that sent its Stop is not resumed with the carry-on prompt');
+  workers.reconcile(start + STOP_GRACE_MS - 1);
+  assert.equal(status(), 'working');
+  workers.reconcile(start + STOP_GRACE_MS);
+  assert.equal(status(), 'done');
+  // A Stop followed by more work is not a finish.
+  hook('UserPromptSubmit', { prompt: 'again' });
+  hook('Stop', {});
+  hook('PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'a.ts' } });
+  workers.reconcile(start + 30_000);
+  assert.equal(status(), 'working');
+  assert.equal(midTurn(), true);
+});
+
+test('a Stop while asking finishes the turn; one while the dialog is still up waits for it', async (t) => {
+  const { workers, worker, hook, status } = await liveWorker(t, 'stop-asking');
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'deploy it' });
+  await show(workers, worker.id, ' ⠋ Executing...  (Press ESC to stop)');
+  hook('PreToolUse', { tool_name: 'Execute', tool_input: { command: 'git push', riskLevel: 'high', summary: 'Push the fix' } });
+  hook('Notification', { notification_type: 'permission_prompt', message: 'Factory CLI needs permission to execute 1 tool(s)' });
+  assert.equal(status(), 'needs_input');
+  assert.deepEqual(workers.get(worker.id)?.ask, { kind: 'permission', tool: 'Execute', command: 'git push', risk: 'high', summary: 'Push the fix' });
+  assert.equal(workers.get(worker.id)?.activity, 'Approve high-risk command: git push');
+  const start = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  await show(workers, worker.id, '  ↑↓ navigate   Enter select   Esc cancel   Alt/Option+E to inspect approval details');
+  hook('Stop', {});
+  workers.reconcile(start + STOP_GRACE_MS);
+  assert.equal(status(), 'needs_input', 'the dialog is still up');
+  // Denied with Esc: droid ends the turn, and the dialog goes.
+  await showIdle(workers, worker.id);
+  workers.reconcile(start + 2 * STOP_GRACE_MS);
+  assert.equal(status(), 'done');
+  assert.equal(workers.get(worker.id)?.ask, undefined, 'the ask goes with the need for input');
+});
+test('a hook within its grace keeps a Stop from finishing, and the screen settles what follows', async (t) => {
+  const { workers, worker, hook, status, updates } = await liveWorker(t, 'confirmed-stop');
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'fix the login' });
+  const start = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  const at = (ms: number) => {
+    t.mock.timers.setTime(start + ms);
+    workers.reconcile();
+  };
+  // The footer from the previous turn can still be visible when Stop runs.
+  await showIdle(workers, worker.id);
+  at(0);
+  at(3000);
+  t.mock.timers.setTime(start + 5000);
+  hook('Stop', {});
+  at(6000);
+  assert.equal(status(), 'working');
+  t.mock.timers.setTime(start + 6100);
+  hook('PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'a.ts' } });
+  at(9000);
+  assert.equal(status(), 'working', 'new activity invalidates an attempted completion');
+  await show(workers, worker.id, '[⏱ 9s, context: 4%] ? for help');
+  at(10_000);
+  assert.equal(status(), 'working', 'an idle footer that is still printing is not done');
+  at(12_999);
+  assert.equal(status(), 'working');
+  assert.ok(!updates.some((info) => info.status === 'done'));
+  at(13_000);
+  assert.equal(status(), 'done');
+});
+
+test("a status the hooks left wrong follows the agent's screen once it has settled", async (t) => {
+  const { workers, worker, hook, status } = await liveWorker(t, 'healed');
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'fix the login' });
+  assert.equal(status(), 'working');
+  const start = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  const at = (ms: number) => {
+    t.mock.timers.setTime(start + ms);
+    workers.reconcile();
+  };
+
+  // Its Stop never came (another program's hook broke the chain): at rest on screen, and still.
+  await show(workers, worker.id, '[⏱ 6s, context: 4%] ? for help');
+  at(0);
+  at(3000);
+  assert.equal(status(), 'working', 'not before the screen has settled');
+  at(4000);
+  assert.equal(status(), 'done');
+
+  // A message queued with Ctrl+Enter starts a turn with no UserPromptSubmit: busy on screen, spinner printing.
+  await show(workers, worker.id, ' ⠋ Executing...  (Press ESC to stop)');
+  at(5000);
+  at(9000);
+  assert.equal(status(), 'done', 'a spinner that stopped printing is no turn');
+  await show(workers, worker.id, '[⏱ 9s, context: 4%]');
+  at(9000);
+  assert.equal(status(), 'working');
+
+  // A permission prompt whose Notification never came.
+  await show(workers, worker.id, '  ↑↓ navigate   Enter select   Esc cancel   Alt/Option+E to inspect approval details');
+  at(10_000);
+  at(14_000);
+  assert.equal(status(), 'needs_input');
+  assert.equal(workers.get(worker.id)?.activity, 'Waiting for input');
+
+  // A hook that just came in is believed over the screen, until the screen has had time to catch up.
+  t.mock.timers.setTime(start + 20_000);
+  hook('PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'a.ts' } });
+  assert.equal(status(), 'working');
+  at(22_000);
+  assert.equal(status(), 'working');
+  at(24_000);
+  assert.equal(status(), 'needs_input');
+});
+
+test("a finished reply quoting a dialog's key hints above the input box leaves the worker done", async (t) => {
+  const { workers, worker, hook, status } = await liveWorker(t, 'quoted');
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'how do I see what it asked to run?' });
+  hook('Stop', {});
+  await settleIdle(workers, worker.id);
+  assert.equal(status(), 'done');
+  const start = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  await show(workers, worker.id, 'Assistant: Click "inspect approval details" to see what was requested.');
+  await show(workers, worker.id, '[⏱ 6s, context: 4%] ? for help');
+  for (const ms of [0, 4000, 8000]) {
+    t.mock.timers.setTime(start + ms);
+    workers.reconcile();
+  }
+  assert.equal(status(), 'done');
+  // The dialog itself, its key hints where the footer was, still reads as asking.
+  await show(workers, worker.id, '  ↑↓ navigate   Enter select   Esc cancel   Alt/Option+E to inspect approval details');
+  for (const ms of [9000, 13_000]) {
+    t.mock.timers.setTime(start + ms);
+    workers.reconcile();
+  }
+  assert.equal(status(), 'needs_input');
+});
+
+test('a first prompt whose SessionStart never comes is typed in once droid shows its input box', async (t) => {
+  const f = carryOnFixture(t);
+  const workers = manager(f, []);
+  t.after(() => workers.shutdown());
+  const worker = workers.spawn('desk-1', 'test', 'fix the login');
+  if (typeof worker === 'string') throw new Error(worker);
+  const [launch] = await waitFor(
+    () => launchesOf(f),
+    (x) => x.length > 0,
+  );
+  const start = Date.now();
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  await show(workers, worker.id, '[⏱ 6s, context: 4%] ? for help');
+  const before = pastedInto(f, launch).length;
+  t.mock.timers.setTime(start + 10_000);
+  workers.reconcile();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(pastedInto(f, launch).length, before, 'a slow start still gets its SessionStart');
+  t.mock.timers.setTime(start + 15_000);
+  workers.reconcile();
+  workers.reconcile();
+  await waitFor(
+    () => pastedInto(f, launch),
+    (typed) => typed.length > before,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(pastedInto(f, launch).slice(before), ['fix the login']);
+  // Its SessionStart turning up late doesn't send it again.
+  assert.equal(workers.hookReply(worker.id, launch.env.hookToken!, 'SessionStart', { session_id: 'late', hook_event_name: 'SessionStart' }) !== undefined, true);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(pastedInto(f, launch).slice(before), ['fix the login']);
+});
+
+/** Each worker launch so far (not the task namer's calls, nor what was typed into it), oldest first. */
+const launchesOf = (f: Fixture) => f.read().filter((r) => r.kind === 'droid' && r.args.includes('--settings') && r.stdin === undefined);
+
 function carryOnFixture(t: { after(fn: () => void): void }) {
   const f = fixture();
   isolateAgentEnvironment(f, t);
@@ -863,14 +1483,13 @@ function carryOnFixture(t: { after(fn: () => void): void }) {
 
 test('fixture cleanup shuts down every manager before deleting its directory', async (t) => {
   const f = carryOnFixture(t);
-  const updates: WorkerInfo[] = [];
-  const workers = manager(f, updates);
-  const pending = Promise.withResolvers<void>();
-  t.after(() => pending.resolve());
-  f.daemon.beforeInitialize = () => pending.promise;
-  const worker = workers.spawn('desk-1', 'test', 'never sent');
-  if (typeof worker === 'string') return assert.fail(worker);
-  await initializedWorker(f, worker.id);
+  const workers = manager(f, []);
+  const worker = workers.spawn('desk-1', 'test');
+  assert.notEqual(typeof worker, 'string');
+  await waitFor(
+    () => launchesOf(f),
+    (launches) => launches.length === 1,
+  );
   const restored = manager(f, []);
   const stopped: WorkerManager[] = [];
   for (const current of [workers, restored]) {
@@ -885,23 +1504,33 @@ test('fixture cleanup shuts down every manager before deleting its directory', a
   assert.deepEqual(stopped, [workers, restored]);
   assert.equal(existsSync(f.root), false);
   t.mock.restoreAll();
-  const updateCount = updates.length;
-  pending.resolve();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(existsSync(f.root), false, 'late daemon replies must not recreate the fixture');
-  assert.equal(updates.length, updateCount);
-  assert.equal(worker.sessionId, undefined);
-  assert.deepEqual(f.daemon.messages, []);
+  await waitFor(
+    () => workers.get(worker.id)?.status,
+    (status) => status === 'exited',
+  );
+  assert.equal(existsSync(f.root), false, 'late terminal exits must not recreate the fixture');
 });
 
 /** Hires a worker and puts its session in `state`: mid-turn ('working', 'needs_input') or finished ('done'). */
 async function hireInState(f: Fixture, workers: WorkerManager, deskId: string, session: string, state: 'working' | 'needs_input' | 'done') {
-  f.daemon.nextSessionId = session;
+  const before = launchesOf(f).length;
   const worker = workers.spawn(deskId, 'test', `task for ${session}`);
+  assert.notEqual(typeof worker, 'string');
   if (typeof worker === 'string') throw new Error(worker);
-  await waitFor(() => f.daemon.messages.some((message) => message.sessionId === session), Boolean);
-  if (state === 'needs_input') f.daemon.ask(session, { requestId: 'ask-1', toolCallId: 'ask-tool', questions: [{ index: 1, question: 'Which color?', options: ['Red', 'Blue'], multiSelect: false }] });
-  if (state === 'done') f.daemon.notify(session, { type: 'agent_turn_completed' });
+  const token = (
+    await waitFor(
+      () => launchesOf(f),
+      (x) => x.length > before,
+    )
+  ).at(-1)?.env.hookToken as string;
+  const hook = (event: string, extra: Record<string, unknown> = {}) => assert.equal(workers.hookReply(worker.id, token, event, { session_id: session, hook_event_name: event, ...extra }) !== undefined, true);
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: `task for ${session}` });
+  if (state === 'needs_input') hook('Notification', { notification_type: 'permission_prompt' });
+  if (state === 'done') {
+    hook('Stop', {});
+    await settleIdle(workers, worker.id);
+  }
   assert.equal(workers.get(worker.id)?.status, state);
   return worker;
 }
@@ -938,26 +1567,37 @@ for (const nested of [false, true]) {
     assert.equal(twin.worktree, undefined);
     assert.equal(twin.repos, undefined);
     assert.equal(twin.lead, undefined);
+    assert.equal(twin.sessionId, undefined);
     assert.equal(twin.forkedFrom?.workerId, source.id);
     assert.equal(twin.deskId, 'desk-3');
-    const sid = await waitFor(() => twin.sessionId, Boolean);
-    const forkRequest = f.daemon.forks.find((fork) => fork.loadOptions?.mcp?.workerId === twin.id);
-    assert.equal(forkRequest?.sessionId, source.sessionId);
-    assert.equal(forkRequest?.cwd && realpathSync(forkRequest.cwd), realpathSync(folder));
+    const launch = (await waitFor(() => launchesOf(f).find((r) => r.env.workerId === twin.id), Boolean))!;
+    assert.deepEqual(launch.args.slice(-2), ['--fork', 'source-home']);
+    assert.ok(!launch.args.includes('--resume'));
+    assert.equal(launch.args[launch.args.indexOf('--cwd') + 1], folder);
+    assert.equal(launch.env.ceiling?.split(path.delimiter)[0], realpathSync(f.root));
     assert.equal(existsSync(path.join(data, 'worktrees')), false);
     const saved = JSON.parse(readFileSync(path.join(data, 'workers.json'), 'utf8')).find((w: WorkerInfo) => w.id === twin.id);
     assert.equal(saved.setupPlan, undefined);
     assert.equal(saved.worktreeOwnership, undefined);
-    assert.equal(saved.pendingFork, undefined);
-    assert.equal(await waitFor(() => f.daemon.messages.find((m) => m.sessionId === sid)?.text, Boolean), 'Try another approach');
-    assert.notEqual(source.sessionId, sid);
+    assert.equal(saved.pendingFork.sessionId, 'source-home');
+    const system = readFileSync(path.join(data, `system-${twin.id}.md`), 'utf8');
+    assert.match(system, /share this floor’s folder/);
+    assert.doesNotMatch(system, /private snapshot|floor-branch\.json/);
+    assert.equal(await startedWith(f, workers, launch, 'twin-home'), 'Try another approach');
+    assert.equal(source.sessionId, 'source-home');
+    assert.equal(twin.sessionId, 'twin-home');
     assert.equal(readFileSync(path.join(folder, 'notes.txt'), 'utf8'), 'shared notes');
     workers.shutdown(true);
     const after = createManager();
     assert.equal(after.resume(twin.id), undefined);
-    const resumed = f.daemon.launches.at(-1)!;
-    assert.equal(resumed.sessionId, sid);
-    assert.equal(resumed.options.mcp?.workerId, twin.id);
+    const resumed = (
+      await waitFor(
+        () => launchesOf(f).filter((r) => r.env.workerId === twin.id),
+        (r) => r.length === 2,
+      )
+    )[1];
+    assert.deepEqual(resumed.args.slice(-2), ['--resume', 'twin-home']);
+    assert.equal(resumed.cwd, realpathSync(folder));
     assert.equal(fork.mock.callCount(), 0);
     assert.equal(ownership.mock.callCount(), 0);
   });
@@ -980,19 +1620,21 @@ test('a fork gets its own session, worktree, source-local setup and seat, then r
   assert.equal(twin.deskId, 'desk-2', 'the nearest desk is held');
   assert.equal(twin.name, `${source.name} ⑂`);
   assert.equal(twin.color, source.color);
-  assert.notEqual(twin.sessionId, source.sessionId, 'never claims the source session');
+  assert.equal(twin.sessionId, undefined, 'never temporarily claims the source session');
   assert.equal(twin.lead, undefined, 'a peer, not a subagent');
   assert.equal(twin.worktree?.base, git('rev-parse', 'HEAD'));
   assert.equal(twin.forkedFrom?.workerId, source.id);
-  const sid = await waitFor(() => twin.sessionId, Boolean);
-  const request = f.daemon.forks.at(-1)!;
-  assert.equal(request.sessionId, source.sessionId);
+  const launch = (await waitFor(() => launchesOf(f).find((r) => r.env.workerId === twin.id), Boolean))!;
+  assert.deepEqual(launch.args.slice(-2), ['--fork', 'source-session']);
+  assert.ok(!launch.args.includes('--resume'));
   const cwd = path.join(f.root, twin.worktree!.path);
-  assert.equal(realpathSync(request.cwd!), realpathSync(cwd), 'the fork is moved into its own worktree');
+  assert.equal(launch.args[launch.args.indexOf('--cwd') + 1], cwd, 'Droid must not restore the source session’s working directory');
   assert.equal(readFileSync(path.join(cwd, 'file.txt'), 'utf8'), 'unstaged');
   assert.equal(readFileSync(path.join(cwd, '.env'), 'utf8'), 'LOCAL=source');
-  assert.equal(await waitFor(() => f.daemon.messages.find((m) => m.sessionId === sid)?.text, Boolean), 'Try the alternative');
-  assert.notEqual(twin.sessionId, source.sessionId);
+  assert.match(readFileSync(path.join(f.data, `system-${twin.id}.md`), 'utf8'), /independent fork/);
+  assert.equal(await startedWith(f, workers, launch, 'twin-session'), 'Try the alternative');
+  assert.equal(source.sessionId, 'source-session');
+  assert.equal(twin.sessionId, 'twin-session');
   const saved = JSON.parse(readFileSync(path.join(f.data, 'workers.json'), 'utf8')).find((w: WorkerInfo) => w.id === twin.id);
   assert.equal(saved.pendingFork, undefined);
   workers.shutdown(true);
@@ -1001,38 +1643,39 @@ test('a fork gets its own session, worktree, source-local setup and seat, then r
   t.after(() => after.shutdown());
   assert.deepEqual(after.get(twin.id)?.forkedFrom, twin.forkedFrom);
   assert.equal(after.resume(twin.id), undefined);
-  assert.equal(f.daemon.launches.at(-1)?.sessionId, sid);
-  assert.equal(f.daemon.launches.at(-1)?.options.mcp?.workerId, twin.id);
+  const resumed = (
+    await waitFor(
+      () => launchesOf(f).filter((r) => r.env.workerId === twin.id),
+      (r) => r.length === 2,
+    )
+  )[1];
+  assert.deepEqual(resumed.args.slice(-2), ['--resume', 'twin-session']);
 });
 
-test('an interrupted fork retries the fork RPC, never loading the source as its own session', async (t) => {
+test('a fork interrupted before SessionStart retries the fork, never resumes the source', async (t) => {
   const f = carryOnFixture(t);
   forkRepository(f);
   const before = manager(f, []);
   const source = await hireInState(f, before, 'desk-1', 'source-pending', 'done');
-  const pending = Promise.withResolvers<void>();
-  t.after(() => pending.resolve());
-  f.daemon.beforeFork = () => pending.promise;
   const twin = await before.fork(source.id, 'test', 'alternative after restart');
-  if (typeof twin === 'string') return assert.fail(twin);
-  await waitFor(
-    () => f.daemon.forks.length,
-    (n) => n === 1,
-  );
-  assert.equal(twin.sessionId, undefined);
+  assert.ok(typeof twin !== 'string', String(twin));
+  if (typeof twin === 'string') return;
+  await waitFor(() => launchesOf(f).find((r) => r.env.workerId === twin.id), Boolean);
   before.shutdown(true);
-  f.daemon.beforeFork = undefined;
+  await new Promise((resolve) => setTimeout(resolve, 200));
   const after = manager(f, []);
+  t.after(() => after.shutdown());
   assert.equal(after.resume(twin.id), undefined);
-  const sid = await waitFor(() => after.get(twin.id)?.sessionId, Boolean);
-  pending.resolve();
-  assert.notEqual(sid, source.sessionId);
-  assert.deepEqual(
-    f.daemon.forks.map((fork) => fork.sessionId),
-    [source.sessionId, source.sessionId],
-  );
-  assert.equal(await waitFor(() => f.daemon.messages.find((m) => m.sessionId === sid)?.text, Boolean), 'alternative after restart');
+  const launch = (
+    await waitFor(
+      () => launchesOf(f).filter((r) => r.env.workerId === twin.id),
+      (r) => r.length === 2,
+    )
+  )[1];
+  assert.deepEqual(launch.args.slice(-2), ['--fork', 'source-pending']);
+  assert.equal(await startedWith(f, after, launch, 'separate-session'), 'alternative after restart');
 });
+
 test('a fork copies every repository in a workspace and leaves team relationships behind', async (t) => {
   const f = carryOnFixture(t);
   forkRepository(f);
@@ -1043,10 +1686,8 @@ test('a fork copies every repository in a workspace and leaves team relationship
   const source = workers.spawn('desk-1', 'test', undefined, true, 'agent', undefined, undefined, [{ floor: 'other', name: 'other', dir: other }]);
   assert.ok(typeof source !== 'string', String(source));
   if (typeof source === 'string') return;
-  await waitFor(
-    () => source.status,
-    (status) => status === 'idle',
-  );
+  const launch = (await waitFor(() => launchesOf(f).find((r) => r.env.workerId === source.id), Boolean))!;
+  await startedWith(f, workers, launch, 'workspace-source');
   writeFileSync(path.join(f.root, source.worktree!.path, 'file.txt'), 'primary edits');
   writeFileSync(path.join(f.root, source.repos![0].path, 'file.txt'), 'other edits');
   writeFileSync(path.join(f.root, '.env'), 'LOCAL=floor');
@@ -1066,15 +1707,8 @@ test('a fork copies every repository in a workspace and leaves team relationship
   assert.equal(twin.team, undefined);
   assert.equal(twin.model, 'custom:current');
   assert.equal(twin.effort, undefined, 'a /model change without effort must not inherit an old pinned effort');
-  await waitFor(
-    () => twin.status,
-    (status) => status === 'idle',
-  );
-  assert.equal(
-    f.daemon.messages.some((m) => m.sessionId === twin.sessionId),
-    false,
-    'a blank fork never starts a turn',
-  );
+  const twinLaunch = (await waitFor(() => launchesOf(f).find((r) => r.env.workerId === twin.id), Boolean))!;
+  assert.equal(await startedWith(f, workers, twinLaunch, 'workspace-twin'), undefined, 'a blank fork never starts a turn');
   assert.equal(readFileSync(path.join(f.root, twin.worktree!.path, '.env'), 'utf8'), 'LOCAL=source');
   assert.equal(readFileSync(path.join(f.root, twin.repos![0].path, '.env'), 'utf8'), 'LOCAL=other-source');
   const another = await workers.fork(source.id, 'test');
@@ -1118,65 +1752,50 @@ test('forks refuse busy workers, missing sessions, missing sources, full offices
   assert.equal(existsSync(path.join(f.root, '.droid-office', 'worktrees')), false);
 });
 
-test('restart reloads a vanished daemon session and carries on only the interrupted turn', async (t) => {
+test('a restart that takes a mid-turn worker down resumes it with continue; a finished one just wakes up', async (t) => {
   const f = carryOnFixture(t);
   const before = manager(f, []);
-  const working = await hireInState(f, before, 'desk-1', 'restart-working', 'working');
-  const done = await hireInState(f, before, 'desk-2', 'restart-done', 'done');
+  // Never started, so its terminals run in-process and go down with it.
+  await hireInState(f, before, 'desk-1', 'mid-turn', 'working');
+  await hireInState(f, before, 'desk-2', 'asking', 'needs_input');
+  await hireInState(f, before, 'desk-3', 'finished', 'done');
   before.shutdown(true);
-  f.daemon.stop();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
   const after = manager(f, []);
+  t.after(() => after.shutdown());
   await after.start();
-  assert.equal(after.get(working.id)?.sessionId, working.sessionId);
-  assert.equal(after.get(done.id)?.sessionId, done.sessionId);
-  assert.equal(after.get(done.id)?.status, 'done');
-  assert.deepEqual(
-    f.daemon.messages.slice(2).map((m) => [m.sessionId, m.text]),
-    [[working.sessionId, CARRY_ON_PROMPT]],
-  );
+  const resumed = (
+    await waitFor(
+      () => launchesOf(f),
+      (x) => x.length >= 6,
+    )
+  ).slice(3);
+  const of = (session: string) => resumed.find((r) => r.args.includes(session));
+  for (const session of ['mid-turn', 'asking']) {
+    assert.ok(of(session)?.args.includes('--resume'));
+    assert.equal(await startedWith(f, after, of(session) as Invocation, session), CARRY_ON_PROMPT);
+  }
+  assert.ok(of('finished')?.args.includes('--resume'));
+  assert.equal(await startedWith(f, after, of('finished') as Invocation, 'finished'), undefined);
 });
 
-test('a working daemon session and a pending AskUser keep their state across an office restart', async (t) => {
+test('a worker whose terminal outlives the office is picked back up mid-turn, not relaunched or told to continue', async (t) => {
   const f = carryOnFixture(t);
   const before = manager(f, []);
-  const working = await hireInState(f, before, 'desk-1', 'kept-working', 'working');
-  f.daemon.notify(working.sessionId!, { type: 'droid_working_state_changed', newState: 'thinking' });
-  const asking = await hireInState(f, before, 'desk-2', 'kept-asking', 'needs_input');
-  assert.equal(before.hold(asking.id, 'Look at the board'), undefined);
+  await before.start();
+  const worker = await hireInState(f, before, 'desk-1', 'kept', 'working');
   before.shutdown(true);
-  const reopened = manager(f, []);
-  await reopened.start();
-  assert.equal(f.daemon.launches.length, 2, 'neither open session was relaunched');
-  assert.equal(reopened.get(working.id)?.status, 'working');
-  assert.equal(reopened.get(asking.id)?.status, 'needs_input');
-  assert.equal(reopened.get(asking.id)?.menu?.question, 'Which color?');
-  assert.equal(
-    f.daemon.messages.some((m) => m.text.includes(CARRY_ON_PROMPT)),
-    false,
-  );
-  assert.equal(f.daemon.messages.slice(2).filter((m) => m.text.includes('Look at the board')).length, 1);
-});
-test('a turn that finished while the office was down comes back done and unread', async (t) => {
-  const f = carryOnFixture(t);
-  const before = manager(f, []);
-  const working = await hireInState(f, before, 'desk-1', 'finished-while-down', 'working');
-  f.daemon.notify(working.sessionId!, { type: 'droid_working_state_changed', newState: 'thinking' });
-  before.shutdown(true);
-  f.daemon.notify(working.sessionId!, { type: 'agent_turn_completed', reason: 'completed' });
-  const reopened = manager(f, []);
-  t.after(() => reopened.shutdown());
-  await reopened.start();
-  assert.equal(reopened.get(working.id)?.status, 'done');
-  assert.equal(reopened.get(working.id)?.acked, false);
-  assert.equal(typeof reopened.get(working.id)?.waitingSince, 'number');
-  assert.equal(
-    f.daemon.messages.some((m) => m.text.includes(CARRY_ON_PROMPT)),
-    false,
-    'a session that stayed open is never told to carry on',
-  );
+
+  const after = manager(f, []);
+  t.after(() => after.shutdown());
+  await after.start();
+  assert.equal(after.get(worker.id)?.status, 'working');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(launchesOf(f).length, 1);
 });
 
-test('an upgrade retires the four kiosk seats and preserves ordinary workers, subworkers and their worktrees', async (t) => {
+test('an upgrade stops the four kiosk sessions and preserves ordinary workers, subworkers and their worktrees', async (t) => {
   const f = carryOnFixture(t);
   const before = manager(f, []);
   await before.start();
@@ -1199,43 +1818,103 @@ test('an upgrade retires the four kiosk seats and preserves ordinary workers, su
   writeFileSync(note, 'Keep user work');
   sub.worktree = { path: path.relative(f.root, history), branch: 'office/legacy-history', base: 'main' };
   before.shutdown(true);
+  const processes = new Map(launchesOf(f).map((r) => [r.env.workerId, r.pid]));
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const after = manager(f, []);
   t.after(() => after.shutdown());
   await after.start();
   assert.deepEqual(new Set(after.list().map((w) => w.id)), new Set([root.id, bag.id, sub.id, orphan.id]));
   assert.equal(after.get(sub.id)?.lead, root.id);
   assert.equal(after.get(orphan.id)?.lead, undefined, 'a retired kiosk lead does not remove its ordinary subworker');
-  assert.equal(f.daemon.launches.length, 8, 'ordinary daemon sessions are adopted, not relaunched');
+  await waitFor(() => removed.every((w) => !alive(processes.get(w.id)!)), Boolean);
+  for (const w of [root, bag, sub, orphan]) assert.ok(alive(processes.get(w.id)!), w.id);
+  assert.equal(launchesOf(f).length, 8, 'ordinary PTYs are adopted, not relaunched');
   assert.equal(readFileSync(note, 'utf8'), 'Keep user work');
 });
 
-test('a first prompt not yet sent to the daemon survives a graceful restart', async (t) => {
+test('a question or permission prompt still up after a restart that keeps its terminal is still known for what it asks', async (t) => {
   const f = carryOnFixture(t);
   const before = manager(f, []);
-  const pending = Promise.withResolvers<void>();
-  t.after(() => pending.resolve());
-  f.daemon.beforeInitialize = () => pending.promise;
-  const worker = before.spawn('desk-1', 'test', 'fix the login');
-  if (typeof worker === 'string') return assert.fail(worker);
-  await initializedWorker(f, worker.id);
-  assert.equal(worker.sessionId, undefined);
-  assert.deepEqual(f.daemon.messages, []);
+  await before.start();
+  const live = async (deskId: string, session: string) => {
+    const n = launchesOf(f).length;
+    const worker = before.spawn(deskId, 'test', 'ask me');
+    if (typeof worker === 'string') throw new Error(worker);
+    const token = (
+      await waitFor(
+        () => launchesOf(f),
+        (x) => x.length > n,
+      )
+    ).at(-1)?.env.hookToken as string;
+    const hook = (event: string, extra: Record<string, unknown> = {}) => assert.notEqual(before.hookReply(worker.id, token, event, { session_id: session, hook_event_name: event, ...extra }), undefined);
+    hook('SessionStart', { source: 'startup' });
+    hook('UserPromptSubmit', { prompt: 'ask me' });
+    return { id: worker.id, hook };
+  };
+  const asking = await live('desk-1', 'asking');
+  asking.hook('PreToolUse', { tool_name: 'AskUser', tool_input: { questionnaire: '1. [question] Which color?\n[topic] Color\n[option] Red\n[option] Blue' } });
+  const question = { kind: 'question', questions: [{ question: 'Which color?', topic: 'Color', options: ['Red', 'Blue'], multiSelect: false }] };
+  assert.deepEqual(before.get(asking.id)?.ask, question);
+  const approving = await live('desk-2', 'approving');
+  approving.hook('PreToolUse', { tool_name: 'Execute', tool_input: { command: 'rm -rf build', riskLevel: 'high' } });
+  approving.hook('Notification', { notification_type: 'permission_prompt' });
+  const permission = before.get(approving.id)?.ask;
+  assert.equal(permission?.kind, 'permission');
+  const hiring = await live('desk-3', 'hiring');
+  hiring.hook('PreToolUse', { tool_name: 'droid-office___team_hire', tool_input: { title: 'Count tests/*.test.ts', brief: 'Read-only count and report.', worktree: false } });
+  hiring.hook('Notification', { notification_type: 'permission_prompt' });
+  const hirePermission = { kind: 'permission', tool: 'droid-office___team_hire', summary: 'Count tests/*.test.ts' };
+  assert.deepEqual(before.get(hiring.id)?.ask, hirePermission, 'an MCP permission prompt retains the task being approved');
+  assert.equal(before.get(hiring.id)?.status, 'needs_input');
   before.shutdown(true);
-  f.daemon.beforeInitialize = undefined;
+
+  const after = manager(f, []);
+  t.after(() => after.shutdown());
+  await after.start();
+  assert.equal(after.get(asking.id)?.status, 'needs_input');
+  assert.deepEqual(after.get(asking.id)?.ask, question, 'its question can still be answered from the Asks inbox and the Office MCP');
+  assert.deepEqual(after.get(approving.id)?.ask, permission, 'a permission prompt stays one, never mistaken for a menu');
+  assert.deepEqual(after.get(hiring.id)?.ask, hirePermission, 'an MCP permission prompt remains visible after reconnecting');
+});
+
+test('a first message its droid had not taken yet survives a restart that keeps its terminal, and is typed in once', async (t) => {
+  const f = carryOnFixture(t);
+  const before = manager(f, []);
+  await before.start();
+  const worker = before.spawn('desk-1', 'test', 'fix the login');
+  if (typeof worker === 'string') throw new Error(worker);
+  const [launch] = await waitFor(
+    () => launchesOf(f),
+    (x) => x.length > 0,
+  );
+  // The office restarts before droid's SessionStart: the terminal lives on in the host.
+  before.shutdown(true);
+  const savedPrompt = () => JSON.parse(readFileSync(path.join(f.data, 'workers.json'), 'utf8'))[0].pty?.launchPrompt?.text;
+  assert.equal(savedPrompt(), 'fix the login');
+
   const after = manager(f, []);
   await after.start();
-  await waitFor(
-    () => f.daemon.messages.length,
-    (n) => n === 1,
-  );
-  pending.resolve();
-  assert.equal(f.daemon.messages[0].text, 'fix the login');
-  assert.equal(f.daemon.messages[0].sessionId, after.get(worker.id)?.sessionId);
+  assert.equal(launchesOf(f).length, 1, 'picked back up, not relaunched');
+  assert.equal(await startedWith(f, after, launch, 'first'), 'fix the login');
+  assert.equal(savedPrompt(), undefined, 'saved as typed in at once');
+  assert.equal(await startedWith(f, after, launch, 'first'), undefined, 'a later SessionStart in the same run sends nothing');
+
+  // Another restart once it was typed in sends nothing again.
   after.shutdown(true);
   const again = manager(f, []);
+  t.after(() => again.shutdown());
   await again.start();
-  assert.equal(f.daemon.messages.length, 1, 'adoption does not repeat delivered prompts');
+  assert.equal(await startedWith(f, again, launch, 'first'), undefined);
+  assert.deepEqual(pastedInto(f, launch), ['fix the login']);
 });
+
 test('a worker whose terminal was in the host when an older office went down carries on if the host is gone', async (t) => {
   const f = carryOnFixture(t);
   // workers.json as the office before midTurn left it: only the host terminal's status says it was mid-turn.
@@ -1252,14 +1931,12 @@ test('a worker whose terminal was in the host when an older office went down car
   const workers = manager(f, []);
   t.after(() => workers.shutdown());
   await workers.start();
-  assert.deepEqual(
-    f.daemon.launches.map((launch) => launch.sessionId),
-    ['was-working', 'was-done'],
+  const resumed = await waitFor(
+    () => launchesOf(f),
+    (x) => x.length >= 2,
   );
-  assert.deepEqual(
-    f.daemon.messages.map((m) => [m.sessionId, m.text]),
-    [['was-working', CARRY_ON_PROMPT]],
-  );
+  assert.equal(await startedWith(f, workers, resumed.find((r) => r.args.includes('was-working')) as Invocation, 'was-working'), CARRY_ON_PROMPT);
+  assert.equal(await startedWith(f, workers, resumed.find((r) => r.args.includes('was-done')) as Invocation, 'was-done'), undefined);
 });
 
 test('stopping the office on purpose (Ctrl+C) leaves nothing to carry on', async (t) => {
@@ -1269,37 +1946,62 @@ test('stopping the office on purpose (Ctrl+C) leaves nothing to carry on', async
   await before.start();
   await hireInState(f, before, 'desk-1', 'stopped', 'working');
   before.shutdown(false);
-  f.daemon.stop();
+  await new Promise((resolve) => setTimeout(resolve, 200));
 
   const after = manager(f, []);
   t.after(() => after.shutdown());
   await after.start();
-  assert.equal(f.daemon.launches.at(-1)?.sessionId, 'stopped');
-  assert.equal(f.daemon.messages.length, 1, 'no carry-on after a deliberate stop');
+  const resumed = (
+    await waitFor(
+      () => launchesOf(f),
+      (x) => x.length >= 2,
+    )
+  )[1];
+  assert.ok(resumed.args.includes('stopped'));
+  assert.equal(await startedWith(f, after, resumed, 'stopped'), undefined);
 });
 
-test('worktree setup runs before the daemon starts and the first prompt includes setup failures', async (t) => {
+test("a new worktree is set up in the worker's terminal before its agent starts, and a failed setup is passed on to it", async (t) => {
   const f = carryOnFixture(t);
-  const git = forkRepository(f);
-  const command = `printf '%s' "$DROID_OFFICE_ROOT_PATH" > set-up.txt; printf '%s' 'fixture setup failure'; exit 1`;
-  writeFileSync(path.join(f.root, '.droid-office.json'), JSON.stringify({ worktree: { setup: command, copy: ['/.env'] } }));
-  git('add', '.droid-office.json');
-  git('commit', '-qm', 'test setup');
-  writeFileSync(path.join(f.root, '.env'), 'LOCAL=fixture');
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' }).trim();
+  git(f.root, 'init', '-q', '-b', 'main');
+  const mark = `require('fs').writeFileSync('set-up.txt', process.env.DROID_OFFICE_ROOT_PATH)`;
+  writeFileSync(path.join(f.root, '.droid-office.json'), JSON.stringify({ worktree: { setup: `"${process.execPath}" -e "${mark}"` } }));
+  writeFileSync(path.join(f.root, '.gitignore'), '.env\ndata/\nbin/\nhome/\nconfig/\n*.jsonl\n');
+  git(f.root, 'add', '.droid-office.json', '.gitignore');
+  git(f.root, 'commit', '-qm', 'init');
+  writeFileSync(path.join(f.root, '.env'), 'SECRET=1');
   const toasts: string[] = [];
-  const workers = managed(f, f.root, f.data, f.droid, [], { url: 'http://127.0.0.1:1', token: '' }, { ...events([]), toast: (text) => toasts.push(text) });
+  const workers = managed(f, f.root, f.data, f.droid, ['--from-test'], { url: 'http://127.0.0.1:1', token: '' }, { ...events([]), toast: (text) => toasts.push(text) });
+  t.after(() => workers.shutdown());
   const worker = workers.spawn('desk-1', 'test', 'build the thing', true);
-  if (typeof worker === 'string') return assert.fail(worker);
+  assert.notEqual(typeof worker, 'string');
+  if (typeof worker === 'string') return;
   const cwd = path.join(f.root, worker.worktree!.path);
-  assert.match(worker.activity ?? '', /Setting up its worktree/);
-  assert.deepEqual(f.daemon.launches, []);
-  const launch = await initializedWorker(f, worker.id);
-  assert.equal(readFileSync(path.join(cwd, '.env'), 'utf8'), 'LOCAL=fixture');
-  assert.equal(realpathSync(readFileSync(path.join(cwd, 'set-up.txt'), 'utf8')), realpathSync(f.root));
-  assert.match(toasts.at(-1) ?? '', /worktree setup failed/);
-  const message = await waitFor(() => f.daemon.messages.find((m) => m.sessionId === launch.sessionId)?.text, Boolean);
-  assert.match(message ?? '', /fixture setup failure[\s\S]+build the thing$/);
+  assert.equal(workers.get(worker.id)?.activity, 'Setting up its worktree');
+  const launch = (
+    await waitFor(
+      () => launchesOf(f),
+      (x) => x.length > 0,
+      8000,
+    )
+  )[0];
+  // The agent came after the setup: the worktree has its .env and what the command wrote.
+  assert.equal(readFileSync(path.join(cwd, '.env'), 'utf8'), 'SECRET=1');
+  assert.equal(readFileSync(path.join(cwd, 'set-up.txt'), 'utf8'), f.root);
+  const setupHook = (body: Record<string, unknown>) => workers.hookReply(worker.id, launch.env.hookToken!, 'WorktreeSetup', { hook_event_name: 'WorktreeSetup', ...body }) !== undefined;
+  assert.equal(workers.hookReply(worker.id, 'wrong', 'WorktreeSetup', { hook_event_name: 'WorktreeSetup', phase: 'start' }) !== undefined, false);
+  assert.equal(setupHook({ phase: 'later' }), false);
+  assert.equal(setupHook({ phase: 'start', commands: ['npm ci'] }), true);
+  assert.equal(workers.get(worker.id)?.activity, 'Setting up its worktree: npm ci');
+  assert.equal(setupHook({ phase: 'done', failed: [{ command: 'npm ci', code: 1, output: 'npm ERR! no lockfile' }] }), true);
+  assert.equal(workers.get(worker.id)?.activity, undefined);
+  assert.match(toasts.at(-1)!, /worktree setup failed: `npm ci` \(exit 1\)\. \w+'s first message says so, with the error\./);
+  // Once it's done, it's done: a second report changes nothing.
+  assert.equal(setupHook({ phase: 'done', failed: [] }), false);
+  assert.equal(await startedWith(f, workers, launch, 'set-up'), `${setupFailedNote('`npm ci` (exit 1)', 'npm ERR! no lockfile')}\n\nbuild the thing`);
 });
+
 test('a worktree worker that makes its own branch is followed there: O finds the PR it opened, and sending it home tidies both branches', async (t) => {
   const f = carryOnFixture(t);
   const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -1317,15 +2019,23 @@ test('a worktree worker that makes its own branch is followed there: O finds the
   if (typeof worker === 'string') return;
   const office = worker.worktree!.branch;
   assert.match(office, /^office\//);
-  const launch = await initializedWorker(f, worker.id);
-  await waitFor(() => f.daemon.messages.find((m) => m.sessionId === launch.sessionId), Boolean);
+  const token = (
+    await waitFor(
+      () => launchesOf(f),
+      (x) => x.length > 0,
+    )
+  )[0].env.hookToken!;
+  const hook = (event: string, extra: Record<string, unknown> = {}) => assert.equal(workers.hookReply(worker.id, token, event, { session_id: 'own-branch', hook_event_name: event, ...extra }) !== undefined, true);
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'fix x on a new branch and open a PR' });
   // What the task told it to do: a branch of its own, a commit, a PR from there.
   const cwd = path.join(f.root, worker.worktree!.path);
   git(cwd, 'checkout', '-qb', 'fix-x');
   writeFileSync(path.join(cwd, 'x.txt'), 'x');
   git(cwd, 'add', 'x.txt');
   git(cwd, 'commit', '-qm', 'fix x');
-  f.daemon.notify(worker.sessionId!, { type: 'agent_turn_completed' });
+  hook('Stop', {});
+  await settleIdle(workers, worker.id);
   const info = await waitFor(
     () => workers.get(worker.id)!,
     (w) => w.worktree?.branch === 'fix-x',
@@ -1361,9 +2071,7 @@ test('a worktree worker that makes its own branch is followed there: O finds the
   if (typeof named === 'string') throw new Error(named);
   assert.equal(named.worktree!.branch, 'feat/structured-task');
   assert.match((await workers.dismissTeam(named.id, true, true)).error!, /finish/);
-  const namedLaunch = await initializedWorker(f, named.id);
-  await waitFor(() => f.daemon.messages.some((m) => m.sessionId === namedLaunch.sessionId), Boolean);
-  f.daemon.notify(namedLaunch.sessionId, { type: 'agent_turn_completed' });
+  named.status = 'done';
   const namedCwd = path.join(f.root, named.worktree!.path);
   writeFileSync(path.join(namedCwd, 'a.txt'), 'uncommitted');
   assert.match((await workers.dismissTeam(named.id, true, true)).error!, /dirty/);
@@ -1499,12 +2207,21 @@ test("a worker that renames the office's branch goes home with it; one that dele
     return { w, cwd: path.join(f.root, w.worktree!.path), office: w.worktree!.branch };
   };
   const a = hire('desk-1');
-  await waitFor(() => a.w.sessionId, Boolean);
+  const token = (
+    await waitFor(
+      () => launchesOf(f),
+      (x) => x.length > 0,
+    )
+  )[0].env.hookToken!;
+  const hook = (event: string, extra: Record<string, unknown> = {}) => assert.equal(workers.hookReply(a.w.id, token, event, { session_id: 'renamed', hook_event_name: event, ...extra }) !== undefined, true);
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'fix x and name the branch after it' });
   writeFileSync(path.join(a.cwd, 'x.txt'), 'x');
   git(a.cwd, 'add', 'x.txt');
   git(a.cwd, 'commit', '-qm', 'fix x');
   git(a.cwd, 'branch', '-m', 'fix-x');
-  f.daemon.notify(a.w.sessionId!, { type: 'agent_turn_completed' });
+  hook('Stop', {});
+  await settleIdle(workers, a.w.id);
   // Followed there, with nothing to remember: office/… is gone, fix-x is it.
   const info = await waitFor(
     () => workers.get(a.w.id)!,
@@ -1570,11 +2287,18 @@ test('a worker whose worktree was deleted outside the office waits, marked lost,
   const officeWith = (updates: WorkerInfo[], toasts: string[]) => managed(f, f.root, f.data, f.droid, ['--from-test'], { url: 'http://127.0.0.1:1', token: '' }, { ...events(updates), toast: (text) => toasts.push(text) });
   const before = officeWith([], []);
   const hire = async (deskId: string, session: string) => {
-    f.daemon.nextSessionId = session;
-    const worker = before.spawn(deskId, 'test', `task for ${session}`, true);
-    if (typeof worker === 'string') throw new Error(worker);
-    await waitFor(() => worker.sessionId, Boolean);
-    return worker;
+    const n = launchesOf(f).length;
+    const w = before.spawn(deskId, 'test', `task for ${session}`, true);
+    assert.notEqual(typeof w, 'string');
+    if (typeof w === 'string') throw new Error(w);
+    const token = (
+      await waitFor(
+        () => launchesOf(f),
+        (x) => x.length > n,
+      )
+    ).at(-1)!.env.hookToken!;
+    assert.equal(before.hookReply(w.id, token, 'SessionStart', { session_id: session, hook_event_name: 'SessionStart' }) !== undefined, true);
+    return w;
   };
   const kept = await hire('desk-1', 'kept-branch');
   const gone = await hire('desk-2', 'gone-branch');
@@ -1595,17 +2319,17 @@ test('a worker whose worktree was deleted outside the office waits, marked lost,
   const toasts: string[] = [];
   const after = officeWith(updates, toasts);
   t.after(() => after.shutdown());
-  const launched = f.daemon.launches.length;
+  const launched = launchesOf(f).length;
   await after.start();
   await new Promise((resolve) => setTimeout(resolve, 200));
   // Nobody started, nobody was told "could not start": both wait at their desks, marked lost.
-  assert.equal(f.daemon.launches.length, launched);
+  assert.equal(launchesOf(f).length, launched);
   assert.deepEqual(toasts, []);
   assert.deepEqual(after.get(kept.id)?.lost, { branch: 'here' });
   assert.deepEqual(after.get(gone.id)?.lost, { branch: 'gone' });
   assert.equal(after.get(kept.id)?.status, 'offline');
   assert.match(after.resume(kept.id) ?? '', /worktree .* was deleted outside droid-office/);
-  assert.equal(f.daemon.launches.length, launched);
+  assert.equal(launchesOf(f).length, launched);
 
   // Put back on its own branch, work and all, and it carries on its conversation.
   assert.deepEqual(await after.rebuild(kept.id), { rebuilt: true, note: undefined });
@@ -1613,10 +2337,10 @@ test('a worker whose worktree was deleted outside the office waits, marked lost,
   assert.ok(existsSync(path.join(keptDir, 'work.txt')));
   assert.equal(after.get(kept.id)?.lost, undefined);
   const resumed = await waitFor(
-    () => f.daemon.launches.slice(launched),
+    () => launchesOf(f).slice(launched),
     (x) => x.length > 0,
   );
-  assert.equal(resumed[0].sessionId, 'kept-branch');
+  assert.ok(resumed[0].args.includes('--resume') && resumed[0].args.includes('kept-branch'));
 
   // Its branch gone too: made again from where it started.
   const again = await after.rebuild(gone.id);
@@ -1633,13 +2357,7 @@ test('two connections share one terminal: closing one leaves the other subscribe
   const streamed: { workerId: string; data: string; to: string[] }[] = [];
   const workers = managed(f, f.root, f.data, f.droid, ['--from-test'], { url: 'http://127.0.0.1:1', token: '' }, { ...events(updates), data: (workerId, data, to) => streamed.push({ workerId, data, to }) });
   t.after(() => workers.shutdown());
-  const savedShell = process.env.SHELL;
-  process.env.SHELL = f.droid;
-  t.after(() => {
-    if (savedShell === undefined) delete process.env.SHELL;
-    else process.env.SHELL = savedShell;
-  });
-  const spawned = workers.spawn('desk-1', 'test', undefined, false, 'shell');
+  const spawned = workers.spawn('desk-1', 'test', 'share this terminal');
   assert.notEqual(typeof spawned, 'string');
   if (typeof spawned === 'string') throw new Error(spawned);
   const id = spawned.id;
@@ -1692,6 +2410,38 @@ test('two connections share one terminal: closing one leaves the other subscribe
   assert.equal(workers.attach(id, 'conn-a'), undefined);
 });
 
+test('opening a finished terminal acknowledges its wait; answering a question takes input', async (t) => {
+  const f = carryOnFixture(t);
+  const workers = manager(f, []);
+  t.after(() => workers.shutdown());
+  const done = await hireInState(f, workers, 'desk-1', 'finished-session', 'done');
+  assert.equal(workers.get(done.id)?.acked, false);
+  assert.equal(workers.get(done.id)?.open, false);
+  const waiting = workers.get(done.id)?.waitingSince;
+  workers.attach(done.id, 'conn-a');
+  assert.equal(workers.get(done.id)?.acked, true);
+  assert.equal(workers.get(done.id)?.waitingSince, waiting);
+  assert.equal(workers.get(done.id)?.open, true);
+  workers.detach(done.id, 'conn-a');
+
+  const asking = await hireInState(f, workers, 'desk-2', 'asking-session', 'needs_input');
+  assert.equal(workers.get(asking.id)?.acked, false);
+  workers.attach(asking.id, 'conn-a');
+  assert.equal(workers.get(asking.id)?.acked, false, 'opening a question does not answer it');
+  workers.write(asking.id, 'yes\r');
+  assert.equal(workers.get(asking.id)?.acked, true);
+  assert.ok(typeof workers.get(asking.id)?.lastInputAt === 'number');
+  // The agent answers on its own time: let it log the keystrokes before teardown takes its log away.
+  await waitFor(
+    () =>
+      f
+        .read()
+        .map((inv) => inv.stdin ?? '')
+        .join(''),
+    (x) => x.includes('yes'),
+  );
+});
+
 test('a worker restored from before subscriptions keeps its names, maps its last input time, and starts unopened', async (t) => {
   const f = carryOnFixture(t);
   writeFileSync(
@@ -1734,12 +2484,15 @@ test('a worker restored from before subscriptions keeps its names, maps its last
   workers.detachAll('ghost-connection');
   assert.equal(workers.get('legacy-1')?.open, false);
   // Still visible and actionable: it opens, closes, and gets back to work.
-  assert.ok(workers.open('legacy-1', 'conn-a'));
+  assert.ok(workers.attach('legacy-1', 'conn-a'));
   assert.equal(workers.get('legacy-1')?.open, true);
   workers.detachAll('conn-a');
   assert.equal(workers.get('legacy-1')?.open, false);
   assert.equal(workers.resume('legacy-1'), undefined);
-  await waitFor(() => info.sessionId, Boolean);
+  await waitFor(
+    () => launchesOf(f),
+    (x) => x.length > 0,
+  );
 });
 
 test('a subagent sits down told who hired it and where it works; its lead goes on record with no office command on disk', async (t) => {
@@ -1749,6 +2502,7 @@ test('a subagent sits down told who hired it and where it works; its lead goes o
   writeFileSync(path.join(bin, 'office-workers'), '#!/bin/sh\n');
   const workers = manager(f, [], []);
   t.after(() => workers.shutdown());
+  const launches = (id: string) => launchesOf(f).filter((r) => r.env.workerId === id);
 
   assert.equal(existsSync(bin), false, 'the commands from before the Office MCP are deleted');
 
@@ -1769,21 +2523,26 @@ test('a subagent sits down told who hired it and where it works; its lead goes o
   assert.equal(sub.prompt, 'Fix the redirect', 'its card shows the task alone');
   assert.match(workers.spawn('desk-4', sub.name, 'x', false, 'agent', undefined, undefined, [], sub.id) as string, /can't hire subagents of its own/);
 
-  await waitFor(
-    () => f.daemon.messages.length,
-    (n) => n === 2,
+  const [leadLaunch] = await waitFor(
+    () => launches(lead.id),
+    (l) => l.length === 1,
   );
-  const leadMsg = f.daemon.messages.find((m) => m.sessionId === lead.sessionId);
-  const subMsg = f.daemon.messages.find((m) => m.sessionId === sub.sessionId)!;
-  assert.equal(leadMsg?.text, 'Ship the login fix', 'a worker nobody hired is told nothing extra');
-  const brief = subMsg.text;
+  const [subLaunch] = await waitFor(
+    () => launches(sub.id),
+    (l) => l.length === 1,
+  );
+  assert.equal(await startedWith(f, workers, leadLaunch, 'lead-session'), 'Ship the login fix', 'a worker nobody hired is told nothing extra');
+  const brief = (await startedWith(f, workers, subLaunch, 'sub-session')) ?? '';
   assert.match(brief, new RegExp(`^Droid Office role: ${sub.name}, subagent of ${lead.name} \\(a worker, not the owner\\)`));
   assert.match(brief, /Your session starts in the project's main checkout/);
   assert.doesNotMatch(brief, /You work in/);
   assert.match(brief, /`team_report`/);
   assert.ok(brief.endsWith(`## Task from ${lead.name}\n\`\`\`text\nFix the redirect\n\`\`\`\n\n${context}`));
   assert.equal(workers.get(sub.id)?.prompt, 'Fix the redirect');
-  f.daemon.notify(subMsg.sessionId, { type: 'create_message', message: { id: 'sub-user', role: 'user', content: [{ type: 'text', text: brief }] } });
+  for (const r of [leadLaunch, subLaunch]) assert.equal((r.env.path ?? '').split(path.delimiter).includes(bin), false, 'no office command folder is on the agent PATH');
+  assert.equal((leadLaunch.env.path ?? '').split(path.delimiter).includes(path.join(f.data, 'bin')), false, 'nothing else is put in the data directory’s bin');
+
+  // What its lead reads of it: the end of its terminal, as text (the brief typed into it, echoed).
   await waitFor(
     () => workers.tail(sub.id, 20),
     (s) => !!s?.includes('Fix the redirect'),
@@ -1825,7 +2584,13 @@ test('custom subagent briefs keep the lead task exactly once, with or without a 
     custom = template;
     const sub = workers.spawn(desk, lead.name, 'Use {{lead}} literally', false, 'agent', undefined, undefined, [], lead.id);
     if (typeof sub === 'string') return assert.fail(sub);
-    const text = await waitFor(() => f.daemon.messages.find((m) => m.sessionId === sub.sessionId)?.text, Boolean);
+    const launch = (
+      await waitFor(
+        () => launchesOf(f),
+        (ls) => ls.some((l) => l.env.workerId === sub.id),
+      )
+    ).find((l) => l.env.workerId === sub.id)!;
+    const text = await startedWith(f, workers, launch, `custom-${desk}`);
     assert.equal(text?.split('Use {{lead}} literally').length, 2, 'task is included once without expanding its placeholders');
     assert.equal(text, desk === 'desk-2' ? `Office instructions for ${sub.name}. Task from ${lead.name}:\n\nUse {{lead}} literally` : `Task from ${lead.name}:\nUse {{lead}} literally\nOffice instructions: report back.`);
   }
@@ -1905,56 +2670,121 @@ test('team markings form with the first hire, survive restarts and the lead leav
   assert.equal(migrated.get(two.id)?.lead, undefined);
 });
 /** Everything the agent has read from its terminal so far: a pty hands it over a line at a time. */
+const typed = (records: Invocation[]) => records.map((r) => r.stdin ?? '').join('');
+
 const PICTURE = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('pixels')]);
 
-test('staged pictures reach the daemon with the first and later prompts and are removed with the worker', async (t) => {
-  const f = carryOnFixture(t);
-  const workers = manager(f, []);
+test('pictures staged for a prompt are listed, numbered, after a new worker’s first prompt and after later ones', async (t) => {
+  const f = fixture();
+  const updates: WorkerInfo[] = [];
+  isolateAgentEnvironment(f, t);
+  const previousLog = process.env.FAKE_AGENT_LOG;
+  process.env.FAKE_AGENT_LOG = f.log;
+  t.after(() => {
+    if (previousLog === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = previousLog;
+    f.close();
+  });
+  const workers = manager(f, updates);
+  t.after(() => workers.shutdown());
+  const launches = () => f.read().filter((r) => r.kind === 'droid' && r.args.includes('--settings') && r.stdin === undefined);
+
   assert.equal(workers.stageImage('notes.png', Buffer.from('not a picture')), undefined);
   const [a, b] = [workers.stageImage('first.png', PICTURE)!, workers.stageImage('second.png', PICTURE)!];
   assert.ok(a && b);
-  const hired = workers.spawn('desk-2', 'test', 'What is wrong here?', false, 'agent', undefined, undefined, [], undefined, [a, b]);
-  if (typeof hired === 'string') return assert.fail(hired);
-  assert.equal(hired.prompt, 'What is wrong here?');
-  const picture = { type: 'base64', data: PICTURE.toString('base64'), mediaType: 'image/png' };
-  await waitFor(
-    () => f.daemon.messages.length,
-    (n) => n === 1,
-  );
-  assert.deepEqual(f.daemon.messages[0].images, [picture, picture]);
-  assert.equal(f.daemon.messages[0].text, hired.prompt);
 
+  // Hired with a prompt and two pictures: its card shows the prompt alone, the agent is given the list too.
+  const hired = workers.spawn('desk-2', 'test', 'What is wrong here?', false, 'agent', undefined, undefined, [], undefined, [a, b]);
+  assert.equal(typeof hired, 'object');
+  if (typeof hired === 'string') return;
+  assert.equal(hired.prompt, 'What is wrong here?');
+  const drops = path.join(f.data, 'drops', hired.id);
+  const [first] = await waitFor(launches, (l) => l.length === 1);
+  const given = (await startedWith(f, workers, first, 'pictures-session')) ?? '';
+  assert.match(given, new RegExp(`^What is wrong here\\?\\n\\nImage 1: ${drops.replace(/[\\/^$.*+?()[\]{}|]/g, '\\$&')}[\\\\/][0-9a-f]{8}-first\\.png\\nImage 2: .*[0-9a-f]{8}-second\\.png$`));
+  assert.deepEqual(readFileSync(given.match(/Image 1: (.*)/)![1]), PICTURE);
+
+  // Later prompts: the pictures go in the same bracketed paste, so they're one message.
   const c = workers.stageImage('third.png', PICTURE)!;
   assert.equal(workers.prompt(hired.id, 'And this one?', [c]), undefined);
-  assert.deepEqual(f.daemon.messages[1].images, [picture]);
-  assert.equal(f.daemon.messages[1].text, 'And this one?');
+  await waitFor(
+    () => f.read(),
+    (records) => typed(records).includes('And this one?\n\nImage 1: '),
+  );
+  // Pictures alone are a prompt, and the card says so.
   const d = workers.stageImage('fourth.png', PICTURE)!;
-  assert.equal(workers.prompt(hired.id, '', [d]), undefined);
+  assert.equal(workers.prompt(hired.id, '  ', [d]), undefined);
   assert.equal(workers.get(hired.id)?.activity, 'See the attached images');
-  assert.deepEqual(f.daemon.messages[2].images, [picture]);
-  assert.equal(f.daemon.messages[2].text, '');
+  await waitFor(
+    () => f.read(),
+    (records) => typed(records).includes('\x1b[200~Image 1: '),
+  );
   assert.equal(workers.prompt(hired.id, '  ', []), 'Empty prompt');
+  assert.equal(workers.prompt(hired.id, '  ', ['ffffffffffffffff']), 'Empty prompt');
+
+  // The pictures go when the worker does; the staged originals when they're thrown away.
   workers.unstage([a, b, c, d]);
-  const drops = path.join(f.data, 'drops', hired.id);
-  assert.ok(existsSync(drops));
+  assert.deepEqual(workers.stageImage('x.png', PICTURE)?.length, 16);
   await workers.kill(hired.id);
   assert.ok(!existsSync(drops));
 });
 
-test('a picture-only first message sends no placeholder text to the daemon', async (t) => {
-  const f = carryOnFixture(t);
-  const workers = manager(f, []);
-  const image = workers.stageImage('shot.png', PICTURE)!;
-  const worker = workers.spawn('desk-1', 'test', '', false, 'agent', undefined, undefined, [], undefined, [image]);
-  if (typeof worker === 'string') return assert.fail(worker);
-  assert.equal(worker.prompt, 'See the attached images');
-  await waitFor(
-    () => f.daemon.messages.length,
-    (n) => n === 1,
+test('a picture-only first prompt hires a worker with the list as its prompt', async (t) => {
+  const f = fixture();
+  const updates: WorkerInfo[] = [];
+  isolateAgentEnvironment(f, t);
+  const previousLog = process.env.FAKE_AGENT_LOG;
+  process.env.FAKE_AGENT_LOG = f.log;
+  t.after(() => {
+    if (previousLog === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = previousLog;
+    f.close();
+  });
+  const workers = manager(f, updates);
+  t.after(() => workers.shutdown());
+  const a = workers.stageImage('shot.png', PICTURE)!;
+  const info = workers.spawn('desk-1', 'Ada', '', false, 'agent', undefined, undefined, [], undefined, [a]);
+  if (typeof info === 'string') return assert.fail(info);
+  const hired = { info };
+  assert.equal(typeof hired, 'object');
+  if (typeof hired === 'string') return;
+  assert.equal(hired.info.prompt, 'See the attached images');
+  const [first] = await waitFor(
+    () => f.read().filter((r) => r.kind === 'droid' && r.args.includes('--settings') && r.stdin === undefined),
+    (l) => l.length === 1,
   );
-  assert.equal(f.daemon.messages[0].text, '');
-  assert.equal(f.daemon.messages[0].images?.length, 1);
+  assert.match((await startedWith(f, workers, first, 'shot-session')) ?? '', /^Image 1: .*[0-9a-f]{8}-shot\.png$/);
 });
+
+test('a queued prompt is submitted to an agent with Ctrl+Enter, a plain one with Enter', async (t) => {
+  const f = fixture();
+  const updates: WorkerInfo[] = [];
+  isolateAgentEnvironment(f, t);
+  const previousLog = process.env.FAKE_AGENT_LOG;
+  process.env.FAKE_AGENT_LOG = f.log;
+  t.after(() => {
+    if (previousLog === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = previousLog;
+    f.close();
+  });
+  const workers = manager(f, updates);
+  t.after(() => workers.shutdown());
+  const hired = workers.spawn('desk-2', 'test', 'Start', false, 'agent');
+  assert.equal(typeof hired, 'object');
+  if (typeof hired === 'string') return;
+
+  assert.equal(workers.prompt(hired.id, 'Queue this', [], true), undefined);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  // The terminal hands a line over at its newline, which the plain prompt's Enter brings.
+  assert.equal(workers.prompt(hired.id, 'Now this'), undefined);
+  const records = await waitFor(
+    () => f.read(),
+    (r) => typed(r).includes('Now this\x1b[201~'),
+  );
+  assert.ok(typed(records).includes('\x1b[200~Queue this\x1b[201~\x1b[13;5u\x1b[200~Now this'));
+  assert.equal(workers.get(hired.id)?.activity, 'Now this');
+});
+
 test('fresh workers start from the latest main, the checkout moved only when nobody is in its way; subagents start where their lead is', async (t) => {
   const f = carryOnFixture(t);
   const forge = mkdtempSync(path.join(tmpdir(), 'office-fresh-forge-'));
@@ -2003,7 +2833,10 @@ test('fresh workers start from the latest main, the checkout moved only when nob
   assert.equal(git(f.root, 'rev-parse', 'HEAD'), merged);
   assert.deepEqual(moved, ['main']);
   assert.ok(toasts.includes(`🌿 Switched the checkout from feature to main for ${direct.name}`), toasts.join('\n'));
-  await waitFor(() => direct.sessionId, Boolean);
+  await waitFor(
+    () => launchesOf(f).filter((l) => l.env.workerId === direct.id),
+    (x) => x.length > 0,
+  );
 
   // With that worker in the checkout, the next one doesn't move it from under it.
   git(f.root, 'checkout', '-q', 'feature');
@@ -2121,7 +2954,10 @@ test('the checkout goes back to main once its branch merged, and subagents of a 
   // A worker is sitting in the checkout at rest, as the one that merged would be.
   const first = workers.spawn('desk-1', 'test', 'merge it');
   if (typeof first === 'string') throw new Error(first);
-  await waitFor(() => first.sessionId, Boolean);
+  await waitFor(
+    () => launchesOf(f).filter((l) => l.env.workerId === first.id),
+    (x) => x.length > 0,
+  );
   first.status = 'idle';
 
   // Nothing happens with the setting off, or while the pull request is still open.
@@ -2166,79 +3002,516 @@ test('a log read ignores a trailing partial line', (t) => {
   assert.deepEqual(f.read(), [done, torn]);
 });
 
-test('worker notices steer at end of turn and the completion nudge is delivered once', async (t) => {
-  const f = carryOnFixture(t);
-  const workers = manager(f, []);
-  const worker = await hireInState(f, workers, 'desk-1', 'noticed', 'working');
-  assert.equal(workers.notice(worker.id, 'Look at card 3'), true);
-  assert.equal(f.daemon.messages.length, 2);
-  assert.equal(f.daemon.messages.at(-1)?.text, 'Droid Office notice:\nLook at card 3');
-  assert.equal(f.daemon.messages.at(-1)?.queuePlacement, 'end_of_turn');
-  workers.beforeStop = () => 'Droid Office notice: report to your lead';
-  f.daemon.notify(worker.sessionId!, { type: 'agent_turn_completed' });
-  assert.equal(f.daemon.messages.at(-1)?.text, 'Droid Office notice: report to your lead');
-  assert.equal(worker.status, 'working');
-  f.daemon.notify(worker.sessionId!, { type: 'agent_turn_completed' });
-  assert.equal(f.daemon.messages.length, 3, 'the notice is not repeated');
-  assert.equal(worker.status, 'done');
+test('cancelTurn sends one Escape, and only to a droid that works and shows its spinner', async (t) => {
+  const { workers, worker, hook, status } = await liveWorker(t, 'cancel-turn');
+  const inner = (workers as unknown as { workers: Map<string, { pty?: { write(data: string): void } }> }).workers.get(worker.id)!;
+  const pty = inner.pty!;
+  const write = pty.write.bind(pty);
+  const sent: string[] = [];
+  pty.write = (data: string) => {
+    sent.push(data);
+    write(data);
+  };
+  hook('SessionStart', { source: 'startup' });
+  await showIdle(workers, worker.id);
+  assert.equal(workers.cancelTurn(worker.id), false, 'at rest');
+  hook('UserPromptSubmit', { prompt: 'run it' });
+  assert.equal(status(), 'working');
+  assert.equal(workers.turnScreen(worker.id), 'idle');
+  assert.equal(workers.cancelTurn(worker.id), false, 'working by its status, but at its input box on screen');
+  assert.ok(!sent.includes('\x1b'), 'an idle droid never gets the key');
+  await show(workers, worker.id, ' ⠋ Executing...  (Press ESC to stop)');
+  assert.equal(workers.turnScreen(worker.id), 'busy');
+  sent.length = 0;
+  assert.equal(workers.cancelTurn(worker.id), true);
+  assert.deepEqual(sent, ['\x1b'], 'one Escape, never Ctrl+C');
+  assert.equal(workers.cancelTurn('nobody'), false);
 });
 
-test('after-turn messages keep the worker busy, and removing them allows the turn to finish', async (t) => {
+test('the hook command subscribes every event, says its version, and refuses Task unless Settings allow it', async (t) => {
   const f = carryOnFixture(t);
   const workers = manager(f, []);
-  const worker = await hireInState(f, workers, 'desk-1', 'queue-session', 'working');
-  const sid = worker.sessionId!;
+  t.after(() => workers.shutdown());
+  let deny = true;
+  workers.denyTask = () => deny;
+  const settingsOf = async (deskId: string) => {
+    const before = launchesOf(f).length;
+    assert.notEqual(typeof workers.spawn(deskId, 'test', undefined), 'string');
+    const launch = (
+      await waitFor(
+        () => launchesOf(f),
+        (x) => x.length > before,
+      )
+    ).at(-1)!;
+    return JSON.parse(readFileSync(launch.args[launch.args.indexOf('--settings') + 1], 'utf8')) as { hooks: Record<string, { matcher?: string; hooks: { command: string }[] }[]> };
+  };
+  const first = await settingsOf('desk-1');
+  const events = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SubagentStop', 'PreCompact'];
+  assert.deepEqual(Object.keys(first.hooks).sort(), [...events].sort(), 'only the events the office acts on');
+  for (const event of events) {
+    const office = first.hooks[event]?.find((e) => !e.matcher);
+    assert.match(office?.hooks[0].command ?? '', new RegExp(`event=${event}&v=${HOOK_VERSION}`), event);
+  }
+  const task = first.hooks.PreToolUse.find((e) => e.matcher === 'Task');
+  assert.ok(task, 'Task is refused by default');
+  const out = JSON.parse(execFileSync('sh', ['-c', task.hooks[0].command], { encoding: 'utf8' }));
+  assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /team_hire/);
+  deny = false;
+  const second = await settingsOf('desk-2');
+  assert.equal(
+    second.hooks.PreToolUse.find((e) => e.matcher === 'Task'),
+    undefined,
+    'allowed in Settings, the next start lets it through',
+  );
+});
+
+/** Runs a hook command line as Droid does: `body` on its stdin, the worker's environment around it. */
+function runHook(command: string, body: string, env: Record<string, string>, args: string[] = []): Promise<{ code: number | null; stdout: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(args.length ? command : 'sh', args.length ? args : ['-c', command], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'ignore'] });
+    let stdout = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (c) => (stdout += c));
+    child.on('close', (code) => resolve({ code, stdout }));
+    child.stdin.end(body);
+  });
+}
+
+test('a hook prints what the office answers, and keeps what it cannot deliver in a capped spool', async (t) => {
+  const f = carryOnFixture(t);
+  const workers = manager(f, []);
+  t.after(() => workers.shutdown());
+  assert.notEqual(typeof workers.spawn('desk-1', 'test', undefined), 'string');
+  const launch = (
+    await waitFor(
+      () => launchesOf(f),
+      (x) => x.length > 0,
+    )
+  )[0];
+  const settings = JSON.parse(readFileSync(launch.args[launch.args.indexOf('--settings') + 1], 'utf8'));
+  const command: string = settings.hooks.Stop[0].hooks[0].command;
+  const seen: string[] = [];
+  let status = 200;
+  let slow = false;
+  const server = http.createServer((req, res) => {
+    seen.push(req.url ?? '');
+    req.resume();
+    req.on('end', () => {
+      if (slow) return;
+      res.writeHead(status);
+      res.end(status === 200 ? '{"decision":"block","reason":"Droid Office notice"}' : '{}');
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const port = (server.address() as { port: number }).port;
+  const env = { DROID_OFFICE_WORKER_ID: 'w1', DROID_OFFICE_HOOK_TOKEN: 'tok', DROID_OFFICE_HOOK_URL: `http://127.0.0.1:${port}` };
+  const body = JSON.stringify({ hook_event_name: 'Stop', session_id: 's1' });
+  const spool = path.join(f.data, 'hook-spool', 'w1.jsonl');
+  const rows = () =>
+    existsSync(spool)
+      ? readFileSync(spool, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l))
+      : [];
+
+  const answered = await runHook(command, body, env);
+  assert.equal(answered.stdout, '{"decision":"block","reason":"Droid Office notice"}');
+  assert.match(seen[0], /worker=w1&event=Stop&v=2/);
+  assert.deepEqual(rows(), [], 'delivered: nothing spooled');
+
+  // Its Node half prints the answer only for a command that says so: one from before HOOK_VERSION throws it away.
+  const script = path.join(f.data, 'hook.cjs');
+  assert.equal((await runHook(process.execPath, body, env, [script, 'Stop', 'reply'])).stdout, '{"decision":"block","reason":"Droid Office notice"}');
+  assert.match(seen.at(-1)!, /event=Stop&v=2/);
+  await runHook(process.execPath, body, env, [script, 'Stop']);
+  assert.match(seen.at(-1)!, /event=Stop&v=0/, 'a legacy command is answered as one');
+
+  // The office took it but answered too late: it isn't spooled to be replayed a second time.
+  slow = true;
+  const late = await Promise.all([runHook(command, body, env), runHook(process.execPath, body, env, [script, 'Stop', 'reply'])]);
+  slow = false;
+  assert.deepEqual(
+    late.map((r) => [r.code, r.stdout]),
+    [
+      [0, ''],
+      [0, ''],
+    ],
+  );
+  assert.equal(seen.length, 5);
+  assert.deepEqual(rows(), [], 'taken late: nothing spooled');
+  server.closeAllConnections();
+
+  // Refused (a worker the office doesn't know), then unreachable: kept, in order, and nothing printed.
+  status = 401;
+  assert.equal((await runHook(command, body, env)).stdout, '');
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  const down = await runHook(command, JSON.stringify({ hook_event_name: 'Stop', session_id: 's2' }), env);
+  assert.equal(down.code, 0, 'a hook never fails its droid');
+  assert.equal(down.stdout, '');
+  assert.deepEqual(
+    rows().map((r) => [r.event, r.token, r.payload.session_id]),
+    [
+      ['Stop', 'tok', 's1'],
+      ['Stop', 'tok', 's2'],
+    ],
+  );
+  assert.equal(statSync(spool).mode & 0o777, 0o600);
+
+  // At the cap, the oldest go first.
+  const big = JSON.stringify({ hook_event_name: 'PostToolUse', session_id: 'big', pad: 'x'.repeat(200 * 1024) });
+  for (let i = 0; i < 3; i++) await runHook(process.execPath, big, env, [script, 'PostToolUse', 'spool']);
+  const kept = rows();
+  assert.ok(statSync(spool).size <= SPOOL_MAX_BYTES);
+  assert.equal(kept.length, 2, 'two of the big ones fit');
+  assert.ok(kept.every((r) => r.payload.session_id === 'big'));
+});
+
+test('hooks spooled while the office was down are replayed in order when it picks the worker back up', async (t) => {
+  const f = carryOnFixture(t);
+  const before = manager(f, []);
+  await before.start();
+  const worker = await hireInState(f, before, 'desk-1', 'spooled', 'working');
+  const token = launchesOf(f).at(-1)!.env.hookToken!;
+  before.shutdown(true);
+  const dir = path.join(f.data, 'hook-spool');
+  mkdirSync(dir, { recursive: true });
+  const row = (event: string, at: number, extra: Record<string, unknown> = {}, from = token) => JSON.stringify({ event, at, token: from, payload: { session_id: 'spooled', hook_event_name: event, ...extra } });
+  const now = Date.now();
+  writeFileSync(
+    path.join(dir, `${worker.id}.jsonl`),
+    [
+      row('PreToolUse', now, { tool_name: 'Execute', tool_input: { command: 'rm -rf build', riskLevel: 'high' } }),
+      row('Stop', now + 1, {}, 'an-earlier-run'),
+      'not json',
+      row('Notification', now + 2, { notification_type: 'permission_prompt' }),
+    ].join('\n'),
+  );
+  // A worker who left the floor while the office was down.
+  writeFileSync(path.join(dir, 'gone.jsonl'), row('Stop', now));
+
+  const after = manager(f, []);
+  t.after(() => after.shutdown());
+  assert.equal(existsSync(path.join(dir, 'gone.jsonl')), false, "a gone worker's spool is dropped");
+  await after.start();
+  assert.equal(after.get(worker.id)?.status, 'needs_input', 'the permission prompt it raised while the office was down');
+  assert.equal(after.get(worker.id)?.activity, 'Approve high-risk command: rm -rf build');
+  assert.equal(existsSync(path.join(dir, `${worker.id}.jsonl`)), false, 'replayed once');
+
+  // A Stop spooled while the office was coming up, then a live hook: the Stop is older, and stale.
+  const refusedAt = Date.now() - 1;
+  assert.equal(after.hookReply(worker.id, token, 'PostToolUse', { session_id: 'spooled', hook_event_name: 'PostToolUse', tool_name: 'Execute' }) !== undefined, true);
+  assert.equal(after.get(worker.id)?.status, 'working');
+  writeFileSync(path.join(dir, `${worker.id}.jsonl`), [row('Stop', refusedAt), row('PreToolUse', Date.now() + 1000, { tool_name: 'Read', tool_input: { file_path: 'b.ts' } })].join('\n'));
+  after.replaySpools();
+  assert.equal(after.get(worker.id)?.activity, 'Read: b.ts');
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() + 10 * STOP_GRACE_MS });
+  after.reconcile();
+  assert.equal(after.get(worker.id)?.status, 'working', 'the stale Stop was skipped');
+});
+
+test('notices promised to a working droid outlive an office restart that keeps its terminal', async (t) => {
+  const f = carryOnFixture(t);
+  const before = manager(f, []);
+  await before.start();
+  const worker = await hireInState(f, before, 'desk-1', 'kept', 'working');
+  const token = launchesOf(f).at(-1)!.env.hookToken!;
+  const live = (workers: WorkerManager, event: string, extra: Record<string, unknown> = {}) => workers.hookReply(worker.id, token, event, { session_id: 'kept', hook_event_name: event, ...extra }, HOOK_VERSION);
+  live(before, 'PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'a.ts' } });
+  assert.equal(before.notice(worker.id, 'Droid Office notice: from Ada'), true);
+  before.shutdown(true);
+
+  const after = manager(f, []);
+  t.after(() => after.shutdown());
+  await after.start();
+  assert.equal(after.get(worker.id)?.status, 'working');
+  assert.deepEqual(JSON.parse(live(after, 'PostToolUse', { tool_name: 'Read' })!), { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'Droid Office notice: from Ada' } });
+});
+test('sibling notes use real worker hooks without contaminating launch, permission, legacy or reported sessions', async (t) => {
+  const { workers, worker, token, f } = await liveWorker(t, 'sibling-note');
+  const lead: WorkerInfo = { ...worker, id: 'team-lead', name: 'Lead' };
+  const author: WorkerInfo = { ...worker, id: 'author', name: 'Author', lead: lead.id };
+  const member = (): WorkerInfo => ({ ...workers.get(worker.id)!, lead: lead.id });
+  const reply = (event: string, extra: Record<string, unknown> = {}, version = HOOK_VERSION) => workers.hookReply(worker.id, token, event, { session_id: 'sibling-note', hook_event_name: event, ...extra }, version);
+  const team = new Team(
+    {
+      list: () => [lead, author, member()],
+      get: (id) => (id === lead.id ? lead : id === author.id ? author : id === worker.id ? member() : undefined),
+      officeDefault: undefined,
+      deskOccupied: () => false,
+      hire: () => 'Unused',
+      prompt: (id, text, queue) => workers.prompt(id, text, [], queue),
+      notice: (id, text) => workers.notice(id, text),
+      resume: (id, text) => workers.resume(id, text),
+      kill: (id) => workers.kill(id),
+      tail: (id, lines) => workers.tail(id, lines),
+      setTask: (id, task) => workers.setTask(id, task),
+    },
+    { dataDir: f.data, dir: f.root, git: false, settings: () => ({ ...SUBAGENT_DEFAULTS, wakeLead: false }), toast() {} },
+  );
+  t.after(() => team.stop());
+  workers.beforeStop = () => team.beforeStop(member());
+  const note = () => team.handle(author, { action: 'note', text: 'Sibling finding, not a new task.' });
+  assert.equal(member().status, 'starting');
+  await note();
+  assert.doesNotMatch(readFileSync(path.join(f.data, 'workers.json'), 'utf8'), /Sibling finding/);
+  assert.equal(reply('SessionStart', { source: 'startup' }), '');
+  reply('UserPromptSubmit', { prompt: 'Continue.' });
+  await note();
+  assert.match(JSON.parse(reply('PostToolUse', { tool_name: 'Read' })!).hookSpecificOutput.additionalContext, /sibling note from Author/);
+  reply('Notification', { notification_type: 'permission_prompt', message: 'Approve command?' });
+  await note();
+  assert.equal(reply('PostToolUse', { tool_name: 'Read' }), '', 'a permission menu did not gain queued input');
+  reply('UserPromptSubmit', { prompt: 'Legacy turn.' }, 0);
+  await note();
+  assert.equal(reply('PostToolUse', { tool_name: 'Read' }, 0), '', 'legacy hooks leave the note on the board only');
+  assert.doesNotMatch(readFileSync(path.join(f.data, 'workers.json'), 'utf8'), /Sibling finding/);
+  reply('UserPromptSubmit', { prompt: 'Finish.' });
+  await team.handle(member(), { action: 'report', text: 'Finished.' });
+  await note();
+  assert.equal(reply('Stop', { stop_hook_active: false }), '', 'a sibling cannot prolong reported work');
+  await settleIdle(workers, worker.id);
+  await note();
+  assert.doesNotMatch(readFileSync(path.join(f.data, 'workers.json'), 'utf8'), /Sibling finding/);
+  assert.equal(workers.get(worker.id)?.prompt, 'fix the login');
+});
+
+test('office notices reach a working droid with its next tool call or as its Stop is blocked, once', async (t) => {
+  const { workers, worker, status, token, f } = await liveWorker(t, 'noticed');
+  const reply = (event: string, extra: Record<string, unknown> = {}, version = HOOK_VERSION) => workers.hookReply(worker.id, token, event, { session_id: 'noticed', hook_event_name: event, ...extra }, version);
+  assert.equal(reply('SessionStart', { source: 'startup' }), '');
+  assert.equal(workers.notice(worker.id, 'Droid Office notice: hi'), false, 'at rest it is typed in instead');
+  reply('UserPromptSubmit', { prompt: 'fix the login' });
+  assert.equal(workers.notice(worker.id, 'Droid Office notice: hi'), true);
+  assert.deepEqual(JSON.parse(reply('PostToolUse', { tool_name: 'Read' })!), { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'Droid Office notice: hi' } });
+  assert.equal(reply('PostToolUse', { tool_name: 'Read' }), '', 'handed over once');
+  // A notice whose rewritten prompt dropped the office's marker still carries it, so the Thread knows it.
+  workers.notice(worker.id, 'Look at card 3');
+  assert.equal(JSON.parse(reply('PostToolUse', { tool_name: 'Read' })!).hookSpecificOutput.additionalContext, 'Droid Office notice:\nLook at card 3');
+
+  // Its turn ends with one waiting: the Stop is blocked with it, and the one after goes through.
+  workers.notice(worker.id, 'second');
+  let stops = 0;
+  workers.beforeStop = () => (++stops === 1 ? 'Droid Office notice: report to your lead' : undefined);
+  assert.deepEqual(JSON.parse(reply('Stop', { stop_hook_active: false })!), { decision: 'block', reason: 'Droid Office notice:\nsecond\n\nDroid Office notice: report to your lead' });
+  assert.equal(status(), 'working');
+  workers.notice(worker.id, 'third');
+  assert.equal(reply('Stop', { stop_hook_active: true }), '', 'a Stop a block continued is never blocked again');
+  // At rest, what's left is typed in.
+  const launch = launchesOf(f).at(-1)!;
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() + 10 * STOP_GRACE_MS });
+  workers.reconcile();
+  assert.equal(status(), 'done');
+  await waitFor(
+    () => pastedInto(f, launch),
+    (p) => p.includes('third'),
+  );
+
+  // Cancelled with Esc: never blocked, whatever is waiting.
+  reply('UserPromptSubmit', { prompt: 'again' });
+  workers.notice(worker.id, 'fourth');
+  workers.write(worker.id, '\x1b');
+  assert.equal(reply('Stop', { stop_hook_active: false }), '');
+
+  // A hook command from before the office's (version 0) can't carry notices.
+  reply('UserPromptSubmit', { prompt: 'and again' }, 0);
+  assert.equal(workers.notice(worker.id, 'fifth'), false);
+});
+
+test('a message queued with Ctrl+Enter keeps its worker working through the Stop before it', async (t) => {
+  const { workers, worker, status, token } = await liveWorker(t, 'queued');
+  const hook = (event: string, extra: Record<string, unknown> = {}) => workers.hookReply(worker.id, token, event, { session_id: 'queued', hook_event_name: event, ...extra }, HOOK_VERSION);
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'first' });
+  assert.equal(workers.prompt(worker.id, 'then this', [], true), undefined);
   const turns: string[] = [];
   workers.nextTurn = (info) => turns.push(info.id);
-
-  assert.equal(workers.prompt(worker.id, 'Steer now'), undefined);
-  assert.equal(workers.prompt(worker.id, 'Then do this', [], true), undefined);
-  const [steer, later] = f.daemon.messages.slice(-2);
-  assert.deepEqual([steer.text, steer.queuePlacement, later.text, later.queuePlacement], ['Steer now', 'end_of_turn', 'Then do this', 'end_of_loop']);
-  f.daemon.notify(sid, { type: 'agent_turn_completed' });
-  assert.equal(worker.status, 'working');
-  assert.deepEqual(turns, [worker.id]);
-  f.daemon.notify(sid, { type: 'create_message', requestId: later.requestId, message: { id: 'queued-user', role: 'user', content: later.text } });
-  f.daemon.notify(sid, { type: 'agent_turn_completed' });
-  assert.equal(worker.status, 'done');
-
-  assert.equal(workers.prompt(worker.id, 'Start again'), undefined);
-  assert.equal(workers.prompt(worker.id, 'Do not send', [], true), undefined);
-  const discarded = f.daemon.messages.at(-1)!;
-  f.daemon.notify(sid, { type: 'queued_messages_discarded', requestId: discarded.requestId });
-  f.daemon.notify(sid, { type: 'agent_turn_completed' });
-  assert.equal(worker.status, 'done');
+  const start = Date.now() + 1000;
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  hook('Stop', {});
+  workers.reconcile(start + 10 * STOP_GRACE_MS);
+  assert.equal(status(), 'working', 'the queued message runs next');
+  assert.deepEqual(turns, [worker.id], 'and starts a turn of its own');
+  hook('Stop', {});
+  workers.reconcile(start + 20 * STOP_GRACE_MS);
+  assert.equal(status(), 'done');
+  hook('Stop', {});
+  assert.equal(status(), 'done', 'a Stop at rest changes nothing');
 });
 
-test('switchModel updates the daemon by id and applies a saved choice on resume', async (t) => {
+test('a cleared queue lets the next Stop finish the turn', async (t) => {
+  const { workers, worker, status, token } = await liveWorker(t, 'cleared');
+  const hook = (event: string, extra: Record<string, unknown> = {}) => workers.hookReply(worker.id, token, event, { session_id: 'cleared', hook_event_name: event, ...extra }, HOOK_VERSION);
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'first' });
+  // Cleared with Clear queue (Droid's Ctrl+X): nothing runs after this turn.
+  workers.prompt(worker.id, 'then this', [], true);
+  workers.write(worker.id, CLEAR_DROID_QUEUE);
+  hook('Stop', {});
+  workers.reconcile(Date.now() + 10 * STOP_GRACE_MS);
+  assert.equal(status(), 'done');
+
+  // Emptied some other way (Ctrl+R in its terminal): its screen shows the input box with no queue.
+  hook('UserPromptSubmit', { prompt: 'second' });
+  workers.prompt(worker.id, 'and this', [], true);
+  await showIdle(workers, worker.id);
+  hook('Stop', {});
+  workers.reconcile(Date.now() + 10 * STOP_GRACE_MS);
+  assert.equal(status(), 'done');
+});
+test("a worker's TodoWrite list is published as progress, kept until it's all done at the end of a turn, and cleared with its conversation", async (t) => {
+  const { workers, worker, hook, status, f } = await liveWorker(t, 'todos');
+  const list = (...statuses: string[]) => ({ todos: statuses.map((s, i) => ({ id: String(i + 1), status: s, content: ['alpha', 'beta', 'gamma'][i], priority: 'high' })) });
+  const todos = () => workers.get(worker.id)?.todos;
+  hook('SessionStart', { source: 'startup' });
+  hook('UserPromptSubmit', { prompt: 'work through the list' });
+  hook('PreToolUse', { tool_name: 'TodoWrite', tool_input: { todos: '1. [in_progress] alpha\n2. [pending] beta\n3. [pending] gamma' } });
+  assert.equal(todos(), undefined, 'the list is taken from PostToolUse, which has it structured');
+  hook('PostToolUse', { tool_name: 'TodoWrite', tool_input: list('in_progress', 'pending', 'pending') });
+  assert.deepEqual(todos(), { done: 0, total: 3, current: 'alpha' });
+
+  // A Task subagent's own list isn't the worker's.
+  hook('SessionStart', { source: 'startup', calling_session_id: 'todos' }, 'todos-sub');
+  hook('PostToolUse', { tool_name: 'TodoWrite', tool_input: list('completed', 'completed', 'completed') }, 'todos-sub');
+  assert.deepEqual(todos(), { done: 0, total: 3, current: 'alpha' });
+
+  hook('PostToolUse', { tool_name: 'TodoWrite', tool_input: list('completed', 'in_progress', 'pending') });
+  assert.deepEqual(todos(), { done: 1, total: 3, current: 'beta' });
+  const saved = () => (JSON.parse(readFileSync(path.join(f.data, 'workers.json'), 'utf8')) as WorkerInfo[]).find((w) => w.id === worker.id)?.todos;
+  assert.deepEqual(saved(), { done: 1, total: 3, current: 'beta' });
+  hook('Stop', {});
+  workers.reconcile(Date.now() + 10 * STOP_GRACE_MS);
+  assert.equal(status(), 'done');
+  assert.deepEqual(todos(), { done: 1, total: 3, current: 'beta' }, 'a list left unfinished stays up');
+
+  hook('UserPromptSubmit', { prompt: 'finish it' });
+  hook('PostToolUse', { tool_name: 'TodoWrite', tool_input: list('completed', 'completed', 'completed') });
+  assert.deepEqual(todos(), { done: 3, total: 3 }, 'a finished list shows for the rest of its turn');
+  hook('Stop', {});
+  workers.reconcile(Date.now() + 10 * STOP_GRACE_MS);
+  assert.equal(status(), 'done');
+  assert.equal(todos(), undefined);
+
+  hook('UserPromptSubmit', { prompt: 'a new list' });
+  hook('PostToolUse', { tool_name: 'TodoWrite', tool_input: list('in_progress', 'pending') });
+  assert.deepEqual(todos(), { done: 0, total: 2, current: 'alpha' });
+  hook('PostToolUse', { tool_name: 'TodoWrite', tool_input: { todos: [] } });
+  assert.equal(todos(), undefined, 'an empty list clears it');
+  hook('PostToolUse', { tool_name: 'TodoWrite', tool_input: list('in_progress', 'pending') });
+  hook('SessionStart', { source: 'clear' });
+  assert.equal(todos(), undefined, '/clear starts a new conversation');
+
+  hook('UserPromptSubmit', { prompt: 'and again' });
+  hook('PostToolUse', { tool_name: 'TodoWrite', tool_input: list('completed', 'in_progress', 'pending') });
+  workers.shutdown();
+  const restored = manager(f, []);
+  t.after(() => restored.shutdown());
+  await restored.start();
+  assert.deepEqual(restored.get(worker.id)?.todos, { done: 1, total: 3, current: 'beta' }, 'a restarted office keeps it');
+});
+test('a question or permission prompt is published whole from the hooks, and clears once answered', async (t) => {
+  const { workers, worker, hook, status } = await liveWorker(t, 'asked');
+  hook('SessionStart', { source: 'startup', transcript_path: '/tmp/sessions/-tmp-proj/asked.jsonl' });
+  assert.equal(workers.threadSession(worker.id)?.transcript, '/tmp/sessions/-tmp-proj/asked.jsonl');
+  hook('UserPromptSubmit', { prompt: 'ask me', transcript_path: '/tmp/sessions/-tmp-proj/someone-else.jsonl' });
+  assert.equal(workers.threadSession(worker.id)?.transcript, '/tmp/sessions/-tmp-proj/asked.jsonl', "another session's file is not its own");
+  const questionnaire = '1. [question] Which color?\n[topic] Color\n[option] Red\n[option] Blue\n\n2. [question] Which sizes? (multi)\n[topic] Sizes\n[option] S\n[option] M';
+  hook('PreToolUse', { tool_name: 'AskUser', tool_input: { questionnaire } });
+  assert.equal(status(), 'needs_input');
+  assert.deepEqual(workers.get(worker.id)?.ask, {
+    kind: 'question',
+    questions: [
+      { question: 'Which color?', topic: 'Color', options: ['Red', 'Blue'], multiSelect: false },
+      { question: 'Which sizes?', topic: 'Sizes', options: ['S', 'M'], multiSelect: true },
+    ],
+  });
+  assert.equal(workers.get(worker.id)?.activity, 'Which color? (+1 more)');
+  hook('Notification', { notification_type: 'elicitation_dialog', message: 'Factory CLI is asking the user 2 question(s)' });
+  assert.equal(workers.get(worker.id)?.activity, 'Which color? (+1 more)', 'the dialog notice keeps the question');
+  hook('PostToolUse', { tool_name: 'AskUser', tool_response: '[answer] Red' });
+  assert.equal(status(), 'working');
+  assert.equal(workers.get(worker.id)?.ask, undefined);
+  // Compaction shows as what it's doing, until the conversation carries on.
+  hook('PreCompact', { trigger: 'auto' });
+  assert.equal(workers.get(worker.id)?.activity, 'Compacting its conversation');
+  hook('SessionStart', { source: 'compact' });
+  assert.equal(status(), 'working', 'compacting is inside the turn');
+  assert.equal(workers.get(worker.id)?.activity, undefined);
+});
+
+test("a tool call that changed the worker's files, branch or pull requests says so at once", async (t) => {
   const f = carryOnFixture(t);
+  const refreshed: [string, ToolRefresh][] = [];
+  const workers = managed(f, f.root, f.data, f.droid, ['--from-test'], { url: 'http://127.0.0.1:1', token: '' }, { ...events([]), tool: (id, r) => refreshed.push([id, r]) });
+  t.after(() => workers.shutdown());
+  const worker = await hireInState(f, workers, 'desk-1', 'tools', 'working');
+  const token = launchesOf(f).at(-1)!.env.hookToken!;
+  const post = (tool_name: string, tool_input: Record<string, unknown>) => workers.hookReply(worker.id, token, 'PostToolUse', { session_id: 'tools', hook_event_name: 'PostToolUse', tool_name, tool_input }) !== undefined;
+  post('Read', { file_path: 'a.ts' });
+  post('Edit', { file_path: 'a.ts' });
+  post('Execute', { command: 'git push -u origin HEAD' });
+  assert.deepEqual(refreshed, [
+    [worker.id, { changes: true }],
+    [worker.id, { changes: true, board: true, pipelines: true }],
+  ]);
+});
+
+test('switchModel drives /model in a running session, pins the model for a resume, and sets an asleep worker’s next launch', async (t) => {
+  const f = fixture();
+  isolateAgentEnvironment(f, t);
+  const previous = process.env.FAKE_AGENT_LOG;
+  process.env.FAKE_AGENT_LOG = f.log;
+  t.after(() => {
+    f.close();
+    if (previous === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = previous;
+  });
   const workers = manager(f, []);
   const worker = workers.spawn('desk-1', 'owner', undefined, false, 'agent', 'claude-sonnet-5-5');
-  if (typeof worker === 'string') return assert.fail(worker);
-  const sessionId = await waitFor(() => worker.sessionId, Boolean);
-  const failure = t.mock.method(f.daemon, 'updateSessionSettings', async () => {
-    throw new Error('Droid refused this setting');
+  if (typeof worker === 'string') throw new Error(worker);
+  const launches = () => f.read().filter((r) => r.kind === 'droid' && r.env.workerId === worker.id && r.args.includes('--settings'));
+  const pinned = (launch: Invocation) => JSON.parse(readFileSync(launch.args[launch.args.indexOf('--settings') + 1], 'utf8')).sessionDefaultSettings;
+  const [first] = await waitFor(launches, (l) => l.length >= 1);
+  workers.hookReply(worker.id, first.env.hookToken!, 'SessionStart', { session_id: 'droid-1', hook_event_name: 'SessionStart' });
+  const driven: unknown[] = [];
+  let answer: string | undefined = 'Droid has a dialog open. Close it in Raw TTY first.';
+  t.mock.method(workers, 'setting', async (_id: string, want: unknown) => {
+    driven.push(want);
+    return answer;
   });
-  const model = { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' };
-  assert.deepEqual(await workers.switchModel(worker.id, model), { error: 'Droid refused this setting' });
-  assert.equal(worker.model, 'claude-sonnet-5-5');
-  failure.mock.restore();
-  assert.deepEqual(await workers.switchModel(worker.id, model, 'high'), { applied: 'now' });
-  assert.deepEqual(f.daemon.settingsChanges[0], { sessionId, modelId: model.id, reasoningEffort: 'high' });
-  assert.equal(worker.activeModel, model.id);
-  assert.equal(workers.halt(worker.id), true);
-  const custom = { id: 'custom:droidproxy:gpt-6.1-sol', name: 'DroidProxy: GPT 6.1 Sol' };
-  assert.deepEqual(await workers.switchModel(worker.id, custom), { applied: 'next_launch' });
-  assert.equal(f.daemon.settingsChanges.length, 1);
-  assert.equal(workers.resume(worker.id), undefined);
+
+  assert.deepEqual(await workers.switchModel(worker.id, { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }), { error: 'Droid has a dialog open. Close it in Raw TTY first.' });
+  assert.equal(workers.get(worker.id)?.model, 'claude-sonnet-5-5', 'a refused switch keeps the old model');
+  answer = undefined;
+  assert.deepEqual(await workers.switchModel(worker.id, { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }, 'high'), { applied: 'now' });
+  assert.deepEqual(driven.at(-1), { setting: 'model', name: 'GPT-6.1 Sol', effort: 'high' }, 'the picker is driven by the name Droid lists');
+  assert.deepEqual([workers.get(worker.id)?.model, workers.get(worker.id)?.effort, workers.get(worker.id)?.activeModel], ['gpt-6.1-sol', 'high', 'gpt-6.1-sol']);
+
+  process.kill(first.pid, 'SIGTERM');
   await waitFor(
-    () => f.daemon.settingsChanges.length,
-    (n) => n === 2,
+    () => workers.get(worker.id)?.status,
+    (status) => status === 'exited',
   );
-  assert.equal(f.daemon.settingsChanges[1].modelId, custom.id);
-  assert.equal(f.daemon.launches[1].sessionId, sessionId);
-  assert.ok('error' in (await workers.switchModel(worker.id, { id: 'bad model\nid', name: 'x' })));
-  workers.modelGate = (id) => (id === model.id ? 'GPT-6.1 Sol is out of quota' : undefined);
-  assert.deepEqual(await workers.switchModel(worker.id, model), { error: 'GPT-6.1 Sol is out of quota' });
-  assert.equal(worker.model, custom.id);
+  assert.equal(workers.resume(worker.id), undefined);
+  const [, second] = await waitFor(launches, (l) => l.length >= 2);
+  assert.deepEqual(pinned(second), { model: 'gpt-6.1-sol', reasoningEffort: 'high' }, 'a resume keeps the switched model');
+
+  process.kill(second.pid, 'SIGTERM');
+  await waitFor(
+    () => workers.get(worker.id)?.status,
+    (status) => status === 'exited',
+  );
+  const calls = driven.length;
+  assert.deepEqual(await workers.switchModel(worker.id, { id: 'custom:droidproxy:gpt-6.1-sol', name: 'DroidProxy: GPT 6.1 Sol' }), { applied: 'next_launch' });
+  assert.equal(driven.length, calls, 'an asleep worker has no picker to drive');
+  assert.equal(workers.resume(worker.id), undefined);
+  const [, , third] = await waitFor(launches, (l) => l.length >= 3);
+  assert.deepEqual(pinned(third), { model: 'custom:droidproxy:gpt-6.1-sol' });
+  assert.ok('error' in (await workers.switchModel(worker.id, { id: 'bad model\nid', name: 'x' })), 'an id Droid could not take is refused');
+  workers.modelGate = (model) => (model === 'gpt-6.1-sol' ? 'GPT-6.1 Sol is out of quota' : undefined);
+  assert.deepEqual(await workers.switchModel(worker.id, { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol' }), { error: 'GPT-6.1 Sol is out of quota' }, 'the office’s model gate applies as it does to a hire');
+  assert.equal(workers.get(worker.id)?.model, 'custom:droidproxy:gpt-6.1-sol');
 });

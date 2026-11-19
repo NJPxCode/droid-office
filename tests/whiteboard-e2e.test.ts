@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -14,7 +14,20 @@ import { findCard, type Board } from '../src/shared/whiteboard.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER } from '../src/server/office-mcp/index.js';
 
-import { TestDaemon } from './daemon-fixture.js';
+const fakeAgent = `#!/usr/bin/env node
+const fs = require('node:fs');
+const log = process.env.FAKE_AGENT_LOG;
+const record = (extra = {}) => fs.appendFileSync(log, JSON.stringify({ ...extra, env: { workerId: process.env.DROID_OFFICE_WORKER_ID, hookToken: process.env.DROID_OFFICE_HOOK_TOKEN, hookUrl: process.env.DROID_OFFICE_HOOK_URL, path: process.env.PATH } }) + '\\n');
+if (process.argv.includes('--output-format')) {
+  process.stdout.write(JSON.stringify({ structured_output: { name: 'Fake Task', summary: 'A test task' } }));
+  process.exit(0);
+}
+record();
+process.stdout.write('fake-agent-ready\\r\\n');
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => record({ stdin: chunk }));
+process.stdin.resume();
+`;
 
 async function waitFor<T>(read: () => T | undefined, what: string, ms = 15_000): Promise<T> {
   const end = Date.now() + ms;
@@ -32,18 +45,22 @@ test('an agent and the owner share a floor Whiteboard end to end: MCP, the windo
   const home = path.join(root, 'home');
   const work = project;
   for (const d of [project, home, work]) mkdirSync(d, { recursive: true });
-  const cfg = loadConfig([project, '--home', home, '--weather', 'clear', '--host', '127.0.0.1', '--agent', '/not-a-real-droid']);
+  const agent = path.join(root, 'droid');
+  writeFileSync(agent, fakeAgent, { mode: 0o700 });
+  const log = path.join(root, 'agent.jsonl');
+  writeFileSync(log, '');
+  const before = process.env.FAKE_AGENT_LOG;
+  process.env.FAKE_AGENT_LOG = log;
+  const cfg = loadConfig([project, '--home', home, '--weather', 'clear', '--host', '127.0.0.1', '--agent', agent]);
   cfg.port = 0;
-  const daemon = new TestDaemon(cfg.dataDir);
-  const initialized = Promise.withResolvers<void>();
-  daemon.beforeInitialize = () => initialized.promise;
-  const office = await startServer(cfg, { localDaemon: daemon });
+  const office = await startServer(cfg);
   t.after(async () => {
     const closed = once(office.server, 'close');
     office.shutdown();
     await closed;
     await delay(150);
-    initialized.resolve();
+    if (before === undefined) delete process.env.FAKE_AGENT_LOG;
+    else process.env.FAKE_AGENT_LOG = before;
     rmSync(root, { recursive: true, force: true });
   });
   const base = `http://127.0.0.1:${(office.server.address() as AddressInfo).port}`;
@@ -65,17 +82,28 @@ test('an agent and the owner share a floor Whiteboard end to end: MCP, the windo
   const store = () => office.floors()[0].whiteboard;
   const send = (m: unknown) => ws.send(JSON.stringify(m));
 
-  // A worker at a desk, with its worker-scoped Office MCP credential.
+  // A worker at a desk, with its hook token in its environment.
   send({ t: 'worker.spawn', deskId: 'desk-1', kind: 'agent', worktree: false });
-  const launch = await waitFor(() => daemon.launches[0], 'the daemon initialization request');
-  const mcp = launch.options.mcp!;
-  assert.ok(mcp.workerHookToken);
-  const log = () => daemon.messages.map((message) => message.text).join('\n');
+  const launch = await waitFor(() => {
+    // A poll can land mid-append. A finished record always ends with a newline, so a trailing segment without one is not a record yet.
+    const text = readFileSync(log, 'utf8');
+    const lines = text.split('\n');
+    if (text.length > 0 && !text.endsWith('\n')) lines.pop();
+    return lines
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .find((r) => r.env?.hookToken) as { env: { workerId: string; hookToken: string; hookUrl: string; path: string } } | undefined;
+  }, 'the agent to start');
+  assert.equal(
+    launch.env.path.split(path.delimiter).some((dir) => dir.startsWith(root)),
+    false,
+    'no office command folder is on the agent PATH',
+  );
   const client = new Client({ name: 'whiteboard-e2e', version: '1.0.0' });
   t.after(() => client.close());
   const connect = (target: Client, token: string) =>
-    target.connect(new StreamableHTTPClientTransport(new URL(OFFICE_MCP_PATH, mcp.hookUrl), { requestInit: { headers: { [OFFICE_MCP_WORKER_HEADER]: mcp.workerId, Authorization: `Bearer ${token}` } } }));
-  await connect(client, mcp.workerHookToken);
+    target.connect(new StreamableHTTPClientTransport(new URL(OFFICE_MCP_PATH, launch.env.hookUrl), { requestInit: { headers: { [OFFICE_MCP_WORKER_HEADER]: launch.env.workerId, Authorization: `Bearer ${token}` } } }));
+  await connect(client, launch.env.hookToken);
   const tool = async (name: string, args: Record<string, unknown> = {}) => {
     const result = await client.callTool({ name, arguments: args });
     const out = (result.content as { type: string; text?: string }[])
@@ -92,7 +120,7 @@ test('an agent and the owner share a floor Whiteboard end to end: MCP, the windo
   const wrong = new Client({ name: 'wrong-token', version: '1.0.0' });
   t.after(() => wrong.close());
   await assert.rejects(connect(wrong, 'nope'), /Office MCP requires/);
-  assert.equal((await fetch(new URL('/office/whiteboard', mcp.hookUrl), { method: 'POST' })).status, 404, 'the CLI-only endpoint is removed');
+  assert.equal((await fetch(new URL('/office/whiteboard', launch.env.hookUrl), { method: 'POST' })).status, 404, 'the CLI-only endpoint is removed');
 
   // A card from a file with its assets, pushed by the agent: the window hears it.
   writeFileSync(path.join(work, 'style.css'), 'h1 { color: teal }');
@@ -184,7 +212,7 @@ test('an agent and the owner share a floor Whiteboard end to end: MCP, the windo
   assert.match(read.out, / {4}\| <!doctype html>.*<h1 data-wb-id="title">Plan<\/h1>/, 'a named card prints its HTML');
   assert.match(read.out, /Not collected: \.\.\/gone\.png/);
   const rev = store().board.rev;
-  assert.equal(store().board.reads[mcp.workerId][card], rev - 1, 'the read point moved to the read snapshot');
+  assert.equal(store().board.reads[launch.env.workerId][card], rev - 1, 'the read point moved to the read snapshot');
   const again = await tool('whiteboard_read', { json: true });
   const json = JSON.parse(again.out);
   assert.equal(json.cards[0].changed, false);
@@ -243,31 +271,36 @@ test('an agent and the owner share a floor Whiteboard end to end: MCP, the windo
 
   // Ping: refused while it's starting, typed in when idle, queued behind a turn when working.
   const pinged = () => msgs.filter((m): m is Extract<ServerMsg, { t: 'whiteboard.pinged' }> => m.t === 'whiteboard.pinged');
-  send({ t: 'whiteboard.ping', worker: mcp.workerId });
+  send({ t: 'whiteboard.ping', worker: launch.env.workerId });
   const first = await waitFor(() => pinged()[0], 'the first ping');
   assert.equal(first.ok, false);
   assert.match(first.error!, /still starting/);
-  initialized.resolve();
-  await waitFor(() => office.floors()[0].workers.get(mcp.workerId)?.status === 'idle', 'daemon session to become idle');
-  send({ t: 'whiteboard.ping', worker: mcp.workerId });
+  const hook = (event: string) =>
+    fetch(`${launch.env.hookUrl}/hooks/droid?worker=${launch.env.workerId}&event=${event}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${launch.env.hookToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ hook_event_name: event, session_id: 'sess-1', prompt: 'work' }),
+    });
+  assert.equal((await hook('SessionStart')).status, 200);
+  send({ t: 'whiteboard.ping', worker: launch.env.workerId });
   const second = await waitFor(() => pinged()[1], 'the second ping');
   assert.deepEqual([second.ok, second.how], [true, 'type']);
-  await waitFor(() => /whiteboard[_ -]read/.test(log()) || undefined, 'the line typed in');
-  daemon.notify(launch.sessionId, { type: 'droid_working_state_changed', newState: 'thinking' });
-  send({ t: 'whiteboard.ping', worker: mcp.workerId });
+  await waitFor(() => /whiteboard[_ -]read/.test(readFileSync(log, 'utf8')) || undefined, 'the line typed in');
+  assert.equal((await hook('UserPromptSubmit')).status, 200);
+  send({ t: 'whiteboard.ping', worker: launch.env.workerId });
   const third = await waitFor(() => pinged()[2], 'the third ping');
   assert.deepEqual([third.ok, third.how], [true, 'queue']);
   send({ t: 'whiteboard.ping', worker: 'nobody' });
   assert.equal((await waitFor(() => pinged()[3], 'the fourth ping')).ok, false);
 
   // A data-wb-ping button on the agent's card: its first press is typed into the agent, once, until the agent re-arms it.
-  daemon.notify(launch.sessionId, { type: 'agent_turn_completed' });
-  const buttonSays = () => log().split('Ship the plan.').length - 1;
+  assert.equal((await hook('Stop')).status, 200);
+  const buttonSays = () => readFileSync(log, 'utf8').split('Ship the plan.').length - 1;
   const press = (seq: number, on: string, extra: unknown[] = []) =>
     send({ t: 'whiteboard.apply', floor, envelope: { epoch, seq, ops: [...extra, { op: 'state.action', card: on, name: 'accept', ping: { text: 'Ship the plan.', label: 'Accept' } }] } });
   press(4, card);
   await waitFor(() => buttonSays() > 0 || undefined, 'the button message typed in');
-  assert.match(log(), /pressed “Accept” on the Whiteboard card “The plan”/);
+  assert.match(readFileSync(log, 'utf8'), /pressed “Accept” on the Whiteboard card “The plan”/);
   assert.deepEqual(Object.keys(findCard(store().board, card)!.state.pinged as object), ['accept']);
   press(5, card);
   await waitFor(() => boardMsgs().find((m) => m.update.kind === 'ack' && m.update.seq === 5), 'the second press');
@@ -288,6 +321,6 @@ test('an agent and the owner share a floor Whiteboard end to end: MCP, the windo
   assert.equal((resync.update as { board: Board }).board.rev, store().board.rev);
 
   // Dismissed, its read points go.
-  send({ t: 'worker.kill', workerId: mcp.workerId, cleanup: 'keep' });
-  await waitFor(() => (store().board.reads[mcp.workerId] === undefined ? true : undefined), 'its read points to go');
+  send({ t: 'worker.kill', workerId: launch.env.workerId, cleanup: 'keep' });
+  await waitFor(() => (store().board.reads[launch.env.workerId] === undefined ? true : undefined), 'its read points to go');
 });

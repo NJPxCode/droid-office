@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import os from 'node:os';
 import path from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { Answers } from '../src/server/answers.js';
 import { MAX_KEYS, RemoteWorkers } from '../src/server/remote-workers.js';
 import { RemoteOffice, type RemoteFloor } from '../src/server/remote-office.js';
 import { REMOTE_MCP_FILE, RemoteMcp, remoteMcpListener } from '../src/server/remote-mcp-http.js';
@@ -89,7 +90,7 @@ function rig(t: Cleanup) {
     };
     const team = new Team({ ...workers, get }, { dataDir: data, dir: data, git: false, settings: () => settings, toast() {}, now: () => now });
     teams.push(team);
-    const visit = new Visits({ ...workers, get, tell: workers.prompt, cancelTurn: () => false }, { on: () => settings.visits, emit() {}, now: () => now });
+    const visit = new Visits({ ...workers, get, tell: workers.prompt, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {}, now: () => now });
     visits.push(visit);
     floors.push({ id, dir: data, def: { name: id }, workers, team, visits: visit, whiteboard: new WhiteboardStore(data) });
   }
@@ -328,7 +329,7 @@ test('remote hires select an open task repository and inspection resolves across
 test('a building agent hires through MCP by naming a floor, and a structured task needs no invented base branch', async (t) => {
   const r = rig(t);
   const hostname = 'office.example.ts.net';
-  const server = remoteMcpListener({ remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
+  const server = remoteMcpListener({ answers: new Answers(), remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
   const url = new URL('/office/mcp', await listening(t, server));
   const client = new Client({ name: 'building-hire-test', version: '1' });
   t.after(() => client.close());
@@ -373,7 +374,7 @@ test('a building agent’s team tools take a floor by id, name or path, and refu
   r.floors[0].def.name = 'Web';
   r.floors[1].def.name = 'API';
   const hostname = 'office.example.ts.net';
-  const server = remoteMcpListener({ remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
+  const server = remoteMcpListener({ answers: new Answers(), remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
   const url = new URL('/office/mcp', await listening(t, server));
   const client = new Client({ name: 'building-floor-test', version: '1' });
   t.after(() => client.close());
@@ -436,7 +437,7 @@ test('real MCP transport enforces host, tailnet identity, remote bearer auth, re
   const r = rig(t);
   const hostname = 'office.example.ts.net';
   const owner = 'owner@example.com';
-  const server = remoteMcpListener({ remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => owner }, floor: r.floor, settings: () => r.settings });
+  const server = remoteMcpListener({ answers: new Answers(), remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => owner }, floor: r.floor, settings: () => r.settings });
   const origin = await listening(t, server);
   const url = new URL('/office/mcp', origin);
   const headers = { host: `${hostname}:8443`, 'tailscale-user-login': owner, Authorization: `Bearer ${r.remote.token}`, 'x-droid-office-worker-id': r.remote.worker.id };
@@ -477,7 +478,7 @@ test('a remote lead gets structured status, cursors, waits and questions across 
   const id = r.remote.worker.id;
   const alpha = (await r.teams[0].handle(r.remote.worker, { action: 'hire', task: 'Work on alpha' })).body.worker as WorkerInfo;
   const beta = (await r.teams[1].handle(r.remote.worker, { action: 'hire', task: 'Work on beta' })).body.worker as WorkerInfo;
-  const server = remoteMcpListener({ remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
+  const server = remoteMcpListener({ answers: new Answers(), remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
   const url = new URL('/office/mcp', await listening(t, server));
   const client = new Client({ name: 'remote-test', version: '1' });
   t.after(() => client.close());
@@ -530,7 +531,7 @@ test('a remote lead gets structured status, cursors, waits and questions across 
 test('a bot that sends only its key gets its worker id from the office, and any named key connects as it', async (t) => {
   const r = rig(t);
   const hostname = 'office.example.ts.net';
-  const server = remoteMcpListener({ remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
+  const server = remoteMcpListener({ answers: new Answers(), remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
   const url = new URL('/office/mcp', await listening(t, server));
   const base = { host: `${hostname}:8443` };
   const seen: (string | null)[] = [];
@@ -569,7 +570,7 @@ test('a bot that sends only its key gets its worker id from the office, and any 
 test('Accept: application/json gets one plain JSON-RPC body; clients that also accept SSE get SSE as before', async (t) => {
   const r = rig(t);
   const hostname = 'office.example.ts.net';
-  const server = remoteMcpListener({ remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
+  const server = remoteMcpListener({ answers: new Answers(), remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
   const url = new URL('/office/mcp', await listening(t, server));
   const auth = { host: `${hostname}:8443`, Authorization: `Bearer ${r.remote.token}`, 'Content-Type': 'application/json' };
   const post = (accept: string | undefined, body: unknown, version = true) =>
@@ -613,7 +614,7 @@ test('a plain JSON client can hold team_wait open and gets one JSON body when ne
   const r = rig(t);
   const hostname = 'office.example.ts.net';
   const sub = (await r.teams[0].handle(r.remote.worker, { action: 'hire', task: 'Work on alpha' })).body.worker as WorkerInfo;
-  const server = remoteMcpListener({ remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
+  const server = remoteMcpListener({ answers: new Answers(), remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
   const url = new URL('/office/mcp', await listening(t, server));
   const call = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'team_wait', arguments: { until: ['report'], timeoutSec: 20 }, _meta: { progressToken: 1 } } };
   const waiting = proxyFetch(url, {
@@ -640,7 +641,7 @@ test('remote status starts at the current news, advances per caller, and timesta
   await r.teams[0].handle(sub, { action: 'report', text: 'An old report' });
   r.advance(86_400_000);
   const hostname = 'office.example.ts.net';
-  const server = remoteMcpListener({ remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
+  const server = remoteMcpListener({ answers: new Answers(), remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
   const origin = await listening(t, server);
   const connect = async () => {
     const client = new Client({ name: 'remote-news-test', version: '1' });
@@ -754,7 +755,7 @@ test('unchanged remote status polls do not rewrite team state', async (t) => {
 
 test('remote tokens never authenticate on the local hook MCP', async (t) => {
   const r = rig(t);
-  const local = createOfficeMcp({ floor: r.floor, settings: () => r.settings });
+  const local = createOfficeMcp({ answers: new Answers(), floor: r.floor, settings: () => r.settings });
   const origin = await listening(
     t,
     createServer((req, res) => void local.handle(req, res)),
@@ -787,7 +788,7 @@ test('external-bot tools/list returns exactly the supported tools and their docu
   const hostname = 'office.example.ts.net';
   // The office always gives external workers its owner bridge, so their tool list includes the owner tools.
   const owner = { mission: () => [], tail: () => undefined, act: async () => ({ notes: [] }) };
-  const server = remoteMcpListener({ owner, remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
+  const server = remoteMcpListener({ answers: new Answers(), owner, remote: r.office, remoteTransport: { hostname: () => hostname, owner: () => undefined }, floor: r.floor, settings: () => r.settings });
   const url = new URL('/office/mcp', await listening(t, server));
   const client = new Client({ name: 'doc-sync', version: '1' });
   t.after(() => client.close());
@@ -880,10 +881,8 @@ test('external-bot tools/list returns exactly the supported tools and their docu
       problems.push(`Add this under "## Tools":\n\n${docEntry(tool)}`);
       continue;
     }
-    for (const [name, s] of Object.entries(tool.inputSchema.properties ?? {})) {
-      if (tool.name === 'worker_queue' && name === 'id' && entry.includes("Droid's TUI queue")) continue;
+    for (const [name, s] of Object.entries(tool.inputSchema.properties ?? {}))
       if (!entry.includes(`| \`${name}\` |`)) problems.push(`Add this row to the argument table of ### \`${tool.name}\`:\n\n${argRow(name, s, !!tool.inputSchema.required?.includes(name))}`);
-    }
   }
   for (const name of documented.keys()) if (!listed.some((tool) => tool.name === name)) problems.push(`Remove ### \`${name}\` from "## Tools": tools/list no longer has it.`);
   if (problems.length) assert.fail(`${REMOTE_DOC} is out of sync with tools/list for a remote bot:\n\n${problems.join('\n\n')}\n`);
@@ -1095,6 +1094,7 @@ test('a building lead’s subagents on a real floor report to it from no desk, a
         tell: (wid, text) => m.tell(wid, text),
         resume: (wid, text) => m.resume(wid, text),
         cancelTurn: (wid) => m.cancelTurn(wid),
+        turnScreen: (wid) => m.turnScreen(wid),
       },
       { on: () => settings.visits, emit() {}, now: () => now },
     );

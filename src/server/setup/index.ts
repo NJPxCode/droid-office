@@ -34,8 +34,6 @@ export interface SetupOptions {
   /** Where the agent command is now; defaults to PATH, the login shell's PATH, then ~/.local/bin/droid. */
   findAgent?: (cmd: string) => Promise<string | null>;
   env?: () => Record<string, string>;
-  /** The office's Factory API key: the local `droid daemon` signs in with it ahead of Droid's own login. */
-  apiKey?: () => string | undefined;
   timing?: Partial<SetupTiming>;
 }
 
@@ -120,11 +118,6 @@ export function mountSetup(opts: SetupOptions): Setup {
   const arch = opts.arch ?? process.arch;
   const run = opts.run ?? runCommand;
   const env = opts.env ?? childEnv;
-  /** Asks doctor about the credentials workers actually run with. */
-  const authEnv = () => {
-    const key = opts.apiKey?.()?.trim();
-    return key ? { ...env(), FACTORY_API_KEY: key } : env();
-  };
   const timing = { ...TIMING, ...opts.timing };
   const find = opts.findAgent ?? agentFinder(home, platform);
 
@@ -201,7 +194,7 @@ export function mountSetup(opts: SetupOptions): Setup {
       state.droid.signedIn = null;
       state.droid.account = null;
     } else {
-      const [version, auth] = await Promise.all([droidVersion(found, run, env()), state.airgapped ? null : doctorAuth(found, run, authEnv())]);
+      const [version, auth] = await Promise.all([droidVersion(found, run, env()), state.airgapped ? null : doctorAuth(found, run, env())]);
       if (stopped) return;
       state.droid.version = version;
       if (auth && !state.airgapped && state.droid.busy !== 'signing-in') applyAuth(auth);
@@ -287,7 +280,7 @@ export function mountSetup(opts: SetupOptions): Setup {
       opts.agentChanged(file);
       opts.toast(`Droid ${state.droid.version} installed.`);
       if (!state.airgapped) {
-        const auth = await doctorAuth(file, run, authEnv());
+        const auth = await doctorAuth(file, run, env());
         if (!state.airgapped) applyAuth(auth);
       }
       state.customModels = customModels();
@@ -317,7 +310,7 @@ export function mountSetup(opts: SetupOptions): Setup {
     state.droid.busy = 'signing-in';
     state.droid.signIn = { code: null, url: null, since: Date.now() };
     send();
-    const auth = await doctorAuth(droid, run, authEnv());
+    const auth = await doctorAuth(droid, run, env());
     if (stopped || generation !== signInGeneration) return;
     if (auth.signedIn) {
       applyAuth(auth);
@@ -335,7 +328,7 @@ export function mountSetup(opts: SetupOptions): Setup {
       recognizeMs: timing.signInRecognizeMs,
       timeoutMs: timing.signInTimeoutMs,
       signedIn: async () => {
-        last = await doctorAuth(droid, run, authEnv());
+        last = await doctorAuth(droid, run, env());
         return last.signedIn;
       },
       onCode: (code, url) => {

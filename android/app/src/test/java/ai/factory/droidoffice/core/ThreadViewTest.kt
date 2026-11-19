@@ -8,15 +8,23 @@ import org.junit.Test
 
 class ThreadViewTest {
     @Test
-    fun inlinePlanIsRemovedFromTranscriptButStillUpdatesTheDrawer() {
-        val entry = ThreadEntry("p", 7, ThreadRole.Assistant, ThreadKind.Todo, text = "1. [in_progress] Do the work")
-        val plan = ThreadView.latestPlan(listOf(entry), busy = true)!!
-        val block = ThreadBlock.Tools("tools:t", "Ran a command", ActivityState.Complete, live = false, actions = emptyList(), plan = plan.steps)
-        val row = activity(listOf("p", "t")).copy(blocks = listOf(block))
-        assertEquals(listOf(row.copy(blocks = listOf(block.copy(plan = null)))), ThreadView.transcriptRows(listOf(row)))
-        assertEquals("Do the work", plan.current)
-        assertTrue(ThreadView.isPlanUpdate("mcp__factory__todo_write"))
-        assertFalse(ThreadView.isPlanUpdate("TodoRead"))
+    fun theLatestPositionNeverShowsJumpEvenWhenFollowIsPausedOrStuck() {
+        for (follow in listOf(true, false)) for (stuck in listOf(true, false)) {
+            assertFalse(ThreadView.showJump(follow, stuck, canScrollForward = false))
+        }
+    }
+
+    @Test
+    fun pausedFollowShowsJumpOnlyWhileThereIsContentBelow() {
+        assertTrue(ThreadView.showJump(follow = false, stuck = false, canScrollForward = true))
+        assertFalse(ThreadView.showJump(follow = false, stuck = false, canScrollForward = false))
+    }
+
+    @Test
+    fun followingOnlyShowsJumpIfAutomaticScrollingIsStuckBehind() {
+        assertFalse(ThreadView.showJump(follow = true, stuck = false, canScrollForward = true))
+        assertTrue(ThreadView.showJump(follow = true, stuck = true, canScrollForward = true))
+        assertFalse(ThreadView.showJump(follow = true, stuck = true, canScrollForward = false))
     }
 
     private fun activity(
@@ -231,8 +239,7 @@ class ThreadViewTest {
 
         val nextPrompt = ThreadEntry("u2", 5, ThreadRole.User, ThreadKind.Text, text = "Now polish the diff view")
         assertTrue(ThreadView.latestPlan(listOf(doneCall, nextPrompt), busy = false)!!.stale)
-        assertTrue(ThreadView.latestPlan(listOf(doneCall, nextPrompt), busy = true)!!.stale)
-        assertTrue(ThreadView.latestPlan(listOf(todoCall), busy = false)!!.stale)
+        assertFalse(ThreadView.latestPlan(listOf(doneCall, nextPrompt), busy = true)!!.stale)
     }
 
     @Test

@@ -122,8 +122,6 @@ data class ThreadArgumentsRef(val label: String, val field: String? = null) {
     }
 }
 
-data class ThreadQuestionAnswer(val question: String, val answer: String)
-
 data class ThreadModelAction(
     /** The tool entry's id: its arguments and result are that entry's input and output. */
     val id: String,
@@ -150,7 +148,6 @@ data class ThreadModelAction(
     val subject: String? = null,
     /** What a failed row says at its end ("Command failed", "Error editing file", "Error"). */
     val failedLabel: String? = null,
-    val answers: List<ThreadQuestionAnswer> = emptyList(),
 )
 
 /** How an Activity reads in the app's grouping, in order, covering every block of the row. */
@@ -449,15 +446,7 @@ data class ThreadPresentation(val version: Int, val rows: List<ThreadRow>) {
                 verb = o.str("verb"),
                 subject = o.str("subject"),
                 failedLabel = o.str("failedLabel"),
-                answers = (o["answers"] as? JsonArray).orEmpty().mapNotNull(::questionAnswer),
             )
-        }
-
-        private fun questionAnswer(e: JsonElement): ThreadQuestionAnswer? {
-            val o = e as? JsonObject ?: return null
-            val question = o.str("question")?.takeIf { it.isNotBlank() } ?: return null
-            val answer = o.str("answer")?.takeIf { it.isNotBlank() } ?: return null
-            return ThreadQuestionAnswer(question, answer)
         }
 
         private fun fileChange(e: JsonElement): ThreadFileChange? {
@@ -529,7 +518,7 @@ data class ThreadPresentation(val version: Int, val rows: List<ThreadRow>) {
     }
 }
 
-/** Whether the office's presentation can be shown: when it can't, the thread says why. */
+/** Whether the office's presentation can be shown: when it can't, the thread says why and offers Raw TTY. */
 enum class ThreadSupport(
     /** The state's heading, or null when the Thread can be read. */
     val title: String?,
@@ -537,9 +526,9 @@ enum class ThreadSupport(
 ) {
     Supported(null, null),
     /** No presentation at all: the office predates it. */
-    OlderOffice("Update Droid Office", "Update Droid Office on your computer to read this Thread here."),
+    OlderOffice("Update Droid Office", "Update Droid Office on your computer to read this Thread here. Raw TTY still works."),
     /** A presentation version this app doesn't know. */
-    NewerOffice("Update the app", "Update the app to read this Thread.");
+    NewerOffice("Update the app", "Update the app to read this Thread. Raw TTY still works.");
 
     companion object {
         fun of(p: ThreadPresentation?): ThreadSupport = when {

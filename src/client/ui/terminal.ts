@@ -10,11 +10,10 @@ import { TERM_THEME } from '../term-theme';
 import { focusReports, suppressMirrorQueries, TerminalMirror } from '../term-mirror';
 import { h, hintToast, openModal, STATUS_LABEL, toast, type Modal } from './dom';
 import { colorDot } from './kit';
-import { ORCHESTRATOR_ID } from '../../shared/mission-control';
 import { OFFICE_SHELL_ID } from '../../shared/office-shell';
 import type { ServerMsg, WorkerInfo } from '../../shared/protocol';
 import { teamSummary, workerTeams } from '../../shared/team';
-import { buildingAgent, missionLead, orchestratorMessage } from '../mission';
+import { buildingAgent, missionLead } from '../mission';
 import { missionTeamLine } from '../mission-office';
 import { forkRefusal } from '../../shared/worker-fork';
 import { openForkWorker } from './fork-worker';
@@ -26,10 +25,9 @@ import { attachKittyTerminal, type ExpandedKittyImage } from '../term-kitty';
 import { attachPixelScroll } from '../term-pixel-scroll';
 import { wantsCsiEnter } from '../term-keys';
 import { viewPicture } from './picture-viewer';
-import { createQuestionSlot } from './question-slot';
 import { onTermFontSize, setTermFontSize, stepTermFont, termFontSize, TERM_FONT_MAX, TERM_FONT_MIN } from './term-font';
 import { followTerminalPrefs, scrollAtOnce, terminalOptions } from './terminal-prefs';
-import { mountWorkerThread } from './worker-thread';
+import { mountWorkerThread, type WorkerThread } from './worker-thread';
 
 function openKittyPicture(img: ExpandedKittyImage, about: string, isAlive: () => boolean, focusTerm: () => void, state: { modal: Modal | null }) {
   if (state.modal || !isAlive()) return;
@@ -67,7 +65,7 @@ async function uploadDrop(workerId: string, f: File): Promise<string> {
 
 let current: { workerId: string; modal: Modal; find(f: TerminalFind): void; streams(): boolean } | null = null;
 const threadDrafts = new Map<string, string>();
-const questionDrafts = new Map<string, string>();
+const THREAD_VIEW_KEY = 'droid-office.desk-thread-view:';
 
 /**
  * The team strip's people for `w`: its lead and teammates on this floor, or its own subagents. A building
@@ -103,7 +101,7 @@ export function openTerminalFor(): string | null {
   return current?.workerId ?? null;
 }
 
-/** Whether the open desk window streams a PTY (`shell` desk or boss shell) rather than a Droid Thread. */
+/** Whether the open desk window is showing Raw TTY rather than Thread view. */
 export function openTerminalStreams(): boolean {
   return current?.streams() ?? false;
 }
@@ -142,177 +140,10 @@ export interface InlineTerminalHandle {
   attach(): void;
 }
 
-function makeTeamStrip(hide?: boolean) {
-  const team = h('div.term-team.chips.hidden', { role: 'group', 'aria-label': 'Team' });
-  let teamKey = '';
-  return {
-    element: team,
-    paint(w: WorkerInfo) {
-      if (hide) return;
-      const { lead, mates, summary } = teamAround(w);
-      const chipKey = (x: WorkerInfo | undefined) => (x ? `${x.id}:${x.name}:${x.status}:${x.acked}:${x.title ?? ''}` : '');
-      const key = [summary ?? '', chipKey(lead), ...mates.map(chipKey)].join('|');
-      if (key === teamKey) return;
-      teamKey = key;
-      const chip = (x: WorkerInfo) =>
-        h(
-          'button.chip.team-chip',
-          { type: 'button', title: `Open ${x.name}'s ${x.kind === 'shell' ? 'terminal' : 'thread'}${x.title ? `: ${x.title}` : ''}`, onclick: () => openTeammate(x.id) },
-          colorDot(x.color),
-          h('span.team-chip-name', {}, x.name),
-          h('span.pill', { class: x.status }, STATUS_LABEL[x.status] ?? x.status),
-        );
-      team.classList.toggle('hidden', !lead && !mates.length);
-      if (lead) team.replaceChildren(h('span.term-team-label', {}, 'Subagent of'), chip(lead), ...(mates.length ? [h('span.term-team-label', {}, 'with'), ...mates.map(chip)] : []));
-      else team.replaceChildren(h('span.term-team-label', {}, summary ?? ''), ...mates.map(chip));
-    },
-  };
-}
-
-function openAgentThreadModal(net: Net, workerId: string, info: WorkerInfo, onChanges?: () => void, find?: TerminalFind) {
-  const title = h('h2');
-  const sub = h('p.sub.hidden');
-  const pill = h('span.pill');
-  const changes = onChanges
-    ? h(
-        'button.btn',
-        {
-          type: 'button',
-          title: 'What this worker changed: files, diff, commit, open a PR (C at the desk)',
-          onclick: () => {
-            onChanges();
-            modal.close();
-          },
-        },
-        '🌿 Changes',
-      )
-    : null;
-  // A building agent has no desk for a fork to sit at.
-  const fork = info.kind === 'agent' && info.deskId ? h('button.btn', { type: 'button', onclick: () => openForkWorker(net, workerId) }, 'Fork') : null;
-  const close = h('button.btn.icon.close', { title: 'Close (Esc)', 'aria-label': 'Close', onclick: () => modal.close() }, '✕');
-  const headerEl = h('header', {}, colorDot(info.color), h('div.titles', {}, h('div.term-title', {}, title, pill), sub), h('div.actions', {}, changes, fork), close);
-  const team = makeTeamStrip();
-  const threadHost = h('div.term-thread-host');
-  const el = h('div.modal.full.term', { role: 'dialog', 'aria-label': `${info.name} thread` }, headerEl, team.element, threadHost);
-  const isOrchestrator = workerId === ORCHESTRATOR_ID;
-
-  const questionSlot = createQuestionSlot({
-    worker: () => store.worker(workerId),
-    entries: () => thread.entries(),
-    live: () => net.up,
-    readDraft: (id) => questionDrafts.get(id) ?? '',
-    saveDraft: (id, text) => (text ? questionDrafts.set(id, text) : questionDrafts.delete(id)),
-    send: async (msg) => {
-      const result = await net.request(msg);
-      return result.ok ? undefined : (result.error ?? 'The office refused that.');
-    },
-  });
-
-  const thread = mountWorkerThread(net, {
-    worker: info,
-    question: questionSlot.element,
-    draft: threadDrafts.get(workerId) ?? '',
-    onDraft: (text) => (text ? threadDrafts.set(workerId, text) : threadDrafts.delete(workerId)),
-    onEntries: () => questionSlot.paint(),
-    send: async (msg) => {
-      const result = await net.request(isOrchestrator ? orchestratorMessage(msg) : msg);
-      return result.ok ? undefined : (result.error ?? 'The office refused that.');
-    },
-    openChanges: onChanges
-      ? () => {
-          onChanges();
-          modal.close();
-        }
-      : undefined,
-    openWorker: (id) => openTeammate(id),
-    team: () => [...store.workers.values()],
-    floor: isOrchestrator ? undefined : (store.floor ?? undefined),
-    ...(isOrchestrator ? { promptWakes: true } : {}),
-  });
-  threadHost.append(thread.element);
-
-  const refreshHeader = (w: WorkerInfo) => {
-    title.textContent = ['Droid', w.name].filter(Boolean).join(' · ');
-    title.title = title.textContent;
-    sub.textContent = [
-      w.task?.name ?? w.title,
-      w.forkedFrom && `Fork of ${w.forkedFrom.name}`,
-      w.worktree && `🌿 ${w.worktree.branch}`,
-      creditsNote(store.factory.sessions, w.sessionId),
-      w.repos?.length && `🗂️ ${[w.worktree?.path.split(/[\\/]/).pop(), ...w.repos.map((r) => r.name)].join(' + ')}`,
-    ]
-      .filter(Boolean)
-      .join(' · ');
-    sub.title = sub.textContent;
-    sub.classList.toggle('hidden', !sub.textContent);
-    pill.className = `pill ${w.status}`;
-    pill.textContent = STATUS_LABEL[w.status] ?? w.status;
-    if (fork) {
-      const why = forkRefusal(w);
-      fork.disabled = !net.up || !!why;
-      fork.title = why ?? 'Fork this conversation and its files into an independent worker';
-    }
-  };
-
-  const refresh = () => {
-    const w = store.worker(workerId);
-    if (!w) {
-      modal.close();
-      return;
-    }
-    refreshHeader(w);
-    team.paint(w);
-    thread.update(w, net.up);
-    questionSlot.paint();
-  };
-
-  const offWorkers = store.on('workers', refresh);
-  const offMission = store.on('missionControl', refresh);
-  const unsubCredits = store.on('factory', refresh);
-  const offStatus = net.onStatus((up) => {
-    const w = store.worker(workerId) ?? info;
-    refreshHeader(w);
-    thread.update(w, up);
-    questionSlot.paint();
-  });
-  const onKey = (e: KeyboardEvent) => {
-    if (e.ctrlKey && e.key === ']') {
-      e.preventDefault();
-      modal.close();
-    }
-  };
-  el.addEventListener('keydown', onKey);
-
-  const modal = openModal(el, {
-    backdropCloses: true,
-    doing: `💬 in ${info.name}'s thread`,
-    onClose: () => {
-      el.removeEventListener('keydown', onKey);
-      offWorkers();
-      offMission();
-      unsubCredits();
-      offStatus();
-      questionSlot.dispose();
-      thread.dispose();
-      if (current?.modal === modal) current = null;
-    },
-  });
-  thread.dropZone(modal.backdrop, el);
-  current = {
-    workerId,
-    modal,
-    streams: () => false,
-    find: (f) => thread.search(f.needle),
-  };
-  refresh();
-  thread.activate(true);
-  if (find) thread.search(find.needle);
-  else setTimeout(() => thread.element.querySelector<HTMLTextAreaElement>('textarea:not(:disabled)')?.focus(), 30);
-}
-
 /**
- * Opens a Droid session's Thread modal (`agent` or `ORCHESTRATOR_ID`) or a `shell` worker's terminal.
- * With `inline`, mounts a headerless inline `xterm.js` terminal inside `inline.mount`.
+ * Opens a worker's terminal in a window. With `inline`, it fills `inline.mount` instead: no window,
+ * backdrop or ✕, and Esc goes to the program. It doesn't replace the terminal window or other inline
+ * terminals; the caller closes it with the handle this returns.
  */
 export function openTerminal(net: Net, workerId: string, onChanges?: () => void, find?: TerminalFind): void;
 export function openTerminal(net: Net, workerId: string, onChanges: (() => void) | undefined, find: TerminalFind | undefined, inline: InlineTerminal): InlineTerminalHandle | undefined;
@@ -327,10 +158,13 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   const info = store.worker(workerId);
   // An external bot runs elsewhere and has no terminal here: its card in Mission Control stands in.
   if (!info || info.remote) return;
-  if (!inline && (info.kind === 'agent' || workerId === ORCHESTRATOR_ID) && !info.cloud) {
-    openAgentThreadModal(net, workerId, info, onChanges, find);
-    return;
-  }
+  const canThread = !inline && info.kind === 'agent' && !info.cloud;
+  let thread: WorkerThread | undefined;
+  let threadView = false;
+  let setThreadView = (_next: 'thread' | 'raw', _focus = true) => {};
+  const threadButton = canThread ? h('button.btn.sm', { type: 'button', onclick: () => setThreadView('thread') }, 'Thread') : null;
+  const rawButton = canThread ? h('button.btn.sm', { type: 'button', onclick: () => setThreadView('raw') }, 'Raw TTY') : null;
+  const viewSwitch = canThread ? h('span.seg.term-view', { role: 'group', 'aria-label': 'Worker view' }, threadButton, rawButton) : null;
 
   const header = inline
     ? undefined
@@ -355,22 +189,39 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
               '🌿 Changes',
             )
           : null;
+        // A building agent has no desk for a fork to sit at.
+        const fork = info.kind === 'agent' && info.deskId ? h('button.btn', { type: 'button', onclick: () => openForkWorker(net, workerId) }, 'Fork') : null;
         const close = h('button.btn.icon.close', { title: 'Leave terminal (Shift+Esc or Ctrl+]) · Esc goes to the terminal', 'aria-label': 'Close', onclick: () => modal.close() }, '✕');
-        const element = h('header', {}, colorDot(info.color), h('div.titles', {}, h('div.term-title', {}, title, pill), sub), h('div.actions', {}, zoom, changes), close);
+        const element = h('header', {}, colorDot(info.color), h('div.titles', {}, h('div.term-title', {}, title, pill), sub), h('div.actions', {}, viewSwitch, zoom, changes, fork), close);
         const zoomBy = (dir: 1 | -1) => {
           setTermFontSize(stepTermFont(term.options.fontSize ?? termFontSize(), dir));
-          term.focus();
+          if (threadView) setThreadView('raw');
+          else term.focus();
         };
         return {
           element,
           refresh(w: WorkerInfo) {
-            title.textContent = w.name;
+            const engine = w.kind !== 'agent' ? null : 'Droid';
+            title.textContent = [engine, w.name].filter(Boolean).join(' · ');
             title.title = title.textContent;
-            sub.textContent = [w.task?.name ?? w.title, w.worktree && `🌿 ${w.worktree.branch}`, w.repos?.length && `🗂️ ${[w.worktree?.path.split(/[\\/]/).pop(), ...w.repos.map((r) => r.name)].join(' + ')}`].filter(Boolean).join(' · ');
+            sub.textContent = [
+              w.task?.name ?? w.title,
+              w.forkedFrom && `Fork of ${w.forkedFrom.name}`,
+              w.worktree && `🌿 ${w.worktree.branch}`,
+              creditsNote(store.factory.sessions, w.sessionId),
+              w.repos?.length && `🗂️ ${[w.worktree?.path.split(/[\\/]/).pop(), ...w.repos.map((r) => r.name)].join(' + ')}`,
+            ]
+              .filter(Boolean)
+              .join(' · ');
             sub.title = sub.textContent;
             sub.classList.toggle('hidden', !sub.textContent);
             pill.className = `pill ${w.status}`;
             pill.textContent = STATUS_LABEL[w.status] ?? w.status;
+            if (fork) {
+              const why = forkRefusal(w);
+              fork.disabled = !net.up || !!why;
+              fork.title = why ?? 'Fork this conversation and its files into an independent worker';
+            }
           },
           zoom(px: number) {
             smaller.toggleAttribute('disabled', px <= TERM_FONT_MIN);
@@ -381,15 +232,38 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
       })();
   const disconnected = h('p.note.warn.hidden', { role: 'status' }, 'Disconnected. Terminal input is disabled until a fresh snapshot arrives.');
   const host = h('div.term-host', { 'data-drop': 'Drop screenshots or files to put them in the terminal' });
-  const team = makeTeamStrip(inline?.hideTeam);
+  const threadHost = canThread ? h('div.term-thread-host', { hidden: true }) : null;
+  // A lead's subagents, or a subagent's lead and teammates: one click to the next terminal.
+  const team = h('div.term-team.chips.hidden', { role: 'group', 'aria-label': 'Team' });
+  let teamKey = '';
   const el = h(
     inline ? 'div.modal.term.inline' : 'div.modal.full.term',
     inline ? { role: 'region', 'aria-label': `${info.name} terminal` } : { role: 'dialog', 'aria-label': `${info.name} terminal` },
     header?.element ?? null,
-    team.element,
+    team,
     disconnected,
+    threadHost,
     host,
   );
+  const paintTeam = (w: WorkerInfo) => {
+    if (inline?.hideTeam) return;
+    const { lead, mates, summary } = teamAround(w);
+    const chipKey = (x: WorkerInfo | undefined) => (x ? `${x.id}:${x.name}:${x.status}:${x.acked}:${x.title ?? ''}` : '');
+    const key = [summary ?? '', chipKey(lead), ...mates.map(chipKey)].join('|');
+    if (key === teamKey) return;
+    teamKey = key;
+    const chip = (x: WorkerInfo) =>
+      h(
+        'button.chip.team-chip',
+        { type: 'button', title: `Open ${x.name}'s terminal${x.title ? `: ${x.title}` : ''}`, onclick: () => openTeammate(x.id) },
+        colorDot(x.color),
+        h('span.team-chip-name', {}, x.name),
+        h('span.pill', { class: x.status }, STATUS_LABEL[x.status] ?? x.status),
+      );
+    team.classList.toggle('hidden', !lead && !mates.length);
+    if (lead) team.replaceChildren(h('span.term-team-label', {}, 'Subagent of'), chip(lead), ...(mates.length ? [h('span.term-team-label', {}, 'with'), ...mates.map(chip)] : []));
+    else team.replaceChildren(h('span.term-team-label', {}, summary ?? ''), ...mates.map(chip));
+  };
 
   const pathLinks = new TerminalPathLinksAddon({ floor: () => store.floor ?? '', workerId, workerName: info.name });
   const term = new Terminal({
@@ -482,7 +356,26 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
       return;
     }
     header?.refresh(w);
-    team.paint(w);
+    paintTeam(w);
+    thread?.update(w, net.up);
+    if (thread) {
+      const asking = w.status === 'needs_input';
+      const question = thread.element.querySelector<HTMLElement>('.dash-question');
+      if (question) {
+        question.hidden = !asking;
+        if (asking && !question.childElementCount) {
+          question.replaceChildren(
+            h(
+              'div.dash-question-card.quiet',
+              { role: 'status' },
+              h('span.dash-question-icon', {}, '●'),
+              h('p', {}, `${w.name} is waiting for an answer. Answer its question in Raw TTY.`),
+              h('button.btn.sm', { type: 'button', onclick: () => setThreadView('raw') }, 'Open Raw TTY'),
+            ),
+          );
+        } else if (!asking) question.replaceChildren();
+      }
+    }
     // Status updates can still carry the old size while our resize is in flight. Only a new
     // PTY size not acknowledging one of our requests means another window claimed it.
     const ptySize = `${w.cols}x${w.rows}`;
@@ -588,6 +481,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   });
   const offStatus = net.onStatus((up) => {
     header?.refresh(store.worker(workerId) ?? info);
+    thread?.update(store.worker(workerId) ?? info, up);
     if (up) return; // The welcome handler reattaches only after the authoritative worker snapshot.
     mirror.disconnect();
     term.options.disableStdin = true;
@@ -596,6 +490,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
 
   const onClose = () => {
     document.removeEventListener('visibilitychange', visibility);
+    thread?.dispose();
     listeners.delete(onMsg);
     unsub();
     unsubCredits();
@@ -645,12 +540,73 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     current = {
       workerId,
       modal,
-      streams: () => true,
+      streams: () => !threadView,
       find: (f) => {
+        setThreadView('raw', false);
         if (mirror.ready) jumpTo(f);
         else pendingFind = f;
       },
     };
+  if (canThread && threadHost) {
+    const question = h('section.dash-question', { 'aria-label': 'Question requiring input', hidden: true });
+    thread = mountWorkerThread(net, {
+      worker: info,
+      question,
+      queueKey: `droid-office.desk-queue:${workerId}`,
+      draft: threadDrafts.get(workerId) ?? '',
+      onDraft: (text) => (text ? threadDrafts.set(workerId, text) : threadDrafts.delete(workerId)),
+      send: async (msg) => {
+        const result = await net.request(msg);
+        return result.ok ? undefined : (result.error ?? 'The office refused that.');
+      },
+      screen: () => {
+        const s = store.screens.get(workerId);
+        return s && Array.from({ length: s.rows }, (_, i) => (s.lines[i] ?? []).map((run) => run[0]).join(''));
+      },
+      raw: () => setThreadView('raw'),
+      openChanges: onChanges
+        ? () => {
+            onChanges();
+            modal.close();
+          }
+        : undefined,
+      openWorker: (id) => openTeammate(id),
+      team: () => [...store.workers.values()],
+      floor: store.floor ?? undefined,
+    });
+    threadHost.append(thread.element);
+    thread.dropZone(threadHost);
+    let saved = 'thread';
+    try {
+      saved = localStorage.getItem(`${THREAD_VIEW_KEY}${workerId}`) ?? 'thread';
+    } catch {}
+    setThreadView = (next, focus = true) => {
+      if (!thread || !threadHost) return;
+      threadView = next === 'thread';
+      threadHost.hidden = !threadView;
+      host.hidden = threadView;
+      threadButton?.classList.toggle('on', threadView);
+      rawButton?.classList.toggle('on', !threadView);
+      threadButton?.setAttribute('aria-pressed', String(threadView));
+      rawButton?.setAttribute('aria-pressed', String(!threadView));
+      try {
+        localStorage.setItem(`${THREAD_VIEW_KEY}${workerId}`, next);
+      } catch {}
+      if (threadView) {
+        mirror.disconnect();
+        thread.activate(true);
+        term.options.disableStdin = true;
+      } else {
+        thread.activate(false);
+        net.send({ t: 'worker.attach', workerId });
+        term.options.disableStdin = !net.up;
+        sendSize();
+        if (focus) setTimeout(() => alive && term.focus(), 0);
+      }
+      refresh();
+    };
+    setThreadView(saved === 'raw' ? 'raw' : 'thread', false);
+  }
   header?.zoom(termFontSize());
   const offFont = onTermFontSize((px) => {
     term.options.fontSize = px;
@@ -695,7 +651,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   // where they are, as a terminal does with a file dragged into it: Droid attaches a picture.
   let uploading = 0;
   const insertFiles = async (files: File[]) => {
-    if (!files.length) return;
+    if (!files.length || threadView) return;
     if (!mirror.ready || !net.up) return toast('Disconnected. No files were sent.', 'warn');
     el.classList.toggle('uploading', ++uploading > 0);
     try {
@@ -760,9 +716,9 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     opened = true;
     ro.observe(host);
     adoptSharedSize = store.worker(workerId)?.open === true;
-    if (!inline || !document.hidden) net.send({ t: 'worker.attach', workerId });
+    if (!threadView && (!inline || !document.hidden)) net.send({ t: 'worker.attach', workerId });
     setTimeout(() => {
-      if (alive && inline?.focus !== false) term.focus();
+      if (alive && inline?.focus !== false && !threadView) term.focus();
     }, 50);
   });
   if (!inline) return;

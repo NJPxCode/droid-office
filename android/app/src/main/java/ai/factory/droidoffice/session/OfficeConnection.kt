@@ -1,6 +1,5 @@
 package ai.factory.droidoffice.session
 
-import android.os.SystemClock
 import ai.factory.droidoffice.core.Backoff
 import ai.factory.droidoffice.core.OfficeEndpoint
 import ai.factory.droidoffice.core.HostUpdateAction
@@ -27,7 +26,6 @@ import ai.factory.droidoffice.core.ServerMsg
 import ai.factory.droidoffice.core.TermEvent
 import ai.factory.droidoffice.core.TermFeed
 import ai.factory.droidoffice.core.TermSize
-import ai.factory.droidoffice.core.ThreadLiveState
 import ai.factory.droidoffice.core.WbFetched
 import ai.factory.droidoffice.core.WbFileRef
 import ai.factory.droidoffice.core.WbFloor
@@ -108,7 +106,7 @@ data class OfficeData(
     val synced: Boolean = false,
     /** Only a welcome that explicitly advertises the checkbox-answer contract enables it. */
     val workerAnswerMultiSelect: Boolean = false,
-    /** The office answers rewind and queue actions for Droid workers; an older one leaves them unanswered. */
+    /** The office answers rewind, queue, model and side-chat actions in a worker's terminal; an older one leaves them unanswered. */
     val threadActions: Boolean = false,
     /** The building's agents, the same on every floor; null from an office that predates Mission Control. */
     val mission: MissionControlState? = null,
@@ -277,10 +275,8 @@ class OfficeConnection(
     /** Pages of workers' conversations, each answering one `thread.read`; a [ai.factory.droidoffice.core.ThreadFeed] keeps the ones it asked for. */
     val threads: SharedFlow<ServerMsg.ThreadSnapshot> = _threads.asSharedFlow()
 
-    private val threadWatches = mutableMapOf<String, LiveWatch>()
-    private class LiveWatch(val state: ThreadLiveState = ThreadLiveState(), var lastResync: Long? = null)
-    private val _threadLives = MutableStateFlow<Map<String, ServerMsg.ThreadLiveUpdate>>(emptyMap())
-    val threadLives: StateFlow<Map<String, ServerMsg.ThreadLiveUpdate>> = _threadLives.asStateFlow()
+    private val _threadLives = MutableSharedFlow<ServerMsg.ThreadLiveUpdate>(extraBufferCapacity = 32)
+    val threadLives: SharedFlow<ServerMsg.ThreadLiveUpdate> = _threadLives.asSharedFlow()
 
     private val _workerRewounds = MutableSharedFlow<ServerMsg.WorkerRewound>(extraBufferCapacity = 8)
     val workerRewounds: SharedFlow<ServerMsg.WorkerRewound> = _workerRewounds.asSharedFlow()
@@ -290,7 +286,7 @@ class OfficeConnection(
 
     private val holders = MutableStateFlow<Set<String>>(emptySet())
     private val nonce = MutableStateFlow(0)
-    private val attached = ConcurrentHashMap<String, Boolean>()
+    private val attached = ConcurrentHashMap.newKeySet<String>()
     private val holds = HashMap<String, Int>()
     /** Each attached terminal's stream, on the main thread like [handle]. */
     private val feeds = HashMap<String, TermFeed>()
@@ -338,33 +334,6 @@ class OfficeConnection(
 
     fun send(json: String): Boolean = socket?.takeIf { _link.value.phase == Phase.Connected }?.send(json) ?: false
 
-    /** Fold all wire appends on the ordered socket loop before the UI can conflate frames. */
-    fun watchThread(workerId: String, on: Boolean) {
-        if (on) threadWatches[workerId] = LiveWatch()
-        else {
-            threadWatches.remove(workerId)
-            _threadLives.update { it - workerId }
-        }
-        send(ClientMsg.threadWatch(workerId, on, stream = true))
-    }
-
-    private fun applyThreadStream(msg: ServerMsg.ThreadStream) {
-        val watch = threadWatches[msg.workerId] ?: return
-        when (watch.state.append(msg)) {
-            ThreadLiveState.Append.Applied -> {
-                val live = watch.state.live ?: return
-                _threadLives.update { it + (msg.workerId to ServerMsg.ThreadLiveUpdate(msg.workerId, msg.sessionId, live)) }
-            }
-            ThreadLiveState.Append.Resync -> {
-                val now = SystemClock.elapsedRealtime()
-                if (watch.lastResync?.let { now - it < 1_000L } != true &&
-                    send(ClientMsg.threadWatch(msg.workerId, true, stream = true))
-                ) watch.lastResync = now
-            }
-            ThreadLiveState.Append.Ignore -> Unit
-        }
-    }
-
     /** A successful socket write is not an answer receipt. Never queue or replay an answer. */
     suspend fun answerConfirmed(requestId: String, json: String): ServerMsg.ActionResult? = actionConfirmed(requestId, json)
 
@@ -393,16 +362,15 @@ class OfficeConnection(
     }
 
     /**
-     * Attaches to a worker (`worker.attach`): with [stream] true (explicit shells), its PTY stream
-     * comes in; with [stream] false (Droid workers), the office marks the worker open/acked without
-     * streaming PTY output. Reference-counted until the last holder detaches.
+     * Attaches to a worker's terminal: its stream comes in, and the office takes keys for it only
+     * from an attached window. Counted, so the terminal screen and an answer from the Asks tab or a
+     * notification can each hold it; it detaches when the last one lets go.
      */
-    fun attach(workerId: String, stream: Boolean = true) {
+    fun attach(workerId: String) {
         synchronized(holds) { holds[workerId] = (holds[workerId] ?: 0) + 1 }
-        val effectiveStream = stream || (attached[workerId] == true)
-        attached[workerId] = effectiveStream
-        if (effectiveStream) feeds.getOrPut(workerId) { TermFeed() }
-        send(ClientMsg.attach(workerId, effectiveStream))
+        attached += workerId
+        feeds.getOrPut(workerId) { TermFeed() }
+        send(ClientMsg.attach(workerId))
     }
 
     fun detach(workerId: String) {
@@ -412,7 +380,7 @@ class OfficeConnection(
             n
         }
         if (left > 0) return
-        attached.remove(workerId)
+        attached -= workerId
         feeds.remove(workerId)
         send(ClientMsg.detach(workerId))
     }
@@ -422,8 +390,7 @@ class OfficeConnection(
 
     /** Asks the office for a fresh snapshot of an attached terminal (attaching again sends one). */
     fun resnapshot(workerId: String) {
-        val stream = attached[workerId] ?: return
-        send(ClientMsg.attach(workerId, stream))
+        if (workerId in attached) send(ClientMsg.attach(workerId))
     }
 
     /** Asks the office to move this phone to [floorId]; false when the message couldn't be sent. */
@@ -545,11 +512,6 @@ class OfficeConnection(
     suspend fun threadImage(floor: String, worker: String, image: String): ByteArray? {
         val (base, auth) = current ?: return null
         return api.threadImage(base, auth, floor, worker, image)
-    }
-
-    suspend fun threadOutput(floor: String, worker: String, output: String): String? {
-        val (base, auth) = current ?: return null
-        return api.threadOutput(base, auth, floor, worker, output)
     }
 
     suspend fun threadFileImage(floor: String, worker: String, path: String): ByteArray? {
@@ -747,7 +709,7 @@ class OfficeConnection(
                         if (msg is ServerMsg.Welcome) {
                             welcomed = true
                             _link.value = Link(Phase.Connected, office.id, base = base, kind = kind)
-                            for ((id, stream) in attached) ws.send(ClientMsg.attach(id, stream))
+                            for (id in attached) ws.send(ClientMsg.attach(id))
                         }
                         handle(office.id, msg)
                     }
@@ -760,8 +722,6 @@ class OfficeConnection(
         } finally {
             upgrade?.cancel()
             socket = null
-            threadWatches.clear()
-            _threadLives.value = emptyMap()
             answerEpoch++
             actionRequests.values.forEach { it.complete(null) }
             actionRequests.clear()
@@ -844,7 +804,7 @@ class OfficeConnection(
                 if (msg.floor != activeFloor && knownBefore != null && (knownBefore.cols != w.cols || knownBefore.rows != w.rows)) {
                     feeds[w.id]?.push(TermEvent.Resize(TermSize(w.cols, w.rows)))
                 }
-                if (msg.floor != activeFloor && w.state != WorkerStatus.NeedsInput && !attached.containsKey(w.id)) {
+                if (msg.floor != activeFloor && w.state != WorkerStatus.NeedsInput && w.id !in attached) {
                     _screens.update { it - w.id }
                 }
             }
@@ -858,7 +818,7 @@ class OfficeConnection(
                     )
                 }
                 _screens.update { it - msg.workerId }
-                attached.remove(msg.workerId)
+                attached -= msg.workerId
                 synchronized(holds) { holds.remove(msg.workerId) }
                 feeds.remove(msg.workerId)
             }
@@ -903,7 +863,7 @@ class OfficeConnection(
                     d.copy(workers = d.workers - msg.workerId, buildingWorkers = nextBuilding)
                 }
                 _screens.update { it - msg.workerId }
-                attached.remove(msg.workerId)
+                attached -= msg.workerId
                 synchronized(holds) { holds.remove(msg.workerId) }
                 feeds.remove(msg.workerId)
             }
@@ -919,13 +879,7 @@ class OfficeConnection(
             is ServerMsg.Whiteboard -> whiteboard.handle(msg.t, msg.obj)
             is ServerMsg.Pinged -> _pinged.tryEmit(msg.result)
             is ServerMsg.ThreadSnapshot -> _threads.tryEmit(msg)
-            is ServerMsg.ThreadLiveUpdate -> {
-                val watch = threadWatches[msg.workerId]
-                if (watch?.state?.receive(msg.sessionId, msg.live) == true) {
-                    _threadLives.update { it + (msg.workerId to msg) }
-                }
-            }
-            is ServerMsg.ThreadStream -> applyThreadStream(msg)
+            is ServerMsg.ThreadLiveUpdate -> _threadLives.tryEmit(msg)
             is ServerMsg.WorkerRewound -> _workerRewounds.tryEmit(msg)
             is ServerMsg.ActionResult -> actionRequests.remove(msg.requestId)?.complete(msg)
             is ServerMsg.Pong, is ServerMsg.Ignored -> Unit

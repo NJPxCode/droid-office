@@ -128,6 +128,7 @@ fun MainTabs(
                     when (t) {
                         MainTab.Workers -> WorkersScreen(
                             onOpenWorker = open,
+                            onOpenRawTty = { id -> onOpenWorker(id, "") },
                             selected = workersSelected,
                             onCloseWorker = { workersSelected = null },
                             onHire = { hiring = true },

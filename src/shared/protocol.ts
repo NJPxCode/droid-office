@@ -136,22 +136,15 @@ export interface WorkerInfo {
   exitCode?: number;
   cols: number;
   rows: number;
-  /** True while any owner connection has its Thread or shell terminal open. */
+  /** True while any owner connection has its terminal open. */
   open: boolean;
   /** Latest line of meaningful activity (e.g. last prompt or tool). */
   activity?: string;
   /**
-   * What it is waiting on the owner for: the whole AskUser questionnaire, or the tool call a
-   * permission prompt is about.
+   * What it is waiting on the owner for, from its hooks: the whole AskUser questionnaire, or the tool
+   * call a permission prompt is about. Set while it needs input; the answer still goes into its terminal.
    */
   ask?: WorkerAsk;
-  /**
-   * The waiting AskUser question to answer next, as a menu `worker.answer` takes, while the
-   * office holds that AskUser from its local or cloud daemon. Not saved.
-   */
-  menu?: Menu;
-  /** Pending steering and after-turn messages held for this worker's session. */
-  queue?: WorkerQueueState;
   /** What its latest tool call is, for the worker to act out while it works. */
   action?: WorkerAction;
   /**
@@ -163,7 +156,7 @@ export interface WorkerInfo {
   task?: WorkerTask;
   /** A /clear boundary for the read-only sign writer, including across Office restarts. */
   taskSince?: number;
-  /** When the worker last received input. */
+  /** When its terminal last took input (keystrokes or a prompt). */
   lastInputAt?: number;
   /**
    * The worker that hired this one as its subagent with the Office MCP's `team_hire` (see server/team.ts),
@@ -206,34 +199,8 @@ export interface AskedQuestion {
   multiSelect: boolean;
 }
 
-/** A worker's pending ask (see WorkerInfo.ask). `sub` is set when the ask came from a child session. */
+/** A worker's pending ask (see WorkerInfo.ask). `sub` is set when a Task subagent in its terminal asks. */
 export type WorkerAsk = { kind: 'question'; questions: AskedQuestion[]; sub?: true } | { kind: 'permission'; tool: string; command?: string; file?: string; risk?: string; summary?: string; sub?: true };
-
-export type QueuedMessageDelivery = 'next_step' | 'steering' | 'after_turn';
-export type QueuedMessageSource = 'outbox' | 'droid';
-
-export interface QueuedMessageItem {
-  /** Daemon requestId when backed by droid-daemon (`resolveQueuedUserMessage`). */
-  id?: string;
-  /** 1-based position across all pending messages on this worker. */
-  index: number;
-  text: string;
-  /** True when the queued message carries image attachments. */
-  hasImage?: boolean;
-  /** True when only a single-line preview is known. */
-  preview: boolean;
-  moreLines: number;
-  source: QueuedMessageSource;
-  /** next_step: office outbox; steering: EndOfTurn; after_turn: EndOfLoop. */
-  delivery: QueuedMessageDelivery;
-}
-
-export interface WorkerQueueState {
-  count: number;
-  items: QueuedMessageItem[];
-  moreSteering: number;
-  moreQueued: number;
-}
 
 /** The glyph a team wears beside its accent color, so two teams never differ by color alone. */
 export type TeamEmblem = 'chevron' | 'star' | 'diamond' | 'bolt' | 'ring' | 'cross' | 'hex' | 'triangle';
@@ -838,17 +805,17 @@ export interface WhiteboardRenderInfo {
   error?: string;
 }
 
-/** A matching line from a worker's conversation or shell terminal. */
+/** A line of a worker's terminal that matched a search. */
 export interface TerminalHit {
   workerId: string;
   /** The line, cut down around the match. */
   text: string;
-  /** Position and total row count in the conversation excerpt or terminal buffer that was searched. */
+  /** Where it is: its row in the worker's terminal, and how many rows that terminal had. */
   row: number;
   rows: number;
 }
 
-/** What GET /api/search answers: matching conversation and shell terminal lines, newest first. */
+/** What GET /api/search answers: matching terminal lines, newest first. */
 export interface SearchResults {
   q: string;
   terminals: TerminalHit[];
@@ -874,7 +841,7 @@ type ClientMessage =
    */
   | { t: 'worker.spawn'; deskId: string; prompt?: string; worktree?: boolean; kind?: WorkerKind; model?: string; effort?: AgentEffort; issue?: number; linear?: string; repos?: string[]; images?: string[]; cloud?: CloudHire }
   | { t: 'worker.resume'; workerId: string }
-  /** Interrupts a local Droid turn through the daemon or a cloud turn through Factory's Sessions API. */
+  /** Stops the turn a worker is in: Escape in a local agent's terminal, an interrupt of a cloud worker's Factory session. */
   | { t: 'worker.interrupt'; workerId: string }
   | { t: 'worker.fork'; workerId: string; prompt?: string }
   /** `deleteSession`: a cloud worker's Factory session is deleted too, not just left on the Factory account. */
@@ -885,34 +852,34 @@ type ClientMessage =
   | { t: 'worker.worktree'; workerId: string }
   /** Puts a lost worker's worktree back and starts it again (see WorkerInfo.lost); `all`: every lost worker on the floor. */
   | { t: 'worker.rebuild'; workerId: string; all?: boolean }
-  /** `stream: false` opens a Thread. Only shell desks support raw terminal snapshots and live `term.data`. */
+  /** `stream: false` opens the worker without a raw terminal snapshot or live `term.data` stream (Thread view). */
   | { t: 'worker.attach'; workerId: string; stream?: boolean }
   | { t: 'worker.detach'; workerId: string }
   /**
    * With `issue`, the prompt hands the worker that GitHub issue, which is taken as for worker.spawn.
-   * With `queue`, a local Droid prompt waits until the end of the current turn (`EndOfLoop`)
-   * instead of steering it (`EndOfTurn`). Shells ignore `queue`.
+   * With `queue`, an agent's prompt is submitted with Ctrl+Enter instead of Enter, so Droid queues it
+   * behind what it is doing rather than sending it now (a shell gets Enter either way).
    */
   | { t: 'worker.prompt'; workerId: string; prompt: string; issue?: number; linear?: string; images?: string[]; queue?: boolean; urgent?: boolean }
-  /** Rechecks the pending AskUser menu before accepting the answer shown by the client.
-   * Single-select takes `choice` or `text`; multi-select takes `choices` with optional `text`. */
+  /** Rechecks the current worker and screen on the server before answering the menu shown to the owner.
+   * Send exactly one of `choice` or `text`. The server rejects neither and both. */
   | { t: 'worker.answer'; workerId: string; menu: Menu; choice?: number; choices?: number[]; text?: string }
   /** Push a worktree worker's branch and open a pull request for it, drafted from its task. */
   | { t: 'worker.pr'; workerId: string }
   | { t: 'term.input'; workerId: string; data: string }
   | { t: 'thread.read'; workerId: string; request: string; before?: number; child?: string }
-  /** `stream`: this client applies `thread.stream` appends, so its live stream's growth comes as them. */
-  | { t: 'thread.watch'; workerId: string; on: boolean; child?: string; stream?: boolean }
-  /** Drives Droid's pending-message queue: by daemon `id` (`requestId`) or 1-based `index`, optionally checked by group and text. */
-  | { t: 'worker.queue'; workerId: string; action: 'promote' | 'delete' | 'clear'; id?: string; index?: number; group?: 'steering' | 'queued'; text?: string }
+  | { t: 'thread.watch'; workerId: string; on: boolean; child?: string }
+  /** Drives Droid's pending-message review: a 1-based index, optionally checked by group and text. */
+  | { t: 'worker.queue'; workerId: string; action: 'promote' | 'delete' | 'clear'; index?: number; group?: 'steering' | 'queued'; text?: string }
   /**
    * Rewinds before a user ThreadEntry; restore defaults to conversation only. `choose` restores only
-   * `files` (paths as the Thread knows them) from Droid's rewind checkpoint.
+   * `files` (paths as the Thread knows them) from Droid's "Choose files to restore..." list.
    */
   | { t: 'worker.rewind'; workerId: string; entryId: string; restore?: 'files' | 'conversation' | 'choose'; files?: string[] }
-  /** Changes a local Droid session's reasoning effort or model through the daemon's `updateSessionSettings` RPC. */
+  /** Changes the session's reasoning effort (an effort id) or model (a model id, with an optional effort) through Droid's Tab key and /model picker. */
   | { t: 'worker.setting'; workerId: string; setting: 'effort' | 'model'; value: string; effort?: string }
-  /** Resizes a shell desk's PTY. */
+  /** Closes Droid's side chat (/btw) when the terminal shows it. */
+  | { t: 'worker.side'; workerId: string; close: true }
   | { t: 'term.resize'; workerId: string; cols: number; rows: number }
   /** Open the boss monitor's shell (see OFFICE_SHELL_ID). It is not a worker. */
   | { t: 'shell.attach' }
@@ -1085,14 +1052,14 @@ type ClientMessage =
   | { t: 'whiteboard.apply'; floor: string; envelope: OpEnvelope }
   /** Send this connection a fresh snapshot of a floor's Whiteboard, with its epoch for that floor. */
   | { t: 'whiteboard.sync'; floor: string }
-  /** Send the Whiteboard prompt to a worker (see shared/whiteboard-ping.ts); answered with `whiteboard.pinged`. */
+  /** Type the Whiteboard line into a worker's terminal (see shared/whiteboard-ping.ts); answered with `whiteboard.pinged`. */
   | { t: 'whiteboard.ping'; worker: string }
   /** The answer to an `automation.run`: what the command resolved with, or why it rejected. */
   | { t: 'automation.result'; id: string; ok: boolean; value?: unknown; error?: string }
   /**
    * The building's Orchestrator (shared/mission-control.ts), from any floor. A prompt starts or wakes its session;
    * `queue` holds it for after the current turn instead of steering it. Answered with `action.result` when
-   * `requestId` is set. Its Thread and AskUser menus use the usual worker messages with ORCHESTRATOR_ID.
+   * `requestId` is set. Its terminal, thread and menus use the usual worker messages with ORCHESTRATOR_ID.
    */
   | { t: 'orchestrator.prompt'; prompt: string; images?: string[]; queue?: boolean }
   | { t: 'orchestrator.interrupt' }
@@ -1120,12 +1087,6 @@ export type ServerMsg =
   | { t: 'thread.snapshot'; workerId: string; request: string; before?: number; push?: boolean; sessionId?: string; child?: string; entries: ThreadEntry[]; hasMore: boolean; presentation?: ThreadPresentation; error?: string }
   /** The watched local worker's turn as it happens; replaces its previous live state wholesale. */
   | { t: 'thread.live'; workerId: string; sessionId?: string; live: ThreadLive }
-  /**
-   * Only the live stream grew: `text` goes on at `from` of the `thread.live` (or append) at `base`, making
-   * `rev`. Sent instead of a whole `thread.live` to clients that watch with `stream`; one that can't apply
-   * it watches again for a whole one.
-   */
-  | { t: 'thread.stream'; workerId: string; sessionId?: string; rev: number; base: number; from: number; text: string }
   /** The outcome of worker.rewind. text is the rewound prompt, ready for the composer. */
   | { t: 'worker.rewound'; workerId: string; entryId: string; ok: boolean; sessionId?: string; text?: string; error?: string; note?: string }
   | { t: 'action.result'; requestId: string; ok: boolean; error?: string; workerId?: string; note?: string }
@@ -1154,7 +1115,7 @@ export type ServerMsg =
       workerLabels?: WorkerLabelState;
       /** Confirmed worker.answer supports a complete checkbox selection and optional custom text. */
       workerAnswerMultiSelect?: boolean;
-      /** The office supports structured worker.rewind, worker.queue and worker.setting actions. An older office leaves them unanswered. */
+      /** The office drives worker.rewind, worker.queue, worker.setting and worker.side in a worker's terminal. An older one leaves them unanswered. */
       threadActions?: boolean;
       /** The office's prompts, and the worker a new one starts on when nobody picks. */
       prompts: PromptsState;

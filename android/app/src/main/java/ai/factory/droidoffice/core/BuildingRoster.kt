@@ -71,6 +71,7 @@ object BuildingRoster {
         workersByFloor: Map<String, Collection<WorkerInfo>>,
         pullsByFloor: Map<String, List<GhPull>>,
         mission: MissionControlState?,
+        screens: Map<String, ScreenState>,
     ): BuildingRosterView {
         val floorMap = floors.associateBy { it.id }
         val floorRank = floors.mapIndexed { index, f -> f.id to index }.toMap()
@@ -150,7 +151,7 @@ object BuildingRoster {
         val askCandidates = enriched
             .filter { it.kind != RosterKind.Bot && !it.worker.remote && it.worker.state == WorkerStatus.NeedsInput }
             .map { it.worker }
-        val asks = Asks.queue(askCandidates)
+        val asks = Asks.queue(askCandidates, screens)
 
         return BuildingRosterView(
             totalSummary = totalSummary,

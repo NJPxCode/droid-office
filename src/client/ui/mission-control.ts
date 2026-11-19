@@ -14,7 +14,7 @@ import { openPrompt } from './prompt';
 // and New conversation), what to do while it's off or can't start, and an external bot's card.
 
 export interface OrchestratorActions {
-  /** Its thread, from any floor. */
+  /** Its terminal, from any floor. */
   terminal(): void;
   /** Settings on its own pane, or on the one named. */
   settings(pane?: SettingsPane): void;
@@ -33,8 +33,8 @@ export function openOrchestrator(net: Net, actions: OrchestratorActions) {
   if (phase === 'blocked') return orchestratorBlocked(o.blocked ?? '', orchestratorSettingsPane(state), actions);
   const w = o.agent?.worker;
   const busy = !!w && isBusy(w.status);
-  // Asleep, its thread would only bring this box back: the prompt wakes it.
-  const terminal = orchestratorAwake(state) ? h('button.btn.sm', { type: 'button', title: 'Its thread and conversation (O at the Orchestrator)', onclick: () => actions.terminal() }, 'Thread') : null;
+  // Asleep, its terminal would only bring this box back: the prompt wakes it.
+  const terminal = orchestratorAwake(state) ? h('button.btn.sm', { type: 'button', title: 'Its terminal and conversation (O at the Orchestrator)', onclick: () => actions.terminal() }, 'Terminal') : null;
   const stop = busy
     ? h(
         'button.btn.sm',
@@ -60,7 +60,7 @@ export function openOrchestrator(net: Net, actions: OrchestratorActions) {
   openPrompt({
     title: `🛰️ ${w?.name ?? ORCHESTRATOR_NAME}`,
     subtitle: !w ? ORCHESTRATOR_PITCH : busy ? `${STATUS_LABEL[w.status] ?? w.status}${w.task?.name ? ` · ${w.task.name}` : ''}. Send steers its turn; Queue waits until it's over.` : (w.task?.name ?? ORCHESTRATOR_PITCH),
-    warning: w?.status === 'needs_input' ? `${w.name} is waiting on an answer: open its thread to reply.` : undefined,
+    warning: w?.status === 'needs_input' ? `${w.name} is waiting on an answer: open its terminal to reply.` : undefined,
     placeholder: 'What do you want done? It can hire and direct workers on any floor',
     imagesOption: true,
     workerId: ORCHESTRATOR_ID,
@@ -147,7 +147,7 @@ export function openBot(id: string, actions: BotActions) {
               {},
               h(
                 'button.list-row',
-                { type: 'button', title: m.floor === store.floor ? `Open ${m.name}'s thread` : `Go to the ${m.floorName} floor and open ${m.name}'s thread`, onclick: () => actions.openMember(m) },
+                { type: 'button', title: m.floor === store.floor ? `Open ${m.name}'s terminal` : `Go to the ${m.floorName} floor and open ${m.name}'s terminal`, onclick: () => actions.openMember(m) },
                 h('span.list-main', {}, h('span.list-title', {}, m.name), h('span.list-meta', {}, [m.floorName, m.activity ?? m.title].filter(Boolean).join(' · '))),
                 h('span.list-end', {}, h('span.pill', { class: m.status }, STATUS_LABEL[m.status] ?? m.status)),
               ),

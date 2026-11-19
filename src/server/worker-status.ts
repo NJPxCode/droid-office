@@ -1,4 +1,3 @@
-import type { Menu } from '../shared/asks.js';
 import type { GhPull, TodoProgress, WorkerInfo, WorkerStatus } from '../shared/protocol.js';
 import type { PipelinesState, PipelineRun, RunState } from '../shared/pipelines.js';
 import {
@@ -20,21 +19,25 @@ import type { TeamModel, WorkerResult, WorkerReview } from './team.js';
 import type { FactoryState } from '../shared/factory.js';
 import { factoryLimitsActive, factoryModelAvailability, factoryModelTier, factoryOverageWords, factoryWindows, type FactoryLimitsState } from '../shared/factory-limits.js';
 
-const RETRY_ACTIVITY = /^Retrying the model request(?:\s*\(attempt\s*(\d+)(?:\s*(?:\/|of)\s*(\d+))?\))?[^\r\n]*/i;
+const AT_REST = /\? for help/;
+const BOX_TOP = /^\s*╭─+╮\s*$/;
+const BOX_BOTTOM = /^\s*╰─+╯\s*$/;
+const BOX_ROW = /^\s*│.*│\s*$/;
+const BUSY_SPINNER = /Press ESC to stop/i;
+const RETRY_LINE = /Retrying the model request(?:\s*\(attempt\s*(\d+)(?:\s*(?:\/|of)\s*(\d+))?\))?[^\r\n]*/i;
+const MODEL_ERROR_PATTERNS: readonly RegExp[] = [
+  /Usage is exhausted for the model request\.?/i,
+  /The model provider rate limited (?:the request|my requests)\.?/i,
+  /All credentials for model [^\r\n]+? are cooling down[^\r\n]*/i,
+  /\bmodel_cooldown\b[^\r\n]*/i,
+  /\busage_limit_reached\b[^\r\n]*/i,
+  /(?:\b402\b[^\r\n]*(?:exhaust|usage|quota|subscription)|(?:usage|quota|subscription)[^\r\n]*\b402\b)/i,
+];
 
 export interface WorkerToolSpan {
   name: string;
   summary: string;
   at: number;
-}
-
-export interface WorkerRetryInput {
-  retrying?: boolean;
-  attempt?: number;
-  maxAttempts?: number;
-  detail?: string;
-  message?: string;
-  error?: string;
 }
 
 export interface WorkerRuntimeSnapshot {
@@ -45,11 +48,6 @@ export interface WorkerRuntimeSnapshot {
   lastOutputAt?: number;
   queuedMessages?: string[];
   queuedNotices?: number;
-  /** Structured daemon retry / model failure status (`llm_retry` / `error`). */
-  retry?: WorkerRetryInput;
-  /** Structured waiting AskUser menu (`WorkerInfo.menu ?? WorkerInfo.cloud?.menu`). */
-  menu?: Menu;
-  /** @deprecated Legacy pre-daemon PTY snapshot field kept optional for HEAD compat. */
   screenRows?: string[];
 }
 
@@ -139,7 +137,6 @@ export interface WorkerInspection {
   task?: string;
   taskLabel?: WorkerTaskLabel;
   doing?: string;
-  menu?: Menu;
   plan?: WorkerPlanStatus;
   currentTool?: { name: string; summary: string; startedAt: string; runningForMs: number };
   lastTool?: { name: string; summary: string; at: string; agoMs: number };
@@ -281,45 +278,57 @@ function clipText(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
 }
 
-/**
- * Resolves structured daemon model retry / failure status (`llm_retry` / `error` or retry activity)
- * without scraping terminal screen rows.
- */
-export function inspectWorkerRetry(worker: Pick<WorkerInfo, 'status' | 'activity'>, runtime?: WorkerRuntimeSnapshot): WorkerRetryStatus | undefined {
-  if (runtime?.currentTool) return undefined;
-  const structured = runtime?.retry;
-  if (structured) {
-    const retrying = structured.retrying ?? true;
-    if (retrying && worker.status !== 'working') return undefined;
-    const attempt = structured.attempt !== undefined && Number.isSafeInteger(structured.attempt) ? structured.attempt : undefined;
-    const maxAttempts = structured.maxAttempts !== undefined && Number.isSafeInteger(structured.maxAttempts) ? structured.maxAttempts : undefined;
-    const fallbackDetail = retrying ? `Retrying the model request${attempt !== undefined ? ` (attempt ${attempt}${maxAttempts !== undefined ? `/${maxAttempts}` : ''})` : ''}...` : 'Model request failed.';
-    const rawDetail = structured.detail ?? structured.message ?? structured.error ?? fallbackDetail;
-    return {
-      retrying,
-      ...(attempt !== undefined ? { attempt } : {}),
-      ...(maxAttempts !== undefined ? { maxAttempts } : {}),
-      detail: clipText(rawDetail, retrying ? 140 : 160),
-    };
+/** Rows right above Droid's input box (excluding text typed inside the input box itself). */
+function liveAboveInputBox(rows: readonly string[]): { above: string[]; hasBusySpinner: boolean } {
+  const nonempty = rows.filter((r) => r.trim());
+  if (!nonempty.length) return { above: [], hasBusySpinner: false };
+  let footerRow = nonempty.length - 1;
+  while (footerRow >= 0 && !AT_REST.test(nonempty[footerRow])) footerRow--;
+  let top = footerRow - 2;
+  const hasBottom = footerRow >= 1 && BOX_BOTTOM.test(nonempty[footerRow - 1] ?? '');
+  if (hasBottom) {
+    while (top >= 0 && BOX_ROW.test(nonempty[top])) top--;
   }
-  if (worker.status === 'working' && worker.activity) {
-    const m = RETRY_ACTIVITY.exec(worker.activity.trim());
-    if (m) {
+  const hasBox = hasBottom && footerRow >= nonempty.length - 8 && top >= 0 && BOX_TOP.test(nonempty[top] ?? '');
+  const above = hasBox ? nonempty.slice(Math.max(0, top - 10), top) : nonempty.slice(-10);
+  const tail = hasBox ? [...above, ...nonempty.slice(footerRow)] : above;
+  return { above, hasBusySpinner: tail.some((line) => BUSY_SPINNER.test(line)) };
+}
+
+/**
+ * Reads Droid's live status area above its input box for an in-flight model retry spinner or a
+ * terminal quota/rate-limit failure banner after retries gave up.
+ */
+export function inspectTerminalRetry(rows: readonly string[] | undefined, status: WorkerStatus, hasCurrentTool = false): WorkerRetryStatus | undefined {
+  if (!rows?.length) return undefined;
+  const { above, hasBusySpinner } = liveAboveInputBox(rows);
+  if (!above.length) return undefined;
+  if (status === 'working' && !hasCurrentTool) {
+    for (let i = above.length - 1; i >= 0; i--) {
+      const m = RETRY_LINE.exec(above[i]);
+      if (!m) continue;
+      // Require either the active turn spinner or no settled prompt box quoting old output.
+      if (!hasBusySpinner && i < above.length - 4) continue;
       const attempt = m[1] ? Number(m[1]) : undefined;
       const maxAttempts = m[2] ? Number(m[2]) : undefined;
+      const detail = clipText(m[0].replace(/\s*\(Press ESC to stop\)\s*$/i, ''), 140);
       return {
         retrying: true,
         ...(attempt !== undefined && Number.isSafeInteger(attempt) ? { attempt } : {}),
         ...(maxAttempts !== undefined && Number.isSafeInteger(maxAttempts) ? { maxAttempts } : {}),
-        detail: clipText(m[0], 140),
+        detail,
       };
     }
   }
-  return undefined;
-}
-
-/** @deprecated Legacy pre-daemon stub kept for HEAD compat; never scrapes terminal rows. */
-export function inspectTerminalRetry(_rows: readonly string[] | undefined, _status: WorkerStatus, _hasCurrentTool = false): WorkerRetryStatus | undefined {
+  if (!hasCurrentTool) {
+    const recent = above.slice(-5);
+    for (let i = recent.length - 1; i >= 0; i--) {
+      for (const re of MODEL_ERROR_PATTERNS) {
+        const m = re.exec(recent[i]);
+        if (m) return { retrying: false, detail: clipText(m[0], 160) };
+      }
+    }
+  }
   return undefined;
 }
 
@@ -334,7 +343,7 @@ function mapQuotaWindows(usage: ModelUsage | undefined, now: number): WorkerQuot
 }
 
 /**
- * Combines DroidProxy model availability, subscription quota windows, and live daemon retry signals
+ * Combines DroidProxy model availability, subscription quota windows, and live terminal retry signals
  * into one actionable model status with explicit reset countdown and ISO timestamp.
  */
 export function inspectModelStatus(model: string | undefined, availability: ModelAvailability | undefined, usage: ModelUsage | undefined, now: number, retry?: WorkerRetryStatus): WorkerModelCooldown | undefined {
@@ -564,10 +573,9 @@ export function buildWorkerInspection(input: BuildWorkerInspectionInput): Worker
   const { worker, runtime, report } = input;
   const model = worker.activeModel ?? worker.model;
   const effort = worker.activeEffort ?? worker.effort;
-  const menu = worker.status === 'needs_input' && worker.ask?.kind !== 'permission' ? (worker.menu ?? worker.cloud?.menu ?? runtime?.menu) : undefined;
-  const state = input.state ?? (worker.status === 'needs_input' && (worker.ask?.kind === 'question' || Boolean(menu)) ? 'blocked_on_question' : worker.status);
+  const state = input.state ?? (worker.status === 'needs_input' && worker.ask?.kind === 'question' ? 'blocked_on_question' : worker.status);
 
-  const retry = inspectWorkerRetry(worker, runtime);
+  const retry = inspectTerminalRetry(runtime?.screenRows, worker.status, Boolean(runtime?.currentTool));
   const modelStatus = inspectFactoryModelStatus(input.factory, model, now, retry) ?? inspectModelStatus(model, input.availability, input.usage, now, retry);
 
   const plan: WorkerPlanStatus | undefined = worker.todos
@@ -598,16 +606,9 @@ export function buildWorkerInspection(input: BuildWorkerInspectionInput): Worker
 
   const lastHookAt = runtime?.lastHookAt;
   const silentForMs = lastHookAt ? Math.max(0, now - lastHookAt) : undefined;
-  let queuedMessages = runtime?.queuedMessages;
-  let termQueued = queuedMessages?.length ?? 0;
-  let noticeQueued = runtime?.queuedNotices ?? 0;
-  if (worker.queue && worker.queue.count > 0 && queuedMessages === undefined) {
-    const droidItems = worker.queue.items.filter((i) => i.source !== 'outbox');
-    const outboxCount = worker.queue.items.filter((i) => i.source === 'outbox').length;
-    termQueued = droidItems.length + worker.queue.moreSteering + worker.queue.moreQueued;
-    noticeQueued = outboxCount || noticeQueued;
-    if (droidItems.length) queuedMessages = droidItems.map((i) => i.text);
-  }
+  const queuedMessages = runtime?.queuedMessages;
+  const termQueued = queuedMessages?.length ?? 0;
+  const noticeQueued = runtime?.queuedNotices ?? 0;
   const queued =
     termQueued > 0 || noticeQueued > 0
       ? {
@@ -646,7 +647,6 @@ export function buildWorkerInspection(input: BuildWorkerInspectionInput): Worker
     ...(task ? { task } : {}),
     ...(taskLabel ? { taskLabel } : {}),
     ...(worker.activity ? { doing: worker.activity } : {}),
-    ...(menu ? { menu } : {}),
     ...(plan ? { plan } : {}),
     ...(currentTool ? { currentTool } : {}),
     ...(lastTool ? { lastTool } : {}),
@@ -697,15 +697,12 @@ export function formatForgeLines(forge: Pick<WorkerInspection, 'pr' | 'ci' | 're
   return lines;
 }
 
-/** Multi-line structured header for `office_look` and `worker_log` before the output tail. */
+/** Multi-line structured header for `office_look` and `worker_log` so leads see real state before raw terminal text. */
 export function formatWorkerInspection(s: WorkerInspection, opts?: { includeSteps?: boolean }): string {
   const lines: string[] = [];
   const head = [`State: ${s.state}`, ...(s.model ? [`model ${s.model}${s.effort ? ` (${s.effort})` : ''}`] : []), ...(s.silentForMs !== undefined ? [`last hook ${briefAge(s.silentForMs)} ago (${s.lastActivityAt})`] : [])];
   lines.push(head.join(' · '));
   if (s.task) lines.push(`Task: ${s.task}${formatTaskTag(s.taskLabel)}`);
-  if (s.menu) {
-    lines.push(`Question: ${s.menu.question ?? 'Choose an answer'}${s.menu.choices.length ? ` (${s.menu.choices.map((c) => `${c.number}. ${c.label}`).join(' | ')})` : ''}`);
-  }
   if (s.modelStatus && s.modelStatus.state !== 'ok') {
     const label = s.modelStatus.state === 'cooldown' ? 'Model cooldown' : 'Model alert';
     lines.push(`${label}: ${s.modelStatus.summary}`);

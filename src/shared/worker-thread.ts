@@ -18,8 +18,6 @@ export interface ThreadEntry {
   name?: string;
   input?: string;
   output?: string;
-  /** When `output` is a tail preview, the full visible result's id at `/api/thread/output`. */
-  outputRef?: string;
   error?: boolean;
   /** For a tool result, the seq the next entry took when the result was read: later than seq + 1 when other entries came first. */
   resultSeq?: number;
@@ -29,7 +27,7 @@ export interface ThreadEntry {
   at?: number;
   /** A tool's: when its result was written. */
   doneAt?: number;
-  /** A thought's recorded duration, from its block or the daemon's completion event. */
+  /** A thought's: how long the model took on the message it came in, from the record before it. */
   tookMs?: number;
   /** A Task call's: the session of the subagent it started (`thread.read` with `child`). */
   child?: string;

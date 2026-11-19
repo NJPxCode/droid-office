@@ -2,6 +2,8 @@
 // the office knows of one with no local terminal, or a picker when the pane is empty.
 
 import type { ClientMsg, WorkerInfo, WorkerStatus } from '../shared/protocol';
+import { canAnswer, sameMenu, workerMenu, type Menu } from '../shared/asks';
+import { pendingQuestions, questionPresentation, replySummary } from '../shared/ask-question';
 import { isAsleep, isBusy, needsOwnerInput, workerActivity } from '../shared/status';
 import { sessionWebUrl } from '../shared/factory-sessions';
 import { forkRefusal } from '../shared/worker-fork';
@@ -14,29 +16,23 @@ import { h, STATUS_LABEL, timeAgo, toast } from './ui/dom';
 import { colorDot } from './ui/kit';
 import { icon, type IconName } from './ui/icons';
 import { modelBadgeLabel, modelBadgeNode } from './ui/models';
-import { createQuestionSlot } from './ui/question-slot';
 import { mountWorkerThread, type WorkerThread } from './ui/worker-thread';
+import type { QuestionDraft, QuestionReply, openQuestionWorkspace } from './ui/question-workspace';
 import type { InlineTerminalHandle } from './ui/terminal';
+import type { PaneView } from './dashboard-workspace';
 import { workerTeams } from '../shared/team';
 import { missionAgent, ORCHESTRATOR_ID, type MissionAgent, type MissionControlState, type MissionTeamMember } from '../shared/mission-control';
 import type { SettingsPane } from '../shared/settings-nav';
 import { botLine, buildingAgent, missionLead, ORCHESTRATOR_EXAMPLES, ORCHESTRATOR_PITCH, orchestratorBlocked, orchestratorLine, orchestratorMessage, orchestratorSettingsPane, orchestratorStarted } from './mission';
+import { orchestratorAwake } from './mission-office';
 
 /** What a sidebar row carries when it's dragged onto a pane. */
 export const WORKER_MIME = 'application/x-droid-worker';
 /** What a pane's number carries when it's dragged onto another pane. */
 const SLOT_MIME = 'application/x-droid-slot';
+export const VIEW_KEY = 'droid-office.companion-view';
 
 export type PaneMode = 'empty' | 'terminal' | 'thread' | 'info';
-
-/** Routes all Droid sessions (`agent`, `ORCHESTRATOR_ID`, `cloud`) to Thread, external bots to info, and shells to terminal/info. */
-export function modeFor(w: WorkerInfo | undefined): PaneMode {
-  if (!w) return 'empty';
-  // An external bot runs elsewhere: its pane says what it is and who's on its team.
-  if (w.remote) return 'info';
-  if (w.id === ORCHESTRATOR_ID || w.cloud || w.kind === 'agent') return 'thread';
-  return !isAsleep(w.status) ? 'terminal' : 'info';
-}
 
 /** What a pane needs from the page around it. */
 export interface PaneHost {
@@ -49,6 +45,7 @@ export interface PaneHost {
   read(key: string): string;
   remember(key: string, value: string): void;
   terminal(): Promise<typeof import('./ui/terminal')>;
+  setView(id: string, view: PaneView): void;
   focus(index: number): void;
   close(index: number): void;
   toggleMax(index: number): void;
@@ -75,6 +72,7 @@ export interface PaneHost {
 
 export interface PaneState {
   worker?: WorkerInfo;
+  view: PaneView;
   focused: boolean;
   maximized: boolean;
   canMaximize: boolean;
@@ -111,6 +109,11 @@ function safeLink(url: string) {
   } catch {
     return '#';
   }
+}
+
+function lines(id: string) {
+  const s = store.screens.get(id);
+  return s && Array.from({ length: s.rows }, (_, i) => (s.lines[i] ?? []).map((r) => r[0]).join(''));
 }
 
 /** A worker's colour, ringed and pulsing by status. */
@@ -162,10 +165,12 @@ export function createPane(host: PaneHost, index: number): Pane {
   const task = h('span.dash-pane-task');
   const model = h('span.dash-pane-model');
   const pill = h('span.pill');
+  const views = h('div.seg.dash-pane-views', { role: 'group' });
+  const flip = h('button.btn.icon.sm.ghost.dash-pane-flip', { type: 'button' });
   const actions = h('div.dash-pane-actions', { role: 'group', 'aria-label': 'Worker actions' });
   const maxBtn = h('button.btn.icon.sm.ghost', { type: 'button', onclick: () => host.toggleMax(index) });
   const closeBtn = h('button.btn.icon.sm.ghost.dash-pane-close', { type: 'button', 'aria-label': 'Close pane', title: 'Close pane', onclick: () => host.close(index) }, icon('x', 14));
-  const head = h('header.dash-pane-head', {}, badge, who, h('span.dash-pane-titles', {}, name, task, model), pill, actions, maxBtn, closeBtn);
+  const head = h('header.dash-pane-head', {}, badge, who, h('span.dash-pane-titles', {}, name, task, model), pill, views, flip, actions, maxBtn, closeBtn);
   const teamNav = h('nav.dash-team-nav', { 'aria-label': 'Worker team', hidden: true });
   const question = h('section.dash-question', { 'aria-label': 'Question requiring input', hidden: true });
   const stage = h('div.dash-stage');
@@ -189,17 +194,15 @@ export function createPane(host: PaneHost, index: number): Pane {
   /** The Orchestrator session this pane's thread shows: a new conversation starts a new thread. */
   let orchestratorSession = '';
 
-  const questionSlot = createQuestionSlot({
-    element: question,
-    worker: () => (id ? host.worker(id) : undefined),
-    entries: () => thread?.entries() ?? [],
-    live: () => host.live(),
-    busy: (wid) => host.busy(wid),
-    usable: (wid) => host.usable(wid, host.floor()),
-    readDraft: (wid) => host.read(draftKey(host.floor(), `${wid}:answer`)),
-    saveDraft: (wid, text) => host.remember(draftKey(host.floor(), `${wid}:answer`), text),
-    send: (msg, wid) => host.action(msg, wid, host.floor(), 'Answer sent.'),
-  });
+  let shownMenu: Menu | undefined;
+  let questionKey = '';
+  let questionDraft: QuestionDraft = { text: '' };
+  let questionWorkspace: ReturnType<typeof openQuestionWorkspace> | undefined;
+  /** What this pane sent for the questionnaire being asked, by position, for the workspace's step bar. */
+  let series = { key: '', answers: {} as Record<number, string> };
+  let answered = false;
+  let questionReplying = false;
+  let answerSettlesAt = 0;
 
   // --- Focus and drag-and-drop ------------------------------------------------------------------
   let focusComposerOnClick = false;
@@ -246,6 +249,7 @@ export function createPane(host: PaneHost, index: number): Pane {
 
   // --- The body ---------------------------------------------------------------------------------
   function teardown(keepThread = false) {
+    questionWorkspace?.close();
     if (keepThread) thread?.activate(false);
     else {
       thread?.dispose();
@@ -264,7 +268,27 @@ export function createPane(host: PaneHost, index: number): Pane {
     mode = '';
     headKey = '';
     actionsKey = '';
-    questionSlot.reset(next);
+    shownMenu = undefined;
+    questionKey = '';
+    questionDraft = { text: next ? host.read(draftKey(host.floor(), `${next}:answer`)) : '' };
+    series = { key: '', answers: {} };
+    answered = false;
+    questionReplying = false;
+    answerSettlesAt = 0;
+    question.hidden = true;
+    question.replaceChildren();
+  }
+
+  function modeFor(w: WorkerInfo | undefined, view: PaneView): PaneMode {
+    if (!w) return 'empty';
+    // An external bot runs elsewhere: its pane says what it is and who's on its team.
+    if (w.remote) return 'info';
+    // Before its first prompt, or asleep, the Orchestrator has no terminal: its Thread is where a prompt starts it.
+    if (w.id === ORCHESTRATOR_ID) return view === 'terminal' && orchestratorAwake(host.mission()) ? 'terminal' : 'thread';
+    // A cloud worker has no terminal here: its Thread is its Factory session.
+    if (w.cloud) return 'thread';
+    if (w.kind === 'agent' && view === 'thread') return 'thread';
+    return !isAsleep(w.status) ? 'terminal' : 'info';
   }
 
   function build(w: WorkerInfo | undefined, next: PaneMode) {
@@ -301,10 +325,6 @@ export function createPane(host: PaneHost, index: number): Pane {
       info.preview = s ? h('pre.dash-preview.big', { 'aria-label': `${w.name}’s screen` }) : undefined;
       stage.replaceChildren(h('div.dash-info', {}, info.who, info.activity, info.preview ?? null, info.meta));
     } else if (next === 'thread') {
-      if (!host.net) {
-        stage.replaceChildren();
-        return;
-      }
       const intended = host.floor();
       const orchestrator = w.id === ORCHESTRATOR_ID;
       // The Orchestrator's conversation is the same on every floor, and so is its draft.
@@ -312,15 +332,23 @@ export function createPane(host: PaneHost, index: number): Pane {
       thread ??= mountWorkerThread(host.net, {
         worker: w,
         question,
+        queueKey: `${key}:queue-receipts`,
         draft: host.read(key),
         onDraft: (text) => host.remember(key, text),
         onEntries: () => paintQuestion(),
         send: (msg) => host.action(orchestrator ? orchestratorMessage(msg) : msg, w.id, intended),
+        screen: w.cloud ? undefined : () => lines(w.id),
         team: () => (host.floor() === intended ? [...store.workers.values()] : []),
         openWorker: (mate) => {
           if (!host.usable(mate, intended)) return;
+          host.setView(mate, 'thread');
           host.openBeside(mate);
         },
+        raw: w.cloud
+          ? undefined
+          : () => {
+              if (!orchestrator || orchestratorAwake(host.mission())) host.setView(w.id, 'terminal');
+            },
         floor: intended,
         ...(host.changes && !w.cloud ? { openChanges: (id: string) => host.changes?.(id) } : {}),
         ...(host.toWhiteboard && !w.cloud ? { sendToWhiteboard: (id: string, path: string) => host.toWhiteboard?.(id, path, intended) } : {}),
@@ -329,6 +357,7 @@ export function createPane(host: PaneHost, index: number): Pane {
               intro: () => (orchestratorStarted(host.mission()) ? undefined : (intro ??= orchestratorIntro())),
               blocked: () => orchestratorBlocked(host.mission()),
               blockedAction: h('button.btn.sm', { type: 'button', onclick: () => host.settings(orchestratorSettingsPane(host.mission())) }, icon('settings', 13), 'Settings'),
+              interrupt: true,
               promptWakes: true,
             }
           : {}),
@@ -493,7 +522,11 @@ export function createPane(host: PaneHost, index: number): Pane {
 
   function paintHead(s: PaneState) {
     const w = s.worker;
-    const key = JSON.stringify([w && [w.id, w.name, w.color, w.status, w.acked, w.lead, headLine(w), w.activeModel ?? w.model, w.activeEffort ?? w.effort], mode, s.maximized, s.canMaximize, host.live()]);
+    const local = !!w && !w.cloud && !w.remote;
+    const threaded = mode === 'thread';
+    // The Orchestrator has a terminal only while a session it started is awake.
+    const toggles = local && w.kind === 'agent' && (w.id !== ORCHESTRATOR_ID || !!orchestratorAwake(host.mission()));
+    const key = JSON.stringify([w && [w.id, w.name, w.color, w.status, w.acked, w.lead, headLine(w), w.activeModel ?? w.model, w.activeEffort ?? w.effort], toggles, mode, s.maximized, s.canMaximize, host.live()]);
     if (key === headKey) return;
     headKey = key;
     el.setAttribute('aria-label', w ? `Pane ${index + 1}: ${w.name}` : `Pane ${index + 1}: empty`);
@@ -509,6 +542,7 @@ export function createPane(host: PaneHost, index: number): Pane {
       task.textContent = '';
       model.replaceChildren();
       pill.hidden = true;
+      views.hidden = flip.hidden = true;
       return;
     }
     who.replaceChildren(workerDot(w));
@@ -523,6 +557,26 @@ export function createPane(host: PaneHost, index: number): Pane {
     const blocked = w.id === ORCHESTRATOR_ID && !!orchestratorBlocked(host.mission());
     pill.className = blocked ? 'pill blocked' : `pill ${w.status}`;
     pill.textContent = blocked ? 'blocked' : (STATUS_LABEL[w.status] ?? w.status);
+    views.hidden = flip.hidden = !toggles;
+    views.setAttribute('aria-label', `${w.name} view`);
+    views.replaceChildren(
+      ...(['thread', 'terminal'] as const).map((value) =>
+        h(
+          'button',
+          {
+            type: 'button',
+            class: `btn sm ${(threaded ? 'thread' : 'terminal') === value ? 'on' : ''}`,
+            'aria-pressed': String((threaded ? 'thread' : 'terminal') === value),
+            onclick: () => host.setView(w.id, value),
+          },
+          value === 'thread' ? 'Thread' : 'TTY',
+        ),
+      ),
+    );
+    flip.replaceChildren(icon(threaded ? 'terminal' : 'message', 14));
+    flip.setAttribute('aria-label', threaded ? 'Show raw terminal' : 'Show thread');
+    flip.title = flip.getAttribute('aria-label') ?? '';
+    flip.onclick = () => host.setView(w.id, threaded ? 'terminal' : 'thread');
   }
 
   function paintActions(w: WorkerInfo | undefined) {
@@ -616,7 +670,7 @@ export function createPane(host: PaneHost, index: number): Pane {
         },
         h('div.dash-empty-icon', {}, icon('panes', 18)),
         h('h3', {}, s.anyone ? 'Open a worker here' : 'Nobody on this floor yet'),
-        h('p', {}, s.anyone ? (chips.length ? 'Pick someone from the floor, or drag them in from the list.' : 'Everyone on the floor is open in another pane.') : 'Hire a Droid and its thread opens here.'),
+        h('p', {}, s.anyone ? (chips.length ? 'Pick someone from the floor, or drag them in from the list.' : 'Everyone on the floor is open in another pane.') : 'Hire a Droid and its terminal opens here.'),
         chips.length ? h('div.dash-picks', {}, ...chips) : null,
         // The floor's one orange call to action when nobody works here yet; beside other panes the sidebar's Hire is.
         h(s.anyone ? 'button.btn' : 'button.btn.accent', { type: 'button', disabled: !host.live(), onclick: () => host.hire(index) }, icon('plus', 14), 'Hire Droid here'),
@@ -705,9 +759,160 @@ export function createPane(host: PaneHost, index: number): Pane {
 
   // --- The worker's question --------------------------------------------------------------------
   function paintQuestion(review = false) {
-    if (!id || mode === 'empty' || !mode) return;
+    const w = id ? host.worker(id) : undefined;
+    if (!w || mode === 'empty' || !mode) return;
+    if (w.status !== 'needs_input' && question.hidden && !shownMenu && !questionWorkspace && !questionReplying && Date.now() >= answerSettlesAt) return;
+    const screen = lines(w.id);
+    const next = canAnswer(w, screen) ? workerMenu(w, screen) : undefined;
+    if (w.status !== 'needs_input') {
+      shownMenu = undefined;
+      answered = false;
+    }
+    // The workspace follows the questionnaire: after an answer, or when the owner hasn't started on the
+    // shown question (it was answered in the terminal), the next menu replaces it. A started draft waits.
+    const untouched = !questionDraft.text.trim() && questionDraft.choices === undefined;
+    if ((!shownMenu && next) || review || (next && !questionReplying && !sameMenu(shownMenu, next) && (answered || untouched))) {
+      shownMenu = next;
+      answered = false;
+      questionDraft.choices = undefined;
+    }
+    const current = sameMenu(shownMenu, next);
+    const settling = questionReplying || Date.now() < answerSettlesAt;
+    const entries = thread?.entries() ?? [];
+    const asked = JSON.stringify(pendingQuestions(entries, w.ask).map((q) => [q.question, q.options]));
+    if (asked !== series.key) series = { key: asked, answers: {} };
+    const display = shownMenu && questionPresentation(shownMenu, entries, w.ask);
+    const supported = !shownMenu?.multiSelect || store.workerAnswerMultiSelect;
+    const live = host.live();
+    const enabled = live && supported && current && !host.busy(w.id) && !answered && !questionReplying;
+    const qs = shownMenu && { menu: shownMenu, entries, ask: w.ask, answers: series.answers, hasReview: !w.cloud, enabled, supported, sending: questionReplying, answered, current, connected: live };
+    if (qs) questionWorkspace?.update(qs);
+    else if (questionWorkspace && !settling) questionWorkspace.close();
+    const key = JSON.stringify([shownMenu, display, current, supported, live, host.busy(w.id), answered, questionReplying, settling, w.status, mode]);
+    if (key === questionKey) return;
+    questionKey = key;
+    question.hidden = !shownMenu && w.status !== 'needs_input';
     if (mode !== 'thread' && question.nextElementSibling !== stage) stage.before(question);
-    questionSlot.paint(review);
+    if (!shownMenu) {
+      if (settling) {
+        question.replaceChildren(h('div.dash-question-card.quiet', { role: 'status' }, h('p', {}, questionReplying ? 'Sending your answer…' : 'Answer sent. Waiting for the worker’s next move.')));
+        return;
+      }
+      question.replaceChildren(
+        h(
+          'div.dash-question-card.quiet',
+          {},
+          h('span.dash-question-icon', {}, icon('alert', 16)),
+          h(
+            'p',
+            {},
+            h('b', {}, `${w.name} needs you. `),
+            w.cloud
+              ? 'The office can’t answer this one from here: open its Factory session.'
+              : mode === 'thread'
+                ? 'This CLI dialog cannot be answered safely here. Open TTY to continue.'
+                : 'Its screen has no menu the companion can answer safely. Answer it in the terminal below.',
+          ),
+        ),
+      );
+      return;
+    }
+    const menu = shownMenu;
+    const intended = host.floor();
+    const reply = async (value: QuestionReply, answerMenu: Menu) => {
+      if (!host.live() || questionReplying || answered || !host.usable(w.id, intended)) return;
+      questionReplying = true;
+      questionKey = '';
+      paintQuestion();
+      const error = await host.action({ t: 'worker.answer', workerId: w.id, menu: answerMenu, ...value }, w.id, intended, 'Answer sent.');
+      if (id !== w.id || host.floor() !== intended) return;
+      questionReplying = false;
+      if (error) {
+        answerSettlesAt = 0;
+        toast(error, 'warn');
+      } else {
+        const sent = questionPresentation(answerMenu, thread?.entries() ?? [], w.ask);
+        if (sent.position) series.answers = { ...series.answers, [sent.position]: replySummary(sent, value) };
+        answered = true;
+        const until = Date.now() + 3000;
+        answerSettlesAt = until;
+        setTimeout(() => {
+          if (id !== w.id || answerSettlesAt !== until) return;
+          questionKey = '';
+          paintQuestion();
+        }, 3000);
+        questionDraft.text = '';
+        questionDraft.choices = undefined;
+        host.remember(draftKey(intended, `${w.id}:answer`), '');
+      }
+      questionKey = '';
+      paintQuestion();
+    };
+    question.replaceChildren(
+      h(
+        'div.dash-question-card',
+        {},
+        h('div.dash-question-top', {}, h('span.eyebrow', {}, `${w.name} needs your answer`), answered ? h('span.pill.done', {}, 'Sent') : null),
+        h('h3.dash-question-preview', {}, display?.question ?? menu.question ?? 'Choose an answer'),
+        h(
+          'div.dash-question-summary',
+          {},
+          menu.review
+            ? 'Review and submit your answers to continue'
+            : `${display?.position ? `Question ${display.position} of ${display.total} · ` : ''}${menu.multiSelect ? 'Select all that apply' : 'Select one answer'} · ${menu.choices.length} options`,
+        ),
+        h(
+          'button.btn.accent',
+          {
+            type: 'button',
+            disabled: !live || questionReplying,
+            onclick: () => {
+              if (questionWorkspace || !qs) return;
+              void import('./ui/question-workspace').then(({ openQuestionWorkspace }) => {
+                if (questionWorkspace || !qs) return;
+                questionWorkspace = openQuestionWorkspace({
+                  name: w.name,
+                  state: qs,
+                  draft: questionDraft,
+                  onDraft: () => host.remember(draftKey(intended, `${w.id}:answer`), questionDraft.text),
+                  reply,
+                  review: () => {
+                    questionKey = '';
+                    paintQuestion(true);
+                  },
+                  // A cloud worker has no terminal to fall back on.
+                  raw: w.cloud ? undefined : () => host.setView(w.id, 'terminal'),
+                  onClose: () => {
+                    questionWorkspace = undefined;
+                  },
+                });
+              });
+            },
+          },
+          answered ? 'View answer status' : menu.review ? 'Review answers' : 'Answer questions',
+        ),
+        questionReplying
+          ? h('p.note.info', {}, 'Sending your answer…')
+          : answered
+            ? h('p.note.info', {}, 'Answer sent. Waiting for the worker’s next move.')
+            : !current
+              ? h('p.note.warn', {}, 'The question changed or was answered elsewhere. Your text is kept; look at the current question before sending anything.')
+              : null,
+        !current && next
+          ? h(
+              'button.btn',
+              {
+                type: 'button',
+                onclick: () => {
+                  questionKey = '';
+                  paintQuestion(true);
+                },
+              },
+              'Show the current question',
+            )
+          : null,
+      ),
+    );
   }
 
   const pane: Pane = {
@@ -734,7 +939,7 @@ export function createPane(host: PaneHost, index: number): Pane {
       el.toggleAttribute('inert', s.covered);
       badge.title = `Pane ${index + 1}`;
       if ((w?.id ?? '') !== id) reset(w?.id ?? '');
-      const next = modeFor(w);
+      const next = modeFor(w, s.view);
       if (w?.id === ORCHESTRATOR_ID) {
         // Its first session grows out of the empty thread; any later change of session is a new conversation.
         const session = w.sessionId ?? '';
@@ -778,7 +983,6 @@ export function createPane(host: PaneHost, index: number): Pane {
     dispose() {
       if (disposed) return;
       teardown();
-      questionSlot.dispose();
       disposed = true;
       el.remove();
     },
