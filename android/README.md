@@ -39,7 +39,7 @@ One answer workspace walks a whole structured AskUser questionnaire (`1..N`): a 
 Typing just `/` offers the complete slash-command list. Swipe through the bounded menu to reach every built-in command, skill and custom command without typing more characters.
 
 Thread follows the newest message without moving away when older pages load. Drag toward earlier messages to pause follow; return to the bottom or tap the down arrow to resume. TodoWrite updates appear only in the plan drawer, not inline in the conversation.
-Live thinking and replies reveal word by word, then hand off to the saved message. Joining an in-progress turn shows what's already been written and reveals new text as it comes in.
+Live thinking and replies reveal word by word, then hand off to the saved message. Joining an in-progress turn shows what's already been written and reveals new text as it comes in. Tap the thinking header to collapse or reopen it while text is still coming in.
 
 Office and compaction messages appear as notices, not as your prompts. Pictures sent with prompts open from their thumbnails; after you submit an AskUser questionnaire, `worker.thread.answered_question/<tool id>` shows the recorded questions and your answers. A plan from a previous turn does not stay above the composer on the next turn.
 

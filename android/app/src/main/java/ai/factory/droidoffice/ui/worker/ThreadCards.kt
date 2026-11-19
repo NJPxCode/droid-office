@@ -594,14 +594,14 @@ private fun ActionRow(a: ThreadModelAction, c: Cards, dense: Boolean) {
 /** One thought, with the shell's Factory timing, shimmer and disclosure motion. */
 @Composable
 private fun ThoughtRow(t: ThreadBlock.Thought, c: Cards) {
-    val isOpen = ThreadView.Open.block(t, c.open)
     val entry = c.loaded[t.id]
     val revealed = LocalThreadReveal.current?.value?.takeIf { it.entryId == t.id }
+    val isOpen = ThreadView.Open.block(t, c.open) || (revealed != null && c.open[t.id] != false)
     ThinkingBlock(
         id = t.id,
         text = revealed?.text ?: ThreadView.thought(t, entry),
         live = t.live,
-        open = isOpen || (revealed != null && c.open[t.id] != false),
+        open = isOpen,
         onToggle = { c.onFlip(t.id, isOpen) },
         tookMs = entry?.tookMs,
         startedAtMs = c.livePhaseSince,

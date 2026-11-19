@@ -2409,6 +2409,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       progress.dispose();
       motion.dispose();
       if (revealFrame) cancelAnimationFrame(revealFrame);
+      clearTimeout(heldTimer);
       window.removeEventListener('pointerup', ownerReleased);
       search.dispose();
       settingsUi.dispose();
