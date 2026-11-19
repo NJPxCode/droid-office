@@ -794,7 +794,9 @@ test('tool notifications animate work, count failed tests and request branch/PR 
   };
   const read = call('Read', { file_path: 'src/a.ts' });
   assert.equal(worker.action, 'read');
+  assert.ok(worker.activity, 'the sidebar shows the running tool');
   read();
+  assert.equal(worker.activity, undefined, 'the sidebar clears the finished tool');
   const edit = call('Edit', { file_path: 'src/a.ts' });
   assert.equal(worker.action, 'edit');
   edit();

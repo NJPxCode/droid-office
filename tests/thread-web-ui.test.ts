@@ -1238,7 +1238,7 @@ test('live thinking follows its own tail and the bottom, ends as a finished thou
     const since = Date.now();
     w.thinkSince = since;
     let sent = 40;
-    w.live(2, { status: 'pondering', working: 'thinking', stream: { kind: 'thinking', text: thinking.slice(0, sent), since } });
+    w.live(2, { status: 'pondering', working: 'thinking', stream: { kind: 'thinking', text: thinking.slice(0, sent), since, entryId: 'think-1' } });
     let rev = 2;
     const out: { dist: number; arrow: boolean; inner: number }[] = [];
     for (let frame = 0; frame < 240; frame++) {
@@ -1277,7 +1277,7 @@ test('live thinking follows its own tail and the bottom, ends as a finished thou
         t: 'thread.live',
         workerId: 'worker-1',
         sessionId: 'session-1',
-        live: { rev: rev + 1, at: Date.now(), status: 'pondering', working: 'thinking', after: 'm29', tools: [], stream: { kind: 'thinking', text: `${thinking} more words arriving now`, since: w.thinkSince } },
+        live: { rev: rev + 1, at: Date.now(), status: 'pondering', working: 'thinking', after: 'm29', tools: [], stream: { kind: 'thinking', text: `${thinking} more words arriving now`, since: w.thinkSince, entryId: 'think-1' } },
       });
       await w.frames(20);
       const body = document.querySelector<HTMLElement>('.wt-live-thinking .wt-thinking-text')!;
@@ -1290,26 +1290,36 @@ test('live thinking follows its own tail and the bottom, ends as a finished thou
   // The reply starts: the thought shows finished, where its entry will land, until the transcript has it.
   const handoff = await page.evaluate(async (rev) => {
     const w = window as any;
-    w.advance(4000);
-    w.live(rev + 2, { stream: { kind: 'text', text: 'The answer is ', since: Date.now() } });
+    w.advance(8000);
+    w.live(rev + 2, { stream: { kind: 'text', text: 'The answer is ', since: Date.now() }, completedThinking: { 'think-1': 5000 } });
     await w.frames(10);
     return { held: document.querySelector('.wt-stream .wt-held-thinking .wt-thought-label')?.textContent, live: !!document.querySelector('.wt-live-thinking'), arrow: w.arrow(), dist: w.dist() };
   }, during.rev);
-  assert.match(handoff.held ?? '', /^Thought for \d+s$/);
+  assert.equal(handoff.held, 'Thought for 5s', 'uses the daemon duration, not the time this viewer waited');
   assert.equal(handoff.live, false);
   assert.equal(handoff.arrow, false);
-  const entries = [...longEntries(), { id: 'think-1', seq: 30, role: 'assistant', kind: 'thinking', text: thinking } as ThreadEntry, { id: 'reply-1', seq: 31, role: 'assistant', kind: 'text', text: 'The answer is 42.' } as ThreadEntry];
+  const entries = [
+    ...longEntries(),
+    { id: 'think-1', seq: 30, role: 'assistant', kind: 'thinking', text: thinking, tookMs: 5000 } as ThreadEntry,
+    { id: 'reply-1', seq: 31, role: 'assistant', kind: 'text', text: 'The answer is 42.' } as ThreadEntry,
+  ];
   const landed = await page.evaluate(
     async ({ entries, rows, rev }) => {
       const w = window as any;
       w.receive({ t: 'thread.live', workerId: 'worker-1', sessionId: 'session-1', live: { rev: rev + 3, at: Date.now(), status: 'idle', working: 'idle', after: 'reply-1', tools: [] } });
       w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
       await w.frames(10);
-      return { stream: document.querySelector<HTMLElement>('.wt-stream')!.hidden, held: !!document.querySelector('.wt-stream:not([hidden]) .wt-held-thinking'), dist: w.dist(), arrow: w.arrow() };
+      return {
+        stream: document.querySelector<HTMLElement>('.wt-stream')!.hidden,
+        held: !!document.querySelector('.wt-stream:not([hidden]) .wt-held-thinking'),
+        recorded: document.querySelector('[data-disclosure="think-1"] .wt-thought-label')?.textContent,
+        dist: w.dist(),
+        arrow: w.arrow(),
+      };
     },
     { entries, rows: presentThread(entries, false), rev: during.rev },
   );
-  assert.deepEqual(landed, { stream: true, held: false, dist: landed.dist, arrow: false });
+  assert.deepEqual(landed, { stream: true, held: false, recorded: handoff.held, dist: landed.dist, arrow: false });
   assert.ok(landed.dist <= 2, 'still at the bottom once the turn lands');
 
   // The owner scrolling the Thread up lets go of the bottom and shows the arrow; new text no longer pulls it down.

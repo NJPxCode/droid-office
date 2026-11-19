@@ -1157,7 +1157,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
 
   /** An entry's pictures, each opening at full size, read from `owner`'s session. A cloud worker's session has none here. */
   const pictures = (entry: ThreadEntry | undefined, title: string, about?: string, owner: WorkerInfo = worker) => {
-    const imgs = !owner.cloud ? (entry?.images ?? []) : [];
+    const imgs = canOpenFiles(owner) ? (entry?.images ?? []) : [];
     if (!imgs.length) return null;
     const gallery = imgs.map((image, i) => ({
       src: withToken(`/api/thread/image?${new URLSearchParams({ floor: opts.floor ?? '', worker: owner.id, image: image.id })}`),

@@ -159,7 +159,7 @@ test('daemon live stream tracks thinking/text deltas, dedupes landed entries, an
   const step1 = await tracker.compute('w', thinkingInputs, [prompt]);
   assert.equal(step1.live.status, 'pondering');
   assert.equal(step1.live.working, 'thinking');
-  assert.deepEqual(step1.live.stream, { kind: 'thinking', text: 'Checking test suite...', since: 5100 });
+  assert.deepEqual(step1.live.stream, { kind: 'thinking', text: 'Checking test suite...', since: 5100, entryId: 'm1:0' });
   assert.deepEqual(step1.live.tools, [
     {
       name: 'Execute',
@@ -185,11 +185,13 @@ test('daemon live stream tracks thinking/text deltas, dedupes landed entries, an
       ...thinkingInputs.daemon!,
       working: 'streaming_assistant_message',
       stream: { kind: 'text', messageId: 'm2', blockIndex: 0, since: 5500, text: 'All tests passed.' },
+      completedThinking: { 'm1:0': 400 },
     },
   };
   const step2 = await tracker.compute('w', textInputs, [prompt, landedTool]);
   assert.equal(step2.live.tools[0]?.id, 'tool:call-1');
   assert.equal(step2.live.stream?.text, 'All tests passed.');
+  assert.deepEqual(step2.live.completedThinking, { 'm1:0': 400 });
 
   const step3 = await tracker.compute('w', textInputs, [prompt, landedTool, entry('m2:0', { text: 'All tests passed.' })]);
   assert.equal(step3.live.stream, undefined);

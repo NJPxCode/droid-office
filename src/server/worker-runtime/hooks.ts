@@ -400,7 +400,6 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
         w.completedTool = { ...w.currentTool, at: now };
         if (w.info.activity === w.currentTool.summary) w.info.activity = undefined;
         w.currentTool = undefined;
-        w.info.action = undefined;
       }
       const isError = result.is_error === true || n.isError === true;
       if (toolName === 'TodoWrite' && !isError) {
