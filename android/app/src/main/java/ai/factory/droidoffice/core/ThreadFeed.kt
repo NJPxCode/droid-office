@@ -79,6 +79,8 @@ data class ThreadEntry(
     val tookMs: Long? = null,
     /** A Task call's: the subagent session running it. */
     val child: String? = null,
+    /** Reference to the complete tool result when [output] is a tail preview. */
+    val outputRef: String? = null,
 ) {
     companion object {
         /** An entry with no id, no seq, or a role or kind this app doesn't know is skipped rather than guessed at. */
@@ -104,6 +106,7 @@ data class ThreadEntry(
                 doneAt = o.long("doneAt")?.takeIf { it > 0 },
                 tookMs = o.long("tookMs")?.takeIf { it >= 0 },
                 child = o.str("child")?.takeIf { it.isNotEmpty() },
+                outputRef = o.str("outputRef")?.takeIf { it.isNotEmpty() },
             )
         }
 
@@ -260,7 +263,7 @@ class ThreadFeed(val workerId: String, private val prefix: String = UUID.randomU
     }
 
     /** Applies an answer when it is to a request still out from this feed, or a pushed latest snapshot. True when it was. */
-    fun receive(msg: ServerMsg.ThreadSnapshot): Boolean {
+    fun receive(msg: ServerMsg.ThreadSnapshot, keepLatest: Boolean = false): Boolean {
         if (msg.workerId != workerId) return false
         val isLatest = msg.before == null && latest?.request == msg.request
         val isPush = msg.push && msg.before == null && state.phase != ThreadPhase.Unavailable
@@ -275,7 +278,7 @@ class ThreadFeed(val workerId: String, private val prefix: String = UUID.randomU
                 // The session moved on, or the list's first entry changed, while this page was out: it
                 // no longer joins onto what is shown.
                 msg.sessionId != state.sessionId || state.entries.firstOrNull()?.seq != before -> state.copy(loadingEarlier = false)
-                else -> older(msg, before ?: Long.MAX_VALUE)
+                else -> older(msg, before ?: Long.MAX_VALUE, keepLatest)
             }
             return true
         }
@@ -327,11 +330,11 @@ class ThreadFeed(val workerId: String, private val prefix: String = UUID.randomU
     }
 
     /** An earlier page joined in front of what's loaded; past [MAX_ENTRIES], the newest entries make room. */
-    private fun older(msg: ServerMsg.ThreadSnapshot, before: Long): ThreadState {
+    private fun older(msg: ServerMsg.ThreadSnapshot, before: Long, keepLatest: Boolean): ThreadState {
         val loaded = state.entries.mapTo(HashSet()) { it.id }
         val page = msg.entries.filter { it.seq < before && it.id !in loaded }.sortedBy { it.seq }.distinctBy { it.id }
         val all = page + state.entries
-        val kept = if (all.size > MAX_ENTRIES) all.take(MAX_ENTRIES) else all
+        val kept = if (keepLatest) all.takeLast(MAX_ENTRIES) else all.take(MAX_ENTRIES)
         val support = ThreadSupport.of(msg.presentation)
         val heldFrom = state.rows.firstOrNull()?.from ?: Long.MAX_VALUE
         val rows = rowsBefore(incoming(msg, support), heldFrom, kept) + state.rows
@@ -339,10 +342,10 @@ class ThreadFeed(val workerId: String, private val prefix: String = UUID.randomU
             entries = kept,
             rows = if (kept.size < all.size) within(rows, kept) else rows,
             support = support,
-            hasMore = msg.hasMore,
+            hasMore = msg.hasMore || (keepLatest && kept.size < all.size),
             loadingEarlier = false,
             earlierError = null,
-            newerTrimmed = state.newerTrimmed || kept.size < all.size,
+            newerTrimmed = state.newerTrimmed || (!keepLatest && kept.size < all.size),
         )
     }
 

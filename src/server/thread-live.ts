@@ -1,7 +1,7 @@
 import { stat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { WorkerAsk, WorkerStatus } from '../shared/protocol.js';
-import { liveStatus, textSignature, type ThreadLive, type ThreadLiveTool, type ThreadLiveWorking, type ThreadSessionSettings } from '../shared/thread-live.js';
+import { liveStatus, outputTail, textSignature, type ThreadLive, type ThreadLiveTool, type ThreadLiveWorking, type ThreadSessionSettings } from '../shared/thread-live.js';
 import type { ThreadEntry } from '../shared/worker-thread.js';
 import type { ActiveToolCall } from './worker-queue.js';
 
@@ -17,6 +17,7 @@ export interface DaemonLiveToolInput {
 export interface DaemonLiveInput {
   working: ThreadLiveWorking;
   stream?: { kind: 'thinking' | 'text'; text: string; since: number; messageId?: string; blockIndex?: number };
+  completedThinking?: Record<string, number>;
   tools?: readonly DaemonLiveToolInput[];
   settings?: ThreadSessionSettings;
   label?: string;
@@ -45,7 +46,6 @@ export interface ThreadLiveInputs {
 
 /** How often a session's settings file is looked at again while it's watched. */
 const SETTINGS_RECHECK_MS = 500;
-const OUTPUT_LINES = 40;
 /** Matches the activity label for conversation compaction (worker-runtime/hooks.ts). */
 const COMPACTING = /compacting/i;
 
@@ -135,11 +135,12 @@ export class ThreadLiveTracker {
     let stream: ThreadLive['stream'];
     if (busy && daemon?.stream && (working === 'thinking' || working === 'streaming_assistant_message')) {
       const ds = daemon.stream;
-      const landedById = ds.messageId ? entries.some((e) => e.id === `${ds.messageId}:text` || e.id === `${ds.messageId}:${ds.blockIndex ?? 0}`) : false;
+      const entryId = ds.messageId ? `${ds.messageId}:${ds.blockIndex ?? 0}` : undefined;
+      const landedById = ds.messageId ? entries.some((e) => e.id === `${ds.messageId}:text` || e.id === entryId) : false;
       if (ds.text && !landedById && !landed(ds.text, entries)) {
         const key = `${ds.kind}:${ds.messageId ?? ''}:${ds.blockIndex ?? 0}:${textSignature(ds.text).slice(0, 40)}`;
         if (state.stream?.key !== key) state.stream = { key, since: ds.since || now };
-        stream = { kind: ds.kind, text: ds.text, since: state.stream.since };
+        stream = { kind: ds.kind, text: ds.text, since: state.stream.since, ...(entryId ? { entryId } : {}) };
       }
     }
     if (!stream) state.stream = undefined;
@@ -162,6 +163,7 @@ export class ThreadLiveTracker {
       ...(working !== 'idle' ? { phaseSince: state.phaseSince } : {}),
       ...(entries.length ? { after: entries[entries.length - 1].id } : {}),
       ...(stream ? { stream } : {}),
+      ...(daemon?.completedThinking ? { completedThinking: daemon.completedThinking } : {}),
       tools,
       ...(waiting ? { waiting } : {}),
       ...(merged ? { settings: merged } : {}),
@@ -194,12 +196,7 @@ export class ThreadLiveTracker {
         startedAt: dt?.startedAt ?? entry.at ?? this.now(),
         phase: 'running',
       };
-      if (dt?.output !== undefined) {
-        const lines = dt.output.split('\n');
-        tool.output = lines.slice(-OUTPUT_LINES).join('\n');
-        const more = dt.more ?? (lines.length > OUTPUT_LINES ? lines.length - OUTPUT_LINES : undefined);
-        if (more !== undefined && more > 0) tool.more = more;
-      }
+      if (dt?.output !== undefined) Object.assign(tool, outputTail(dt.output, dt.more));
       out.push(tool);
     }
     for (const dt of daemon.tools ?? []) {
@@ -213,12 +210,7 @@ export class ThreadLiveTracker {
         phase: 'running',
         ...(dt.session ? { session: dt.session } : {}),
       };
-      if (dt.output !== undefined) {
-        const lines = dt.output.split('\n');
-        tool.output = lines.slice(-OUTPUT_LINES).join('\n');
-        const more = dt.more ?? (lines.length > OUTPUT_LINES ? lines.length - OUTPUT_LINES : undefined);
-        if (more !== undefined && more > 0) tool.more = more;
-      }
+      if (dt.output !== undefined) Object.assign(tool, outputTail(dt.output, dt.more));
       out.push(tool);
     }
     return out;

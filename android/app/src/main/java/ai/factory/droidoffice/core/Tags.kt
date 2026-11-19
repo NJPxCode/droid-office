@@ -476,6 +476,7 @@ object Tags {
         const val THREAD_ERROR = "worker.thread.error"
         /** In place of the composer while the worker waits on an AskUser question. */
         const val THREAD_WAITING = "worker.thread.waiting"
+        fun threadAnsweredQuestion(id: String) = "worker.thread.answered_question/$id"
         /** Reserved: former Raw TTY button in [THREAD_WAITING]. */
         const val THREAD_WAITING_TTY = "worker.thread.waiting.raw_tty"
         /** After Load earlier pushed the newest entries out: loads the newest page again. */
@@ -572,6 +573,9 @@ object Tags {
         fun threadChangeFull(id: String) = "worker.thread.change.full/$id"
         /** Copies a top-level Command card's shell command. */
         fun threadCommandCopy(id: String) = "worker.thread.command.copy/$id"
+        /** Opens the full result when a tool card only has a preview. */
+        fun threadOutput(id: String) = "worker.thread.output/$id"
+        const val THREAD_OUTPUT_SHEET = "worker.thread.output.sheet"
         /** Opens the delegated subagent's own worker Thread from a Delegation card. */
         fun threadDelegateOpen(id: String) = "worker.thread.delegate.open/$id"
 

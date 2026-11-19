@@ -2,7 +2,7 @@
 // in the office's own .droid-office/orchestrator/ folder (docs/mission-control.md). It signs in to the Office
 // MCP on the loopback hook listener with its session's hook token and gets the building agents' surface.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Menu } from '../shared/asks.js';
 import { DEFAULT_ORCHESTRATOR_SETTINGS, ORCHESTRATOR_COLOR, ORCHESTRATOR_ID, ORCHESTRATOR_NAME, type MissionAgent, type OrchestratorBlock, type OrchestratorSettings, type OrchestratorState } from '../shared/mission-control.js';
@@ -12,6 +12,7 @@ import { missionTeam } from './building-agent.js';
 import type { AskReply } from './factory/cloud-ask.js';
 import type { LocalDaemon } from './local-daemon.js';
 import { officePrompt, type PromptSource } from './prompts.js';
+import { PtyHost } from './ptys.js';
 import { floorHint } from '../shared/prompts.js';
 import type { Team } from './team.js';
 import { WorkerManager, type HookEnv } from './workers.js';
@@ -46,6 +47,8 @@ export interface OrchestratorOptions {
   changed(): void;
   data(workerId: string, data: string, connectionIds: string[]): void;
   screen(workerId: string, frame: ScreenFrame): unknown;
+  /** Its live thinking or reply text grew. */
+  stream?(workerId: string): void;
   toast(text: string, level: 'info' | 'warn' | 'error'): void;
 }
 
@@ -92,6 +95,7 @@ export class Orchestrator {
         },
         data: (id, data, ids) => opts.data(id, data, ids),
         screen: (id, frame) => opts.screen(id, frame),
+        stream: (id) => opts.stream?.(id),
         toast: (text, level) => opts.toast(text, level),
       },
       undefined,
@@ -113,9 +117,17 @@ export class Orchestrator {
     };
   }
 
-  /** Picks its terminal back up, or resumes its conversation, as a floor does its workers. */
-  start(): Promise<void> {
-    return this.workers.start();
+  /** Retire our old TUI process group before adopting its conversation in the daemon. */
+  async start(): Promise<void> {
+    const stateDir = path.join(this.cwd, '.droid-office');
+    let owned = false;
+    try {
+      owned = realpathSync(stateDir) === path.join(realpathSync(this.opts.dataDir), ORCHESTRATOR_DIR, '.droid-office');
+    } catch {
+      // Missing or unreadable state cannot prove ownership.
+    }
+    if (owned) await new PtyHost(stateDir, () => {}).stopExisting();
+    await this.workers.start();
   }
 
   shutdown(keep = false) {

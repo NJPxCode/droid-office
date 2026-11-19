@@ -4,7 +4,25 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { readSessionSettings, ThreadLiveTracker, type ThreadLiveInputs } from '../src/server/thread-live.js';
+import { outputTail } from '../src/shared/thread-live.js';
 import type { ThreadEntry } from '../src/shared/worker-thread.js';
+
+test('outputTail keeps the latest 400 lines within 24,000 characters and counts what it leaves out', () => {
+  const lines = (n: number, width = 5) => Array.from({ length: n }, (_, i) => `${i}`.padStart(width, '0'));
+  assert.deepEqual(outputTail('a\nb'), { output: 'a\nb' });
+  assert.deepEqual(outputTail('a\nb', 3), { output: 'a\nb', more: 3 });
+  const many = outputTail(lines(1000).join('\n'));
+  assert.equal(many.output.split('\n').length, 400);
+  assert.ok(many.output.endsWith('00999'));
+  assert.equal(many.more, 600);
+  const wide = outputTail(lines(300, 199).join('\n'));
+  assert.ok(wide.output.length <= 24_000);
+  assert.equal(wide.output.split('\n').length, 120);
+  assert.equal(wide.more, 180);
+  const huge = outputTail('x'.repeat(30_000));
+  assert.equal(huge.output.length, 24_000);
+  assert.equal(huge.more, undefined);
+});
 
 const entry = (id: string, extra: Partial<ThreadEntry> = {}): ThreadEntry => ({ id, role: 'assistant', kind: 'text', text: 'Earlier', seq: 0, ...extra });
 const base = (): ThreadLiveInputs => ({ sessionId: 'session', status: 'idle', activeTool: new Map() });
@@ -141,7 +159,7 @@ test('daemon live stream tracks thinking/text deltas, dedupes landed entries, an
   const step1 = await tracker.compute('w', thinkingInputs, [prompt]);
   assert.equal(step1.live.status, 'pondering');
   assert.equal(step1.live.working, 'thinking');
-  assert.deepEqual(step1.live.stream, { kind: 'thinking', text: 'Checking test suite...', since: 5100 });
+  assert.deepEqual(step1.live.stream, { kind: 'thinking', text: 'Checking test suite...', since: 5100, entryId: 'm1:0' });
   assert.deepEqual(step1.live.tools, [
     {
       name: 'Execute',
@@ -167,11 +185,13 @@ test('daemon live stream tracks thinking/text deltas, dedupes landed entries, an
       ...thinkingInputs.daemon!,
       working: 'streaming_assistant_message',
       stream: { kind: 'text', messageId: 'm2', blockIndex: 0, since: 5500, text: 'All tests passed.' },
+      completedThinking: { 'm1:0': 400 },
     },
   };
   const step2 = await tracker.compute('w', textInputs, [prompt, landedTool]);
   assert.equal(step2.live.tools[0]?.id, 'tool:call-1');
   assert.equal(step2.live.stream?.text, 'All tests passed.');
+  assert.deepEqual(step2.live.completedThinking, { 'm1:0': 400 });
 
   const step3 = await tracker.compute('w', textInputs, [prompt, landedTool, entry('m2:0', { text: 'All tests passed.' })]);
   assert.equal(step3.live.stream, undefined);

@@ -15,6 +15,43 @@ import { TestDaemon } from './daemon-fixture.js';
 import type { LocalInitializeSessionOptions } from '../src/server/local-daemon.js';
 import { airgappedModelError } from '../src/server/droid-models.js';
 
+test('retry after a daemon start timeout sends the hire prompt and buffered follow-up exactly once', async (t) => {
+  const f = fixture();
+  isolateAgentEnvironment(f, t);
+  t.after(() => f.close());
+  const workers = manager(f, []);
+  const timeout = Promise.withResolvers<void>();
+  f.daemon.beforeInitialize = () => timeout.promise;
+  const prompt = 'Reply with exactly the retained hire prompt.';
+  const worker = workers.spawn('desk-2', 'owner', prompt);
+  assert.ok(typeof worker === 'object');
+  assert.equal(workers.prompt(worker.id, 'And check the notes.'), undefined);
+  timeout.reject(new Error('Timed out connecting to droid daemon on 127.0.0.1:49152'));
+  await waitFor(
+    () => worker.status,
+    (state) => state === 'exited',
+  );
+  assert.match(worker.activity ?? '', /^Failed to start: Timed out connecting/);
+  assert.equal(worker.prompt, prompt);
+  assert.deepEqual(f.daemon.messages, []);
+  workers.wakeAll();
+  assert.equal(worker.status, 'exited', 'reopening the floor leaves Retry available');
+
+  f.daemon.beforeInitialize = undefined;
+  assert.equal(workers.resume(worker.id), undefined);
+  await waitFor(
+    () => f.daemon.messages.length,
+    (count) => count === 2,
+  );
+  assert.deepEqual(
+    f.daemon.messages.map((m) => m.text),
+    [prompt, 'And check the notes.'],
+  );
+  assert.equal(worker.activity, undefined);
+  assert.equal(worker.exitCode, undefined);
+  assert.equal(worker.status, 'working');
+});
+
 type Invocation = {
   pid: number;
   kind: string;
@@ -757,7 +794,9 @@ test('tool notifications animate work, count failed tests and request branch/PR 
   };
   const read = call('Read', { file_path: 'src/a.ts' });
   assert.equal(worker.action, 'read');
+  assert.ok(worker.activity, 'the sidebar shows the running tool');
   read();
+  assert.equal(worker.activity, undefined, 'the sidebar clears the finished tool');
   const edit = call('Edit', { file_path: 'src/a.ts' });
   assert.equal(worker.action, 'edit');
   edit();

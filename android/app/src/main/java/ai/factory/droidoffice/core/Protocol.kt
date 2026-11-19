@@ -348,6 +348,14 @@ sealed interface ServerMsg {
     ) : ServerMsg
     /** A watched local worker's live turn state; each one replaces the last by rev. */
     data class ThreadLiveUpdate(val workerId: String, val sessionId: String?, val live: ThreadLive) : ServerMsg
+    data class ThreadStream(
+        val workerId: String,
+        val sessionId: String?,
+        val rev: Long,
+        val base: Long,
+        val from: Int,
+        val text: String,
+    ) : ServerMsg
     /** The result of ClientMsg.rewind; text is the rewound prompt for the composer. */
     data class WorkerRewound(val workerId: String, val entryId: String, val ok: Boolean, val sessionId: String?, val text: String?, val error: String?, val note: String? = null) : ServerMsg
     data class Ignored(val t: String) : ServerMsg
@@ -420,6 +428,16 @@ object Protocol {
         "whiteboard.pinged" -> WbPinged.of(o)?.let { ServerMsg.Pinged(it) } ?: ServerMsg.Ignored(t)
         "thread.snapshot" -> threadSnapshot(o) ?: ServerMsg.Ignored(t)
         "thread.live" -> ThreadLive.of(o["live"])?.let { live -> ServerMsg.ThreadLiveUpdate(o.str("workerId").orEmpty(), o.str("sessionId"), live) } ?: ServerMsg.Ignored(t)
+        "thread.stream" -> {
+            val worker = o.str("workerId")?.takeIf { it.isNotEmpty() }
+            val rev = o.long("rev")
+            val base = o.long("base")
+            val from = o.long("from")?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
+            val text = o.str("text")
+            if (worker != null && rev != null && base != null && from != null && text != null) {
+                ServerMsg.ThreadStream(worker, o.str("sessionId"), rev, base, from, text)
+            } else ServerMsg.Ignored(t)
+        }
         "worker.rewound" -> ServerMsg.WorkerRewound(o.str("workerId").orEmpty(), o.str("entryId").orEmpty(), o.bool("ok") == true, o.str("sessionId"), o.str("text"), o.str("error"), o.str("note"))
         "action.result" -> ServerMsg.ActionResult(o.str("requestId").orEmpty(), o.bool("ok") == true, o.str("error"))
         else -> ServerMsg.Ignored(t)
@@ -592,9 +610,10 @@ object ClientMsg {
     }
 
     /** Subscribes ([on] true) or unsubscribes ([on] false) to snapshots and live state, optionally for one subagent. */
-    fun threadWatch(workerId: String, on: Boolean, child: String? = null) = obj("thread.watch") {
+    fun threadWatch(workerId: String, on: Boolean, child: String? = null, stream: Boolean = false) = obj("thread.watch") {
         put("workerId", workerId)
         put("on", on)
+        if (on && stream) put("stream", true)
         child?.let { put("child", it) }
     }
 

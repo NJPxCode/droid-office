@@ -33,6 +33,8 @@ export interface ThreadLiveStream {
   kind: 'thinking' | 'text';
   text: string;
   since: number;
+  /** Canonical entry this stream will become, when the daemon names it. */
+  entryId?: string;
 }
 
 export interface ThreadLive {
@@ -45,11 +47,17 @@ export interface ThreadLive {
   phaseSince?: number;
   after?: string;
   stream?: ThreadLiveStream;
+  /** Recently completed thoughts, including those not yet written to the transcript. */
+  completedThinking?: Record<string, number>;
   tools: ThreadLiveTool[];
   waiting?: { kind: 'permission' | 'question' | 'spec' | 'other'; toolId?: string };
   settings?: ThreadSessionSettings;
   /** A rewind the office is running in the daemon (worker.rewind), until it ends. */
   rewind?: { entryId: string; since: number };
+}
+
+export function thinkingDuration(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
 }
 
 /** Factory's status for a working state (its uEc): an open question or permission wins. */
@@ -68,9 +76,43 @@ export function effortName(effort: string): string {
   return EFFORT_LABEL[effort.toLowerCase()] ?? effort;
 }
 
+/**
+ * What `next` adds to `prev`'s live stream when that is all that changed (rev and clock aside): the
+ * offset it goes on at and the text, for a `thread.stream` append. Undefined when anything else differs.
+ */
+export function streamAppend(prev: ThreadLive, next: ThreadLive): { from: number; text: string } | undefined {
+  const a = prev.stream;
+  const b = next.stream;
+  if (!a || !b || a.kind !== b.kind || a.since !== b.since || b.text.length <= a.text.length || !b.text.startsWith(a.text)) return undefined;
+  const rest = (live: ThreadLive) => JSON.stringify({ ...live, rev: 0, at: 0, stream: undefined });
+  if (rest(prev) !== rest(next)) return undefined;
+  return { from: a.text.length, text: b.text.slice(a.text.length) };
+}
+
 export function textSignature(text: string): string {
   return text
     .normalize('NFKC')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+/** A running tool's output keeps this many of its latest lines, within OUTPUT_CHARS. */
+const OUTPUT_LINES = 400;
+const OUTPUT_CHARS = 24_000;
+
+/** The latest lines of a running tool's output, and how many earlier lines that leaves out. */
+export function outputTail(output: string, more?: number): { output: string; more?: number } {
+  const lines = output.split('\n');
+  let keep = Math.min(lines.length, OUTPUT_LINES);
+  let chars = 0;
+  for (let i = lines.length - 1; i >= lines.length - keep; i--) {
+    chars += lines[i].length + 1;
+    if (chars > OUTPUT_CHARS) {
+      keep = Math.max(1, lines.length - 1 - i);
+      break;
+    }
+  }
+  const kept = lines.slice(-keep).join('\n');
+  const left = (more ?? 0) + lines.length - keep;
+  return { output: kept.length > OUTPUT_CHARS ? kept.slice(-OUTPUT_CHARS) : kept, ...(left > 0 ? { more: left } : {}) };
 }

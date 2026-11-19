@@ -238,7 +238,9 @@ test('only the focused thread pane shows its composer, reclaiming space without 
     return el.scrollHeight - el.scrollTop - el.clientHeight < 2;
   });
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  // The owner scrolls up (a scroll with no wheel, touch or key behind it is the Thread's own).
   await first.locator('.wt-scroll').evaluate((el) => {
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
     el.scrollTop = 40;
     el.dispatchEvent(new Event('scroll'));
   });
@@ -282,6 +284,11 @@ test('only the focused thread pane shows its composer, reclaiming space without 
   assert.equal(await first.locator('.wt-input').evaluate((el) => document.activeElement === el), true, 'moved panes still focus their own composer');
   await second.locator('.dash-pane-head').click();
   const summary = first.locator('.wt-list :is(.wt-sg-trigger, .wt-tr-trigger)[aria-expanded], .wt-list summary').first();
+  // The owner scrolls up to it first, so the Thread stops following the bottom.
+  const scrollBox = await first.locator('.wt-scroll').boundingBox();
+  await page.mouse.move(scrollBox!.x + scrollBox!.width / 2, scrollBox!.y + scrollBox!.height / 2);
+  await page.mouse.wheel(0, -1000);
+  await page.waitForFunction(() => document.querySelector('.wt-scroll')!.scrollTop === 0);
   await summary.click();
   assert.equal(await summary.evaluate((el) => document.activeElement === el), true, 'clicking a disclosure keeps keyboard focus on that control');
   await second.locator('.dash-pane-head').click();

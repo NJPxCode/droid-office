@@ -26,6 +26,15 @@ object ThreadView {
     private const val STEP_LIMIT = 50
     private const val STEP_CHARS = 200
 
+    /** The plan drawer owns TodoWrite. Older offices can still send an inline plan on tool blocks. */
+    fun transcriptRows(rows: List<ThreadRow>): List<ThreadRow> = rows.map { row ->
+        if (row is ThreadRow.Activity && row.blocks.any { it is ThreadBlock.Tools && it.plan != null }) {
+            row.copy(blocks = row.blocks.map { if (it is ThreadBlock.Tools && it.plan != null) it.copy(plan = null) else it })
+        } else row
+    }
+
+    fun isPlanUpdate(name: String?): Boolean = toolLeaf(name) in setOf("todowrite", "todo_write", "update_plan")
+
     /**
      * Chronological slices of a [ThreadRow.Activity]: consecutive thoughts and non-card tool runs
      * collapse into one 1-level [Segment.Exploration] disclosure, while file changes, commands and
@@ -230,8 +239,7 @@ object ThreadView {
                 break
             }
             if (entry.kind == ThreadKind.Tool && !entry.error) {
-                val name = toolLeaf(entry.name)
-                if (name == "todowrite" || name == "todo_write" || name == "update_plan") {
+                if (isPlanUpdate(entry.name)) {
                     val args = parseObject(entry.input) ?: continue
                     val rawTodos = args["todos"] ?: continue
                     steps = parseTodoItems(rawTodos)
@@ -245,7 +253,10 @@ object ThreadView {
         val done = list.count { it.done }
         val current = list.firstOrNull { it.active }?.text
         val allDone = done == total
-        val stale = allDone && !busy && entries.any { it.seq > planSeq && it.kind == ThreadKind.Text && it.role == ThreadRole.User }
+        val stale = (!busy && !allDone) || entries.any {
+            it.seq > planSeq && ((it.kind == ThreadKind.Text && it.role == ThreadRole.User) ||
+                (!allDone && it.kind == ThreadKind.Notice && it.id.startsWith("turn:")))
+        }
         return ActivePlan(
             steps = list,
             done = done,
@@ -347,9 +358,6 @@ object ThreadView {
 
     /** The row index standing for [entryId], or -1. */
     fun rowOf(rows: List<ThreadRow>, entryId: String): Int = rows.indexOfFirst { it.id == entryId || entryId in it.sourceIds }
-
-    /** Pausing follow alone isn't a reason to jump: there must be content below the viewport. */
-    fun showJump(follow: Boolean, stuck: Boolean, canScrollForward: Boolean): Boolean = canScrollForward && (!follow || stuck)
 
     /** An Activity's closed line. While the worker waits on the owner its run isn't working: the question card says what it's on. */
     fun line(a: ThreadRow.Activity, asking: Boolean): String = if (a.live && !asking) WORKING + a.label else a.label

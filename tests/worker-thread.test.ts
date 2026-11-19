@@ -161,9 +161,9 @@ test('pictures in tool results and messages are referenced by id and served from
     ]),
   ]);
   const page = await reader.read(source);
-  const [sent, read, mislabelled] = [page.entries[1], page.entries[2], page.entries[3]];
-  assert.equal(sent.kind, 'notice');
-  assert.equal(sent.text, '[Image attachment]');
+  const [sent, read, mislabelled] = page.entries;
+  assert.equal(sent.kind, 'text');
+  assert.equal(sent.text, 'What is on this screen?');
   assert.deepEqual(
     sent.images?.map(({ type, width, height }) => ({ type, width, height })),
     [{ type: 'image/jpeg', width: 540, height: 1200 }],
@@ -609,8 +609,82 @@ test('discovers canonical and fallback session paths through a checkout symlink'
   assert.ok((await new WorkerThreadReader(root).read({ ...source, cwd: root })).error);
 });
 
+test('keeps 60,000+ characters of replies and thoughts in canonical snapshots', async (t) => {
+  const report = `${'A paragraph about the results, with Japanese 日本語 and emoji 🙂.\n'.repeat(1000)}END-OF-REPLY-SENTINEL`;
+  const thought = `${'Consider how the pagination cursor advances.\n'.repeat(1500)}END-OF-THOUGHT`;
+  assert.ok([...report].length > 60_000);
+  assert.ok(thought.length > 60_000);
+  const { reader, source } = await rig(t, [
+    message('string', 'assistant', report),
+    message('blocks', 'assistant', [
+      { type: 'thinking', thinking: thought },
+      { type: 'text', text: report },
+    ]),
+  ]);
+  const page = await reader.read(source);
+  assert.deepEqual(
+    page.entries.map((e) => e.text),
+    [report, thought, report],
+  );
+  assert.equal(page.hasMore, false);
+});
+
+test('previews a long tool result from the tail and resolves its full visible text on demand', async (t) => {
+  const log = Array.from({ length: 3000 }, (_, i) => `output line ${i + 1}`);
+  const result = message('result', 'user', [
+    {
+      type: 'tool_result',
+      tool_use_id: 'call',
+      content: [
+        { type: 'text', text: `START-OF-OUTPUT\n<system-reminder>PRIVATE_DATA</system-reminder>\n${log.join('\n')}` },
+        { type: 'text', text: 'FINAL-OUTPUT-LINE' },
+      ],
+    },
+  ]);
+  const { reader, source, file } = await rig(t, [message('execute', 'assistant', [{ type: 'tool_use', id: 'call', name: 'Execute', input: { command: "seq 1 3000 | sed 's/^/output line /'; echo FINAL-OUTPUT-LINE" } }]), result]);
+  const page = await reader.read(source);
+  const { output, outputRef } = page.entries[0];
+  assert.ok(output && outputRef);
+  const [marker, ...tail] = output.split('\n');
+  const full = ['START-OF-OUTPUT', '', ...log, 'FINAL-OUTPUT-LINE'];
+  assert.equal(marker, `[${full.length - tail.length} earlier lines hidden]`);
+  assert.deepEqual(tail, full.slice(-tail.length));
+  assert.equal(tail.at(-1), 'FINAL-OUTPUT-LINE');
+  assert.deepEqual((await reader.toolOutput(source, outputRef))?.split('\n'), full);
+  assert.equal(await reader.toolOutput({ ...source, sessionId: 'unrelated' }, outputRef), undefined);
+  assert.equal(await reader.toolOutput(source, `${outputRef.slice(0, -32)}${'A'.repeat(32)}`), undefined);
+  const raw = await readFile(file, 'utf8');
+  await writeFile(file, raw.replace('"id":"result"', '"id":"result","visibility":"llm_only"'));
+  assert.equal(await reader.toolOutput(source, outputRef), undefined);
+  await writeFile(file, raw.replace('START-OF-OUTPUT', 'OTHER-OUTPUT-LOG'));
+  assert.equal(await reader.toolOutput(source, outputRef), undefined);
+});
+
+test('keeps the ending of an oversized final line and leaves short tool results alone', async (t) => {
+  const finalLine = `${'wrap 🙂 '.repeat(2400)} EXIT-STATUS`;
+  const { reader, source } = await rig(t, [
+    message('tools', 'assistant', [
+      { type: 'tool_use', id: 'long', name: 'Execute', input: {} },
+      { type: 'tool_use', id: 'bare', name: 'Read', input: {} },
+      { type: 'tool_use', id: 'short', name: 'Read', input: {} },
+    ]),
+    message('results', 'user', [
+      { type: 'tool_result', tool_use_id: 'long', content: `start\r\n${finalLine}` },
+      { type: 'tool_result', tool_use_id: 'bare', content: finalLine },
+      { type: 'tool_result', tool_use_id: 'short', content: 'small\noutput' },
+    ]),
+  ]);
+  const [long, bare, short] = (await reader.read(source)).entries;
+  assert.match(long.output!, /^\[1 earlier line hidden; start of last line hidden\]\n/);
+  assert.match(bare.output!, /^\[Start of line hidden\]\n/);
+  assert.match(long.output!, / EXIT-STATUS$/);
+  assert.equal(await reader.toolOutput(source, long.outputRef!), `start\r\n${finalLine}`);
+  assert.equal(short.output, 'small\noutput');
+  assert.equal(short.outputRef, undefined);
+});
+
 test('bounds field/response/cache sizes and skips oversized complete records without losing later records', async (t) => {
-  const huge = 'A paragraph with spaces and unicode. '.repeat(1500);
+  const huge = 'A paragraph with spaces and unicode. '.repeat(4000);
   const { reader, source, file } = await rig(
     t,
     Array.from({ length: 200 }, (_, i) => text(`m-${i}`, huge)),
@@ -855,13 +929,55 @@ test('entries carry when they were written, a tool when it finished, and a thoug
   const [prompt, thought, tool, compacted] = page.entries;
   assert.equal(prompt.at, Date.parse(at(10)));
   assert.equal(thought.kind, 'thinking');
-  assert.equal(thought.tookMs, 3000, 'from the hook record before it, not durationMs');
+  assert.equal(thought.tookMs, 20, 'the explicit block duration wins over the time between records');
   assert.equal(tool.at, Date.parse(at(14)));
   assert.equal(tool.doneAt, Date.parse(at(17)));
   assert.equal(page.entries.length, 4, 'a provider switch is not a compaction');
   assert.equal(compacted.name, 'compaction');
   assert.equal(compacted.text, 'Compacted');
   assert.doesNotMatch(JSON.stringify(page), /PRIVATE_/);
+});
+
+test('late queued turn outcomes are placed before the next prompt without changing its cursor', async (t) => {
+  const { reader, source, file } = await rig(t, [text('turn-a', 'One', 'user'), text('reply-a', 'Started'), text('turn-b', 'Two', 'user'), text('reply-b', 'Finished')]);
+  const prior = await reader.read(source);
+  await appendFile(file, lines({ type: 'agent_turn_outcome', turnId: 'turn-a', reason: 'cancelled', resultKind: 'null' }, { type: 'agent_turn_outcome', turnId: 'turn-b', reason: 'completed', resultKind: 'text' }));
+  const page = await reader.read(source);
+  assert.deepEqual(
+    page.entries.map((e) => e.id),
+    ['turn-a:0', 'reply-a:0', 'turn:turn-a:cancelled', 'turn-b:0', 'reply-b:0', 'turn:turn-b:completed'],
+  );
+  assert.equal(page.entries[3].seq, prior.entries[2].seq);
+  assert.deepEqual(
+    page.presentation?.rows.map((r) => r.id),
+    ['turn-a:0', 'reply-a:0', 'turn:turn-a:cancelled', 'turn-b:0', 'reply-b:0'],
+  );
+  assert.equal((await reader.read(source, prior.entries[2].seq)).entries.at(-1)?.id, 'turn:turn-a:cancelled');
+});
+
+test('daemon compaction and Office deliveries never enter owner prompt history or offer rewind', async (t) => {
+  const records = [
+    text('owner', 'Keep this.', 'user'),
+    message('__internal__system-notice__compaction:sample', 'user', [{ type: 'text', text: 'Conversation history has been compacted. Continue the task.' }]),
+    { ...text('team', 'Droid Office notice: team update\nYour team changed.', 'user'), seq: 2 },
+    text('delivery', 'Droid Office delivery: message from another worker', 'user'),
+    text('reply', 'I saw the update.'),
+  ];
+  const { reader, source, root } = await rig(t, records);
+  const page = await reader.read(source);
+  assert.deepEqual(
+    page.entries.map(({ kind, role }) => [kind, role]),
+    [
+      ['text', 'user'],
+      ['notice', 'system'],
+      ['notice', 'system'],
+      ['notice', 'system'],
+      ['text', 'assistant'],
+    ],
+  );
+  assert.equal(await reader.rewindPoint(source, 'team:0'), undefined);
+  const labels = new WorkerThreadReader(root, { sessions: 2, entries: 0, bytes: 0 }, true);
+  assert.equal(await labels.readText(source), '\n\nuser: Keep this.\n\nassistant: I saw the update.');
 });
 
 test("a Task call names its subagent's session, which reads like the worker's own", async (t) => {

@@ -2,10 +2,10 @@ import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
 import { isAgentEffort, type WorkerInfo, type WorkerStatus } from '../../shared/protocol.js';
 import { toolRefresh, type ToolRefresh } from '../hook-refresh.js';
 import { FAILS_TO_DESPAIR, outputFailed, toolAction } from '../../shared/actions.js';
-import { officeSays, withoutReminders } from '../../shared/prompts.js';
+import { isThreadSystemMessage, officeSays, withoutReminders } from '../../shared/prompts.js';
 import { todoItems, todoProgress } from '../../shared/todos.js';
 import { searchKey, snippet } from '../../shared/search.js';
-import type { ThreadLiveWorking, ThreadSessionSettings } from '../../shared/thread-live.js';
+import { outputTail, thinkingDuration, type ThreadLiveWorking, type ThreadSessionSettings } from '../../shared/thread-live.js';
 import { record } from '../factory/cloud-stream-messages.js';
 import { buildDaemonQueueState, parseDaemonQueueList } from '../worker-queue.js';
 import type { Worker } from './state.js';
@@ -157,6 +157,8 @@ export interface DaemonNotificationCallbacks {
   persist(): void;
   syncBranch(w: Worker): Promise<void>;
   tool(workerId: string, refresh: ToolRefresh): void;
+  /** Its live stream's text grew. */
+  streamed?(w: Worker): void;
   notePrompt(w: Worker, text: string): void;
   setTitle(w: Worker, title: string): void;
   beforeStop?(info: WorkerInfo): string | undefined;
@@ -198,6 +200,8 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
   switch (type) {
     case 'droid_working_state_changed': {
       const next = validWorkingState(n.newState);
+      if (next !== 'thinking') w.thinkingPhaseSince = undefined;
+      else if (w.workingState !== next) w.thinkingPhaseSince = now;
       w.workingState = next;
       if (next === 'compacting_conversation') {
         w.info.activity = COMPACTING;
@@ -221,7 +225,8 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
       const key = `${messageId}:${blockIndex}`;
       let since = w.thinkingStartedAt.get(key);
       if (since === undefined) {
-        since = now;
+        since = w.thinkingPhaseSince ?? now;
+        w.thinkingPhaseSince = undefined;
         w.thinkingStartedAt.set(key, since);
         capMap(w.thinkingStartedAt, MAX_THINKING_DURATIONS);
       }
@@ -235,6 +240,7 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
         cb.clockWork(w.info, 'working', now);
         cb.setStatus(w, 'working');
       }
+      cb.streamed?.(w);
       break;
     }
 
@@ -244,7 +250,7 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
       const key = `${messageId}:${blockIndex}`;
       const started = w.thinkingStartedAt.get(key);
       w.thinkingStartedAt.delete(key);
-      const explicit = typeof n.durationMs === 'number' && Number.isFinite(n.durationMs) && n.durationMs >= 0 ? Math.round(n.durationMs) : undefined;
+      const explicit = thinkingDuration(n.durationMs ?? n.tookMs);
       const durationMs = explicit ?? (started !== undefined ? Math.max(0, now - started) : undefined);
       if (messageId && durationMs !== undefined) {
         w.thinkingDurations.set(key, durationMs);
@@ -272,6 +278,7 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
         cb.clockWork(w.info, 'working', now);
         cb.setStatus(w, 'working');
       }
+      cb.streamed?.(w);
       break;
     }
 
@@ -286,13 +293,17 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
       const msgId = str(msg.id);
       if (msg.role === 'assistant') {
         if (msgId && w.liveStream?.messageId === msgId) w.liveStream = undefined;
+        const reply = withoutReminders(contentToText(msg.content));
+        if (reply && !w.activeTool.size) w.info.activity = truncate(reply, 80);
       } else if (msg.role === 'user') {
         w.currentTool = undefined;
         w.info.action = undefined;
         const rawText = contentToText(msg.content);
-        const said = (withoutReminders(rawText) || rawText).trim();
-        if (said && !said.startsWith('Droid Office notice:')) {
+        const said = withoutReminders(rawText);
+        if (said && !isThreadSystemMessage(msgId ?? '', said)) {
           w.stopNudged = false;
+          delete w.info.todos;
+          delete w.todoSteps;
           w.info.activity = truncate(said, 80);
           cb.notePrompt(w, said);
         }
@@ -353,9 +364,9 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
       }
       const rawOut = typeof update.fullOutput === 'string' ? update.fullOutput : typeof update.output === 'string' ? update.output : typeof update.text === 'string' ? update.text : undefined;
       if (rawOut !== undefined) {
-        const lines = rawOut.replace(/\r/g, '').split('\n');
-        lt.output = lines.slice(-40).join('\n');
-        lt.more = lines.length > 40 ? lines.length - 40 : undefined;
+        const tail = outputTail(rawOut.replace(/\r/g, ''));
+        lt.output = tail.output;
+        lt.more = tail.more;
       }
       break;
     }
@@ -387,6 +398,7 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
       }
       if (w.currentTool && (!toolName || w.currentTool.name === toolName)) {
         w.completedTool = { ...w.currentTool, at: now };
+        if (w.info.activity === w.currentTool.summary) w.info.activity = undefined;
         w.currentTool = undefined;
       }
       const isError = result.is_error === true || n.isError === true;
@@ -493,18 +505,16 @@ export function applyDaemonNotification(w: Worker, sessionId: string, raw: unkno
     }
 
     case 'agent_turn_completed': {
-      for (const [key, startedAt] of w.thinkingStartedAt) {
-        if (!w.thinkingDurations.has(key)) {
-          w.thinkingDurations.set(key, Math.max(0, now - startedAt));
-          capMap(w.thinkingDurations, MAX_THINKING_DURATIONS);
-        }
-      }
+      w.thinkingPhaseSince = undefined;
       w.thinkingStartedAt.clear();
       w.liveStream = undefined;
       w.liveTools.clear();
       w.activeTool.clear();
+      if (w.currentTool?.summary === w.info.activity || w.completedTool?.summary === w.info.activity) w.info.activity = undefined;
       w.currentTool = undefined;
       w.info.action = undefined;
+      delete w.info.todos;
+      delete w.todoSteps;
       w.workingState = 'idle';
       void cb.syncBranch(w);
 

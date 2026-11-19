@@ -172,7 +172,7 @@ test('worker-thread subscribes via thread.watch, consumes push snapshots immedia
   const initialMsgs = await page.evaluate(() => (window as any).sent);
   assert.deepEqual(
     initialMsgs.filter((m: any) => m.t === 'thread.watch'),
-    [{ t: 'thread.watch', workerId: 'worker-1', on: true }],
+    [{ t: 'thread.watch', workerId: 'worker-1', on: true, stream: true }],
   );
   assert.equal(initialMsgs.filter((m: any) => m.t === 'thread.read').length, 1);
 
@@ -195,7 +195,8 @@ test('worker-thread subscribes via thread.watch, consumes push snapshots immedia
     },
     { entries: pushedEntries, rows: presentThread(pushedEntries, true) },
   );
-  assert.match(await page.locator('.wt-entry.assistant').innerText(), /Pushed live reply!/);
+  // The snapshot inserts its row immediately, before content-visibility necessarily lays it out.
+  assert.match((await page.locator('.wt-entry.assistant').textContent()) ?? '', /Pushed live reply!/);
 
   // Tick 14 seconds of 1s timer + worker status updates -> zero thread.read polls!
   const readsBefore = await page.evaluate(() => (window as any).sent.filter((m: any) => m.t === 'thread.read').length);
@@ -231,7 +232,7 @@ test('worker-thread subscribes via thread.watch, consumes push snapshots immedia
     Object.defineProperty(document, 'hidden', { configurable: true, value: false });
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  assert.deepEqual(await page.evaluate(() => (window as any).sent.filter((m: any) => m.t === 'thread.watch')), [{ t: 'thread.watch', workerId: 'worker-1', on: true }]);
+  assert.deepEqual(await page.evaluate(() => (window as any).sent.filter((m: any) => m.t === 'thread.watch')), [{ t: 'thread.watch', workerId: 'worker-1', on: true, stream: true }]);
 
   // Deactivating and disposing send thread.watch { on: false } without duplicates
   await page.evaluate(() => {
@@ -286,7 +287,8 @@ test('live tool output and nested reading positions survive canonical updates, a
 
   const command: ThreadEntry = { id: 'tool:cmd', seq: 71, role: 'assistant', kind: 'tool', name: 'Execute', input: JSON.stringify({ command: 'npm test', summary: 'Run checks' }) };
   await push([...entries, command]);
-  await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').click();
+  // A running command opens on its own.
+  assert.equal(await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').getAttribute('aria-expanded'), 'true');
   await page.evaluate(() => {
     (window as any).receive({
       t: 'thread.live',
@@ -295,9 +297,11 @@ test('live tool output and nested reading positions survive canonical updates, a
       live: { rev: 1, at: Date.now(), status: 'responding', working: 'executing_tool', after: 'tool:cmd', tools: [{ id: 'tool:cmd', name: 'Execute', phase: 'running', startedAt: Date.now(), output: 'Live output before JSONL result' }] },
     });
   });
-  assert.match(await page.locator('.wt-cmd-out').innerText(), /Live output before JSONL result/);
+  assert.match((await page.locator('.wt-cmd-out').textContent()) ?? '', /Live output before JSONL result/);
   await push([...entries, { ...command, output: 'Canonical final result' }, { id: 'compaction:done', seq: 72, role: 'system', kind: 'notice', name: 'compaction', text: 'Conversation compacted' }], false);
-  assert.equal(await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').getAttribute('aria-expanded'), 'true');
+  // Once it finishes it folds away like a finished live group, and opens again on a click.
+  assert.equal(await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').getAttribute('aria-expanded'), 'false');
+  await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').click();
   await page.locator('.wt-cmd-out').scrollIntoViewIfNeeded();
   assert.match(await page.locator('.wt-cmd-out').innerText(), /Canonical final result/);
   assert.doesNotMatch(await page.locator('.wt-cmd-out').innerText(), /Live output/);
@@ -602,6 +606,61 @@ test('opens live Factory groups, folds repeats and subagents, and expands long c
   await page.evaluate(() => (window as any).thread.dispose());
   assert.deepEqual(errors, []);
 });
+test('a running command shows its output without a click, follows its newest line, and keeps far more than 40 lines', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountV3Thread(t);
+  const command: ThreadEntry = { id: 'tool:run', seq: 1, role: 'assistant', kind: 'tool', name: 'Execute', input: JSON.stringify({ command: 'npm test', summary: 'Run tests' }) };
+  await page.evaluate(
+    ({ entries, rows }) => {
+      (window as any).receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+    },
+    { entries: [command], rows: presentThread([command], true) },
+  );
+  const live = (rev: number, lines: number) =>
+    page.evaluate(
+      ({ rev, lines }) => {
+        const output = Array.from({ length: lines }, (_, i) => `line ${i + 1}`).join('\n');
+        (window as any).receive({
+          t: 'thread.live',
+          workerId: 'worker-1',
+          sessionId: 'session-1',
+          live: { rev, at: Date.now(), status: 'responding', working: 'executing_tool', after: 'tool:run', tools: [{ id: 'tool:run', name: 'Execute', phase: 'running', startedAt: Date.now(), output }] },
+        });
+      },
+      { rev, lines },
+    );
+  await live(1, 120);
+  const row = page.locator('.wt-tr[data-disclosure="tool:run"]');
+  assert.equal(await row.locator('.wt-tr-trigger').getAttribute('aria-expanded'), 'true', 'open without a click');
+  assert.equal(await row.locator('.wt-tr-hint').count(), 0, 'no "Click to see progress" hint');
+  const pre = row.locator('.wt-cmd-out');
+  await page.waitForFunction(() => {
+    const el = document.querySelector<HTMLElement>('.wt-tr[data-disclosure="tool:run"] .wt-cmd-out');
+    return !!el && el.scrollHeight > el.clientHeight && el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
+  });
+  assert.equal(await row.locator('.wt-cmd-clamp').evaluate((el) => el.classList.contains('is-live') && !el.classList.contains('is-clamped')), true);
+  assert.equal(await row.locator('.wt-cmd-row').count(), 121, 'all 120 lines plus the command');
+
+  // New output arrives: the box follows it.
+  await live(2, 200);
+  const tail = () => pre.evaluate((el) => ({ distance: el.scrollHeight - el.scrollTop - el.clientHeight, last: el.lastElementChild?.textContent }));
+  assert.deepEqual(await tail(), { distance: 0, last: 'line 200' });
+
+  // The owner scrolls up inside it: it stays there while more arrives, then follows again from the end.
+  const box = await pre.boundingBox();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.wheel(0, -200);
+  await page.waitForFunction(() => document.querySelector<HTMLElement>('.wt-tr[data-disclosure="tool:run"] .wt-cmd-out')?.dataset.tail === 'off');
+  await live(3, 260);
+  assert.ok((await tail()).distance > 100, 'stays where the owner scrolled');
+  await pre.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await page.waitForFunction(() => document.querySelector<HTMLElement>('.wt-tr[data-disclosure="tool:run"] .wt-cmd-out')?.dataset.tail === undefined);
+  await live(4, 300);
+  assert.deepEqual(await tail(), { distance: 0, last: 'line 300' });
+  assert.deepEqual(errors, []);
+});
+
 test('renders rich Markdown replies, sticky collapsible Plan Bar, @file workspace autocomplete, and responsive viewports without overflow', { skip: chromium }, async (t) => {
   const { page, errors } = await mountV3Thread(t);
 
@@ -935,6 +994,8 @@ test('a Thread to raw terminal round trip keeps the reader’s scroll position a
   await page.evaluate(() => {
     const s = document.querySelector<HTMLElement>('.wt-scroll')!;
     const row = s.querySelector<HTMLElement>('[data-entry="m13"]')!;
+    // The owner's own scroll: only that lets go of the bottom.
+    s.dispatchEvent(new WheelEvent('wheel', { deltaY: -100 }));
     s.scrollTop += row.getBoundingClientRect().top - s.getBoundingClientRect().top + 180;
     s.dispatchEvent(new Event('scroll'));
   });
@@ -957,5 +1018,324 @@ test('a Thread to raw terminal round trip keeps the reader’s scroll position a
   assert.ok(followed.max - followed.top <= 2, `still following latest: ${followed.top}/${followed.max}`);
 
   await page.evaluate(() => (window as any).thread.dispose());
+  assert.deepEqual(errors, []);
+});
+
+const longEntries = (): ThreadEntry[] => Array.from({ length: 30 }, (_, i) => ({ id: `m${i}`, seq: i, role: i % 2 ? 'assistant' : 'user', kind: 'text', text: `Message ${i} `.repeat(30) }));
+const REPLY = Array.from({ length: 120 }, (_, i) => `word${i}`).join(' ');
+
+/** Mounts a Thread scrolled to the bottom of a long transcript, with a live turn under way (no stream yet). */
+async function mountStreaming(t: TestContext) {
+  const mounted = await mountV3Thread(t);
+  const entries = longEntries();
+  await mounted.page.evaluate(
+    ({ entries, rows }) => {
+      const w = window as any;
+      w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+      w.live = (rev: number, extra: Record<string, unknown> = {}) =>
+        w.receive({ t: 'thread.live', workerId: 'worker-1', sessionId: 'session-1', live: { rev, at: Date.now(), status: 'responding', working: 'streaming_assistant_message', after: 'm29', tools: [], ...extra } });
+      w.frames = (n: number) =>
+        new Promise<void>((resolve) => {
+          const step = () => (n-- <= 0 ? resolve() : requestAnimationFrame(step));
+          requestAnimationFrame(step);
+        });
+      w.dist = () => {
+        const s = document.querySelector<HTMLElement>('.wt-scroll')!;
+        return s.scrollHeight - s.scrollTop - s.clientHeight;
+      };
+      w.arrow = () => !document.querySelector('.wt-latest')!.classList.contains('hidden');
+      w.live(1, { status: 'pondering', working: 'thinking' });
+    },
+    { entries, rows: presentThread(entries, true) },
+  );
+  await mounted.page.evaluate(() => (window as any).frames(3));
+  return mounted;
+}
+
+test('a live reply reveals word by word as thread.stream appends arrive, and stays pinned to the bottom', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountStreaming(t);
+  assert.deepEqual(await page.evaluate(() => (window as any).sent.filter((m: any) => m.t === 'thread.watch')), [{ t: 'thread.watch', workerId: 'worker-1', on: true, stream: true }]);
+  const samples: { text: string; dist: number; arrow: boolean }[] = await page.evaluate(async (reply) => {
+    const w = window as any;
+    const out: { text: string; dist: number; arrow: boolean }[] = [];
+    let sent = 30;
+    w.live(2, { stream: { kind: 'text', text: reply.slice(0, sent), since: Date.now() } });
+    let rev = 2;
+    // Appends of a few characters every other frame, like the daemon's deltas, then a quiet tail.
+    for (let frame = 0; frame < 280; frame++) {
+      if (frame % 2 === 0 && sent < reply.length) {
+        const next = Math.min(reply.length, sent + 9);
+        w.receive({ t: 'thread.stream', workerId: 'worker-1', sessionId: 'session-1', rev: rev + 1, base: rev, from: sent, text: reply.slice(sent, next) });
+        rev++;
+        sent = next;
+      }
+      await w.frames(1);
+      out.push({ text: document.querySelector('.wt-stream .wt-stream-copy')?.textContent ?? '', dist: w.dist(), arrow: w.arrow() });
+    }
+    return out;
+  }, REPLY);
+  const lengths = samples.map((s) => s.text.length);
+  assert.equal(samples.at(-1)?.text.trim(), REPLY, 'the whole reply shows once it has caught up');
+  assert.ok(
+    lengths.every((n, i) => i === 0 || n >= lengths[i - 1]),
+    'the reveal only grows',
+  );
+  const steps = lengths
+    .slice(1)
+    .map((n, i) => n - lengths[i])
+    .filter((d) => d > 0);
+  assert.ok(steps.length > 40, `many small reveals, not a few chunks (${steps.length})`);
+  assert.ok(Math.max(...steps) <= 40, `no frame reveals more than a few words (${Math.max(...steps)})`);
+  for (const { text } of samples) {
+    const shown = text.trim();
+    assert.ok(REPLY.startsWith(shown), 'shows a prefix of the reply');
+    assert.ok(!shown || shown.length === REPLY.length || REPLY[shown.length] === ' ', `ends on a whole word: “${shown.slice(-12)}”`);
+  }
+  assert.ok(
+    samples.every((s) => !s.arrow),
+    'the jump arrow never shows while following',
+  );
+  assert.ok(samples.at(-1)!.dist <= 2, 'ends at the bottom');
+  assert.deepEqual(errors, []);
+});
+
+test('a Thread opened mid-reply shows it at once, and an append that does not fit watches again', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountStreaming(t);
+  const shown = await page.evaluate(async (reply) => {
+    const w = window as any;
+    w.live(2, { stream: { kind: 'text', text: reply, since: Date.now() - 5000 } });
+    await w.frames(1);
+    return document.querySelector('.wt-stream .wt-stream-copy')?.textContent?.trim();
+  }, REPLY);
+  assert.equal(shown, REPLY);
+  const watches = await page.evaluate(() => {
+    const w = window as any;
+    w.sent.length = 0;
+    w.receive({ t: 'thread.stream', workerId: 'worker-1', sessionId: 'session-1', rev: 9, base: 7, from: 3, text: 'x' });
+    return w.sent.filter((m: any) => m.t === 'thread.watch');
+  });
+  assert.deepEqual(watches, [{ t: 'thread.watch', workerId: 'worker-1', on: true, stream: true }]);
+  assert.deepEqual(errors, []);
+});
+
+test('a backward selection in the active Markdown tail survives replacement, settling, and finalization', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountStreaming(t);
+  const initial = 'Copy **this** phrase.\n\nCopy **this** phrase.';
+  const updates = [' More words in the selected paragraph.', '\n\nNow write a new paragraph.'];
+  const samples = await page.evaluate(
+    async ({ initial, updates }) => {
+      const w = window as any;
+      // Join a stream under way, as when opening an already active Thread.
+      w.live(2, { stream: { kind: 'text', text: initial, since: Date.now() - 5000 } });
+      const selector = '.wt-stream-copy .wt-md > p';
+      const tail = document.querySelectorAll(selector)[1];
+      const selection = getSelection()!;
+      selection.setBaseAndExtent(tail.lastChild!, tail.lastChild!.textContent!.length, tail.firstChild!, 0);
+      const sample = () => ({
+        text: selection.toString(),
+        backward: selection.anchorNode === selection.getRangeAt(0).endContainer && selection.anchorOffset === selection.getRangeAt(0).endOffset,
+        paragraph: [...document.querySelectorAll(selector)].indexOf(selection.anchorNode?.parentElement?.closest('p') as Element),
+        tailReplaced: !tail.isConnected,
+      });
+      const states = [sample()];
+      let text = initial;
+      for (const [i, more] of updates.entries()) {
+        w.receive({ t: 'thread.stream', workerId: 'worker-1', sessionId: 'session-1', rev: i + 3, base: i + 2, from: text.length, text: more });
+        text += more;
+        await w.frames(30);
+        states.push(sample());
+      }
+      return states;
+    },
+    { initial, updates },
+  );
+  const selected = { text: 'Copy this phrase.', backward: true, paragraph: 1 };
+  assert.deepEqual(samples, [
+    { ...selected, tailReplaced: false },
+    { ...selected, tailReplaced: true },
+    { ...selected, tailReplaced: true },
+  ]);
+  await page.getByText('Now write a new paragraph.', { exact: true }).waitFor();
+
+  const landed = [...longEntries(), { id: 'm30', seq: 30, role: 'assistant', kind: 'text', text: initial + updates.join('') }] as ThreadEntry[];
+  const after = await page.evaluate(
+    async ({ entries, rows }) => {
+      const w = window as any;
+      w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+      w.live(5, { after: 'm30', tools: [{ name: 'Execute', startedAt: Date.now() }] });
+      await w.frames(3);
+      const selection = getSelection()!;
+      const range = selection.getRangeAt(0);
+      return {
+        text: selection.toString(),
+        backward: selection.anchorNode === range.endContainer && selection.anchorOffset === range.endOffset,
+        paragraph: [...document.querySelectorAll('[data-entry="m30"] .wt-md > p')].indexOf(selection.anchorNode?.parentElement?.closest('p') as Element),
+      };
+    },
+    { entries: landed, rows: presentThread(landed, true) },
+  );
+  assert.deepEqual(after, selected);
+  await page.evaluate(() => (window as any).thread.dispose());
+  assert.deepEqual(errors, []);
+});
+
+test('a live reply keeps its finished paragraphs in place, so a selection in them survives later updates', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountStreaming(t);
+  const result = await page.evaluate(async () => {
+    const w = window as any;
+    const first = 'The first paragraph is finished and the owner selects it.\n\n';
+    let text = `${first}Second paragraph `;
+    w.live(2, { stream: { kind: 'text', text, since: Date.now() - 5000 } });
+    await w.frames(2);
+    const p = document.querySelector('.wt-stream .wt-stream-copy p')!;
+    (p as any).marked = true;
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    getSelection()!.removeAllRanges();
+    getSelection()!.addRange(range);
+    const selected = getSelection()!.toString();
+    let rev = 2;
+    for (const more of ['keeps arriving ', 'word by word.\n\n', '- a list item\n', '- another\n\nAnd a closing line.']) {
+      w.receive({ t: 'thread.stream', workerId: 'worker-1', sessionId: 'session-1', rev: rev + 1, base: rev, from: text.length, text: more });
+      rev++;
+      text += more;
+      await w.frames(30);
+    }
+    const now = document.querySelector('.wt-stream .wt-stream-copy p')!;
+    return {
+      selected,
+      still: getSelection()!.toString(),
+      same: (now as any).marked === true && now.isConnected,
+      shown: document.querySelector('.wt-stream .wt-stream-copy')!.textContent!.replace(/\s+/g, ' ').trim(),
+      text,
+    };
+  });
+  assert.equal(result.selected, 'The first paragraph is finished and the owner selects it.');
+  assert.equal(result.still, result.selected, 'the selection survives the updates');
+  assert.ok(result.same, 'the finished paragraph is the same element after later updates');
+  assert.match(result.shown, /And a closing line\.$/);
+
+  // The reply lands in the transcript: the selection moves onto the recorded entry.
+  const landed = [...longEntries(), { id: 'm30', seq: 30, role: 'assistant', kind: 'text', text: result.text }] as ThreadEntry[];
+  const after = await page.evaluate(
+    async ({ entries, rows }) => {
+      const w = window as any;
+      w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+      w.receive({ t: 'thread.live', workerId: 'worker-1', sessionId: 'session-1', live: { rev: 99, at: Date.now(), status: 'responding', working: 'streaming_assistant_message', after: 'm30', tools: [] } });
+      await w.frames(3);
+      const selection = getSelection()!;
+      return { text: selection.toString(), inEntry: !!selection.anchorNode?.parentElement?.closest('[data-entry="m30"]'), streamHidden: document.querySelector<HTMLElement>('.wt-stream')!.hidden };
+    },
+    { entries: landed, rows: presentThread(landed, true) },
+  );
+  assert.deepEqual(after, { text: result.selected, inEntry: true, streamHidden: true });
+  assert.deepEqual(errors, []);
+});
+test('live thinking follows its own tail and the bottom, ends as a finished thought until its entry lands, and only the owner scrolling up lets go', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountStreaming(t);
+  const thinking = Array.from({ length: 400 }, (_, i) => `thought${i}`).join(' ');
+  const during = await page.evaluate(async (thinking) => {
+    const w = window as any;
+    const since = Date.now();
+    w.thinkSince = since;
+    let sent = 40;
+    w.live(2, { status: 'pondering', working: 'thinking', stream: { kind: 'thinking', text: thinking.slice(0, sent), since, entryId: 'think-1' } });
+    let rev = 2;
+    const out: { dist: number; arrow: boolean; inner: number }[] = [];
+    for (let frame = 0; frame < 240; frame++) {
+      if (sent < thinking.length) {
+        const next = Math.min(thinking.length, sent + 14);
+        w.receive({ t: 'thread.stream', workerId: 'worker-1', sessionId: 'session-1', rev: rev + 1, base: rev, from: sent, text: thinking.slice(sent, next) });
+        rev++;
+        sent = next;
+      }
+      await w.frames(1);
+      const body = document.querySelector<HTMLElement>('.wt-live-thinking .wt-thinking-text')!;
+      out.push({ dist: w.dist(), arrow: w.arrow(), inner: body.scrollHeight - body.scrollTop - body.clientHeight });
+    }
+    return { out, rev, open: document.querySelector<HTMLDetailsElement>('.wt-live-thinking')!.open };
+  }, thinking);
+  assert.equal(during.open, true);
+  assert.ok(
+    during.out.every((s) => !s.arrow),
+    'opening the live thinking block and its growth never show the jump arrow',
+  );
+  assert.ok(Math.max(...during.out.slice(-30).map((s) => s.dist)) <= 2, 'the Thread stays at the bottom');
+  assert.ok(
+    during.out.slice(-30).every((s) => s.inner <= 2),
+    'the thinking box follows its newest line',
+  );
+
+  // Scrolling up inside the thinking box stops it following there, without letting go of the Thread.
+  const box = await page.locator('.wt-live-thinking .wt-thinking-text').boundingBox();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.wheel(0, -120);
+  const inside = await page.evaluate(
+    async ({ thinking, rev }) => {
+      const w = window as any;
+      await w.frames(2);
+      w.receive({
+        t: 'thread.live',
+        workerId: 'worker-1',
+        sessionId: 'session-1',
+        live: { rev: rev + 1, at: Date.now(), status: 'pondering', working: 'thinking', after: 'm29', tools: [], stream: { kind: 'thinking', text: `${thinking} more words arriving now`, since: w.thinkSince, entryId: 'think-1' } },
+      });
+      await w.frames(20);
+      const body = document.querySelector<HTMLElement>('.wt-live-thinking .wt-thinking-text')!;
+      return { inner: body.scrollHeight - body.scrollTop - body.clientHeight, arrow: w.arrow() };
+    },
+    { thinking, rev: during.rev },
+  );
+  assert.ok(inside.inner > 40, `the thinking box stays where the owner scrolled it (${inside.inner})`);
+
+  // The reply starts: the thought shows finished, where its entry will land, until the transcript has it.
+  const handoff = await page.evaluate(async (rev) => {
+    const w = window as any;
+    w.advance(8000);
+    w.live(rev + 2, { stream: { kind: 'text', text: 'The answer is ', since: Date.now() }, completedThinking: { 'think-1': 5000 } });
+    await w.frames(10);
+    return { held: document.querySelector('.wt-stream .wt-held-thinking .wt-thought-label')?.textContent, live: !!document.querySelector('.wt-live-thinking'), arrow: w.arrow(), dist: w.dist() };
+  }, during.rev);
+  assert.equal(handoff.held, 'Thought for 5s', 'uses the daemon duration, not the time this viewer waited');
+  assert.equal(handoff.live, false);
+  assert.equal(handoff.arrow, false);
+  const entries = [
+    ...longEntries(),
+    { id: 'think-1', seq: 30, role: 'assistant', kind: 'thinking', text: thinking, tookMs: 5000 } as ThreadEntry,
+    { id: 'reply-1', seq: 31, role: 'assistant', kind: 'text', text: 'The answer is 42.' } as ThreadEntry,
+  ];
+  const landed = await page.evaluate(
+    async ({ entries, rows, rev }) => {
+      const w = window as any;
+      w.receive({ t: 'thread.live', workerId: 'worker-1', sessionId: 'session-1', live: { rev: rev + 3, at: Date.now(), status: 'idle', working: 'idle', after: 'reply-1', tools: [] } });
+      w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+      await w.frames(10);
+      return {
+        stream: document.querySelector<HTMLElement>('.wt-stream')!.hidden,
+        held: !!document.querySelector('.wt-stream:not([hidden]) .wt-held-thinking'),
+        recorded: document.querySelector('[data-disclosure="think-1"] .wt-thought-label')?.textContent,
+        dist: w.dist(),
+        arrow: w.arrow(),
+      };
+    },
+    { entries, rows: presentThread(entries, false), rev: during.rev },
+  );
+  assert.deepEqual(landed, { stream: true, held: false, recorded: handoff.held, dist: landed.dist, arrow: false });
+  assert.ok(landed.dist <= 2, 'still at the bottom once the turn lands');
+
+  // The owner scrolling the Thread up lets go of the bottom and shows the arrow; new text no longer pulls it down.
+  await page.mouse.move(400, 200);
+  await page.mouse.wheel(0, -400);
+  const released = await page.evaluate(async () => {
+    const w = window as any;
+    await w.frames(5);
+    const before = w.dist();
+    w.live(99, { stream: { kind: 'text', text: 'Another reply begins with several words ', since: Date.now() } });
+    await w.frames(30);
+    return { before, after: w.dist(), arrow: w.arrow() };
+  });
+  assert.ok(released.before > 120, `scrolled up (${released.before})`);
+  assert.ok(released.after >= released.before, 'growth does not pull the owner back down');
+  assert.equal(released.arrow, true);
   assert.deepEqual(errors, []);
 });

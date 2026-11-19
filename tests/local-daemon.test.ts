@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createCipheriv, randomBytes } from 'node:crypto';
-import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { EventEmitter, once } from 'node:events';
+import { closeSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -452,6 +453,214 @@ test('spawns detached droid daemon without --parent-pid, polls cold start, persi
   const persistedAfterToggle = JSON.parse(readFileSync(statePath, 'utf8'));
   assert.equal(persistedAfterToggle.pid, 4101);
   assert.equal(persistedAfterToggle.airgapped, false);
+});
+
+test('starting or stopping a clone never connects to or signals another office from copied daemon metadata', async (t) => {
+  const owner = makeTempWorkspace(t);
+  const clone = makeTempWorkspace(t);
+  const ownerPort = 52101;
+  const clonePort = 52102;
+  const kill = t.mock.fn();
+  const connect = t.mock.fn();
+  const spawn = t.mock.fn((_cmd, args: string[]) => new FakeChild(args.includes(String(ownerPort)) ? 4101 : 4102));
+  const options = {
+    apiKey: () => 'fk-shared-test-key',
+    resolveDroidPath: () => '/opt/bin/droid',
+    isPidAlive: () => true,
+    killPid: kill,
+    spawnDaemon: spawn,
+    createClient: () => {
+      const client = new FakeDaemonClient();
+      const call = client.connect.bind(client);
+      client.connect = async (url) => {
+        connect(url);
+        await call(url);
+      };
+      return client;
+    },
+  };
+  const first = new LocalDaemon({ ...owner, ...options, pickPort: async () => ownerPort });
+  await first.ensureStarted();
+  first.disconnect();
+  const copied = readFileSync(first.stateFile, 'utf8');
+  const second = new LocalDaemon({ ...clone, ...options, pickPort: async () => clonePort });
+  writeFileSync(second.stateFile, copied);
+  assert.equal(second.info(), null, 'foreign metadata is not visible as a local daemon');
+  await second.ensureStarted();
+  assert.deepEqual(
+    connect.mock.calls.map((c) => c.arguments[0]),
+    [`ws://127.0.0.1:${ownerPort}`, `ws://127.0.0.1:${clonePort}`],
+  );
+  assert.equal(spawn.mock.callCount(), 2, 'clone launches its own daemon despite matching binary and credentials');
+  second.stop();
+  assert.deepEqual(
+    kill.mock.calls.map((c) => c.arguments[0]),
+    [4102],
+  );
+
+  const stopping = new LocalDaemon({ ...clone, ...options });
+  writeFileSync(stopping.stateFile, copied);
+  stopping.stop();
+  assert.deepEqual(
+    kill.mock.calls.map((c) => c.arguments[0]),
+    [4102],
+    'a cold stop does not signal the copied PID',
+  );
+
+  const legacy = new LocalDaemon({ ...owner, ...options });
+  const { ownerDir: _ownerDir, ...unscoped } = JSON.parse(copied);
+  writeFileSync(legacy.stateFile, JSON.stringify(unscoped));
+  assert.equal(legacy.info(), null, 'an unscoped record is not proof of ownership');
+  legacy.stop();
+  assert.deepEqual(JSON.parse(readFileSync(legacy.stateFile, 'utf8')), unscoped, 'cold stop preserves the legacy migration record');
+  assert.deepEqual(
+    kill.mock.calls.map((c) => c.arguments[0]),
+    [4102],
+    'a cold stop never signals an unscoped PID',
+  );
+});
+
+test('legacy migration proves launch ownership before connecting and scopes metadata only after authenticating', async (t) => {
+  const lsof = process.platform === 'darwin' ? '/usr/sbin/lsof' : process.platform === 'linux' ? '/usr/bin/lsof' : '';
+  if (!existsSync(lsof)) return t.skip('requires a host lsof for real process ownership checks');
+  const owner = makeTempWorkspace(t);
+  const spawnDaemon = t.mock.fn(() => new FakeChild(8888));
+  const killPid = t.mock.fn();
+  const client = new FakeDaemonClient();
+  const createClient = t.mock.fn(() => client);
+  const options = { resolveDroidPath: () => process.execPath, airgapped: () => true, spawnDaemon, killPid, createClient };
+  const office = new LocalDaemon({ ...owner, ...options });
+
+  // A real local process with the old argv, loopback listener and redirected log, no Factory credentials or network.
+  writeFileSync(path.join(owner.root, 'daemon'), `require('node:net').createServer().listen(Number(process.argv[3]), process.argv[5], () => process.send('ready'));\nconsole.log('launch log');\n`);
+  const port = await pickFreeLoopbackPort();
+  const fd = openSync(office.logFile, 'a', 0o600);
+  const child = spawn(process.execPath, ['daemon', '--port', String(port), '--host', '127.0.0.1'], { cwd: owner.root, stdio: ['ignore', fd, fd, 'ipc'] });
+  closeSync(fd);
+  const exited = once(child, 'exit');
+  t.after(async () => {
+    child.kill('SIGTERM');
+    await exited;
+  });
+  const ready = await Promise.race([once(child, 'message').then(([msg]) => msg), exited.then(([code]) => `exited:${code}`)]);
+  assert.equal(ready, 'ready');
+  assert.ok(child.pid);
+  const unscoped = { pid: child.pid, port, droidPath: process.execPath, airgapped: true, authFingerprint: 'airgapped', startedAt: 123 };
+  const metadata = JSON.stringify(unscoped);
+  writeFileSync(office.stateFile, metadata);
+  assert.equal(office.info(), null);
+
+  const clone = makeTempWorkspace(t);
+  const clonedOffice = new LocalDaemon({ ...clone, ...options });
+  writeFileSync(clonedOffice.stateFile, metadata);
+  const refusesCopy = async () => {
+    await assert.rejects(clonedOffice.ensureStarted(), /could not verify.*belongs to this office/i);
+    assert.equal(readFileSync(clonedOffice.stateFile, 'utf8'), metadata);
+    assert.equal(createClient.mock.callCount(), 0);
+    assert.equal(spawnDaemon.mock.callCount(), 0);
+    assert.equal(killPid.mock.callCount(), 0);
+  };
+  await t.test('copied log with identical content is not ownership evidence', async () => {
+    copyFileSync(office.logFile, clonedOffice.logFile);
+    await refusesCopy();
+    rmSync(clonedOffice.logFile);
+  });
+  await t.test('symlink and hard link to the original log confer no ownership', async () => {
+    symlinkSync(office.logFile, clonedOffice.logFile);
+    await refusesCopy();
+    rmSync(clonedOffice.logFile);
+    linkSync(office.logFile, clonedOffice.logFile);
+    await refusesCopy();
+    rmSync(clonedOffice.logFile);
+  });
+  await t.test('a state-directory alias cannot attach or remove the original record', async () => {
+    const dataDir = path.join(clone.root, 'alias');
+    symlinkSync(owner.dataDir, dataDir, 'dir');
+    const alias = new LocalDaemon({ dataDir, ...options });
+    assert.equal(alias.info(), null);
+    await assert.rejects(alias.ensureStarted(), /state directory must not be an alias/);
+    alias.stop();
+    assert.equal(readFileSync(office.stateFile, 'utf8'), metadata);
+    assert.equal(createClient.mock.callCount(), 0);
+    assert.equal(spawnDaemon.mock.callCount(), 0);
+    assert.equal(killPid.mock.callCount(), 0);
+  });
+  await t.test('a port that differs from the running command is rejected', async () => {
+    writeFileSync(office.stateFile, JSON.stringify({ ...unscoped, port: await pickFreeLoopbackPort() }));
+    await assert.rejects(office.ensureStarted(), /could not verify/i);
+    assert.equal(createClient.mock.callCount(), 0);
+    writeFileSync(office.stateFile, metadata);
+  });
+  await t.test('unavailable authentication preserves the live daemon and original metadata for retry', async () => {
+    const rejected = new FakeDaemonClient();
+    rejected.authenticate = async () => {
+      throw new Error('authentication rejected');
+    };
+    const rejectingOffice = new LocalDaemon({ ...owner, ...options, createClient: () => rejected });
+    await assert.rejects(rejectingOffice.ensureStarted(), /authentication rejected/);
+    assert.deepEqual(rejected.urls, [`ws://127.0.0.1:${port}`]);
+    assert.equal(rejected.destroyed, true);
+    assert.equal(rejectingOffice.info(), null);
+    assert.equal(readFileSync(office.stateFile, 'utf8'), metadata);
+    assert.equal(spawnDaemon.mock.callCount(), 0);
+    assert.equal(killPid.mock.callCount(), 0);
+  });
+
+  await t.test('shutdown during authentication cannot claim the legacy daemon', async () => {
+    const closingClient = new FakeDaemonClient();
+    const closingOffice = new LocalDaemon({ ...owner, ...options, createClient: () => closingClient });
+    const authenticate = closingClient.authenticate.bind(closingClient);
+    closingClient.authenticate = (params) => {
+      closingOffice.stop();
+      return authenticate(params);
+    };
+    await assert.rejects(closingOffice.ensureStarted(), /has been stopped/);
+    assert.equal(closingClient.destroyed, true);
+    assert.equal(readFileSync(office.stateFile, 'utf8'), metadata);
+    assert.equal(spawnDaemon.mock.callCount(), 0);
+    assert.equal(killPid.mock.callCount(), 0);
+  });
+
+  client.openedSessions = [{ sessionId: 'ses-live-legacy', workingState: 'executing_tool', updatedAt: 123 }];
+  client.loadSnapshot.pendingAskUserRequests = [{ requestId: 'ask-legacy', toolCallId: 'tc-legacy', questions: [{ index: 1, question: 'Which target?', options: ['Web', 'Android'] }] }];
+  const authenticate = client.authenticate.bind(client);
+  client.authenticate = (params) => {
+    assert.equal(readFileSync(office.stateFile, 'utf8'), metadata, 'must not scope on connect alone');
+    return authenticate(params);
+  };
+  const sessions = await office.adoptSessions(['ses-live-legacy']);
+  assert.deepEqual(sessions.openedSessionIds, ['ses-live-legacy']);
+  assert.ok(sessions.adopted.has('ses-live-legacy'));
+  assert.equal(office.pendingAsk('ses-live-legacy')?.requestId, 'ask-legacy');
+  assert.deepEqual(client.urls, [`ws://127.0.0.1:${port}`]);
+  assert.equal(client.authCalls.length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(office.stateFile, 'utf8')), { ...unscoped, ownerDir: realpathSync(owner.dataDir) });
+  assert.equal(statSync(office.stateFile).mode & 0o777, 0o600);
+  assert.equal(spawnDaemon.mock.callCount(), 0);
+  assert.equal(killPid.mock.callCount(), 0);
+  assert.equal(child.exitCode, null);
+  office.disconnect();
+});
+
+test('a dead legacy daemon record does not block a fresh launch', async (t) => {
+  const workspace = makeTempWorkspace(t);
+  const killPid = t.mock.fn();
+  const office = new LocalDaemon({
+    ...workspace,
+    airgapped: () => true,
+    resolveDroidPath: () => '/opt/bin/droid',
+    isPidAlive: () => false,
+    pickPort: async () => 52102,
+    spawnDaemon: () => new FakeChild(4102),
+    createClient: () => new FakeDaemonClient(),
+    killPid,
+  });
+  writeFileSync(office.stateFile, JSON.stringify({ pid: 4101, port: 52101, droidPath: '/opt/bin/droid', airgapped: true, authFingerprint: 'airgapped', startedAt: 123 }));
+  await office.ensureStarted();
+  assert.equal(office.info()?.pid, 4102);
+  assert.equal(office.info()?.ownerDir, realpathSync(workspace.dataDir));
+  assert.equal(killPid.mock.callCount(), 0);
+  office.disconnect();
 });
 
 test('SIGTERM disconnect leaves daemon alive for adoption on restart, while SIGINT stop kills daemon PID', async (t) => {
@@ -927,7 +1136,7 @@ test('real @factory/droid-sdk createWebSocketDaemonClient wire round-trip over l
   });
 
   writeFileSync(path.join(dataDir, 'setup.json'), JSON.stringify({ onboarded: true, airgapped: true }));
-  writeFileSync(path.join(dataDir, 'droid-daemon.json'), JSON.stringify({ pid: process.pid, port, droidPath: '/opt/bin/droid', airgapped: true, authFingerprint: 'airgapped' }), { mode: 0o600 });
+  writeFileSync(path.join(dataDir, 'droid-daemon.json'), JSON.stringify({ ownerDir: realpathSync(dataDir), pid: process.pid, port, droidPath: '/opt/bin/droid', airgapped: true, authFingerprint: 'airgapped' }), { mode: 0o600 });
 
   const daemon = new LocalDaemon({
     dataDir,

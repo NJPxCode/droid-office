@@ -2,9 +2,11 @@ import { ORCHESTRATOR_ID } from '../../shared/mission-control';
 import { PROMPT_MAX } from '../../shared/prompts';
 import type { ClientMsg, ServerMsg, WorkerInfo } from '../../shared/protocol';
 import { copyTurns, nativeCopy, nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
-import { isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
+import { daemonStartFailure, isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
+import { settledMarkdownEnd } from '../../shared/live-markdown';
+import { REVEAL_JOIN_AGE_MS, StreamReveal } from '../../shared/stream-reveal';
 import { IMAGE_PLACEHOLDER, latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
-import { statusMode, thinkingSeconds, thoughtLabel } from '../../shared/thread-status';
+import { thinkingSeconds, thoughtLabel, threadStatus } from '../../shared/thread-status';
 import { rewindFilesSince } from '../../shared/thread-rewind';
 import { threadPrompts } from '../../shared/thread-turns';
 import { todosFinished } from '../../shared/todos';
@@ -19,7 +21,8 @@ import { withToken } from '../token';
 import { applyHorizontalScrollCue, measureHorizontalScrollCue, type HorizontalScrollCueMeasurement } from './code-highlight';
 import { claimEscape, h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
-import { liveFrom, entryAt, entryTook, type LiveTool, type LiveView } from './thread-live-view';
+import { followsTail, keepAtTail, rememberSelection } from './thread-live-output';
+import { liveAppend, liveFrom, entryAt, entryTook, type LiveTool, type LiveView } from './thread-live-view';
 import { openThreadCopy } from './thread-copy';
 import { mountThreadSettings } from './thread-settings';
 import { refreshMessageTimes, threadMessageActions } from './thread-message-actions';
@@ -94,7 +97,7 @@ function entryDigest(entry: ThreadEntry | undefined): string {
   let digest = digests.get(entry);
   if (digest === undefined) {
     let hash = 2166136261;
-    for (const field of [entry.text, entry.input, entry.output, entry.images?.map((image) => image.id).join()]) {
+    for (const field of [entry.text, entry.input, entry.output, entry.outputRef, entry.images?.map((image) => image.id).join()]) {
       if (field === undefined) continue;
       for (let at = 0; at < field.length; at++) hash = Math.imul(hash ^ field.charCodeAt(at), 16777619);
     }
@@ -140,7 +143,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let rewoundFromSessionId: string | undefined;
   let hasPushed = false;
   let liveView: LiveView | undefined;
-  let liveStreamKey = '';
+  /** Reveals the live stream word by word, however its text arrives. */
+  const reveal = new StreamReveal();
+  let revealFrame = 0;
+  let revealAt = 0;
+  let resyncAt = 0;
   const liveTools = new Map<string, LiveTool>();
   let paintedOnce = false;
   const floorDirs = new Map<string, string>();
@@ -466,7 +473,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const busy = isBusy(worker.status);
     const fromEntries = latestThreadPlan(history.entries, busy);
     if (fromEntries) return fromEntries;
-    if (worker.todos && !todosFinished(worker.todos)) {
+    if (busy && worker.todos && !todosFinished(worker.todos)) {
       return {
         steps: [],
         done: worker.todos.done,
@@ -975,15 +982,20 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   let viewportHeight = scroll.clientHeight;
   const resize = new ResizeObserver(() => {
     updateClamps();
-    if (followingLayout && !inspecting && !history.historical) follow();
+    const resized = viewportWidth !== scroll.clientWidth || viewportHeight !== scroll.clientHeight;
+    if (followingLayout && !inspecting && !history.historical) {
+      if (resized || !paintedOnce) follow();
+      else motion.follow();
+    }
     viewportWidth = scroll.clientWidth;
     viewportHeight = scroll.clientHeight;
     updateLatest();
   });
   resize.observe(scroll);
-  // Off-screen rows hold estimated heights until they render, so the transcript grows after a jump
-  // to the bottom: keep following it.
+  // Off-screen rows hold estimated heights until they render, and Markdown, pictures and diagrams lay
+  // out late, so the transcript grows without a scroll: keep following it, and the live stream too.
   resize.observe(list);
+  resize.observe(streamNode);
   let inspecting = false;
   // While the pane shows the raw terminal the transcript is detached and measures 0×0, which reads as
   // "at the bottom": answer from where the reader was until it is back and laid out, and put a scrolled-up
@@ -1028,7 +1040,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   };
   const updateLatest = () => {
     const distance = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
-    latest.classList.toggle('hidden', !history.historical && !inspecting && distance <= 120);
+    // While following the bottom the reader is where the newest text lands, even mid-glide.
+    latest.classList.toggle('hidden', !history.historical && !inspecting && (followingLayout || distance <= 120));
     labelLatest(history.historical ? 'Back to the latest' : inspecting && atBottom() ? 'Follow latest' : 'Scroll to bottom');
   };
   const updatePin = () => {
@@ -1057,6 +1070,30 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     if (active && needsOwnerInput(worker) && !opts.question.hidden) requestAnimationFrame(() => opts.question.scrollIntoView({ block: 'nearest' }));
   });
   questionChanges.observe(opts.question, { childList: true, subtree: true });
+  // Only the owner's own scroll lets go of the bottom: growth, late layout and the office's own scrolls
+  // fire scroll events too, and must never read as one.
+  let ownerScrollAt = -Infinity;
+  let ownerHolding = false;
+  const ownerScroll = () => {
+    ownerScrollAt = performance.now();
+  };
+  const ownerScrolling = () => ownerHolding || performance.now() - ownerScrollAt < 400;
+  scroll.addEventListener('wheel', ownerScroll, { passive: true });
+  scroll.addEventListener('touchmove', ownerScroll, { passive: true });
+  scroll.addEventListener('keydown', (event) => {
+    // Tab counts too: moving focus to a control above scrolls it into view.
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab'].includes(event.key)) ownerScroll();
+  });
+  // A press on the scroll bar itself, held while dragging it.
+  scroll.addEventListener('pointerdown', (event) => {
+    if (event.target !== scroll) return;
+    ownerHolding = true;
+    ownerScroll();
+  });
+  const ownerReleased = () => {
+    ownerHolding = false;
+  };
+  window.addEventListener('pointerup', ownerReleased);
   let lastScrollTop = scroll.scrollTop;
   scroll.addEventListener('scroll', () => {
     const top = scroll.scrollTop;
@@ -1064,8 +1101,10 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     lastScrollTop = top;
     if (viewportWidth === scroll.clientWidth && viewportHeight === scroll.clientHeight) {
       const distance = scroll.scrollHeight - top - scroll.clientHeight;
-      if ((delta < -1 && distance > 1) || distance > 80) followingLayout = false;
-      else if (distance <= 16 && !inspecting) followingLayout = true;
+      if (ownerScrolling() && ((delta < -1 && distance > 1) || distance > 120)) {
+        followingLayout = false;
+        motion.cancel();
+      } else if (distance <= 16 && !inspecting) followingLayout = true;
     }
     updateLatest();
     updatePin();
@@ -1118,7 +1157,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
 
   /** An entry's pictures, each opening at full size, read from `owner`'s session. A cloud worker's session has none here. */
   const pictures = (entry: ThreadEntry | undefined, title: string, about?: string, owner: WorkerInfo = worker) => {
-    const imgs = !owner.cloud && opts.floor ? (entry?.images ?? []) : [];
+    const imgs = canOpenFiles(owner) ? (entry?.images ?? []) : [];
     if (!imgs.length) return null;
     const gallery = imgs.map((image, i) => ({
       src: withToken(`/api/thread/image?${new URLSearchParams({ floor: opts.floor ?? '', worker: owner.id, image: image.id })}`),
@@ -1204,22 +1243,24 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         return node;
       }
       // The live stretch and one the worker is asking in stay as steps; the fold is for work that is done.
-      return work === 'fold' && !row.live && !asking ? foldActivity(node, row, toggles) : node;
+      const answered = row.blocks.some((block) => block.kind === 'tools' && block.actions.some((action) => action.answers?.length));
+      return work === 'fold' && !row.live && !asking && !answered ? foldActivity(node, row, toggles) : node;
     }
 
     node.classList.add(row.role, row.kind === 'message' ? 'text' : 'notice');
+    const entry = loaded.get(row.id);
     if (row.kind === 'notice') {
-      const compaction = loaded.get(row.id)?.name === 'compaction' || row.id.startsWith('compaction:');
+      const compaction = entry?.name === 'compaction' || row.id.startsWith('compaction:');
       if (compaction) {
         node.append(h('div.wt-compact-divider', { role: 'separator' }, h('span', {}, 'Compacted')));
         return node;
       }
-      const imgs = row.tone === 'attachment' ? pictures(loaded.get(row.id), row.role === 'user' ? 'Picture you sent' : `Picture from ${author.name}`, undefined, author) : null;
-      node.append(imgs ?? h('p.wt-turn', { class: row.tone }, row.text));
+      const imgs = pictures(entry, row.role === 'user' ? 'Picture you sent' : `Picture from ${author.name}`, undefined, author);
+      if (imgs) node.append(imgs);
+      if (!imgs || row.tone !== 'attachment') node.append(h('p.wt-turn', { class: row.tone }, row.text));
       return node;
     }
 
-    const entry = loaded.get(row.id);
     const text = entry?.text ?? '';
     if (row.role === 'assistant') {
       if (row.startsTurn) {
@@ -1234,7 +1275,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         onOpenPath: onOpenPathFor(author),
         ...(canOpenFiles(author) ? { imageUrl: (path: string) => threadFileImageUrl({ floor: opts.floor ?? '', workerId: author.id, path }) } : {}),
       });
-      node.append(body);
+      const sent = pictures(entry, `Picture from ${author.name}`, undefined, author);
+      if (sent) node.append(sent);
+      if (text || !sent) node.append(body);
       if (renderOpts.turnEnd) node.append(threadMessageActions({ text: () => text, at: entryAt(entry) }));
       return node;
     }
@@ -1454,9 +1497,15 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       net.send({ t: 'thread.watch', workerId: watchedWorkerId, on: false });
       watchedWorkerId = '';
     }
-    if (watchedWorkerId !== worker.id && net.send({ t: 'thread.watch', workerId: worker.id, on: true })) {
+    if (watchedWorkerId !== worker.id && net.send({ t: 'thread.watch', workerId: worker.id, on: true, stream: true })) {
       watchedWorkerId = worker.id;
     }
+  };
+  /** An append that doesn't fit what is held: watch again, which sends a whole live state. */
+  const resyncLive = () => {
+    if (watchedWorkerId !== worker.id || Date.now() - resyncAt < 1000) return;
+    resyncAt = Date.now();
+    net.send({ t: 'thread.watch', workerId: worker.id, on: true, stream: true });
   };
 
   const syncAttach = () => {
@@ -1519,14 +1568,19 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const starting = threadStarting(worker);
     const cloudWaiting = received && cloudStarting(worker, Date.now());
     const intro = introNow();
-    const key = JSON.stringify([error, received, starting, cloudWaiting, connected, !!intro]);
+    const startFailed = daemonStartFailure(worker);
+    const retained = startFailed && !worker.sessionId ? worker.prompt : undefined;
+    const key = JSON.stringify([error, received, starting, cloudWaiting, connected, !!intro, startFailed, retained]);
     if (key === emptyKey) return;
     emptyKey = key;
     empty.classList.toggle('wt-intro', !!intro);
     if (intro) empty.removeAttribute('role');
     else empty.setAttribute('role', 'status');
     empty.setAttribute('aria-busy', String(!intro && connected && !error && !received));
-    if (intro) empty.replaceChildren(intro);
+    if (connected && startFailed) {
+      empty.setAttribute('aria-busy', 'false');
+      empty.replaceChildren(h('b', {}, 'Droid could not start.'), ...(retained ? [h('p', {}, 'Unsent prompt'), h('div.wt-user-text', {}, retained)] : []));
+    } else if (intro) empty.replaceChildren(intro);
     else if (error) empty.textContent = `Conversation unavailable. ${errorHint}`;
     else if (!connected) empty.textContent = 'Waiting for the office to reconnect…';
     else if (!received)
@@ -1540,53 +1594,171 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     else empty.replaceChildren(h('span.wt-empty-mark', { 'aria-hidden': true }), h('b', {}, 'No messages yet. Start a conversation!'));
   };
 
-  const renderStreamMarkdown = (text: string, since: number) => {
-    const nextKey = `live:stream:${since}`;
-    if (liveStreamKey && liveStreamKey !== nextKey) threadMarkdown('', { key: liveStreamKey, streaming: false });
-    liveStreamKey = nextKey;
-    return threadMarkdown(text, {
-      key: nextKey,
-      streaming: true,
+  /**
+   * The live reply's Markdown, kept in one root: its settled blocks render once and stay (so a selection in
+   * them survives), and only the block still being written renders again on each update.
+   */
+  let liveMd: { key: string; after: string; root: HTMLElement; settled: string; tail: ChildNode[]; tailText: string; tailKey: string } | undefined;
+  const renderStreamMarkdown = (text: string, { since, after }: ShownStream) => {
+    const key = `live:stream:${since}`;
+    if (!liveMd || liveMd.key !== key || !text.startsWith(liveMd.settled)) {
+      resetStreamMarkdown();
+      liveMd = { key, after, root: threadMarkdown('', { key }), settled: '', tail: [], tailText: '', tailKey: '' };
+    }
+    const md = liveMd;
+    const mdOpts = {
       onOpenPath: onOpenPathFor(worker),
       ...(canOpenFiles(worker) ? { imageUrl: (path: string) => threadFileImageUrl({ floor: opts.floor ?? '', workerId: worker.id, path }) } : {}),
-    });
+    };
+    const end = Math.max(md.settled.length, settledMarkdownEnd(text));
+    if (end > md.settled.length) {
+      for (const node of md.tail) node.remove();
+      md.tail = [];
+      md.tailText = '';
+      md.root.append(...threadMarkdown(text.slice(md.settled.length, end), mdOpts).childNodes);
+      md.settled = text.slice(0, end);
+    }
+    const tail = text.slice(end);
+    if (tail !== md.tailText || !md.tail.length) {
+      if (md.tailKey && md.tailKey !== `${key}:${end}`) threadMarkdown('', { key: md.tailKey, streaming: false });
+      md.tailKey = `${key}:${end}`;
+      const nodes = [...threadMarkdown(tail, { ...mdOpts, key: md.tailKey, streaming: true }).childNodes];
+      for (const node of md.tail) node.remove();
+      md.root.append(...nodes);
+      md.tail = nodes;
+      md.tailText = tail;
+    }
+    return md.root;
   };
 
   const resetStreamMarkdown = () => {
-    if (!liveStreamKey) return;
-    threadMarkdown('', { key: liveStreamKey, streaming: false });
-    liveStreamKey = '';
+    if (!liveMd) return;
+    threadMarkdown('', { key: liveMd.key, streaming: false });
+    if (liveMd.tailKey) threadMarkdown('', { key: liveMd.tailKey, streaming: false });
+    liveMd = undefined;
   };
 
-  const paintLive = () => {
-    const stream = liveView?.stream;
-    const current = !!liveView && liveView.after !== undefined && liveView.after === history.entries.at(-1)?.id && !history.historical;
-    const showStream = active && connected && current && liveView?.status !== 'idle' && !!stream;
-    const pendingTools = active && connected && current ? (liveView?.tools.filter((tool) => !tool.id) ?? []) : [];
-    if (!showStream || stream?.kind !== 'text') resetStreamMarkdown();
-    streamNode.hidden = !showStream && !pendingTools.length;
+  type ShownStream = NonNullable<LiveView['stream']> & { after: string };
+  /**
+   * A stream that ended before its entry landed in the transcript (the daemon writes a message once it
+   * is whole, so a reply's thinking lands with its text): still shown until it does, so nothing vanishes
+   * and then jumps back in. Thinking shows as the finished thought it becomes.
+   */
+  let heldThoughts: (ShownStream & { tookMs?: number; endedAt: number })[] = [];
+  let heldText: (ShownStream & { endedAt: number }) | undefined;
+  const HELD_IDLE_MS = 2500;
+  let heldTimer: ReturnType<typeof setTimeout> | undefined;
+  const streamKey = (s: { kind: string; since: number; entryId?: string }) => `${s.kind}:${s.entryId ?? s.since}`;
+  const liveStreamOf = (view: LiveView | undefined): ShownStream | undefined => (view?.stream && view.after !== undefined && view.status !== 'idle' ? { ...view.stream, after: view.after } : undefined);
+  /** Before `next` replaces the live view: keeps the stream it ends. */
+  const holdEnded = (next: LiveView) => {
+    for (const thought of heldThoughts) {
+      if (thought.entryId) thought.tookMs = next.completedThinking?.[thought.entryId] ?? thought.tookMs;
+    }
+    const ended = liveStreamOf(liveView);
+    const still = liveStreamOf(next);
+    if (!ended || (still && streamKey(still) === streamKey(ended)) || ended.after !== history.entries.at(-1)?.id) return;
+    const endedAt = performance.now();
+    if (ended.kind === 'thinking') heldThoughts = [...heldThoughts, { ...ended, tookMs: ended.entryId ? next.completedThinking?.[ended.entryId] : undefined, endedAt }].slice(-4);
+    else heldText = { ...ended, endedAt };
+  };
+  const dropHeld = () => {
+    heldThoughts = [];
+    heldText = undefined;
+  };
+  let revealJoin = false;
+  let revealKey = '';
+
+  let liveText = '';
+  const revealTick = (now: number) => {
+    revealFrame = 0;
+    const dt = revealAt ? now - revealAt : 16;
+    revealAt = now;
+    if (streamNode.hidden || !revealKey) {
+      revealAt = 0;
+      return;
+    }
+    paintLive(dt);
+  };
+
+  const paintLive = (dt = 0) => {
+    const lastId = history.entries.at(-1)?.id;
+    const showing = active && connected && !history.historical;
+    const current = showing && !!liveView && liveView.after !== undefined && liveView.after === lastId;
+    const live = current ? liveStreamOf(liveView) : undefined;
+    // Held streams go once their entries land, or once the turn has been over a while without them.
+    const stale = (held: { after: string; endedAt: number }) => held.after !== lastId || (liveView?.status === 'idle' && performance.now() - held.endedAt > HELD_IDLE_MS);
+    if (heldThoughts.some(stale)) heldThoughts = heldThoughts.filter((held) => !stale(held));
+    if (heldText && (stale(heldText) || live?.kind === 'text')) heldText = undefined;
+    clearTimeout(heldTimer);
+    const heldUntil = Math.min(...heldThoughts.map((held) => held.endedAt), heldText?.endedAt ?? Infinity) + HELD_IDLE_MS;
+    if (liveView?.status === 'idle' && heldUntil < Infinity) heldTimer = setTimeout(() => paintLive(), Math.max(0, heldUntil - performance.now()) + 1);
+    const thinkingHidden = threadViewPrefs().thinking === 'hidden';
+    const thoughts = showing && !thinkingHidden ? heldThoughts : [];
+    const stream = live ?? (showing ? heldText : undefined);
+    const ended = !live && !!stream;
+    const showStream = !!stream;
+    const pendingTools = current ? (liveView?.tools.filter((tool) => !tool.id) ?? []) : [];
+    const previousMd = liveMd;
+    if (!showStream || stream.kind !== 'text') resetStreamMarkdown();
+    const key = stream ? streamKey(stream) : '';
+    if (key !== revealKey) {
+      // A stream already well under way when this Thread first sees it shows what it has at once.
+      revealJoin = !!stream && Date.now() - (liveView?.skew ?? 0) - stream.since > REVEAL_JOIN_AGE_MS;
+      revealKey = key;
+      if (!stream) reveal.reset();
+    }
+    if (!showStream) revealAt = 0;
+    const hide = !showStream && !thoughts.length && !pendingTools.length;
+    const landedMarkdown = () => {
+      if (!showing || !previousMd || previousMd.after === lastId) return [];
+      const after = history.entries.findIndex((entry) => entry.id === previousMd.after);
+      return history.entries.slice(after + 1).flatMap((entry) => {
+        const body = nodes.get(entry.id)?.node.querySelector('.wt-md');
+        return body && entry.role === 'assistant' && entry.kind === 'text' ? [body] : [];
+      });
+    };
+    if (hide) rememberSelection(previousMd?.root)?.(landedMarkdown);
+    streamNode.hidden = hide;
     streamNode.className = streamNode.hidden ? 'wt-stream' : 'wt-entry assistant text wt-stream';
     if (streamNode.hidden) return;
-    const thinkingHidden = threadViewPrefs().thinking === 'hidden';
-    const structureKey = JSON.stringify([showStream ? [stream?.kind, stream?.since] : undefined, pendingTools.map((tool) => [tool.name, tool.output, tool.more]), thinkingHidden]);
-    const textKey = showStream && stream ? stream.text : '';
-    if (streamNode.dataset.liveStructure !== structureKey) {
+    const shown = stream ? stream.text.slice(0, reveal.advance(key, stream.text, dt, { join: revealJoin, ended })) : '';
+    if (stream && reveal.pending && !revealFrame) revealFrame = requestAnimationFrame(revealTick);
+    if (!reveal.pending) revealAt = 0;
+    const structureKey = JSON.stringify([
+      thoughts.map((thought) => [thought.since, thoughtLabel(thought.tookMs)]),
+      stream ? [stream.kind, stream.since] : undefined,
+      pendingTools.map((tool) => [tool.name, tool.output, tool.more]),
+      thinkingHidden,
+      threadViewPrefs().thinking,
+    ]);
+    const grew = liveText !== shown;
+    const rebuild = streamNode.dataset.liveStructure !== structureKey;
+    const restore = rebuild || (grew && stream?.kind === 'text') ? rememberSelection(previousMd?.root) : undefined;
+    if (rebuild) {
       streamNode.dataset.liveStructure = structureKey;
-      streamNode.dataset.liveText = textKey;
+      liveText = shown;
       const children: HTMLElement[] = [];
-      if (showStream && stream) {
+      for (const thought of thoughts) {
+        const label = thoughtLabel(thought.tookMs);
+        const open = threadViewPrefs().thinking === 'open';
+        const summary = h('summary', { 'aria-label': `${open ? 'Collapse' : 'Expand'} ${label}` }, h('span.wt-thought-label', {}, label), chevron());
+        children.push(setDisclosureOpen(h('details.wt-thinking.wt-held-thinking', {}, summary, h('div.wt-thinking-text', {}, thought.text)), open));
+      }
+      if (stream) {
         if (stream.kind === 'thinking') {
           const time = h('span.wt-live-time.wt-thought-duration', { 'data-since': stream.since }, `for ${thinkingSeconds(Date.now() - (liveView?.skew ?? 0) - stream.since)}`);
           children.push(
             h(
               'details.wt-thinking.wt-live-thinking',
-              { open: !thinkingHidden, class: thinkingHidden ? 'is-textless' : '' },
+              // Marked as the office's own opening so the toggle it fires doesn't read as the owner inspecting it.
+              { open: !thinkingHidden, 'data-expected-open': String(!thinkingHidden), class: thinkingHidden ? 'is-textless' : '' },
               h('summary', {}, h('span.wt-thought-label.wt-shimmer', {}, 'Thinking'), time, chevron()),
-              thinkingHidden ? null : h('div.wt-thinking-text', {}, stream.text),
+              thinkingHidden ? null : followsTail(h('div.wt-thinking-text', {}, shown)),
             ),
           );
         } else {
-          children.push(h('div.wt-stream-copy', {}, renderStreamMarkdown(stream.text, stream.since)));
+          children.push(h('div.wt-stream-copy', {}, renderStreamMarkdown(shown, stream)));
         }
       }
       for (const tool of pendingTools) {
@@ -1604,17 +1776,29 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       }
       streamNode.replaceChildren(...children);
       updateClamps(streamNode);
-    } else if (streamNode.dataset.liveText !== textKey && showStream && stream) {
-      streamNode.dataset.liveText = textKey;
+      const body = streamNode.querySelector<HTMLElement>('.wt-live-thinking .wt-thinking-text');
+      if (body) keepAtTail(body);
+    } else if (grew && stream) {
+      liveText = shown;
       if (stream.kind === 'thinking') {
-        const body = streamNode.querySelector<HTMLElement>('.wt-thinking-text');
-        if (body) body.textContent = stream.text;
+        const body = streamNode.querySelector<HTMLElement>('.wt-live-thinking .wt-thinking-text');
+        if (body) {
+          // Added to in place, so a selection in what is already there survives.
+          const node = body.firstChild;
+          if (node instanceof Text && body.childNodes.length === 1 && shown.startsWith(node.data)) node.appendData(shown.slice(node.data.length));
+          else body.textContent = shown;
+          keepAtTail(body);
+        }
       } else {
         const copy = streamNode.querySelector<HTMLElement>('.wt-stream-copy');
-        copy?.replaceChildren(renderStreamMarkdown(stream.text, stream.since));
+        const root = renderStreamMarkdown(shown, stream);
+        if (copy && copy.firstChild !== root) copy.replaceChildren(root);
         updateClamps(streamNode);
       }
     }
+    // The tail can be replaced on any reveal frame; a completed reply moves to a recorded row.
+    restore?.(() => (liveMd && liveMd.key === previousMd?.key ? [liveMd.root] : landedMarkdown()));
+    if (grew && followingLayout && !inspecting && !history.historical) motion.follow();
     for (const el of streamNode.querySelectorAll<HTMLElement>('.wt-live-time[data-since]')) {
       const since = Number(el.dataset.since);
       const elapsed = thinkingSeconds(Date.now() - (liveView?.skew ?? 0) - since);
@@ -1622,10 +1806,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       if (el.textContent !== text) el.textContent = text;
     }
   };
-
   const rowJson = new WeakMap<object, string>();
   const paintEntries = (older: boolean) => {
-    const stick = !received || (!older && !inspecting && atBottom());
+    const stick = !received || (!older && !inspecting && ((followingLayout && !history.historical) || atBottom()));
     const top = scroll.scrollTop;
     const height = scroll.scrollHeight;
     const want: HTMLElement[] = [];
@@ -1726,10 +1909,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   // The JSONL isn't a token stream: don't infer "Thinking" or "Generating" from its last entry.
   const paintProgress = () => {
     const show = active && connected && !disposed && !document.hidden && !worker.lost && !error && isBusy(worker.status);
-    const label = !show ? '' : worker.status === 'starting' ? 'Starting worker…' : worker.status === 'needs_input' ? 'Waiting for you' : 'Working…';
     const last = history.rows.at(-1);
     const detail = show && worker.status === 'working' && !history.historical && history.sessionId === worker.sessionId && last?.kind === 'activity' && last.live ? (last.running ?? '') : '';
-    progress.paint({ show, running: show && worker.status !== 'needs_input', label, mode: statusMode(liveView?.status, worker.status), detail: liveView?.label || detail });
+    progress.paint(show ? threadStatus(worker, liveView, history.entries, detail) : undefined);
   };
 
   const updateControls = () => {
@@ -1778,17 +1960,20 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     else if (worker.kind === 'agent') hint.replaceChildren(shortcut('Enter', 'send'), shortcut('⇧ Enter', 'new line'), shortcut('@', 'files'), shortcut('/', 'commands'));
     else hint.replaceChildren(shortcut('Enter', 'send'), shortcut('⇧ Enter', 'new line'), shortcut('/', 'commands'));
     earlier.disabled = !!pending || !connected;
-    retry.classList.toggle('hidden', !error);
+    const startFailed = !opts.promptWakes ? daemonStartFailure(worker) : undefined;
+    retry.classList.toggle('hidden', !error || !!startFailed);
     retry.disabled = !connected || !!pending;
     empty.classList.toggle('error', !!error && !history.entries.length);
     if (!history.entries.length) paintEmpty();
     notice.textContent = connected
-      ? error || told || (broken && !opts.cloudErrorShown ? `${worker.name} can’t work: ${broken}` : '') || (isAsleep(worker.status) && !opts.promptWakes ? 'Resume this worker to send another message.' : '')
+      ? (startFailed ? told || startFailed : error || told) ||
+        (broken && !opts.cloudErrorShown ? `${worker.name} can’t work: ${broken}` : '') ||
+        (isAsleep(worker.status) && !opts.promptWakes ? 'Resume this worker to send another message.' : '')
       : '';
     // A cloud worker's Resume reads its Factory session again, which is also how one that broke is checked.
     resume.hidden = (!isAsleep(worker.status) || !!opts.promptWakes) && !broken;
     resume.disabled = !active || !connected || !!worker.lost || resuming;
-    resume.textContent = broken ? (resuming ? 'Checking…' : 'Check again') : resuming ? 'Resuming…' : 'Resume';
+    resume.textContent = broken ? (resuming ? 'Checking…' : 'Check again') : resuming ? 'Resuming…' : startFailed ? 'Retry' : 'Resume';
     element.classList.toggle('has-feedback', !!notice.textContent);
     paintPlan();
     paintQueue();
@@ -1817,9 +2002,17 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       floorDirs.clear();
       for (const f of msg.floors) floorDirs.set(f.id, f.dir);
     }
+    const appended = liveAppend(msg, worker.id, worker.sessionId, liveView);
+    if (appended === 'stale') return resyncLive();
+    if (appended) {
+      liveView = appended;
+      paintLive();
+      return;
+    }
     const nextLive = liveFrom(msg, worker.id, worker.sessionId, liveView);
     if (nextLive) {
-      const stick = received && !inspecting && atBottom();
+      const stick = received && !inspecting && !history.historical && (followingLayout || atBottom());
+      holdEnded(nextLive);
       liveView = nextLive;
       liveTools.clear();
       for (const tool of nextLive.tools) if (tool.id) liveTools.set(tool.id, tool);
@@ -1843,6 +2036,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         list.replaceChildren();
         received = false;
         liveView = undefined;
+        dropHeld();
         resetStreamMarkdown();
         liveTools.clear();
         if (rewound.text) {
@@ -2142,6 +2336,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         error = '';
         nodes.clear();
         liveView = undefined;
+        dropHeld();
         resetStreamMarkdown();
         liveTools.clear();
         streamNode.hidden = true;
@@ -2213,6 +2408,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       paintProgress();
       progress.dispose();
       motion.dispose();
+      if (revealFrame) cancelAnimationFrame(revealFrame);
+      clearTimeout(heldTimer);
+      window.removeEventListener('pointerup', ownerReleased);
       search.dispose();
       settingsUi.dispose();
       document.removeEventListener('visibilitychange', visibility);

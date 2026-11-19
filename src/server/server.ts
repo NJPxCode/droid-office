@@ -389,6 +389,7 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
       threadWatches?.screenChanged(workerId);
       broadcast({ t: 'screen', workerId, ...frame }, undefined, true);
     },
+    stream: (workerId) => threadWatches?.streamChanged(workerId),
     toast: (text, level) => toastAll(text, level),
   });
   /** A worker's own manager: its floor's, or the Orchestrator's. */
@@ -808,6 +809,7 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
     },
     offFloorScreen: broadcastOffFloorScreen,
     screenChanged: (workerId) => threadWatches?.screenChanged(workerId),
+    streamChanged: (workerId) => threadWatches?.streamChanged(workerId),
     connections: (floor) => {
       let n = 0;
       for (const c of clients.values()) if (c.floor === floor.id) n++;
@@ -1532,7 +1534,7 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
         }
         case 'thread.watch':
           if (typeof msg.on !== 'boolean') return stop('Send {"on": true} or {"on": false}.');
-          threadWatches?.watch(c.id, ORCHESTRATOR_ID, msg.on, str(msg.child, 160) || undefined);
+          threadWatches?.watch(c.id, ORCHESTRATOR_ID, msg.on, str(msg.child, 160) || undefined, msg.stream === true);
           return done(undefined, ORCHESTRATOR_ID);
         case 'worker.queue':
           return handleWorkerQueue(orch.get(ORCHESTRATOR_ID) ? { wid: ORCHESTRATOR_ID, workers: orch } : undefined, msg);
@@ -2018,7 +2020,7 @@ export async function startServer(cfg: Config, options: { localDaemon?: LocalDae
       case 'thread.watch': {
         if (typeof msg.on !== 'boolean') return stop('Send {"on": true} or {"on": false}.');
         const workerId = str(msg.workerId, 32);
-        if (workerId) threadWatches?.watch(c.id, workerId, msg.on, str(msg.child, 160) || undefined);
+        if (workerId) threadWatches?.watch(c.id, workerId, msg.on, str(msg.child, 160) || undefined, msg.stream === true);
         done(undefined, workerId || undefined);
         break;
       }

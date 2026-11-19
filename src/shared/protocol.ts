@@ -901,7 +901,8 @@ type ClientMessage =
   | { t: 'worker.pr'; workerId: string }
   | { t: 'term.input'; workerId: string; data: string }
   | { t: 'thread.read'; workerId: string; request: string; before?: number; child?: string }
-  | { t: 'thread.watch'; workerId: string; on: boolean; child?: string }
+  /** `stream`: this client applies `thread.stream` appends, so its live stream's growth comes as them. */
+  | { t: 'thread.watch'; workerId: string; on: boolean; child?: string; stream?: boolean }
   /** Drives Droid's pending-message queue: by daemon `id` (`requestId`) or 1-based `index`, optionally checked by group and text. */
   | { t: 'worker.queue'; workerId: string; action: 'promote' | 'delete' | 'clear'; id?: string; index?: number; group?: 'steering' | 'queued'; text?: string }
   /**
@@ -1119,6 +1120,12 @@ export type ServerMsg =
   | { t: 'thread.snapshot'; workerId: string; request: string; before?: number; push?: boolean; sessionId?: string; child?: string; entries: ThreadEntry[]; hasMore: boolean; presentation?: ThreadPresentation; error?: string }
   /** The watched local worker's turn as it happens; replaces its previous live state wholesale. */
   | { t: 'thread.live'; workerId: string; sessionId?: string; live: ThreadLive }
+  /**
+   * Only the live stream grew: `text` goes on at `from` of the `thread.live` (or append) at `base`, making
+   * `rev`. Sent instead of a whole `thread.live` to clients that watch with `stream`; one that can't apply
+   * it watches again for a whole one.
+   */
+  | { t: 'thread.stream'; workerId: string; sessionId?: string; rev: number; base: number; from: number; text: string }
   /** The outcome of worker.rewind. text is the rewound prompt, ready for the composer. */
   | { t: 'worker.rewound'; workerId: string; entryId: string; ok: boolean; sessionId?: string; text?: string; error?: string; note?: string }
   | { t: 'action.result'; requestId: string; ok: boolean; error?: string; workerId?: string; note?: string }

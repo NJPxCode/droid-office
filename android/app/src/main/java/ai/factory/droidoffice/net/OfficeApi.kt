@@ -330,6 +330,16 @@ class OfficeApi(base: OkHttpClient = OkHttpClient()) {
     suspend fun threadImage(base: String, auth: OfficeAuth, floor: String, worker: String, image: String): ByteArray? =
         fetchBytes(request(base, "api/thread/image", auth, "floor" to floor, "worker" to worker, "image" to image).get().build())
 
+    /** Full visible text of a tool result, fetched only when the owner asks for it. */
+    suspend fun threadOutput(base: String, auth: OfficeAuth, floor: String, worker: String, output: String): String? = withContext(Dispatchers.IO) {
+        val req = request(base, "api/thread/output", auth, "floor" to floor, "worker" to worker, "output" to output).get().build()
+        try {
+            client.newCall(req).await().use { res -> if (res.isSuccessful) res.body.string() else null }
+        } catch (_: IOException) {
+            null
+        }
+    }
+
     /** A picture on the office's machine a reply's Markdown names by its path (GET /api/thread/file?raw=image); null when the office won't show it. */
     suspend fun threadFileImage(base: String, auth: OfficeAuth, floor: String, worker: String, path: String): ByteArray? =
         fetchBytes(request(base, "api/thread/file", auth, "floor" to floor, "worker" to worker, "path" to path, "raw" to "image").get().build())

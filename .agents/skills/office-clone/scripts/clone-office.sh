@@ -17,6 +17,7 @@
 #                                                  copy would run the owner's real sessions twice
 #   linear-floor.json autopilot.on & links         keeps team/project setup, turns autopilot off, clears links
 #   pty.sock, pty-host.*, hook-port, shell.*       the running office's terminals and hooks
+#   droid-daemon.*                                 daemon ownership record and past launch logs
 #   scrollback/, worktrees/, drops/, images/, wiki-run*  other workers' terminals, checkouts, media and runs
 set -euo pipefail
 
@@ -84,7 +85,7 @@ else
 EXCLUDES=(--exclude workers.json --exclude cloud-workers.json --exclude guests.json
   --exclude /orchestrator/
   --exclude remote-workers.json --exclude remote-mcp.json --exclude tailnet-https.json
-  --exclude pty.sock --exclude 'pty-host.*' --exclude hook-port --exclude 'shell.*'
+  --exclude pty.sock --exclude 'pty-host.*' --exclude hook-port --exclude 'shell.*' --exclude 'droid-daemon.*'
   --exclude scrollback/ --exclude worktrees/ --exclude drops/ --exclude images/ --exclude 'wiki-run*'
   --exclude bin/ --exclude 'droid-*.json' --exclude 'system-*.md' --exclude grok-home/ --exclude muse-home/)
 

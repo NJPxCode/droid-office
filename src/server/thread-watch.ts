@@ -2,11 +2,13 @@ import { existsSync, watch as fsWatch, type FSWatcher } from 'node:fs';
 import path from 'node:path';
 import { ORCHESTRATOR_ID } from '../shared/mission-control.js';
 import type { ServerMsg } from '../shared/protocol.js';
+import { streamAppend, type ThreadLive } from '../shared/thread-live.js';
 import type { ThreadPage, ThreadSession, WorkerThreadReader } from './worker-thread.js';
 
 export type ThreadPushMsg = Extract<ServerMsg, { t: 'thread.snapshot' }>;
 export type ThreadLivePushMsg = Extract<ServerMsg, { t: 'thread.live' }>;
-export type ThreadWatchMsg = ThreadPushMsg | ThreadLivePushMsg;
+export type ThreadStreamPushMsg = Extract<ServerMsg, { t: 'thread.stream' }>;
+export type ThreadWatchMsg = ThreadPushMsg | ThreadLivePushMsg | ThreadStreamPushMsg;
 
 const watchKey = (workerId: string, child?: string) => (child ? `${workerId}\0${child}` : workerId);
 
@@ -28,6 +30,8 @@ export interface ThreadWatchOptions {
   live?(workerId: string, entries: ThreadPushMsg['entries'], session?: ThreadSession): Promise<ThreadLivePushMsg['live'] | undefined>;
   localCoalesceMs?: number;
   cloudCoalesceMs?: number;
+  /** How long daemon text deltas gather before their live stream goes out. */
+  streamCoalesceMs?: number;
   maxWatchesPerClient?: number;
 }
 
@@ -51,6 +55,17 @@ interface WorkerWatch {
   closed: boolean;
   lastDigest?: string;
   liveRevs: Map<string, number>;
+  /** Clients that apply `thread.stream` appends. */
+  appends: Set<string>;
+  /** The last read page, which a stream-only push works its live state out over. */
+  lastPage?: { entries: ThreadPushMsg['entries']; sessionId?: string; session?: ThreadSession };
+  /** The live state last sent, and its session: appends are worked out from it. */
+  lastLive?: { live: ThreadLive; sessionId?: string };
+  streamTimer?: NodeJS.Timeout;
+  /** Text arrived during a read: push the stream once it is done. */
+  streamAgain?: boolean;
+  /** Live pushes run one at a time so revs go out in order. */
+  liveTask?: Promise<void>;
 }
 
 const MISSING_POLL_MIN_MS = 250;
@@ -68,7 +83,7 @@ export function threadPageDigest(page: ThreadPage, busy: boolean): string {
   for (const e of page.entries) {
     const tail = (e.output ?? e.text ?? '').slice(-24);
     parts.push(
-      `${e.id}:${e.seq}:${e.text?.length ?? -1}:${e.input?.length ?? -1}:${e.output?.length ?? -1}:${e.error ? 1 : 0}:${e.resultSeq ?? -1}:${e.images?.length ?? 0}:${e.at ?? -1}:${e.doneAt ?? -1}:${e.tookMs ?? -1}:${e.child ?? ''}:${tail}`,
+      `${e.id}:${e.seq}:${e.text?.length ?? -1}:${e.input?.length ?? -1}:${e.output?.length ?? -1}:${e.error ? 1 : 0}:${e.resultSeq ?? -1}:${e.images?.length ?? 0}:${e.at ?? -1}:${e.doneAt ?? -1}:${e.tookMs ?? -1}:${e.child ?? ''}:${e.outputRef ?? ''}:${tail}`,
     );
   }
   return parts.join('|');
@@ -79,16 +94,18 @@ export class ThreadWatchHub {
   private byClient = new Map<string, Set<string>>();
   private readonly localCoalesceMs: number;
   private readonly cloudCoalesceMs: number;
+  private readonly streamCoalesceMs: number;
   private readonly maxPerClient: number;
   private stopped = false;
 
   constructor(private readonly opts: ThreadWatchOptions) {
     this.localCoalesceMs = opts.localCoalesceMs ?? 60;
     this.cloudCoalesceMs = opts.cloudCoalesceMs ?? 50;
+    this.streamCoalesceMs = opts.streamCoalesceMs ?? 30;
     this.maxPerClient = opts.maxWatchesPerClient ?? 16;
   }
 
-  watch(clientId: string, workerId: string, on: boolean, child?: string): boolean {
+  watch(clientId: string, workerId: string, on: boolean, child?: string, appends = false): boolean {
     if (this.stopped || !clientId || !workerId) return false;
     const key = watchKey(workerId, child);
     if (!on) {
@@ -121,6 +138,7 @@ export class ThreadWatchHub {
         ...(child ? { child } : {}),
         clients: new Set(),
         liveRevs: new Map(),
+        appends: new Set(),
         reading: false,
         again: false,
         closed: false,
@@ -128,6 +146,10 @@ export class ThreadWatchHub {
       this.byWorker.set(key, entry);
     }
     entry.clients.add(clientId);
+    // Watching again (a new Thread pane, or one that missed an append) gets a whole live state next.
+    entry.liveRevs.delete(clientId);
+    if (appends) entry.appends.add(clientId);
+    else entry.appends.delete(clientId);
     if (!child) this.refreshBinding(entry, target, false);
     // Settings arrive here too, while the worker is idle, not only after its first change.
     this.schedule(entry, 0);
@@ -162,6 +184,22 @@ export class ThreadWatchHub {
     if (this.stopped) return;
     for (const entry of this.byWorker.values()) {
       if (entry.workerId === workerId && !entry.child && entry.clients.size) this.schedule(entry, Math.max(100, this.localCoalesceMs));
+    }
+  }
+
+  /**
+   * Daemon thinking or reply text arrived: the live stream goes out within `streamCoalesceMs`, worked
+   * out over the last read page rather than waiting on the next read of the conversation file.
+   */
+  streamChanged(workerId: string): void {
+    if (this.stopped) return;
+    for (const entry of this.byWorker.values()) {
+      if (entry.workerId !== workerId || entry.child || entry.closed || !entry.clients.size || entry.streamTimer) continue;
+      entry.streamTimer = setTimeout(() => {
+        entry.streamTimer = undefined;
+        void this.flushStream(entry);
+      }, this.streamCoalesceMs);
+      entry.streamTimer.unref?.();
     }
   }
 
@@ -207,6 +245,7 @@ export class ThreadWatchHub {
     if (!entry) return;
     entry.clients.delete(clientId);
     entry.liveRevs.delete(clientId);
+    entry.appends.delete(clientId);
     if (!entry.clients.size) {
       this.teardown(entry);
       this.byWorker.delete(key);
@@ -407,19 +446,58 @@ export class ThreadWatchHub {
         entry.again = false;
         this.schedule(entry, nextDelay);
       }
+      if (entry.streamAgain) {
+        entry.streamAgain = false;
+        this.streamChanged(entry.workerId);
+      }
     }
+  }
+
+  private async flushStream(entry: WorkerWatch): Promise<void> {
+    const page = entry.lastPage;
+    if (this.stopped || entry.closed || !entry.clients.size || !page) return;
+    if (entry.reading) {
+      entry.streamAgain = true;
+      return;
+    }
+    await this.runLive(entry, page.entries, page.sessionId, page.session);
   }
 
   private async pushLive(entry: WorkerWatch, page: ThreadPage, session?: ThreadSession): Promise<void> {
     if (entry.child || !this.opts.live) return;
-    const live = await this.opts.live(entry.workerId, page.entries, session);
-    if (!live || this.stopped || entry.closed || !entry.clients.size) return;
-    const msg: ThreadLivePushMsg = { t: 'thread.live', workerId: entry.workerId, ...(page.sessionId ? { sessionId: page.sessionId } : {}), live };
+    entry.lastPage = { entries: page.entries, ...(page.sessionId ? { sessionId: page.sessionId } : {}), ...(session ? { session } : {}) };
+    await this.runLive(entry, page.entries, page.sessionId, session);
+  }
+
+  private runLive(entry: WorkerWatch, entries: ThreadPushMsg['entries'], sessionId: string | undefined, session: ThreadSession | undefined): Promise<void> {
+    const task = async () => {
+      const live = await this.opts.live?.(entry.workerId, entries, session);
+      if (live) this.sendLive(entry, live, sessionId);
+    };
+    const run = (entry.liveTask ?? Promise.resolve()).then(task);
+    entry.liveTask = run.catch(() => undefined);
+    return run;
+  }
+
+  private sendLive(entry: WorkerWatch, live: ThreadLive, sessionId: string | undefined): void {
+    if (this.stopped || entry.closed || !entry.clients.size) return;
+    const last = entry.lastLive;
+    const prev = last && last.sessionId === sessionId ? last.live : undefined;
+    const append = prev && prev.rev !== live.rev ? streamAppend(prev, live) : undefined;
+    const session = sessionId ? { sessionId } : {};
+    let whole: ThreadLivePushMsg | undefined;
     for (const clientId of entry.clients) {
-      if (entry.liveRevs.get(clientId) === live.rev) continue;
+      const had = entry.liveRevs.get(clientId);
+      if (had === live.rev) continue;
       entry.liveRevs.set(clientId, live.rev);
-      this.opts.send(clientId, msg);
+      if (append && prev && had === prev.rev && entry.appends.has(clientId)) {
+        this.opts.send(clientId, { t: 'thread.stream', workerId: entry.workerId, ...session, rev: live.rev, base: prev.rev, ...append });
+      } else {
+        whole ??= { t: 'thread.live', workerId: entry.workerId, ...session, live };
+        this.opts.send(clientId, whole);
+      }
     }
+    entry.lastLive = { live, ...session };
   }
 
   private push(entry: WorkerWatch, page: ThreadPage): void {
@@ -471,6 +549,10 @@ export class ThreadWatchHub {
     if (entry.timer) {
       clearTimeout(entry.timer);
       entry.timer = undefined;
+    }
+    if (entry.streamTimer) {
+      clearTimeout(entry.streamTimer);
+      entry.streamTimer = undefined;
     }
     this.closeWatchers(entry);
     entry.clients.clear();

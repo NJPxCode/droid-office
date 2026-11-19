@@ -104,8 +104,6 @@ import ai.factory.droidoffice.core.TermSize
 import ai.factory.droidoffice.core.TermView
 import ai.factory.droidoffice.core.ThreadEntry
 import ai.factory.droidoffice.core.ThreadFeed
-import ai.factory.droidoffice.core.ThreadLive
-import ai.factory.droidoffice.core.ThreadLiveState
 import ai.factory.droidoffice.core.ThreadQueue
 import ai.factory.droidoffice.core.ThreadTurns
 import ai.factory.droidoffice.core.WorkerInfo
@@ -288,21 +286,13 @@ fun WorkerScreen(
         var threadEntries by remember(workerId) { mutableStateOf<List<ThreadEntry>>(emptyList()) }
         var copying by remember(workerId) { mutableStateOf(false) }
         var copyTurns by remember(workerId) { mutableStateOf("1") }
-        val liveState = remember(workerId) { ThreadLiveState() }
-        var threadLive by remember(workerId) { mutableStateOf<ThreadLive?>(null) }
+        val threadLives by connection.threadLives.collectAsStateWithLifecycle()
 
         LaunchedEffect(worker.sessionId, rewoundSessionId) {
             if (rewoundSessionId != null && worker.sessionId == rewoundSessionId) rewoundSessionId = null
         }
-        LaunchedEffect(workerId) {
-            liveState.clear()
-            connection.threadLives.collect { msg ->
-                val session = rewoundSessionId ?: connection.data.value.worker(workerId)?.sessionId
-                if (msg.workerId == workerId && liveState.receive(msg.sessionId, msg.live, session)) threadLive = liveState.live
-            }
-        }
         val activeSessionId = rewoundSessionId ?: worker.sessionId
-        val currentThreadLive = threadLive?.takeIf { liveState.session == activeSessionId }
+        val currentThreadLive = threadLives[workerId]?.takeIf { it.sessionId == activeSessionId }?.live
 
         LaunchedEffect(workerId) {
             connection.workerRewounds.collect { msg ->
