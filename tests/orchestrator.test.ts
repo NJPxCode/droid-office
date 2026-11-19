@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Orchestrator, type OrchestratorFloor } from '../src/server/orchestrator.js';
+import { PtyHost } from '../src/server/ptys.js';
 import { Team } from '../src/server/team.js';
 import { WorkerManager } from '../src/server/workers.js';
 import { ORCHESTRATOR_ID, type OrchestratorBlock } from '../src/shared/mission-control.js';
@@ -67,6 +68,67 @@ function rig(t: { after(fn: () => void): void }, dir = mkdtempSync(path.join(tmp
     },
   };
 }
+
+test('starting the daemon-backed Orchestrator retires only its legacy PTY host', { skip: process.platform === 'win32' }, async (t) => {
+  const { dir, orchestrator, daemon } = rig(t);
+  const legacyDir = path.join(orchestrator.cwd, '.droid-office');
+  const floorDir = path.join(dir, 'floor', '.droid-office');
+  mkdirSync(floorDir, { recursive: true });
+  const legacy = new PtyHost(legacyDir, () => {});
+  const floor = new PtyHost(floorDir, () => {});
+  t.after(() => floor.stop());
+  assert.equal(await legacy.connect(), true);
+  let detached = false;
+  t.after(async () => {
+    if (detached) await new PtyHost(legacyDir, () => {}).stopExisting();
+    else legacy.stop();
+  });
+  assert.equal(await floor.connect(), true);
+  const opts = { file: '/bin/cat', args: [], cwd: dir, env: { PATH: '/usr/bin:/bin' }, cols: 80, rows: 24 };
+  const oldDroid = legacy.spawn(opts);
+  const bossShell = floor.spawn(opts);
+  const legacyPid = await until(() => oldDroid.pid || undefined, 'legacy terminal pid');
+  const bossPid = await until(() => bossShell.pid || undefined, 'boss shell pid');
+  legacy.detach();
+  detached = true;
+
+  // Even when the Orchestrator is turned off, it must retire the previous build's host.
+  assert.equal(orchestrator.set({ on: false }), undefined);
+  await orchestrator.start();
+  await until(() => {
+    try {
+      process.kill(legacyPid, 0);
+      return false;
+    } catch (err) {
+      assert.equal((err as NodeJS.ErrnoException).code, 'ESRCH');
+      return true;
+    }
+  }, 'legacy terminal to stop');
+  assert.doesNotThrow(() => process.kill(bossPid, 0));
+  assert.equal(floor.hosted, true);
+  assert.equal(await new PtyHost(legacyDir, () => {}).stopExisting(), false, 'no host is spawned on a subsequent startup');
+  assert.deepEqual(daemon.launches, [], 'the migration does not open a daemon session');
+});
+
+test('orchestrator upgrade does not follow a copied token through a foreign PTY socket symlink', { skip: process.platform === 'win32' }, async (t) => {
+  // Short paths use the on-disk socket; longer ones already hash the office's directory.
+  const dir = mkdtempSync(path.join('/tmp', 'orch-pty-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const foreign = path.join(dir, 'foreign');
+  mkdirSync(foreign);
+  const host = new PtyHost(foreign, () => {});
+  t.after(() => host.stop());
+  assert.equal(await host.connect(), true);
+
+  const local = path.join(dir, 'local');
+  mkdirSync(local);
+  const { orchestrator } = rig(t, local);
+  const stateDir = path.join(orchestrator.cwd, '.droid-office');
+  copyFileSync(path.join(foreign, 'pty-host.json'), path.join(stateDir, 'pty-host.json'));
+  symlinkSync(path.join(foreign, 'pty.sock'), path.join(stateDir, 'pty.sock'));
+  await orchestrator.start();
+  assert.equal(host.hosted, true, 'the foreign office is never displaced by a hello or stopped');
+});
 
 test('the Orchestrator starts on its first prompt, takes the next one in the same session, and stops no turn that isn’t running', async (t) => {
   const r = rig(t);

@@ -10,22 +10,6 @@ import type { WorkerInfo } from '../src/shared/protocol.js';
 import { presentThread } from '../src/shared/thread-presentation.js';
 import type { ThreadEntry } from '../src/shared/worker-thread.js';
 
-const worker: WorkerInfo = {
-  id: 'worker',
-  kind: 'agent',
-  deskId: 'desk-1',
-  name: 'Nibble',
-  color: '#ee6018',
-  status: 'starting',
-  acked: false,
-  createdBy: 'owner',
-  createdAt: 0,
-  cols: 80,
-  rows: 24,
-  open: true,
-};
-const missing = 'The local conversation file is not available yet.';
-
 test('worktree setup and CLI boot remain loading until the worker starts', () => {
   assert.equal(threadStarting(worker), true);
   assert.equal(threadStarting({ ...worker, sessionId: 'session' }), true);
@@ -129,6 +113,40 @@ async function mountThread(t: TestContext, mounted: WorkerInfo = worker, floor?:
   );
   return { page, errors };
 }
+test('a failed hire shows the unsent prompt and offers a worker retry, not a transcript retry', { skip: chromium }, async (t) => {
+  const prompt = 'Reply with exactly the retained hire prompt.';
+  const failed = { ...worker, status: 'exited' as const, prompt, activity: 'Failed to start: Timed out connecting to droid daemon' };
+  const { page, errors } = await mountThread(t, failed);
+  assert.match(await page.locator('.wt-empty').innerText(), /Unsent prompt/);
+  assert.equal(await page.locator('.wt-empty .wt-user-text').innerText(), prompt);
+  assert.match(await page.locator('.wt-notice').innerText(), /Timed out connecting to droid daemon/);
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => (window as any).actions), [{ t: 'worker.resume', workerId: 'worker' }]);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.thread.update({ ...w.worker, status: 'working', activity: undefined, sessionId: 'session' }, true);
+  });
+  assert.equal(await page.getByRole('button', { name: 'Retry', exact: true }).isVisible(), false);
+  assert.doesNotMatch((await page.locator('.wt-empty').textContent()) ?? '', /Unsent prompt/);
+  assert.deepEqual(errors, []);
+});
+
+const worker: WorkerInfo = {
+  id: 'worker',
+  kind: 'agent',
+  deskId: 'desk-1',
+  name: 'Nibble',
+  color: '#ee6018',
+  status: 'starting',
+  acked: false,
+  createdBy: 'owner',
+  createdAt: 0,
+  cols: 80,
+  rows: 24,
+  open: true,
+};
+const missing = 'The local conversation file is not available yet.';
+
 test('thread startup animates without premature reads, retries missing files and preserves real errors', { skip: chromium }, async (t) => {
   const { page, errors } = await mountThread(t);
   assert.match(await page.locator('.wt-empty').innerText(), /Starting worker/);
@@ -257,23 +275,23 @@ test('thread work signal follows worker lifecycle without restarting or announci
   const { page, errors } = await mountThread(t);
   const signal = page.locator('.wt-progress');
   const label = page.locator('.wt-progress-label');
-  const tile = page.locator('.wt-progress-glyph > span').first();
+  const tile = page.locator('.wt-progress-glyph').first();
   const animation = () => tile.evaluate((el) => getComputedStyle(el).animationName);
   assert.equal(await signal.isVisible(), true);
   assert.equal(await label.textContent(), 'Starting worker…');
-  assert.equal(await animation(), 'wt-work-pulse');
+  assert.equal(await animation(), 'wt-status-spin');
   assert.equal(await page.locator('.wt-progress-glyph').getAttribute('aria-hidden'), 'true');
-  assert.equal(await page.locator('.wt-progress-status').getAttribute('aria-live'), 'polite');
+  assert.equal(await label.getAttribute('role'), 'status');
   await page.evaluate(() => {
     const w = window as any;
     w.worker = { ...w.worker, sessionId: 'session', status: 'working' };
     w.thread.update(w.worker, true);
     w.reply();
     w.signal = document.querySelector('.wt-progress');
-    w.animation = document.querySelector('.wt-progress-glyph > span')!.getAnimations()[0];
+    w.animation = document.querySelector('.wt-progress-glyph')!.getAnimations()[0];
     w.mutations = [];
     w.observer = new MutationObserver((changes) => w.mutations.push(...changes));
-    w.observer.observe(document.querySelector('.wt-progress-status'), { childList: true, characterData: true, subtree: true });
+    w.observer.observe(document.querySelector('.wt-progress-label'), { childList: true, characterData: true, subtree: true });
     w.tick();
     w.thread.update(w.worker, true);
     w.reply();
@@ -282,7 +300,7 @@ test('thread work signal follows worker lifecycle without restarting or announci
   assert.equal(
     await page.evaluate(() => {
       const w = window as any;
-      return w.signal === document.querySelector('.wt-progress') && w.animation === document.querySelector('.wt-progress-glyph > span')!.getAnimations()[0] && w.mutations.length === 0;
+      return w.signal === document.querySelector('.wt-progress') && w.animation === document.querySelector('.wt-progress-glyph')!.getAnimations()[0] && w.mutations.length === 0;
     }),
     true,
   );
@@ -291,7 +309,7 @@ test('thread work signal follows worker lifecycle without restarting or announci
   assert.equal(await signal.isVisible(), true);
   assert.equal(await label.textContent(), 'Working…');
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  assert.equal(await animation(), 'wt-work-pulse');
+  assert.equal(await animation(), 'wt-status-spin');
   await page.evaluate(() => {
     const w = window as any;
     w.worker.status = 'needs_input';

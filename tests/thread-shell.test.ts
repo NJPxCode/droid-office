@@ -7,27 +7,34 @@ import { entryAt, entryTook, liveFrom } from '../src/client/ui/thread-live-view.
 import { browserStatus, closeBrowser, launchBrowser, newIsolatedContext } from '../src/server/whiteboard-browser.js';
 import type { WorkerInfo } from '../src/shared/protocol.js';
 import { presentThread } from '../src/shared/thread-presentation.js';
-import { pickPhrase, relativeTime, statusMode, thoughtLabel } from '../src/shared/thread-status.js';
+import { relativeTime, statusElapsed, thoughtLabel, threadStatus } from '../src/shared/thread-status.js';
 import type { ThreadEntry } from '../src/shared/worker-thread.js';
 
-test('Factory status copy falls back to worker state and formats times', () => {
-  assert.equal(statusMode(undefined, 'working'), 'pondering');
-  assert.equal(statusMode('responding', 'working'), 'responding');
-  assert.equal(statusMode('pondering', 'needs_input'), 'waiting');
-  assert.equal(statusMode('idle', 'working'), 'pondering');
-  assert.equal(statusMode('idle', 'idle'), 'idle');
-  assert.notEqual(
-    pickPhrase(3, 1, () => 0),
-    1,
-  );
-  assert.equal(pickPhrase(1, 0), 0);
-  for (let previous = 0; previous < 3; previous++) {
-    for (const random of [0, 0.5, 0.999999]) {
-      const next = pickPhrase(3, previous, () => random);
-      assert.notEqual(next, previous, 'even a repeated random value must terminate without repeating');
-      assert.ok(next >= 0 && next < 3);
-    }
-  }
+test('Thread status names live work and separates a clock from waiting on the owner', () => {
+  const live = { status: 'pondering', working: 'executing_tool', skew: 1000, phaseSince: 80_000, tools: [{ id: 'tool:1', name: 'Execute', phase: 'running', startedAt: 57_000 }] };
+  const command: ThreadEntry = { id: 'tool:1', seq: 1, role: 'assistant', kind: 'tool', input: '{"command":"npm test"}' };
+  const worker = { status: 'working' as const };
+  const tool = threadStatus(worker, live, [command]);
+  assert.deepEqual(tool, { label: 'Running: npm test', since: 58_000, detail: undefined });
+  assert.equal(statusElapsed(tool!.since!, 100_000), '42s');
+  assert.equal(statusElapsed(0, 62_000), '1m 2s');
+  assert.equal(statusElapsed(1000, 0), '0s');
+  assert.equal(threadStatus(worker, live, [{ ...command, input: '{"command":' }])?.label, 'Running: Execute');
+  assert.equal(threadStatus(worker, { ...live, tools: [{ ...live.tools[0], name: 'Read' }] }, [command])?.label, 'Running: Read');
+  const thinking = { ...live, working: 'thinking', tools: [], phaseSince: 91_000 };
+  const thought = threadStatus(worker, thinking, [command]);
+  assert.equal(thought?.label, 'Thinking');
+  assert.equal(statusElapsed(thought!.since!, 100_000), '8s');
+  assert.equal(threadStatus(worker, { ...thinking, status: 'responding' }, [])?.label, 'Writing');
+  assert.equal(threadStatus(worker, { ...thinking, status: 'compacting' }, [])?.label, 'Compacting conversation…');
+  assert.equal(threadStatus(worker, undefined, [command])?.label, 'Working…');
+  assert.deepEqual(threadStatus({ status: 'needs_input' }, { ...live, waiting: { kind: 'permission' } }, []), { label: 'Waiting for you: permission needed', waiting: true });
+  assert.deepEqual(threadStatus(worker, { ...live, status: 'waiting', waiting: { kind: 'question' } }, []), { label: 'Waiting for you: answer needed', waiting: true });
+  assert.equal(threadStatus({ status: 'starting' }, live, [command])?.label, 'Starting worker…');
+  assert.equal(threadStatus({ status: 'idle' }, live, [command]), undefined);
+});
+
+test('Thought and relative time labels retain Factory copy', () => {
   assert.equal(thoughtLabel(25_000), 'Thought for 25s');
   assert.equal(thoughtLabel(undefined), 'Thought');
   const now = Date.UTC(2026, 0, 2, 12);
@@ -198,6 +205,8 @@ test('Thread shell wires streaming Markdown, retry detail, thought duration, sea
   assert.equal(await page.locator('.wt-stream-copy .md.wt-md code').first().textContent(), 'inline');
   assert.match(await page.locator('.wt-stream-copy .md.wt-md pre').innerText(), /const x = 1;/);
   assert.equal(await page.locator('.wt-progress-detail').textContent(), 'Retrying the model request (attempt 2)...');
+  assert.equal(await page.locator('.wt-progress-label').innerText(), 'Running: Execute');
+  assert.equal(await page.locator('.wt-progress-elapsed').innerText(), '· 2s');
   assert.match(await page.locator('.wt-live-tool').innerText(), /partial output/);
   assert.match(await page.locator('.wt-model').innerText(), /Opus 5.5/);
   assert.equal(await page.locator('.wt-mode, .wt-side').count(), 0);

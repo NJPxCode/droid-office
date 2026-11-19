@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn as spawnProcess } from 'node:child_process';
-import { closeSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, lstatSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -261,6 +261,30 @@ export class PtyHost {
     return { pty: p, cols: msg.cols, rows: msg.rows, title: msg.title, snapshot: msg.snapshot };
   }
 
+  /** Retire an authenticated host that already exists, without launching a replacement. */
+  async stopExisting(): Promise<boolean> {
+    if (process.platform === 'win32') return false;
+    // A copied token is not authority to follow a symlink to another host's socket.
+    try {
+      if (!lstatSync(this.socketPath).isSocket()) return false;
+    } catch {
+      return false;
+    }
+    const found = await this.hello();
+    if (!found) return false;
+    await new Promise<void>((resolve) => {
+      const { sock } = found;
+      const timer = setTimeout(() => sock.destroy(), 5000);
+      sock.once('close', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      // Leave the socket open until the host exits; ending here would close it before its children stop.
+      sock.write(frame({ t: 'stop' }));
+    });
+    return true;
+  }
+
   /** Ends the host's terminals that no worker claimed (their worker was sent home meanwhile). */
   killUnclaimed() {
     for (const id of this.unclaimed) this.send({ t: 'kill', id });
@@ -337,6 +361,7 @@ export class PtyHost {
     let token: string;
     try {
       token = JSON.parse(readFileSync(this.infoPath, 'utf8')).token;
+      if (typeof token !== 'string' || !token) return Promise.resolve(undefined);
     } catch {
       return Promise.resolve(undefined);
     }

@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createDecipheriv, createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import type { AgentEffort, SubagentSettings } from '../shared/protocol.js';
 import type { DroidSlashCommand } from '../shared/slash-commands.js';
 import { cloudAsk, type CloudAsk } from './factory/cloud-ask.js';
 import { record } from './factory/cloud-stream-messages.js';
+import { daemonArgs, provesLegacyDaemonOwnership } from './local-daemon-ownership.js';
 import { readSetupFile } from './setup/index.js';
 import { childEnv, resolveAgent } from './worker-runtime/process.js';
 
@@ -46,6 +47,8 @@ const AES_TAG_BYTES = 16;
 const JWT_EXPIRY_SKEW_MS = 60_000;
 
 export interface PersistedDaemonInfo {
+  /** Canonical office state directory, not the OS user's home shared by other offices. */
+  ownerDir: string;
   pid: number;
   port: number;
   droidPath: string;
@@ -53,6 +56,8 @@ export interface PersistedDaemonInfo {
   authFingerprint?: string;
   startedAt?: number;
 }
+
+type LegacyDaemonInfo = Omit<PersistedDaemonInfo, 'ownerDir'> & { ownerDir?: never };
 
 export type LocalDaemonAuth =
   | { kind: 'airgapped'; token: string; fingerprint: string }
@@ -503,17 +508,26 @@ function writePrivateJson(file: string, data: unknown): void {
   renameSync(tmp, file);
 }
 
-function readPersistedDaemonInfo(file: string): PersistedDaemonInfo | null {
-  if (!existsSync(file)) return null;
+function canonicalOfficeDir(dir: string): string {
+  const resolved = path.resolve(dir);
+  if (!lstatSync(resolved).isDirectory()) throw new Error(`Office state directory must not be an alias: ${dir}`);
+  return realpathSync(resolved);
+}
+
+function readDaemonState(file: string): PersistedDaemonInfo | LegacyDaemonInfo | null {
   try {
+    if (!lstatSync(file).isFile()) return null;
+    const ownerDir = canonicalOfficeDir(path.dirname(file));
     const raw = record(JSON.parse(readFileSync(file, 'utf8')));
     if (
+      (Object.hasOwn(raw, 'ownerDir') && raw.ownerDir !== ownerDir) ||
       typeof raw.pid !== 'number' ||
       !Number.isInteger(raw.pid) ||
       raw.pid <= 0 ||
       typeof raw.port !== 'number' ||
       !Number.isInteger(raw.port) ||
       raw.port <= 0 ||
+      raw.port > 65535 ||
       typeof raw.droidPath !== 'string' ||
       !raw.droidPath ||
       typeof raw.airgapped !== 'boolean'
@@ -521,6 +535,7 @@ function readPersistedDaemonInfo(file: string): PersistedDaemonInfo | null {
       return null;
     }
     return {
+      ...(raw.ownerDir === ownerDir ? { ownerDir } : {}),
       pid: raw.pid,
       port: raw.port,
       droidPath: raw.droidPath,
@@ -531,6 +546,11 @@ function readPersistedDaemonInfo(file: string): PersistedDaemonInfo | null {
   } catch {
     return null;
   }
+}
+
+function readPersistedDaemonInfo(file: string): PersistedDaemonInfo | null {
+  const state = readDaemonState(file);
+  return state?.ownerDir !== undefined ? state : null;
 }
 
 function parseDataUrlImage(value: string): LocalBase64Image | null {
@@ -739,7 +759,7 @@ export class LocalDaemon {
 
   /**
    * "Quit and Stop Workers" (`SIGINT`): closes the WebSocket connection, terminates the detached
-   * `droid daemon` PID, and removes `.droid-office/droid-daemon.json`.
+   * owned `droid daemon` PID, and removes its metadata. A cold stop cannot claim legacy metadata.
    */
   stop(): void {
     this.stopped = true;
@@ -750,8 +770,8 @@ export class LocalDaemon {
       this.activeDaemon = undefined;
       if (persisted) {
         this.killPid(persisted.pid, 'SIGTERM');
+        this.removeStateFile();
       }
-      this.removeStateFile();
     } finally {
       this.detaching = false;
     }
@@ -1207,8 +1227,10 @@ export class LocalDaemon {
     this.closeClient();
     this.detaching = false;
 
-    const persisted = readPersistedDaemonInfo(this.stateFile);
-    if (persisted) {
+    mkdirSync(this.opts.dataDir, { recursive: true, mode: 0o700 });
+    const ownerDir = canonicalOfficeDir(this.opts.dataDir);
+    const persisted = readDaemonState(this.stateFile);
+    if (persisted?.ownerDir !== undefined) {
       const alive = this.isPidAlive(persisted.pid);
       const compatible = alive && persisted.droidPath === droidPath && persisted.airgapped === airgapped && (!persisted.authFingerprint || persisted.authFingerprint === auth.fingerprint);
       if (compatible) {
@@ -1224,6 +1246,9 @@ export class LocalDaemon {
       }
       if (alive) this.killPid(persisted.pid, 'SIGTERM');
       this.removeStateFile();
+    } else if (persisted && this.isPidAlive(persisted.pid)) {
+      await this.adoptLegacyDaemon(persisted, ownerDir, droidPath, airgapped, auth);
+      return;
     }
 
     const port = await this.pickPort();
@@ -1244,8 +1269,7 @@ export class LocalDaemon {
       else delete daemonEnv.FACTORY_API_KEY;
     }
 
-    const args = ['daemon', '--port', String(port), '--host', '127.0.0.1'];
-    const child = this.spawnDaemon(droidPath, args, daemonEnv, this.logFile);
+    const child = this.spawnDaemon(droidPath, daemonArgs(port), daemonEnv, this.logFile);
     let earlyExitError: Error | undefined;
     child.once('error', (err) => {
       earlyExitError = err instanceof Error ? err : new Error(String(err));
@@ -1258,6 +1282,7 @@ export class LocalDaemon {
     if (!child.pid) throw new Error('Failed to spawn detached droid daemon (missing PID)');
 
     const recordInfo: PersistedDaemonInfo = {
+      ownerDir,
       pid: child.pid,
       port,
       droidPath,
@@ -1297,6 +1322,23 @@ export class LocalDaemon {
     throw new Error(`Timed out connecting to droid daemon on 127.0.0.1:${port}${lastError instanceof Error ? `: ${lastError.message}` : ''}`);
   }
 
+  private async adoptLegacyDaemon(legacy: LegacyDaemonInfo, ownerDir: string, droidPath: string, airgapped: boolean, auth: LocalDaemonAuth): Promise<void> {
+    // Never signal or replace an unscoped live PID, even when adoption fails. It may still have active workers.
+    if (legacy.droidPath !== droidPath || legacy.airgapped !== airgapped || (legacy.authFingerprint && legacy.authFingerprint !== auth.fingerprint)) {
+      throw new Error('The running legacy Droid daemon uses different settings. Restore its previous settings to resume its workers.');
+    }
+    if (!(await provesLegacyDaemonOwnership(this.platform, legacy, path.join(ownerDir, path.basename(this.logFile))))) {
+      throw new Error('Could not verify the running legacy Droid daemon belongs to this office. Keep the original launch log; remove copied metadata only after verifying it belongs to another office.');
+    }
+    const scoped = { ...legacy, ownerDir, authFingerprint: auth.fingerprint };
+    await this.connectAndAuthenticate(scoped, auth, () => {
+      if (canonicalOfficeDir(this.opts.dataDir) !== ownerDir || JSON.stringify(readDaemonState(this.stateFile)) !== JSON.stringify(legacy)) {
+        throw new Error('Droid daemon metadata changed during upgrade. Retry to reload it.');
+      }
+      writePrivateJson(this.stateFile, scoped);
+    });
+  }
+
   private async tryConnectOnce(daemon: PersistedDaemonInfo, auth: LocalDaemonAuth): Promise<boolean> {
     try {
       await this.connectAndAuthenticate(daemon, auth);
@@ -1306,7 +1348,8 @@ export class LocalDaemon {
     }
   }
 
-  private async connectAndAuthenticate(daemon: PersistedDaemonInfo, auth: LocalDaemonAuth): Promise<void> {
+  private async connectAndAuthenticate(daemon: PersistedDaemonInfo, auth: LocalDaemonAuth, beforeAttach?: () => void): Promise<void> {
+    if (this.stopped) throw new Error('LocalDaemon has been stopped');
     const client = this.makeClient(auth);
     this.wireClientHandlers(client);
     try {
@@ -1321,6 +1364,8 @@ export class LocalDaemon {
         caller: 'sdk',
         metadata: { sdk: { language: 'typescript', version: SDK_VERSION } },
       });
+      if (this.stopped) throw new Error('LocalDaemon has been stopped');
+      beforeAttach?.();
       this.client = client;
       this.activeDaemon = daemon;
       this.activeAuth = auth;
@@ -1440,6 +1485,7 @@ export class LocalDaemon {
 
   private removeStateFile(): void {
     try {
+      canonicalOfficeDir(this.opts.dataDir);
       rmSync(this.stateFile, { force: true });
     } catch {
       // already gone

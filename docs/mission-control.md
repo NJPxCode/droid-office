@@ -1,5 +1,6 @@
 # Mission Control
 
+- **Upgrade from the TUI.** Startup authenticates to the legacy PTY host at the Orchestrator’s own state directory and asks it to stop, even if the Orchestrator is off. It never starts a replacement PTY host or stops floor shells or an independent Droid daemon.
 The building's agents live in Mission Control, the glass room under the boss office. They belong to no floor and have no desk: they see and direct the whole building. There are two kinds, and they work the same way.
 
 - **The Orchestrator** is the one the office launches and owns. You tell it what you want ("get CI green on every floor", "triage the open issues across my projects and put workers on the top three", "what is everyone doing?") and it plans, hires and directs workers on any floor, answers their questions, checks their work and reports back.

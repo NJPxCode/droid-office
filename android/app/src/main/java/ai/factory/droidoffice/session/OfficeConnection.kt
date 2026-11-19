@@ -1,5 +1,6 @@
 package ai.factory.droidoffice.session
 
+import android.os.SystemClock
 import ai.factory.droidoffice.core.Backoff
 import ai.factory.droidoffice.core.OfficeEndpoint
 import ai.factory.droidoffice.core.HostUpdateAction
@@ -26,6 +27,7 @@ import ai.factory.droidoffice.core.ServerMsg
 import ai.factory.droidoffice.core.TermEvent
 import ai.factory.droidoffice.core.TermFeed
 import ai.factory.droidoffice.core.TermSize
+import ai.factory.droidoffice.core.ThreadLiveState
 import ai.factory.droidoffice.core.WbFetched
 import ai.factory.droidoffice.core.WbFileRef
 import ai.factory.droidoffice.core.WbFloor
@@ -275,8 +277,10 @@ class OfficeConnection(
     /** Pages of workers' conversations, each answering one `thread.read`; a [ai.factory.droidoffice.core.ThreadFeed] keeps the ones it asked for. */
     val threads: SharedFlow<ServerMsg.ThreadSnapshot> = _threads.asSharedFlow()
 
-    private val _threadLives = MutableSharedFlow<ServerMsg.ThreadLiveUpdate>(extraBufferCapacity = 32)
-    val threadLives: SharedFlow<ServerMsg.ThreadLiveUpdate> = _threadLives.asSharedFlow()
+    private val threadWatches = mutableMapOf<String, LiveWatch>()
+    private class LiveWatch(val state: ThreadLiveState = ThreadLiveState(), var lastResync: Long? = null)
+    private val _threadLives = MutableStateFlow<Map<String, ServerMsg.ThreadLiveUpdate>>(emptyMap())
+    val threadLives: StateFlow<Map<String, ServerMsg.ThreadLiveUpdate>> = _threadLives.asStateFlow()
 
     private val _workerRewounds = MutableSharedFlow<ServerMsg.WorkerRewound>(extraBufferCapacity = 8)
     val workerRewounds: SharedFlow<ServerMsg.WorkerRewound> = _workerRewounds.asSharedFlow()
@@ -333,6 +337,33 @@ class OfficeConnection(
     val connected: Boolean get() = _link.value.phase == Phase.Connected && socket != null
 
     fun send(json: String): Boolean = socket?.takeIf { _link.value.phase == Phase.Connected }?.send(json) ?: false
+
+    /** Fold all wire appends on the ordered socket loop before the UI can conflate frames. */
+    fun watchThread(workerId: String, on: Boolean) {
+        if (on) threadWatches[workerId] = LiveWatch()
+        else {
+            threadWatches.remove(workerId)
+            _threadLives.update { it - workerId }
+        }
+        send(ClientMsg.threadWatch(workerId, on, stream = true))
+    }
+
+    private fun applyThreadStream(msg: ServerMsg.ThreadStream) {
+        val watch = threadWatches[msg.workerId] ?: return
+        when (watch.state.append(msg)) {
+            ThreadLiveState.Append.Applied -> {
+                val live = watch.state.live ?: return
+                _threadLives.update { it + (msg.workerId to ServerMsg.ThreadLiveUpdate(msg.workerId, msg.sessionId, live)) }
+            }
+            ThreadLiveState.Append.Resync -> {
+                val now = SystemClock.elapsedRealtime()
+                if (watch.lastResync?.let { now - it < 1_000L } != true &&
+                    send(ClientMsg.threadWatch(msg.workerId, true, stream = true))
+                ) watch.lastResync = now
+            }
+            ThreadLiveState.Append.Ignore -> Unit
+        }
+    }
 
     /** A successful socket write is not an answer receipt. Never queue or replay an answer. */
     suspend fun answerConfirmed(requestId: String, json: String): ServerMsg.ActionResult? = actionConfirmed(requestId, json)
@@ -729,6 +760,8 @@ class OfficeConnection(
         } finally {
             upgrade?.cancel()
             socket = null
+            threadWatches.clear()
+            _threadLives.value = emptyMap()
             answerEpoch++
             actionRequests.values.forEach { it.complete(null) }
             actionRequests.clear()
@@ -886,7 +919,13 @@ class OfficeConnection(
             is ServerMsg.Whiteboard -> whiteboard.handle(msg.t, msg.obj)
             is ServerMsg.Pinged -> _pinged.tryEmit(msg.result)
             is ServerMsg.ThreadSnapshot -> _threads.tryEmit(msg)
-            is ServerMsg.ThreadLiveUpdate -> _threadLives.tryEmit(msg)
+            is ServerMsg.ThreadLiveUpdate -> {
+                val watch = threadWatches[msg.workerId]
+                if (watch?.state?.receive(msg.sessionId, msg.live) == true) {
+                    _threadLives.update { it + (msg.workerId to msg) }
+                }
+            }
+            is ServerMsg.ThreadStream -> applyThreadStream(msg)
             is ServerMsg.WorkerRewound -> _workerRewounds.tryEmit(msg)
             is ServerMsg.ActionResult -> actionRequests.remove(msg.requestId)?.complete(msg)
             is ServerMsg.Pong, is ServerMsg.Ignored -> Unit

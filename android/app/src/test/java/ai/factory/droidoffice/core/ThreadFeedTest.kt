@@ -50,6 +50,21 @@ class ThreadFeedTest {
     }
 
     @Test
+    fun anEarlierPageReturningAfterJumpToLatestCannotTrimTheTail() {
+        val feed = ThreadFeed("w1")
+        val last = ThreadFeed.MAX_ENTRIES + 5L
+        val entries = (6L..last).map { text("e$it", it) }
+        val older = (1L..5L).map { text("e$it", it) }
+        assertTrue(feed.receive(page(feed, feed.latest(0)!!, entries, hasMore = true, presentation = rows(entries))))
+        val (req, before) = feed.earlier(1)!!
+        assertTrue(feed.receive(page(feed, req, older, before = before, presentation = rows(older)), keepLatest = true))
+        assertEquals(last, feed.state.entries.last().seq)
+        assertEquals("e$last", feed.state.rows.last().id)
+        assertTrue(feed.state.hasMore)
+        assertFalse(feed.state.newerTrimmed)
+    }
+
+    @Test
     fun aNewerLatestPageMergesByIdAndKeepsOlderPages() {
         val feed = ThreadFeed("w1")
         feed.receive(page(feed, feed.latest(0)!!, listOf(text("c", 3), text("d", 4)), hasMore = true))

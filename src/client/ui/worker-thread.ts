@@ -2,11 +2,11 @@ import { ORCHESTRATOR_ID } from '../../shared/mission-control';
 import { PROMPT_MAX } from '../../shared/prompts';
 import type { ClientMsg, ServerMsg, WorkerInfo } from '../../shared/protocol';
 import { copyTurns, nativeCopy, nativeLimits, slashCommands, slashOf, slashRefusal, slashSuggestions, type DroidSlashCommand, type SlashCommand } from '../../shared/slash-commands';
-import { isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
+import { daemonStartFailure, isAsleep, isBusy, needsOwnerInput } from '../../shared/status';
 import { settledMarkdownEnd } from '../../shared/live-markdown';
 import { REVEAL_JOIN_AGE_MS, StreamReveal } from '../../shared/stream-reveal';
 import { IMAGE_PLACEHOLDER, latestThreadPlan, type ActivePlan, type ThreadBlock, type ThreadRow } from '../../shared/thread-presentation';
-import { statusMode, thinkingSeconds, thoughtLabel } from '../../shared/thread-status';
+import { thinkingSeconds, thoughtLabel, threadStatus } from '../../shared/thread-status';
 import { rewindFilesSince } from '../../shared/thread-rewind';
 import { threadPrompts } from '../../shared/thread-turns';
 import { todosFinished } from '../../shared/todos';
@@ -1564,14 +1564,19 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const starting = threadStarting(worker);
     const cloudWaiting = received && cloudStarting(worker, Date.now());
     const intro = introNow();
-    const key = JSON.stringify([error, received, starting, cloudWaiting, connected, !!intro]);
+    const startFailed = daemonStartFailure(worker);
+    const retained = startFailed && !worker.sessionId ? worker.prompt : undefined;
+    const key = JSON.stringify([error, received, starting, cloudWaiting, connected, !!intro, startFailed, retained]);
     if (key === emptyKey) return;
     emptyKey = key;
     empty.classList.toggle('wt-intro', !!intro);
     if (intro) empty.removeAttribute('role');
     else empty.setAttribute('role', 'status');
     empty.setAttribute('aria-busy', String(!intro && connected && !error && !received));
-    if (intro) empty.replaceChildren(intro);
+    if (connected && startFailed) {
+      empty.setAttribute('aria-busy', 'false');
+      empty.replaceChildren(h('b', {}, 'Droid could not start.'), ...(retained ? [h('p', {}, 'Unsent prompt'), h('div.wt-user-text', {}, retained)] : []));
+    } else if (intro) empty.replaceChildren(intro);
     else if (error) empty.textContent = `Conversation unavailable. ${errorHint}`;
     else if (!connected) empty.textContent = 'Waiting for the office to reconnect…';
     else if (!received)
@@ -1885,10 +1890,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   // The JSONL isn't a token stream: don't infer "Thinking" or "Generating" from its last entry.
   const paintProgress = () => {
     const show = active && connected && !disposed && !document.hidden && !worker.lost && !error && isBusy(worker.status);
-    const label = !show ? '' : worker.status === 'starting' ? 'Starting worker…' : worker.status === 'needs_input' ? 'Waiting for you' : 'Working…';
     const last = history.rows.at(-1);
     const detail = show && worker.status === 'working' && !history.historical && history.sessionId === worker.sessionId && last?.kind === 'activity' && last.live ? (last.running ?? '') : '';
-    progress.paint({ show, running: show && worker.status !== 'needs_input', label, mode: statusMode(liveView?.status, worker.status), detail: liveView?.label || detail });
+    progress.paint(show ? threadStatus(worker, liveView, history.entries, detail) : undefined);
   };
 
   const updateControls = () => {
@@ -1937,17 +1941,20 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     else if (worker.kind === 'agent') hint.replaceChildren(shortcut('Enter', 'send'), shortcut('⇧ Enter', 'new line'), shortcut('@', 'files'), shortcut('/', 'commands'));
     else hint.replaceChildren(shortcut('Enter', 'send'), shortcut('⇧ Enter', 'new line'), shortcut('/', 'commands'));
     earlier.disabled = !!pending || !connected;
-    retry.classList.toggle('hidden', !error);
+    const startFailed = !opts.promptWakes ? daemonStartFailure(worker) : undefined;
+    retry.classList.toggle('hidden', !error || !!startFailed);
     retry.disabled = !connected || !!pending;
     empty.classList.toggle('error', !!error && !history.entries.length);
     if (!history.entries.length) paintEmpty();
     notice.textContent = connected
-      ? error || told || (broken && !opts.cloudErrorShown ? `${worker.name} can’t work: ${broken}` : '') || (isAsleep(worker.status) && !opts.promptWakes ? 'Resume this worker to send another message.' : '')
+      ? (startFailed ? told || startFailed : error || told) ||
+        (broken && !opts.cloudErrorShown ? `${worker.name} can’t work: ${broken}` : '') ||
+        (isAsleep(worker.status) && !opts.promptWakes ? 'Resume this worker to send another message.' : '')
       : '';
     // A cloud worker's Resume reads its Factory session again, which is also how one that broke is checked.
     resume.hidden = (!isAsleep(worker.status) || !!opts.promptWakes) && !broken;
     resume.disabled = !active || !connected || !!worker.lost || resuming;
-    resume.textContent = broken ? (resuming ? 'Checking…' : 'Check again') : resuming ? 'Resuming…' : 'Resume';
+    resume.textContent = broken ? (resuming ? 'Checking…' : 'Check again') : resuming ? 'Resuming…' : startFailed ? 'Retry' : 'Resume';
     element.classList.toggle('has-feedback', !!notice.textContent);
     paintPlan();
     paintQueue();
