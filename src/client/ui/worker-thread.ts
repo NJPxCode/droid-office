@@ -21,7 +21,7 @@ import { withToken } from '../token';
 import { applyHorizontalScrollCue, measureHorizontalScrollCue, type HorizontalScrollCueMeasurement } from './code-highlight';
 import { claimEscape, h, STATUS_LABEL } from './dom';
 import { openFactoryLimits } from './factory-limits';
-import { carrySelection, followsTail, keepAtTail } from './thread-live-output';
+import { followsTail, keepAtTail, rememberSelection } from './thread-live-output';
 import { liveAppend, liveFrom, entryAt, entryTook, type LiveTool, type LiveView } from './thread-live-view';
 import { openThreadCopy } from './thread-copy';
 import { mountThreadSettings } from './thread-settings';
@@ -1594,12 +1594,12 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
    * The live reply's Markdown, kept in one root: its settled blocks render once and stay (so a selection in
    * them survives), and only the block still being written renders again on each update.
    */
-  let liveMd: { key: string; root: HTMLElement; settled: string; tail: ChildNode[]; tailText: string; tailKey: string } | undefined;
-  const renderStreamMarkdown = (text: string, since: number) => {
+  let liveMd: { key: string; after: string; root: HTMLElement; settled: string; tail: ChildNode[]; tailText: string; tailKey: string } | undefined;
+  const renderStreamMarkdown = (text: string, { since, after }: ShownStream) => {
     const key = `live:stream:${since}`;
     if (!liveMd || liveMd.key !== key || !text.startsWith(liveMd.settled)) {
       resetStreamMarkdown();
-      liveMd = { key, root: threadMarkdown('', { key }), settled: '', tail: [], tailText: '', tailKey: '' };
+      liveMd = { key, after, root: threadMarkdown('', { key }), settled: '', tail: [], tailText: '', tailKey: '' };
     }
     const md = liveMd;
     const mdOpts = {
@@ -1692,6 +1692,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const ended = !live && !!stream;
     const showStream = !!stream;
     const pendingTools = current ? (liveView?.tools.filter((tool) => !tool.id) ?? []) : [];
+    const previousMd = liveMd;
     if (!showStream || stream.kind !== 'text') resetStreamMarkdown();
     const key = stream ? streamKey(stream) : '';
     if (key !== revealKey) {
@@ -1702,8 +1703,15 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     }
     if (!showStream) revealAt = 0;
     const hide = !showStream && !thoughts.length && !pendingTools.length;
-    // The owner's selection in a reply that just landed moves onto the recorded entry.
-    if (hide && !streamNode.hidden) carrySelection(streamNode.querySelector('.wt-stream-copy'), () => [...list.querySelectorAll<HTMLElement>('.wt-entry:not(.wt-stream)')].slice(-6));
+    const landedMarkdown = () => {
+      if (!showing || !previousMd || previousMd.after === lastId) return [];
+      const after = history.entries.findIndex((entry) => entry.id === previousMd.after);
+      return history.entries.slice(after + 1).flatMap((entry) => {
+        const body = nodes.get(entry.id)?.node.querySelector('.wt-md');
+        return body && entry.role === 'assistant' && entry.kind === 'text' ? [body] : [];
+      });
+    };
+    if (hide) rememberSelection(previousMd?.root)?.(landedMarkdown);
     streamNode.hidden = hide;
     streamNode.className = streamNode.hidden ? 'wt-stream' : 'wt-entry assistant text wt-stream';
     if (streamNode.hidden) return;
@@ -1718,7 +1726,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       threadViewPrefs().thinking,
     ]);
     const grew = liveText !== shown;
-    if (streamNode.dataset.liveStructure !== structureKey) {
+    const rebuild = streamNode.dataset.liveStructure !== structureKey;
+    const restore = rebuild || (grew && stream?.kind === 'text') ? rememberSelection(previousMd?.root) : undefined;
+    if (rebuild) {
       streamNode.dataset.liveStructure = structureKey;
       liveText = shown;
       const children: HTMLElement[] = [];
@@ -1741,7 +1751,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
             ),
           );
         } else {
-          children.push(h('div.wt-stream-copy', {}, renderStreamMarkdown(shown, stream.since)));
+          children.push(h('div.wt-stream-copy', {}, renderStreamMarkdown(shown, stream)));
         }
       }
       for (const tool of pendingTools) {
@@ -1774,11 +1784,13 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         }
       } else {
         const copy = streamNode.querySelector<HTMLElement>('.wt-stream-copy');
-        const root = renderStreamMarkdown(shown, stream.since);
+        const root = renderStreamMarkdown(shown, stream);
         if (copy && copy.firstChild !== root) copy.replaceChildren(root);
         updateClamps(streamNode);
       }
     }
+    // The tail can be replaced on any reveal frame; a completed reply moves to a recorded row.
+    restore?.(() => (liveMd && liveMd.key === previousMd?.key ? [liveMd.root] : landedMarkdown()));
     if (grew && followingLayout && !inspecting && !history.historical) motion.follow();
     for (const el of streamNode.querySelectorAll<HTMLElement>('.wt-live-time[data-since]')) {
       const since = Number(el.dataset.since);

@@ -49,28 +49,35 @@ function pointAt(root: Node, at: number): [Node, number] | undefined {
   return undefined;
 }
 
-/** Moves a selection inside `from` onto the same text in the last of `to()` that has it: the recorded entry that replaces a live one. */
-export function carrySelection(from: Element | null, to: () => Element[]): void {
-  const selection = getSelection();
-  if (!from || !selection?.rangeCount || selection.isCollapsed) return;
+/** Captures a reply selection before its DOM changes; restores it onto the same rendered text. */
+export function rememberSelection(from: Element | null | undefined): ((targets: () => Element[]) => void) | undefined {
+  if (!from) return;
+  const selection = from.ownerDocument.getSelection();
+  if (!selection?.rangeCount || selection.isCollapsed) return;
   const range = selection.getRangeAt(0);
   if (!from.contains(range.startContainer) || !from.contains(range.endContainer)) return;
   const picked = range.toString();
-  const target = picked ? to().findLast((el) => el.textContent?.includes(picked)) : undefined;
-  if (!target) return;
+  if (!picked) return;
+  const { anchorNode, anchorOffset, focusNode, focusOffset } = selection;
+  const backward = anchorNode === range.endContainer && anchorOffset === range.endOffset;
   const start = textOffset(from, range.startContainer, range.startOffset);
-  const text = target.textContent ?? '';
-  let best = -1;
-  for (let at = text.indexOf(picked); at >= 0; at = text.indexOf(picked, at + 1)) {
-    if (best < 0 || Math.abs(at - start) < Math.abs(best - start)) best = at;
-    if (at > start) break;
-  }
-  const head = best < 0 ? undefined : pointAt(target, best);
-  const tail = best < 0 ? undefined : pointAt(target, best + picked.length);
-  if (!head || !tail) return;
-  const next = document.createRange();
-  next.setStart(...head);
-  next.setEnd(...tail);
-  selection.removeAllRanges();
-  selection.addRange(next);
+  return (targets) => {
+    const candidates = targets();
+    // Leave a selection in untouched settled blocks alone.
+    if (candidates.includes(from) && selection.anchorNode === anchorNode && selection.anchorOffset === anchorOffset && selection.focusNode === focusNode && selection.focusOffset === focusOffset) return;
+    const target = candidates.findLast((el) => el.textContent?.includes(picked));
+    if (!target) return;
+    const text = target.textContent ?? '';
+    let best = start;
+    if (!text.startsWith(picked, start)) {
+      best = -1;
+      for (let at = text.indexOf(picked); at >= 0; at = text.indexOf(picked, at + 1)) {
+        if (best < 0 || Math.abs(at - start) < Math.abs(best - start)) best = at;
+        if (at > start) break;
+      }
+    }
+    const head = pointAt(target, best);
+    const tail = pointAt(target, best + picked.length);
+    if (head && tail) selection.setBaseAndExtent(...(backward ? tail : head), ...(backward ? head : tail));
+  };
 }

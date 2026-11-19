@@ -1117,6 +1117,67 @@ test('a Thread opened mid-reply shows it at once, and an append that does not fi
   assert.deepEqual(errors, []);
 });
 
+test('a backward selection in the active Markdown tail survives replacement, settling, and finalization', { skip: chromium }, async (t) => {
+  const { page, errors } = await mountStreaming(t);
+  const initial = 'Copy **this** phrase.\n\nCopy **this** phrase.';
+  const updates = [' More words in the selected paragraph.', '\n\nNow write a new paragraph.'];
+  const samples = await page.evaluate(
+    async ({ initial, updates }) => {
+      const w = window as any;
+      // Join a stream under way, as when opening an already active Thread.
+      w.live(2, { stream: { kind: 'text', text: initial, since: Date.now() - 5000 } });
+      const selector = '.wt-stream-copy .wt-md > p';
+      const tail = document.querySelectorAll(selector)[1];
+      const selection = getSelection()!;
+      selection.setBaseAndExtent(tail.lastChild!, tail.lastChild!.textContent!.length, tail.firstChild!, 0);
+      const sample = () => ({
+        text: selection.toString(),
+        backward: selection.anchorNode === selection.getRangeAt(0).endContainer && selection.anchorOffset === selection.getRangeAt(0).endOffset,
+        paragraph: [...document.querySelectorAll(selector)].indexOf(selection.anchorNode?.parentElement?.closest('p') as Element),
+        tailReplaced: !tail.isConnected,
+      });
+      const states = [sample()];
+      let text = initial;
+      for (const [i, more] of updates.entries()) {
+        w.receive({ t: 'thread.stream', workerId: 'worker-1', sessionId: 'session-1', rev: i + 3, base: i + 2, from: text.length, text: more });
+        text += more;
+        await w.frames(30);
+        states.push(sample());
+      }
+      return states;
+    },
+    { initial, updates },
+  );
+  const selected = { text: 'Copy this phrase.', backward: true, paragraph: 1 };
+  assert.deepEqual(samples, [
+    { ...selected, tailReplaced: false },
+    { ...selected, tailReplaced: true },
+    { ...selected, tailReplaced: true },
+  ]);
+  await page.getByText('Now write a new paragraph.', { exact: true }).waitFor();
+
+  const landed = [...longEntries(), { id: 'm30', seq: 30, role: 'assistant', kind: 'text', text: initial + updates.join('') }] as ThreadEntry[];
+  const after = await page.evaluate(
+    async ({ entries, rows }) => {
+      const w = window as any;
+      w.receive({ t: 'thread.snapshot', workerId: 'worker-1', request: 'push', push: true, sessionId: 'session-1', entries, hasMore: false, presentation: { version: 1, rows } });
+      w.live(5, { after: 'm30', tools: [{ name: 'Execute', startedAt: Date.now() }] });
+      await w.frames(3);
+      const selection = getSelection()!;
+      const range = selection.getRangeAt(0);
+      return {
+        text: selection.toString(),
+        backward: selection.anchorNode === range.endContainer && selection.anchorOffset === range.endOffset,
+        paragraph: [...document.querySelectorAll('[data-entry="m30"] .wt-md > p')].indexOf(selection.anchorNode?.parentElement?.closest('p') as Element),
+      };
+    },
+    { entries: landed, rows: presentThread(landed, true) },
+  );
+  assert.deepEqual(after, selected);
+  await page.evaluate(() => (window as any).thread.dispose());
+  assert.deepEqual(errors, []);
+});
+
 test('a live reply keeps its finished paragraphs in place, so a selection in them survives later updates', { skip: chromium }, async (t) => {
   const { page, errors } = await mountStreaming(t);
   const result = await page.evaluate(async () => {
