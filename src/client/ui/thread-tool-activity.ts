@@ -1,13 +1,10 @@
 import { compactDiffRows, threadDeliverable, type ThreadFileChange } from '../../shared/thread-diff';
 import { threadArgumentsText, threadOutputText, type ThreadBlock, type ThreadModelAction, type ThreadRow, type ThreadSegment } from '../../shared/thread-presentation';
 import type { ThreadEntry } from '../../shared/worker-thread';
-import { withToken } from '../token';
 import { copy } from './clipboard';
 import { highlightLine } from './code-highlight';
-import { h, openModal } from './dom';
+import { h } from './dom';
 import { icon } from './icons';
-import { windowHeader } from './kit';
-import { followsTail, keepAtTail } from './thread-live-output';
 import { firstDiffTargetLine, pairIntralineSpans, renderDiffLineCode, renderToolCodeSection, resolveDelegatedWorkerId, toWorkspaceRelPath, type ThreadCardRenderContext } from './thread-diff-view';
 import { summaryGroup, toolRow, type ToolRowState } from './thread-tool-row';
 import { toolGlyph, type ToolGlyph } from './thread-tool-icons';
@@ -37,6 +34,8 @@ export interface ThreadActivityContext extends ThreadCardRenderContext {
 
 /** Factory folds an Execute body to this many lines (`ceil(200 / (13 * 1.55)) + 1`) until expanded. */
 const COMMAND_CLAMP_LINES = 11;
+/** After this long a running command says it can be opened to watch it. */
+const PROGRESS_HINT_MS = 15_000;
 const EXIT_OK = /\n?\[Process exited with code 0\]\s*$/;
 const COPY_RESET_MS = 2000;
 
@@ -69,33 +68,6 @@ function argumentsOf(entry: ThreadEntry | undefined): Record<string, unknown> {
 }
 
 const missing = (what: string) => h('p.wt-detail-missing', {}, `Load earlier messages to see ${what}.`);
-
-function fullOutput(entry: ThreadEntry | undefined, ctx: ThreadActivityContext): HTMLButtonElement | null {
-  const output = entry?.outputRef;
-  if (!output || ctx.owner.cloud) return null;
-  const url = withToken(`/api/thread/output?${new URLSearchParams({ worker: ctx.owner.id, output })}`);
-  return h(
-    'button.btn.sm',
-    {
-      type: 'button',
-      'data-row-action': 'true',
-      onclick: () => {
-        const abort = new AbortController();
-        const body = h('div.body', {}, h('p', { role: 'status' }, 'Loading output…'));
-        openModal(h('div.modal', {}, windowHeader('Full tool output'), body), { size: 'xl', onClose: () => abort.abort() });
-        void fetch(url, { signal: abort.signal })
-          .then(async (response) => {
-            if (!response.ok) throw new Error('Could not load output');
-            body.replaceChildren(h('pre.wt-cmd-out', {}, await response.text()));
-          })
-          .catch(() => {
-            if (!abort.signal.aborted) body.replaceChildren(h('p.note.bad', { role: 'status' }, 'Couldn’t load the output. Close and try again.'));
-          });
-      },
-    },
-    'Show full output',
-  );
-}
 
 /** A 12px icon button for a row's header end. */
 function headerButton(glyph: ToolGlyph, label: string, onclick: (button: HTMLButtonElement) => void, cls = ''): HTMLButtonElement {
@@ -153,9 +125,7 @@ function commandBody(action: ThreadModelAction, entry: ThreadEntry | undefined, 
   const output = commandOutput(action, entry, live, !!images);
   const pre = h('pre.wt-cmd-out', { 'data-command': command, ...(working ? { 'data-live-tool': action.id } : {}) });
   const count = fillCommand(pre, command, output, working, live?.more);
-  // A running command's output is a scrolling box that follows its newest line rather than a fold.
-  const clamp = h('div.wt-cmd-clamp', { class: working ? 'is-live' : count > COMMAND_CLAMP_LINES ? 'is-clamped' : '' }, working ? followsTail(pre) : pre);
-  if (working) requestAnimationFrame(() => keepAtTail(pre));
+  const clamp = h('div.wt-cmd-clamp', { class: count > COMMAND_CLAMP_LINES ? 'is-clamped' : '' }, pre);
   const expand = h('button.wt-cmd-expand', { type: 'button', 'aria-label': 'Expand command output' }, toolGlyph('chevronDown', 12));
   expand.addEventListener('click', () => {
     clamp.classList.remove('is-clamped');
@@ -163,7 +133,7 @@ function commandBody(action: ThreadModelAction, entry: ThreadEntry | undefined, 
     ctx.onLayoutChange?.();
   });
   clamp.append(expand);
-  return h('div.wt-cmd-body', {}, clamp, fullOutput(entry, ctx), images);
+  return h('div.wt-cmd-body', {}, clamp, images);
 }
 
 /** Refreshes running commands' output in place from `thread.live`, without repainting their rows. */
@@ -172,8 +142,7 @@ export function refreshLiveOutput(root: ParentNode, live: (id: string) => Thread
     const view = live(pre.dataset.liveTool ?? '');
     if (view?.output === undefined) continue;
     const count = fillCommand(pre, pre.dataset.command ?? '', view.output.replace(EXIT_OK, '').replace(/\s+$/, ''), true, view.more);
-    if (pre.parentElement?.classList.contains('is-live')) keepAtTail(pre);
-    else pre.parentElement?.classList.toggle('is-clamped', count > COMMAND_CLAMP_LINES && !pre.parentElement.dataset.expanded);
+    pre.parentElement?.classList.toggle('is-clamped', count > COMMAND_CLAMP_LINES && !pre.parentElement.dataset.expanded);
   }
 }
 
@@ -182,12 +151,23 @@ function executeRow(action: ThreadModelAction, entry: ThreadEntry | undefined, c
   const live = ctx.live?.(action.id);
   const state = rowState(action, rowLive, live);
   const images = entry ? ctx.pictures(entry, action.title, command, ctx.owner) : null;
+  let hint: HTMLElement | null = null;
+  // `at` arrives with the live Thread layer (ThreadEntry.at); older offices don't send it.
+  const started = live?.startedAt ?? entry?.at;
+  if (state === 'working' && started !== undefined) {
+    hint = h('span.wt-tr-hint', { hidden: true }, 'Click to see progress');
+    const show = () => {
+      if (hint) hint.hidden = false;
+    };
+    const wait = PROGRESS_HINT_MS - (Date.now() - started);
+    if (wait <= 0) show();
+    else setTimeout(show, wait);
+  }
   return toolRow({
     id: action.id,
     scope: ctx.owner.id,
     toggles: ctx.userToggles,
-    // A running command shows its output without a click.
-    open: !!ctx.toolsOpen || state === 'working',
+    open: !!ctx.toolsOpen,
     onLayoutChange: ctx.onLayoutChange,
     icon: 'terminal',
     verb: nested ? 'Ran' : '',
@@ -196,6 +176,7 @@ function executeRow(action: ThreadModelAction, entry: ThreadEntry | undefined, c
     state,
     failedLabel: action.failedLabel ?? 'Command failed',
     hideFailedWhenOpen: true,
+    inlineSubtitle: hint,
     dense: nested,
     headerEnd: copyButton(() => `$ ${command}\n${commandOutput(action, entry, ctx.live?.(action.id), !!images)}`.trimEnd()),
     body: () => commandBody(action, entry, ctx, images),
@@ -238,17 +219,15 @@ function renderCompactDiff(change: ThreadFileChange): HTMLElement {
   return h('div.wt-diff-scroll', { tabindex: 0, 'aria-label': `Diff for ${basename(change.path)}` }, table);
 }
 
-function changeBody(change: ThreadFileChange | undefined, action: ThreadModelAction, entry: ThreadEntry | undefined, ctx: ThreadActivityContext): HTMLElement {
+function changeBody(change: ThreadFileChange | undefined, action: ThreadModelAction, entry: ThreadEntry | undefined): HTMLElement {
   const failed = action.state === 'failed' && entry?.output ? renderToolCodeSection(entry.output, { lang: 'txt', copyLabel: 'Copy error', isOutput: true }) : null;
-  const full = fullOutput(entry, ctx);
-  if (!change) return h('div.wt-diff-body', {}, failed ?? (entry ? h('p.wt-diff-note', {}, 'No diff available') : missing('what this edit changed')), full);
+  if (!change) return h('div.wt-diff-body', {}, failed ?? (entry ? h('p.wt-diff-note', {}, 'No diff available') : missing('what this edit changed')));
   return h(
     'div.wt-diff-body',
     {},
     change.lines.length ? renderCompactDiff(change) : h('p.wt-diff-note', {}, 'No diff available'),
     change.truncated ? h('p.wt-diff-note', {}, 'Diff preview truncated. Open the file to see the rest.') : null,
     failed,
-    full,
   );
 }
 
@@ -271,9 +250,7 @@ function changeRows(action: ThreadModelAction, entry: ThreadEntry | undefined, c
   const base = { scope: ctx.owner.id, toggles: ctx.userToggles, open: !!ctx.toolsOpen, onLayoutChange: ctx.onLayoutChange, state, chip: true, hideFailedWhenOpen: true, dense: nested, testId: 'change-row' } as const;
   const changes = action.changes ?? [];
   if (!changes.length) {
-    return [
-      toolRow({ ...base, id: action.id, icon: action.icon ?? 'edit', verb: action.verb || action.title, subject: action.subject ?? action.detail, failedLabel: action.failedLabel, body: () => changeBody(undefined, action, entry, ctx) }),
-    ];
+    return [toolRow({ ...base, id: action.id, icon: action.icon ?? 'edit', verb: action.verb || action.title, subject: action.subject ?? action.detail, failedLabel: action.failedLabel, body: () => changeBody(undefined, action, entry) })];
   }
   return changes.map((change) => {
     const name = basename(change.path);
@@ -292,7 +269,7 @@ function changeRows(action: ThreadModelAction, entry: ThreadEntry | undefined, c
       failedLabel: action.failedLabel,
       headerEnd: open,
       headerAlways: deliverable,
-      body: () => changeBody(change, action, entry, ctx),
+      body: () => changeBody(change, action, entry),
     });
   });
 }
@@ -312,7 +289,6 @@ function resultSections(action: ThreadModelAction, entry: ThreadEntry | undefine
     args ? renderToolCodeSection(args, { lang: argLang, copyLabel: `Copy ${(action.arguments?.label ?? 'input').toLowerCase()}` }) : null,
     output || !images ? h('div.wt-detail-label', {}, action.result) : null,
     output ? renderToolCodeSection(output, { lang, copyLabel: 'Copy output', isOutput: true }) : !images ? h('p.wt-tool-empty', {}, action.state === 'working' ? 'Pending...' : empty) : null,
-    fullOutput(entry, ctx),
     images,
   ];
 }
@@ -340,9 +316,6 @@ function taskRow(action: ThreadModelAction, entry: ThreadEntry | undefined, ctx:
 }
 
 function genericRow(action: ThreadModelAction, entry: ThreadEntry | undefined, ctx: ThreadActivityContext, rowLive: boolean, asking: boolean, nested: boolean): HTMLElement {
-  if (action.answers?.length) {
-    return h('dl.wt-answered-question', { 'aria-label': 'Answered questions' }, ...action.answers.flatMap(({ question, answer }) => [h('dt', {}, question), h('dd', {}, 'You answered: ', h('strong', {}, answer))]));
-  }
   const state = rowState(action, rowLive, ctx.live?.(action.id));
   const name = action.icon;
   const waiting = asking && state === 'working';
@@ -373,7 +346,6 @@ function exploreRow(action: ThreadModelAction, entry: ThreadEntry | undefined, c
   const rel = typeof path === 'string' && ctx.onOpenPath && state === 'complete' ? toWorkspaceRelPath(path, ctx.floorDir) : null;
   const offset = args.offset;
   const withImages = !!entry?.images?.length;
-  const hasDetails = withImages || (!rel && !!entry?.outputRef);
   return toolRow({
     id: action.id,
     scope: ctx.owner.id,
@@ -385,8 +357,8 @@ function exploreRow(action: ThreadModelAction, entry: ThreadEntry | undefined, c
     state,
     failedLabel: action.failedLabel,
     dense: true,
-    ...(hasDetails ? { body: () => h('div.wt-tool-body', {}, ...resultSections(action, entry, ctx, 'txt', 'No result')) } : {}),
-    ...(rel && !withImages ? { onActivate: () => ctx.onOpenPath?.({ path: rel, ...(typeof offset === 'number' && offset > 0 ? { line: offset } : {}) }), headerAlways: fullOutput(entry, ctx) } : {}),
+    ...(withImages ? { body: () => h('div.wt-tool-body', {}, ...resultSections(action, entry, ctx, 'txt', 'No result')) } : {}),
+    ...(rel && !withImages ? { onActivate: () => ctx.onOpenPath?.({ path: rel, ...(typeof offset === 'number' && offset > 0 ? { line: offset } : {}) }) } : {}),
     testId: 'explore-row',
   });
 }

@@ -154,20 +154,12 @@ export function openChanges(net: Net, workerId: string, onTerminal?: () => void,
   let requestedSig = '';
   let loading = false;
 
-  const isShell = info.kind === 'shell';
   const title = h('h2', {}, `${info.name} · changes`);
   const branch = h('p.sub.hidden');
   const diffViewBtn = h('button.btn.on', { type: 'button', 'aria-pressed': 'true', title: 'The changed files and their diff (T)' }, 'Diff');
   const logViewBtn = h('button.btn', { type: 'button', 'aria-pressed': 'false', title: "The worker's terminal, to watch it (T)" }, 'Log', h('span.key', {}, 'T'));
-  const viewSeg = isShell ? h('span.seg', { role: 'group', 'aria-label': 'Show' }, diffViewBtn, logViewBtn) : null;
-  const terminalBtn = h(
-    'button.btn',
-    {
-      type: 'button',
-      title: isShell ? 'Leave Changes for the terminal, to type to the worker' : 'Leave Changes for the thread, to reply to the worker',
-    },
-    isShell ? 'Terminal' : 'Thread',
-  );
+  const viewSeg = h('span.seg', { role: 'group', 'aria-label': 'Show' }, diffViewBtn, logViewBtn);
+  const terminalBtn = h('button.btn', { type: 'button', title: 'Leave Changes for the terminal, to type to the worker' }, 'Terminal');
   const closeBtn = h('button.btn.icon.close', { 'aria-label': 'Close' }, '✕');
   const filesHead = h('div.eyebrow.changes-files-head', {}, 'Changed files');
   const list = h('ul.list', { role: 'listbox', 'aria-label': 'Changed files' });
@@ -234,7 +226,7 @@ export function openChanges(net: Net, workerId: string, onTerminal?: () => void,
   };
 
   const setView = (next: 'diff' | 'log') => {
-    if (next === view || (next === 'log' && !isShell)) return;
+    if (next === view) return;
     view = next;
     for (const [btn, on] of [
       [diffViewBtn, next === 'diff'],
@@ -440,7 +432,7 @@ export function openChanges(net: Net, workerId: string, onTerminal?: () => void,
   };
   el.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (isShell && (e.key === 't' || e.key === 'T')) setView(view === 'diff' ? 'log' : 'diff');
+    if (e.key === 't' || e.key === 'T') setView(view === 'diff' ? 'log' : 'diff');
     else if (view === 'log') return;
     else if (e.key === 'ArrowDown' || e.key === 'j') move(1);
     else if (e.key === 'ArrowUp' || e.key === 'k') move(-1);
@@ -480,11 +472,7 @@ export function openChanges(net: Net, workerId: string, onTerminal?: () => void,
       const prompt = officePrompt('changes.ship', shipPromptVars(store.project?.forge, { title, summary, branch: branchName, base: prBase, folder, pr: s.pr?.number }));
       net.send({ t: 'worker.prompt', workerId, prompt, queue: w.status === 'working' });
       toast(`🌿 Asked ${w.name} to commit${s.pr ? ` and push to ${words().pr} ${words().ref(s.pr.number)}` : ` and open a ${words().pull}`}`);
-      if (isShell) setView('log');
-      else if (onTerminal) {
-        onTerminal();
-        modal.close();
-      } else modal.close();
+      setView('log');
     };
     const name = w.task?.name.trim() ?? '';
     const about = w.task?.summary.trim() ?? '';

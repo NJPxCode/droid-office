@@ -131,7 +131,6 @@ internal fun MarkdownText(
     streaming: Boolean = false,
     onOpenPath: ((WorkspacePaths.Ref) -> Unit)? = null,
     rich: Boolean = false,
-    fadeInBlocks: Boolean = true,
 ) {
     val paths = onOpenPath != null
     val blocks = remember(source, breaks, paths, rich) { Markdown.parse(source, breaks, paths, math = rich) }
@@ -142,7 +141,7 @@ internal fun MarkdownText(
     val body = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp, lineHeight = 22.sp, letterSpacing = (-0.02).em)
     Column(modifier, verticalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 8.dp)) {
         for ((index, b) in blocks.withIndex()) {
-            EnteringBlock(fadeInBlocks && streaming && index >= shownBlocks.intValue, onEntered = { shownBlocks.intValue = maxOf(shownBlocks.intValue, index + 1) }) {
+            EnteringBlock(streaming && index >= shownBlocks.intValue, onEntered = { shownBlocks.intValue = maxOf(shownBlocks.intValue, index + 1) }) {
                 when (b) {
                     is Markdown.Block.Heading -> Text(
                         styled(b.spans, mono, opener),

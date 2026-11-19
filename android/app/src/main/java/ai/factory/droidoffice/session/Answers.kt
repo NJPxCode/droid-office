@@ -1,6 +1,7 @@
 package ai.factory.droidoffice.session
 
 import ai.factory.droidoffice.core.Asks
+import ai.factory.droidoffice.core.Choices
 import ai.factory.droidoffice.core.ClientMsg
 import ai.factory.droidoffice.core.Menu
 import ai.factory.droidoffice.core.ORCHESTRATOR_ID
@@ -16,7 +17,7 @@ class Answers(private val connection: OfficeConnection) {
         val w = connection.data.value.worker(workerId)?.takeIf {
             it.state == WorkerStatus.NeedsInput && !it.isShell
         } ?: return null
-        return Asks.menu(w)
+        return Asks.menu(w, connection.screens.value[workerId])
     }
 
     suspend fun choose(workerId: String, shown: Menu, number: Int): Answered =
@@ -24,11 +25,11 @@ class Answers(private val connection: OfficeConnection) {
 
     suspend fun type(workerId: String, shown: Menu, text: String): Answered = submit(workerId, shown, text = text)
 
-    /** Authoritative structured menu check before send; selection is a complete desired set, not a toggle. */
+    /** Screen menu is authoritative for send; selection is a complete desired set, not a toggle. */
     suspend fun submit(workerId: String, shown: Menu, choice: Int? = null, choices: List<Int>? = null, text: String? = null): Answered {
         if (!connection.connected) return Answered.Unreachable
         val now = current(workerId)
-        if (!Asks.sameMenu(shown, now) || now == null) return Answered.Changed
+        if (!Choices.same(shown, now) || now == null) return Answered.Changed
         val data = connection.data.value
         if (now.multiSelect && !data.workerAnswerMultiSelect) return Answered.NeedsThread
         if (!QuestionAnswers.valid(now, choice, choices, text)) return Answered.NeedsThread

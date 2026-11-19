@@ -6,8 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { Answers } from '../../src/server/answers.js';
 import type { DroidModelCatalogue } from '../../src/server/droid-models.js';
-import { askAnswer, askMenu } from '../../src/server/factory/cloud-ask.js';
 import { createOfficeMcp, OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER, type OfficeMcpDeps, type OfficeMcpFloor } from '../../src/server/office-mcp/index.js';
 import type { OwnerFloor, OwnerOffice, OwnerReply } from '../../src/server/office-mcp/owner.js';
 import { remoteMcpListener } from '../../src/server/remote-mcp-http.js';
@@ -17,6 +17,7 @@ import { officePrompt } from '../../src/server/prompts.js';
 import { Team, type TeamReply, type TeamWorkers } from '../../src/server/team.js';
 import { Visits } from '../../src/server/visits.js';
 import { WhiteboardStore } from '../../src/server/whiteboard.js';
+import { readMenu } from '../../src/shared/asks.js';
 import { DESKS } from '../../src/shared/layout.js';
 import { ORCHESTRATOR_ID, type MissionAgent } from '../../src/shared/mission-control.js';
 import { WORKER_VISITS, workerBranchPolicy } from '../../src/shared/prompts.js';
@@ -444,14 +445,10 @@ export async function createEvalRig(config: EvalWorldConfig) {
         if (rec) rec.title = task.name;
       },
       screenLines: (id) => screens.get(id),
-      answerQuestion: (id, shown, reply) => {
-        const worker = people.get(id);
-        if (worker?.status !== 'needs_input' || worker.ask?.kind !== 'question') return 'No pending AskUser question';
-        const result = askAnswer(worker.menu, shown, reply);
-        if ('error' in result) return result.error;
-        delete worker.menu;
-        delete worker.ask;
-        worker.status = 'working';
+      screenMenu: (id) => (screens.has(id) ? readMenu(screens.get(id)!) : undefined),
+      write: (id, data) => {
+        state.messagedWorkers.push({ id, text: data, via: 'terminal-write', step: currentStep });
+        return true;
       },
     };
 
@@ -574,8 +571,6 @@ export async function createEvalRig(config: EvalWorldConfig) {
       ...(sw.ask ? { ask: sw.ask } : {}),
       ...(sw.waitingSince !== undefined ? { waitingSince: sw.waitingSince } : {}),
     };
-    const question = w.ask?.kind === 'question' ? w.ask.questions[0] : undefined;
-    if (question) w.menu = askMenu({ ...question, index: 1 });
     people.set(w.id, w);
     if (sw.tail !== undefined) floorTails.get(sw.floor)!.set(w.id, sw.tail);
     if (sw.screenLines) floorScreens.get(sw.floor)!.set(w.id, sw.screenLines);
@@ -705,6 +700,7 @@ export async function createEvalRig(config: EvalWorldConfig) {
     },
   };
 
+  const answers = new Answers();
   const findFloorForWorker = (workerId: string): OfficeMcpFloor | undefined => {
     for (const [fId, map] of floorMaps.entries()) {
       if (map.has(workerId)) return localFloors.get(fId);
@@ -716,6 +712,7 @@ export async function createEvalRig(config: EvalWorldConfig) {
   const hostname = 'eval.office.ts.net';
   if (config.role === 'external-bot') {
     httpServer = remoteMcpListener({
+      answers,
       owner,
       remote: remoteOffice,
       remoteTransport: { hostname: () => hostname, owner: () => undefined },
@@ -724,6 +721,7 @@ export async function createEvalRig(config: EvalWorldConfig) {
     });
   } else {
     const deps: OfficeMcpDeps = {
+      answers,
       owner,
       remote: remoteOffice,
       orchestrator: {

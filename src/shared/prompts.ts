@@ -174,11 +174,6 @@ export const WORKER_VISITS = [
 /** How the office's messages to a worker start; the Thread knows an office notice by it. */
 export const OFFICE_SAYS = 'Droid Office';
 
-/** Daemon notices can be stored as user messages. Check the reserved id and the Office's delivery prefixes. */
-export function isThreadSystemMessage(id: string, text: string): boolean {
-  return id.startsWith('__internal__system-notice__') || /^Droid Office (?:notice|delivery):/.test(text.trimStart());
-}
-
 /** A notice handed over through a hook, marked as the office's even when its rewritten prompt dropped the marker. */
 export function officeSays(text: string): string {
   return text.startsWith(OFFICE_SAYS) ? text : `${OFFICE_SAYS} notice:\n${text}`;

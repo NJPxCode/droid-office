@@ -653,31 +653,8 @@ test('latestThreadPlan tracks active steps and marks completed plans stale after
   assert.equal(finished.current, undefined);
 
   const withFollowUp: ThreadEntry[] = [...completedEntries, { id: 'u2', seq: 4, role: 'user', kind: 'text', text: 'Thanks, what about mobile?' }];
-  assert.equal(latestThreadPlan(withFollowUp, true)?.stale, true, 'an old plan does not reappear while the next turn starts');
+  assert.equal(latestThreadPlan(withFollowUp, true)?.stale, false, 'not stale while busy');
   assert.equal(latestThreadPlan(withFollowUp, false)?.stale, true, 'stale once idle after a newer user turn');
-  assert.equal(latestThreadPlan(inProgressEntries, false)?.stale, true, 'an unfinished plan does not stay live after the turn');
-  assert.equal(latestThreadPlan([...inProgressEntries, { id: 'turn:u1:completed', seq: 3, role: 'system', kind: 'notice' }], true)?.stale, true);
-});
-
-test('a completed AskUser shows the persisted question and answer inline', () => {
-  const ask = tool(
-    'ask',
-    'AskUser',
-    { question: 'Which direction?' },
-    {
-      output: '1. [question] Which direction should the proof take?\n[answer] North',
-      resultSeq: 1,
-    },
-  );
-  const rows = presentThread([ask], false);
-  const row = rows[0];
-  assert.ok(row.kind === 'activity');
-  const block = row.blocks[0];
-  assert.ok(block.kind === 'tools');
-  assert.deepEqual(block.actions[0].answers, [{ question: 'Which direction should the proof take?', answer: 'North' }]);
-  const failed = presentThread([{ ...ask, error: true }], false)[0];
-  assert.ok(failed.kind === 'activity' && failed.blocks[0].kind === 'tools');
-  assert.equal(failed.blocks[0].actions[0].answers, undefined);
 });
 
 // A turn of edits: `n` Edit cards, each changing `lines` lines of its own file.

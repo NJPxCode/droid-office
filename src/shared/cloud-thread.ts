@@ -1,5 +1,5 @@
 import type { FactoryBlock, FactoryMessage } from './factory-sessions.js';
-import { hideOfficeText, isThreadSystemMessage } from './prompts.js';
+import { hideOfficeText } from './prompts.js';
 import { IMAGE_PLACEHOLDER } from './thread-presentation.js';
 import type { ThreadEntry } from './worker-thread.js';
 
@@ -64,14 +64,13 @@ export function cloudEntries(messages: readonly FactoryMessage[]): ThreadEntry[]
         case 'text': {
           const text = clean(b.text, role === 'user');
           if (!text) return;
-          if (role === 'user' && isThreadSystemMessage(m.id, text)) out.push({ id, seq, role: 'system', kind: 'notice', text });
-          else if (m.isError && role === 'assistant') out.push({ id, seq, role: 'system', kind: 'notice', text, error: true });
+          if (m.isError && role === 'assistant') out.push({ id, seq, role: 'system', kind: 'notice', text, error: true });
           else out.push({ id, seq, role, kind: 'text', text });
           return;
         }
         case 'thinking': {
           const text = b.text.trim();
-          if (text) out.push({ id, seq, role, kind: 'thinking', text, ...(b.tookMs !== undefined ? { tookMs: b.tookMs } : {}) });
+          if (text) out.push({ id, seq, role, kind: 'thinking', text });
           return;
         }
         case 'tool_use': {

@@ -9,7 +9,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { PROMPT_IMAGE_ID, PROMPT_IMAGES_MAX } from '../shared/drops.js';
 import { DESK_BY_ID, nearestFreeSeat, type DeskDef } from '../shared/layout.js';
-import { AGENT_EFFORTS, isAgentEffort, type AgentChoice, type AgentEffort, type GhPull, type SubagentModel, type SubagentSettings, type WorkerInfo, type WorkerQueueState, type WorkerStatus, type WorkerTask } from '../shared/protocol.js';
+import { AGENT_EFFORTS, isAgentEffort, type AgentChoice, type AgentEffort, type GhPull, type SubagentModel, type SubagentSettings, type WorkerInfo, type WorkerStatus, type WorkerTask } from '../shared/protocol.js';
 import type { PipelinesState } from '../shared/pipelines.js';
 import { isAsleep } from '../shared/status.js';
 import type { DroidModelCatalogue, DroidModelOption } from './droid-models.js';
@@ -30,7 +30,7 @@ import { canonicalPath, currentBranch, handoffStart, integrateWorker, verifyPush
 import type { PullHost, PullRef } from './forge.js';
 import {
   buildWorkerInspection,
-  inspectWorkerRetry,
+  inspectTerminalRetry,
   summarizeProviderQuotas,
   summarizeFactoryQuotas,
   factoryModelUsage,
@@ -44,7 +44,7 @@ import {
   type WorkerRuntimeSnapshot,
   type WorkerTaskLabel,
 } from './worker-status.js';
-import { formatBlockingSteerWarning, type BlockingToolState } from './worker-queue.js';
+import { formatBlockingSteerWarning, type BlockingToolState, type WorkerQueueState } from './worker-queue.js';
 import type { WakeTraffic } from '../shared/gemini-vibes.js';
 import { isActiveTeammate, type WakeGate, type WakeLeadView, type WakePacket, type WakeTeammate, type WakeVerdict } from './wake-filter.js';
 
@@ -71,7 +71,7 @@ export interface TeamWorkers {
   queueState?(id: string, now?: number): WorkerQueueState | undefined;
   blockingTool?(id: string, now?: number): BlockingToolState | undefined;
   resume(id: string, prompt?: string, images?: readonly string[]): string | undefined;
-  /** Moves an agent to `model` (`name` is the display label): now in a running session, at its next launch otherwise. */
+  /** Moves an agent to `model` (`name` is how Droid's /model picker lists it): now in a running session, at its next launch otherwise. */
   switchModel?(id: string, model: { id: string; name: string }, effort?: AgentEffort): Promise<{ applied: 'now' | 'next_launch' } | { error: string }>;
   kill(id: string): Promise<{ note?: string; error?: string }>;
   dismiss?(id: string, pruneWorktree: boolean, keepBranch: boolean): Promise<{ note?: string; error?: string }>;
@@ -202,7 +202,7 @@ export interface TeamMember {
   id: string;
   name: string;
   status: WorkerStatus;
-  /** Its status, or blocked_on_question while a team question or an AskUser question waits for an answer. */
+  /** Its status, or blocked_on_question while an asked question or a terminal question waits for an answer. */
   state: TeamState;
   desk: string;
   /** Present when followed via team_watch rather than hired as this caller's subagent. */
@@ -799,7 +799,7 @@ export class Team {
         const terminal = tail > 0 ? this.workers.tail(w.id, tail) : undefined;
         const inspection = this.inspectWorker(w);
         const now = this.now();
-        const queue = this.workers.queueState?.(w.id, now) ?? w.queue;
+        const queue = this.workers.queueState?.(w.id, now);
         const blocking = this.workers.blockingTool?.(w.id, now);
         return ok({
           worker: w.id,
@@ -1176,14 +1176,13 @@ export class Team {
     return [...this.localTeammates(lead, rich), ...(this.opts.teammatesElsewhere?.(lead, rich) ?? [])].filter((t) => t.id !== exclude);
   }
 
-  /** What `lead` waits on: its task, TodoWrite plan, status and recent output. */
+  /** What `lead` waits on: its task, TodoWrite plan, status and recent terminal. */
   wakeLead(lead: string): WakeLeadView {
     const w = this.workers.get(lead);
     const view = this.opts.leadView?.(lead);
     const steps = view?.steps ?? this.workers.runtime?.(lead)?.todoSteps?.map((s) => ({ content: s.content, status: s.status }));
     const tail = view?.tail ?? this.workers.tail(lead, 30);
     const task = view?.task ?? (w?.task ? `${w.task.name}: ${w.task.summary}` : undefined);
-    const activity = view?.activity ?? w?.activity;
     const building = view?.building ?? this.workers.buildingAgent?.(lead);
     const status = view?.status ?? w?.status;
     return {
@@ -1192,7 +1191,6 @@ export class Team {
       ...(building ? { building: true } : {}),
       ...(status ? { status } : {}),
       ...(task ? { task } : {}),
-      ...(activity ? { activity } : {}),
       ...(steps?.length ? { steps } : {}),
       ...(tail ? { tail } : {}),
     };
@@ -1268,14 +1266,13 @@ export class Team {
     const reversed = precomputed ? undefined : [...this.log].reverse();
     const last = precomputed ? precomputed.last : reversed?.find((e) => e.worker === w.id && (e.kind === 'report' || e.kind === 'question'));
     const open = precomputed ? precomputed.open : reversed?.find((e) => e.worker === w.id && e.kind === 'question' && !e.answered && e.lead === w.lead);
-    const runtime = this.workers.runtime?.(w.id);
-    const asking = w.status === 'needs_input' && w.ask?.kind !== 'permission' && (w.ask?.kind === 'question' || Boolean(w.menu ?? w.cloud?.menu ?? runtime?.menu));
+    const asking = w.status === 'needs_input' && w.ask?.kind === 'question';
     const state: TeamState = open || asking ? 'blocked_on_question' : w.status;
     const model = w.activeModel ?? w.model;
     return buildWorkerInspection({
       worker: w,
       state,
-      runtime,
+      runtime: this.workers.runtime?.(w.id),
       availability: model ? this.opts.availability?.(model) : undefined,
       usage: model ? this.opts.usage?.(model, now) : undefined,
       factory: this.opts.factory?.(),
@@ -1297,7 +1294,7 @@ export class Team {
     });
   }
 
-  /** Recheck both providers for live retries and model quota failures, using each poller's throttle. */
+  /** Recheck both providers for live retries and terminal quota failures, using each poller's throttle. */
   async recheckIfRetrying(workers: readonly WorkerInfo[]): Promise<void> {
     const checks = new Set<() => Promise<void>>();
     let known: Map<string, DroidModelOption> | undefined;
@@ -1305,7 +1302,7 @@ export class Team {
       const model = w.activeModel ?? w.model;
       if (!model) continue;
       const rt = this.workers.runtime?.(w.id);
-      if (!inspectWorkerRetry(w, rt)) continue;
+      if (!inspectTerminalRetry(rt?.screenRows, w.status, Boolean(rt?.currentTool))) continue;
       if (isSubscriptionModel(model) && this.opts.recheckModels) checks.add(this.opts.recheckModels);
       if (this.opts.recheckFactoryLimits && factoryModelTier({ id: model })) {
         known ??= new Map((await this.catalogue())?.models.map((m) => [m.id, m]));
@@ -1326,6 +1323,7 @@ export class Team {
     const model = w.activeModel ?? w.model;
     const effort = w.activeEffort ?? w.effort;
     const open = targetLead ? reversed.find((e) => e.worker === w.id && e.kind === 'question' && !e.answered && e.lead === targetLead) : undefined;
+    const asking = w.status === 'needs_input' && w.ask?.kind === 'question';
     // A later event (a turn that ended without a report, a stop) means the job already woke it.
     const awaitingJob = (w.status === 'idle' || w.status === 'done') && last?.progress && !this.log.some((e) => e.worker === w.id && e.seq > last.seq);
     const inspection = this.inspectWorker(w, { last, open });
@@ -1334,7 +1332,7 @@ export class Team {
       id: w.id,
       name: w.name,
       status: w.status,
-      state: inspection.state,
+      state: open || asking ? 'blocked_on_question' : w.status,
       desk: DESK_BY_ID.get(w.deskId)?.label ?? w.deskId,
       ...(watched ? { watched: true as const } : {}),
       ...(model ? { model } : {}),
@@ -1383,7 +1381,7 @@ export class Team {
       ...((w.status === 'idle' || w.status === 'done') && this.idleSince.has(w.id) ? { idleSince: this.idleSince.get(w.id), idleForMs: Math.max(0, this.now() - this.idleSince.get(w.id)!) } : {}),
       ...(() => {
         const now = this.now();
-        const queue = this.workers.queueState?.(w.id, now) ?? w.queue;
+        const queue = this.workers.queueState?.(w.id, now);
         const blocking = this.workers.blockingTool?.(w.id, now);
         return {
           ...(queue?.count ? { queuedMessages: queue } : {}),

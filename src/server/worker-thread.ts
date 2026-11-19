@@ -1,28 +1,22 @@
-import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { open, readFile, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { editedFilePaths } from '../shared/thread-diff.js';
-import { thinkingDuration } from '../shared/thread-live.js';
 import { IMAGE_PLACEHOLDER, pageRows, presentThread, THREAD_MODEL_VERSION, type ThreadFileText, type ThreadPresentation, type ThreadRow } from '../shared/thread-presentation.js';
 import type { ThreadEntry, ThreadImage } from '../shared/worker-thread.js';
 import { LABEL_TEXT_CHARS } from '../shared/worker-labels.js';
-import { hideOfficeText, isThreadSystemMessage, OFFICE_SAYS } from '../shared/prompts.js';
+import { hideOfficeText, OFFICE_SAYS } from '../shared/prompts.js';
 import { DROID_SESSIONS_DIR } from './droid-session.js';
 import { imageAddress, imageAt, imageRef, IMAGES_PER_ENTRY, promptPictures } from './thread-images.js';
 import { WorkspaceTexts } from './thread-workspace.js';
 
 const PAGE_SIZE = 100;
 const FIELD_CHARS = 12_000;
-// Leaves room for 60k+ replies and thoughts while even worst-case JSON escaping fits a page.
-const ASSISTANT_CHARS = 128 * 1024;
-const TOOL_OUTPUT_CHARS = 12_000;
 const RESPONSE_BYTES = 900_000;
 const LINE_BYTES = 4 * 1024 * 1024;
 const CHUNK_BYTES = 64 * 1024;
 const TRUNCATED = '\n[… truncated]';
 const SESSION_ID = /^[a-zA-Z0-9-]{1,160}$/;
-const OUTPUT_ID = /^(\d{1,15})\.(\d{1,4})\.([0-9a-f]{32})$/;
 
 /** An office notice as the Thread shows it. */
 function officeNotice(text: string): string {
@@ -60,9 +54,8 @@ interface Projection {
   drops?: string;
   /** The reason the office last blocked a Stop with, until the user message carrying it (see officeHook). */
   blocked?: string;
-  /** Leave a position before the next prompt for a turn outcome the daemon may append late. */
-  openPrompt?: string;
-  turnEndSlots: Map<string, number>;
+  /** The timestamp of the record read last, for how long the next message took. */
+  lastAt?: number;
 }
 
 interface CachedSession {
@@ -91,21 +84,13 @@ interface CachedSession {
 const object = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 
 /** Only printable content is projected; transport metadata is never serialized. */
-function printable(value: unknown, byOwner = false): string {
+function clean(value: unknown, limit = FIELD_CHARS, byOwner = false): string {
   if (typeof value !== 'string') return '';
-  return hideOfficeText(value, byOwner)
+  const text = hideOfficeText(value, byOwner)
     .replace(/data:[^\s"'<>]*;base64,[a-zA-Z0-9+/=\s]+/gi, '[attachment omitted]')
     .replace(/[a-zA-Z0-9+/]{256,}={0,2}/g, '[binary data omitted]')
     .trim();
-}
-
-function clean(value: unknown, limit = FIELD_CHARS, byOwner = false): string {
-  const text = printable(value, byOwner);
-  return text.length > limit ? text.slice(0, limit).replace(/[\uD800-\uDBFF]$/, '') + TRUNCATED : text;
-}
-
-function messageText(value: unknown, role: 'user' | 'assistant'): string {
-  return clean(value, role === 'assistant' ? ASSISTANT_CHARS : FIELD_CHARS, role === 'user');
+  return text.length > limit ? text.slice(0, limit) + TRUNCATED : text;
 }
 
 function pretty(value: unknown): string {
@@ -122,48 +107,18 @@ function pretty(value: unknown): string {
   );
 }
 
-function contentText(content: unknown, limit = FIELD_CHARS): string {
-  if (typeof content === 'string') return clean(content, limit);
+function contentText(content: unknown): string {
+  if (typeof content === 'string') return clean(content);
   if (!Array.isArray(content)) return '';
   return clean(
     content
       .slice(0, 1024)
       .map((part) => {
         const p = object(part);
-        return p.type === 'text' ? clean(p.text, limit) : p.type === 'image' ? IMAGE_PLACEHOLDER : '';
+        return p.type === 'text' ? clean(p.text) : p.type === 'image' ? IMAGE_PLACEHOLDER : '';
       })
       .filter(Boolean)
       .join('\n'),
-    limit,
-  );
-}
-
-function outputPreview(output: string): string {
-  if (output.length <= TOOL_OUTPUT_CHARS) return output;
-  const cut = output.length - TOOL_OUTPUT_CHARS;
-  // Keep complete lines unless the final line alone is oversized. In that case keep its ending.
-  const boundary = output[cut - 1] === '\n' ? cut : output.indexOf('\n', cut) + 1;
-  const start = boundary || cut;
-  let hidden = 0;
-  for (let at = output.indexOf('\n'); at >= 0 && at < start; at = output.indexOf('\n', at + 1)) hidden++;
-  const lines = hidden ? `${hidden} earlier ${hidden === 1 ? 'line' : 'lines'} hidden` : '';
-  const partial = boundary ? '' : lines ? '; start of last line hidden' : 'Start of line hidden';
-  return `[${lines}${partial}]\n${output.slice(start).replace(/^[\uDC00-\uDFFF]/, '')}`;
-}
-
-function outputHash(toolId: string, output: string): string {
-  return createHash('sha256')
-    .update(JSON.stringify([toolId, output]))
-    .digest('hex')
-    .slice(0, 32);
-}
-
-function visibleMessage(row: Record<string, unknown>, message: Record<string, unknown>): boolean {
-  return (
-    (message.role === 'user' || message.role === 'assistant') &&
-    ![message, row].some((item) => Object.keys(item).some((key) => key.startsWith('hook'))) &&
-    [message.visibility, row.visibility].every((visibility) => visibility === undefined || visibility === 'both' || visibility === 'user_only') &&
-    (!message.userMessageSource || message.userMessageSource === 'cli_tui')
   );
 }
 
@@ -189,7 +144,7 @@ function stamp(row: Record<string, unknown>): { at?: number } {
 
 const leaf = (name = '') => name.split(/[.:/]/).at(-1)?.toLowerCase() ?? '';
 
-const projection = (before = Infinity, since = 0, drops?: string): Projection => ({ text: '', since, entries: [], tools: new Map(), bytes: 0, seq: 0, dropped: false, before, drops, turnEndSlots: new Map() });
+const projection = (before = Infinity, since = 0, drops?: string): Projection => ({ text: '', since, entries: [], tools: new Map(), bytes: 0, seq: 0, dropped: false, before, drops });
 const entryBytes = (entry: ThreadEntry) => Buffer.byteLength(JSON.stringify(entry));
 
 /** A bounded recent window, with disk scans only for explicit older-page requests. */
@@ -416,7 +371,8 @@ export class WorkerThreadReader {
       }
       if (row.type !== 'message' || clean(row.id, 160) !== recordId) continue;
       const message = object(row.message);
-      if (message.role !== 'user' || !visibleMessage(row, message) || isThreadSystemMessage(recordId, contentText(message.content))) return undefined;
+      if (message.role !== 'user' || Object.keys(message).some((key) => key.startsWith('hook'))) return undefined;
+      if (message.visibility !== undefined && message.visibility !== 'both' && message.visibility !== 'user_only') return undefined;
       const suffix = entryId.slice(recordId.length + 1);
       if (suffix === 'text' ? typeof message.content !== 'string' : object(Array.isArray(message.content) ? message.content[Number(suffix)] : undefined).type !== 'text') return undefined;
       const full = clean(contentText(message.content), FIELD_CHARS, true);
@@ -453,7 +409,7 @@ export class WorkerThreadReader {
 
   private async find({ sessionId, cwd, transcript }: ThreadSession): Promise<string | undefined> {
     const name = `${sessionId}.jsonl`;
-    // Prefer a known transcript path when it belongs to this session and is inside the sessions folder.
+    // Where the worker's own hooks say its conversation is, when that's in the sessions folder.
     if (transcript && path.basename(transcript) === name) {
       const rel = path.relative(this.root, transcript);
       const inside = !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
@@ -488,11 +444,7 @@ export class WorkerThreadReader {
         const newline = head.indexOf(10);
         if (newline < 0) continue;
         const start = object(JSON.parse(head.subarray(0, newline).toString('utf8')));
-        if (start.type !== 'session_start') continue;
-        // A session moved to another folder (a fork into its worktree) stays filed under its first cwd and records the new one as lastCwd.
-        for (const recorded of [start.cwd, start.lastCwd]) {
-          if (typeof recorded === 'string' && (recorded === cwd || (await realpath(recorded).catch(() => recorded)) === canonical)) return file;
-        }
+        if (start.type === 'session_start' && typeof start.cwd === 'string' && (start.cwd === cwd || (await realpath(start.cwd).catch(() => start.cwd)) === canonical)) return file;
       } catch {
         // An incomplete header can be retried on the next read.
       } finally {
@@ -580,12 +532,10 @@ export class WorkerThreadReader {
     }
   }
 
-  private add(state: Projection, value: Omit<ThreadEntry, 'seq'>, seq = state.seq++): void {
-    const entry = { ...value, seq };
+  private add(state: Projection, value: Omit<ThreadEntry, 'seq'>): void {
+    const entry = { ...value, seq: state.seq++ };
     if (entry.seq >= state.before) return;
-    let at = state.entries.length;
-    while (at > 0 && state.entries[at - 1].seq > seq) at--;
-    state.entries.splice(at, 0, entry);
+    state.entries.push(entry);
     state.bytes += entryBytes(entry);
     if (entry.kind === 'tool') state.tools.set(entry.id, entry);
     this.trim(state);
@@ -601,15 +551,14 @@ export class WorkerThreadReader {
     }
     if (this.textOnly && row.type !== 'message') return;
     const id = clean(row.id, 160) || `record:${state.seq}`;
+    // Any record, hooks included, ends the wait before the next message: a thought took since then.
+    const before = state.lastAt;
     const { at } = stamp(row);
+    if (at !== undefined) state.lastAt = at;
     const when = at !== undefined ? { at } : {};
     if (row.type === 'agent_turn_outcome') {
       const reason = clean(row.reason, 80);
-      const turn = clean(row.turnId, 160);
-      const seq = state.turnEndSlots.get(turn);
-      state.turnEndSlots.delete(turn);
-      if (turn && state.openPrompt === turn) state.openPrompt = undefined;
-      this.add(state, { id: `turn:${turn || id}:${reason}`, role: 'system', kind: 'notice', text: reason === 'cancelled' ? 'Turn cancelled' : reason ? `Turn ended · ${reason}` : 'Turn ended', ...when }, seq);
+      this.add(state, { id: `turn:${clean(row.turnId, 160) || id}:${reason}`, role: 'system', kind: 'notice', text: reason === 'cancelled' ? 'Turn cancelled' : reason ? `Turn ended · ${reason}` : 'Turn ended' });
       return;
     }
     if (row.type === 'todo_state') {
@@ -641,17 +590,11 @@ export class WorkerThreadReader {
       if (!this.textOnly) this.officeHook(state, id, message);
       return;
     }
-    if (!visibleMessage(row, message)) return;
+    if ([message.visibility, row.visibility].some((visibility) => visibility !== undefined && visibility !== 'both' && visibility !== 'user_only')) return;
+    if (message.userMessageSource && message.userMessageSource !== 'cli_tui') return;
     // Slash skills append a separate CLI acknowledgement, not another owner prompt.
     if (message.role === 'user' && message.visibility === 'user_only' && /^Skill "[^"\r\n]+" activated$/.test(contentText(message.content))) return;
-    const system = message.role === 'user' && isThreadSystemMessage(id, contentText(message.content));
     const role = message.role;
-    if (system) {
-      const text = clean(contentText(message.content));
-      if (text === state.blocked) state.blocked = undefined;
-      if (!this.textOnly && text) this.add(state, { id: `${id}:notice`, role: 'system', kind: 'notice', text: text.startsWith('Droid Office notice:') ? officeNotice(text) : text, ...when });
-      return;
-    }
     const timestamp = at ?? NaN;
     if (this.textOnly && (!state.since || (Number.isFinite(timestamp) && timestamp >= state.since))) {
       const parts =
@@ -669,55 +612,20 @@ export class WorkerThreadReader {
       }
     }
     if (this.textOnly) return;
-    const parts = Array.isArray(message.content) ? message.content.slice(0, 1024).map(object) : undefined;
-    if (role === 'user') {
-      const content = clean(contentText(message.content), FIELD_CHARS, true);
-      if (content && content !== state.blocked) {
-        if (state.openPrompt) {
-          state.turnEndSlots.set(state.openPrompt, state.seq++);
-          if (state.turnEndSlots.size > this.limits.entries) {
-            const oldest = state.turnEndSlots.keys().next().value;
-            if (oldest !== undefined) state.turnEndSlots.delete(oldest);
-          }
-        }
-        state.openPrompt = id;
-      }
-    }
     if (typeof message.content === 'string') {
-      await this.text(state, `${id}:text`, role, messageText(message.content, role), at);
+      await this.text(state, `${id}:text`, role, clean(message.content, FIELD_CHARS, role === 'user'), at);
       return;
     }
-    if (!parts) return;
-    // Attach native daemon images to their owner prompt, including image-only prompts. Preserve block
-    // offsets (for image fetch and rewind), and fall back to separate rows for unrenderable parts.
-    const promptImages =
-      role === 'user'
-        ? parts
-            .flatMap((part, index) => {
-              const image = imageRef(part, `${offset}.${index}.x`);
-              return image ? [{ index, image }] : [];
-            })
-            .slice(0, IMAGES_PER_ENTRY)
-        : [];
-    const promptTextIndex = parts.findIndex((part) => part.type === 'text' && !!messageText(part.text, role));
-    const imageIndices = new Set(promptImages.map(({ index }) => index));
-    const promptImageIndex = promptTextIndex >= 0 ? promptTextIndex : promptImages[0]?.index;
-    for (const [index, part] of parts.entries()) {
+    if (!Array.isArray(message.content)) return;
+    for (const [index, value] of message.content.slice(0, 1024).entries()) {
+      const part = object(value);
       const partId = `${id}:${index}`;
-      if (index === promptImageIndex && promptImages.length) {
-        this.add(state, { id: partId, role, kind: 'text', text: messageText(part.text, role), images: promptImages.map(({ image }) => image), ...when });
-        continue;
-      }
-      if (imageIndices.has(index)) continue;
       if (part.type === 'tool_result') {
         const toolId = clean(part.tool_use_id, 160);
         const tool = state.tools.get(`tool:${toolId}`);
         if (!tool) continue;
         state.bytes -= entryBytes(tool);
-        const output = pictureStandIn(part.content) ? IMAGE_PLACEHOLDER : contentText(part.content, Infinity);
-        tool.output = outputPreview(output);
-        if (output.length > TOOL_OUTPUT_CHARS) tool.outputRef = `${offset}.${index}.${outputHash(toolId, output)}`;
-        else delete tool.outputRef;
+        tool.output = pictureStandIn(part.content) ? IMAGE_PLACEHOLDER : contentText(part.content);
         tool.error = part.is_error === true;
         const images = Array.isArray(part.content)
           ? part.content
@@ -741,12 +649,11 @@ export class WorkerThreadReader {
         const image = imageRef(part, `${offset}.${index}.x`);
         this.add(state, { id: partId, role, kind: 'notice', text: IMAGE_PLACEHOLDER, ...(image ? { images: [image] } : {}), ...when });
       } else if (part.type === 'text') {
-        await this.text(state, partId, role, messageText(part.text, role), at);
+        await this.text(state, partId, role, clean(part.text, FIELD_CHARS, role === 'user'), at);
       } else if (part.type === 'thinking') {
-        const text = clean(part.thinking, ASSISTANT_CHARS);
-        // Adjacent records are not thought boundaries: a single message can contain several blocks.
-        const tookMs = thinkingDuration(part.durationMs ?? part.tookMs);
-        const took = tookMs === undefined ? {} : { tookMs };
+        const text = clean(part.thinking);
+        // The message is written when the model finishes it: since the record before, it was thinking.
+        const took = at !== undefined && before !== undefined && at >= before ? { tookMs: at - before } : {};
         if (text) this.add(state, { id: partId, role, kind: 'thinking', text, ...when, ...took });
       }
     }
@@ -815,29 +722,7 @@ export class WorkerThreadReader {
    */
   async image(source: ThreadSession, id: string): Promise<{ type: ThreadImage['type']; body: Buffer } | undefined> {
     const address = imageAddress(id);
-    if (!address) return undefined;
-    return imageAt(await this.recordAt(source, address.offset), address);
-  }
-
-  /** Full sanitized tool result, read from the session only on demand, never kept in the window. */
-  async toolOutput(source: ThreadSession, id: string): Promise<string | undefined> {
-    const address = OUTPUT_ID.exec(id);
-    if (!address) return undefined;
-    const row = object(await this.recordAt(source, Number(address[1])));
-    if (row.type !== 'message') return undefined;
-    const message = object(row.message);
-    if (!visibleMessage(row, message) || !Array.isArray(message.content)) return undefined;
-    const index = Number(address[2]);
-    if (index >= 1024) return undefined;
-    const part = object(message.content[index]);
-    if (part.type !== 'tool_result' || pictureStandIn(part.content)) return undefined;
-    const output = contentText(part.content, Infinity);
-    const toolId = clean(part.tool_use_id, 160);
-    return toolId && output.length > TOOL_OUTPUT_CHARS && outputHash(toolId, output) === address[3] ? output : undefined;
-  }
-
-  private async recordAt(source: ThreadSession, offset: number): Promise<unknown> {
-    if (!SESSION_ID.test(source.sessionId) || !path.isAbsolute(source.cwd)) return undefined;
+    if (!address || !SESSION_ID.test(source.sessionId) || !path.isAbsolute(source.cwd)) return undefined;
     const key = JSON.stringify([source.cwd, source.sessionId, source.since ?? 0]);
     const file = this.sessions.get(key)?.file ?? (await this.find(source));
     if (!file) return undefined;
@@ -846,15 +731,15 @@ export class WorkerThreadReader {
     try {
       const parts: Buffer[] = [];
       let length = 0;
-      for (let at = offset; length <= LINE_BYTES; ) {
-        const chunk = await this.bytes(handle, at, Math.min(CHUNK_BYTES, LINE_BYTES + 1 - length));
+      for (let at = address.offset; length <= LINE_BYTES; ) {
+        const chunk = await this.bytes(handle, at, 256 * 1024);
         if (!chunk.length) return undefined;
         const newline = chunk.indexOf(10);
         parts.push(newline < 0 ? chunk : chunk.subarray(0, newline));
         length += chunk.length;
         if (newline >= 0) {
           try {
-            return JSON.parse(Buffer.concat(parts).toString('utf8'));
+            return imageAt(JSON.parse(Buffer.concat(parts).toString('utf8')), address);
           } catch {
             return undefined;
           }

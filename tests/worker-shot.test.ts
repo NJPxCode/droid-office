@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WorkerManager, type WorkerEvents } from '../src/server/workers.js';
 import type { WorkerInfo } from '../src/shared/protocol.js';
-import { TestDaemon } from './daemon-fixture.js';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
@@ -35,9 +34,8 @@ function fixture(t: { after(fn: () => void): void }) {
     toast: (text, level) => toasts.push({ text, level }),
   };
   const managers: WorkerManager[] = [];
-  const daemon = new TestDaemon(data);
   const manager = () => {
-    const workers = new WorkerManager(dir, data, command, [], { url: 'http://127.0.0.1:1', token: '' }, events, undefined, undefined, undefined, false, undefined, false, daemon);
+    const workers = new WorkerManager(dir, data, command, [], { url: 'http://127.0.0.1:1', token: '' }, events);
     managers.push(workers);
     return workers;
   };

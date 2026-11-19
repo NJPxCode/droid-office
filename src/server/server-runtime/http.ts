@@ -358,11 +358,9 @@ export function createHttpHandler(ctx: HttpContext) {
         // The skills and custom commands a worker's droid offers as slash commands (droid-commands.ts).
         const workerId = str(url.searchParams.get('worker'), 32);
         // The Orchestrator's folder is there before its first prompt starts a session, and the composer asks at its first "/".
-        const manager = workerId === ORCHESTRATOR_ID ? orchestrator.workers : workerId ? workersOf(workerId) : undefined;
-        const folder = workerId === ORCHESTRATOR_ID ? orchestrator.cwd : workerId ? manager?.agentFolder(workerId) : undefined;
+        const folder = workerId === ORCHESTRATOR_ID ? orchestrator.cwd : workerId ? workersOf(workerId)?.agentFolder(workerId) : undefined;
         if (!folder) return send(res, 404, { error: 'No such worker' });
-        const sessionId = workerId && manager?.running(workerId) ? manager.get(workerId)?.sessionId : undefined;
-        return send(res, 200, { commands: await droidCommands.get(folder, sessionId) });
+        return send(res, 200, { commands: await droidCommands.get(folder) });
       }
       if (p === '/api/jukebox/soundcloud' && req.method === 'GET') {
         const r = await resolveSoundCloudStation(url.searchParams.get('url') ?? '');

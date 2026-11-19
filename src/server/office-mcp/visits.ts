@@ -65,7 +65,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
           kind: z.enum(['tell', 'ask', 'handoff']).describe('tell: info; ask: question answered via visit_reply; handoff: optional task proposal.'),
           text,
           title: z.string().trim().min(1).max(80).optional().describe('Handoff only: short task title.'),
-          urgent: z.boolean().default(false).describe('Interrupts its running turn before delivery; use only when waiting would cause harm.'),
+          urgent: z.boolean().default(false).describe('Cancels its running turn via Escape before delivery; use only when waiting would cause harm.'),
         })
         .refine((a) => resolvePeer(a) !== undefined, 'Pass worker or name, without conflicting values.'),
       annotations,

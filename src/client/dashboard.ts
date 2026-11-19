@@ -47,9 +47,10 @@ import {
   syncWorkspace,
   toggleMax,
   visibleSlots,
+  workerView,
   type Workspace,
 } from './dashboard-workspace';
-import { createPane, type Pane, type PaneHost } from './dashboard-pane';
+import { createPane, type Pane, type PaneHost, VIEW_KEY } from './dashboard-pane';
 import { createWorkerRoster } from './dashboard-roster';
 import { buildingCounts, buildingRoster, type BuildingWorkerRow } from './dashboard-building';
 import { createBuildingView } from './dashboard-building-view';
@@ -579,6 +580,9 @@ function disposePanes() {
   for (const p of panes) p?.dispose();
   panes.length = 0;
 }
+function viewOf(id: string) {
+  return workerView(ws, id, read(VIEW_KEY) === 'terminal' ? 'terminal' : 'thread');
+}
 function changeLayout(mode: LayoutMode) {
   setLayout(ws, mode);
   fillPanes(ws, staff());
@@ -639,6 +643,11 @@ const paneHost: PaneHost = {
   read,
   remember,
   terminal: loadTerminal,
+  setView(id, view) {
+    ws.views[id] = view;
+    remember(VIEW_KEY, view);
+    changed();
+  },
   focus(i) {
     if (ws.focused === i) return;
     ws.focused = i;
@@ -873,8 +882,9 @@ net.onMessage((msg) => {
   if (entering || msg.t === 'floors' || msg.t === 'worker.update') followWorkerLink();
 });
 for (const topic of ['floors', 'workers', 'building', 'pulls', 'whiteboard', 'project', 'missionControl'] as const) store.on(topic, () => paints.schedule());
-store.on('screens', () => {
+store.on('screens', (changedId) => {
   if (document.hidden) return;
+  for (const p of panes) if (!changedId || p?.workerId() === changedId) p?.paintQuestion();
   schedulePreviews();
 });
 async function showFloorOrder() {
@@ -1014,6 +1024,7 @@ function followWorkerLink() {
     return;
   }
   if (result.step === 'gone') return toast('That worker or floor is no longer available.', 'warn');
+  if (result.link.view === 'thread') ws.views[result.link.worker] = 'thread';
   openHere(result.link.worker, true);
 }
 window.addEventListener('hashchange', () => {
@@ -1467,6 +1478,7 @@ function paintWorkspace() {
     const w = id ? workerOf(id) : undefined;
     p.update({
       worker: w,
+      view: w ? viewOf(w.id) : 'terminal',
       focused: ws.focused === i,
       maximized: max,
       canMaximize: count > 1,

@@ -3,6 +3,7 @@ package ai.factory.droidoffice.ui.worker
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
@@ -36,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -60,7 +62,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -71,6 +72,7 @@ import ai.factory.droidoffice.ui.components.tagged
 import ai.factory.droidoffice.ui.theme.OfficeIcons
 import ai.factory.droidoffice.ui.theme.ThreadPalette
 import kotlinx.coroutines.delay
+import kotlin.random.Random
 
 /** The Factory app's transcript motion: its disclosure curve and timings, shimmer and status line. */
 internal object ThreadMotion {
@@ -206,48 +208,42 @@ internal fun ThinkingBlock(
     }
 }
 
-/** Announce the current phase without announcing each visible timer tick. */
+/**
+ * The line under a live turn, as Factory's droidStatusIndicator: a small spinner and a phrase for
+ * what the turn is doing, shimmering, swapped for another every ten seconds with a fade out and in.
+ * Every frame of it runs in the draw phase; only the swap recomposes.
+ */
 @Composable
-internal fun StatusIndicator(status: ThreadStatus.Line, modifier: Modifier = Modifier) {
-    var now by remember(status.since) { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(status.since) {
-        val since = status.since ?: return@LaunchedEffect
+internal fun StatusIndicator(mode: ThreadStatus.Mode, modifier: Modifier = Modifier) {
+    if (mode == ThreadStatus.Mode.Idle) return
+    var index by remember(mode) { mutableIntStateOf(ThreadStatus.pick(mode, -1, Random::nextInt)) }
+    val alpha = remember(mode) { Animatable(0f) }
+    LaunchedEffect(mode) {
+        alpha.animateTo(1f, tween(ThreadStatus.FADE_MS))
         while (true) {
-            now = System.currentTimeMillis()
-            delay(1000 - (now - since).coerceAtLeast(0) % 1000)
+            delay(ThreadStatus.ROTATE_MS)
+            if (ThreadStatus.phrases(mode).size <= 1) continue
+            alpha.animateTo(0f, tween(ThreadStatus.FADE_MS))
+            index = ThreadStatus.pick(mode, index, Random::nextInt)
+            alpha.animateTo(1f, tween(ThreadStatus.FADE_MS))
         }
     }
+    val phrase = ThreadStatus.phrases(mode).getOrElse(index) { "" }
+    val sweep = rememberSweep(ThreadStatus.SHIMMER_MS)
     Row(
         modifier.fillMaxWidth().heightIn(min = 28.dp).clearAndSetSemantics {
-            contentDescription = listOfNotNull(status.label, status.detail).joinToString(", ")
+            contentDescription = phrase
             liveRegion = LiveRegionMode.Polite
         }.tagged(Tags.Worker.THREAD_STATUS),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (!status.waiting) {
-            Spinner(Modifier.size(12.dp), ThreadPalette.TextSecondary)
-            Spacer(Modifier.width(8.dp))
-        }
+        Spinner(Modifier.size(12.dp), ThreadPalette.TextSecondary)
+        Spacer(Modifier.width(8.dp))
         Text(
-            status.label,
+            phrase,
             style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, lineHeight = 18.sp, color = ThreadPalette.TextSecondary),
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
+            modifier = Modifier.graphicsLayer { this.alpha = alpha.value }.shimmer(sweep, ThreadPalette.Text, ThreadPalette.TextSecondary, span = 2f),
         )
-        val elapsed = status.since?.let { ThreadStatus.elapsed(it, now) }
-        if (elapsed != null) {
-            Text(" · $elapsed", style = MaterialTheme.typography.bodySmall, color = ThreadPalette.TextTertiary)
-        }
-        if (status.detail != null) {
-            Text(
-                " · ${status.detail}",
-                style = MaterialTheme.typography.bodySmall,
-                color = ThreadPalette.TextTertiary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-        }
     }
 }

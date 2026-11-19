@@ -1,108 +1,112 @@
 package ai.factory.droidoffice.core
 
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ThreadScrollTest {
     @Test
-    fun onlyScrollingTowardHistoryUnpinsAndReturningToTailFollowsAgain() {
-        assertTrue(ThreadScroll.afterDrag(following = true, dy = 0f, away = true))
-        assertTrue(ThreadScroll.afterDrag(following = true, dy = -5f, away = true))
-        assertFalse(ThreadScroll.afterDrag(following = true, dy = 2f, away = true))
-        assertTrue(ThreadScroll.afterDrag(following = true, dy = 2f, away = false))
-        assertFalse(ThreadScroll.afterDrag(following = false, dy = -2f, away = true))
-        assertTrue(ThreadScroll.afterDrag(following = false, dy = -2f, away = false))
+    fun followingBreaksOnAScrollBackOrPastEightyAndResumesWithinSixteen() {
+        assertTrue(ThreadScroll.follows(following = true, back = false, fromBottom = 79f))
+        assertFalse(ThreadScroll.follows(following = true, back = false, fromBottom = 81f))
+        assertFalse(ThreadScroll.follows(following = true, back = true, fromBottom = 2f))
+        assertTrue(ThreadScroll.follows(following = true, back = true, fromBottom = 0.5f))
+        assertFalse(ThreadScroll.follows(following = true, back = false, fromBottom = null))
+        assertFalse(ThreadScroll.follows(following = false, back = false, fromBottom = 17f))
+        assertTrue(ThreadScroll.follows(following = false, back = false, fromBottom = 16f))
     }
 
     @Test
-    fun theButtonShowsOnlyWhenNotFollowingAndAwayFromTheTail() {
-        assertFalse(ThreadScroll.showJump(following = true, away = true))
-        assertFalse(ThreadScroll.showJump(following = false, away = false))
-        assertTrue(ThreadScroll.showJump(following = false, away = true))
+    fun theButtonShowsOnlyPastOneHundredTwentyWhileNotFollowing() {
+        assertFalse(ThreadScroll.showJump(following = true, fromBottom = 500f))
+        assertFalse(ThreadScroll.showJump(following = false, fromBottom = 120f))
+        assertTrue(ThreadScroll.showJump(following = false, fromBottom = 121f))
+        assertTrue(ThreadScroll.showJump(following = false, fromBottom = null))
     }
 
     @Test
-    fun earlierPagesKeepTheSameLazyIndexesForTheNewestRows() {
-        assertEquals(1, ThreadScroll.indexOf(100, 99))
-        assertEquals(1, ThreadScroll.indexOf(170, 169))
-        assertEquals(100, ThreadScroll.indexOf(100, 0))
-        assertEquals(100, ThreadScroll.indexOf(170, 70))
-        assertEquals(null, ThreadScroll.indexOf(170, -1))
+    fun smallGrowthGlidesWithAFiftyMillisecondTimeConstant() {
+        assertFalse(ThreadScroll.glides(24f, 600f))
+        assertTrue(ThreadScroll.glides(25f, 600f))
+        assertFalse(ThreadScroll.glides(601f, 600f))
+        assertFalse(ThreadScroll.glides(100f, 600f, reducedMotion = true))
+        // 1 - e^(-16/50) of 100 is about 27.4.
+        assertEquals(27.4f, ThreadScroll.glideStep(100f, 16.0), 0.1f)
+        assertEquals(1f, ThreadScroll.glideStep(3f, 0.0), 0f)
+        assertEquals(2f, ThreadScroll.glideStep(2f, 16.0), 0f)
+        assertEquals(50f, ThreadScroll.glideStep(50f, 10_000.0), 0f)
     }
 
     @Test
-    fun visibleHeadOnlyAutoPagesWhileReadingEarlier() {
-        assertFalse(ThreadScroll.autoPage(following = true, searchScroll = false, headVisible = true))
-        assertFalse(ThreadScroll.autoPage(following = false, searchScroll = true, headVisible = true))
-        assertFalse(ThreadScroll.autoPage(following = false, searchScroll = false, headVisible = false))
-        assertTrue(ThreadScroll.autoPage(following = false, searchScroll = false, headVisible = true))
+    fun theQuickScrollEasesOutCubically() {
+        assertEquals(0f, ThreadScroll.quick(0f), 0f)
+        assertEquals(0.875f, ThreadScroll.quick(0.5f), 1e-6f)
+        assertEquals(1f, ThreadScroll.quick(2f), 0f)
+        assertEquals(180, ThreadScroll.QUICK_MS)
+    }
+
+    @Test
+    fun theBottomStaysPutWhenTheKeyboardShrinksTheView() {
+        assertEquals(300, ThreadScroll.keepBottom(1200, 900))
+        assertEquals(-300, ThreadScroll.keepBottom(900, 1200))
     }
 }
 
 class ThreadStatusTest {
-    private val working = WorkerInfo(id = "w", status = "working")
-    private val live = ThreadLive(rev = 1, at = 0, status = ThreadLive.Status.Pondering, working = "executing_tool", phaseSince = 80_000)
-    private val tool = ThreadLive.Tool("tool:1", "Execute", 57_000, "running")
-    private val entry = ThreadEntry("tool:1", 1, ThreadRole.Assistant, ThreadKind.Tool, input = """{"command":"npm test"}""")
+    private fun worker(status: String, activity: String? = null) = WorkerInfo(id = "w", status = status, activity = activity)
 
     @Test
-    fun reportsLiveCommandAndElapsedClockWithSkew() {
-        val running = live.copy(tools = listOf(tool))
-        val line = ThreadStatus.line(working, running, listOf(entry), 1000)!!
-        assertEquals("Running: npm test", line.label)
-        assertEquals("42s", ThreadStatus.elapsed(line.since!!, 100_000))
-        assertEquals("Running: Execute", ThreadStatus.line(working, running, emptyList(), 0)?.label)
-        assertEquals("1m 2s", ThreadStatus.elapsed(0, 62_000))
+    fun waitingAndRunningWorkerStatesOverrideAnOlderLiveStatus() {
+        for (status in ThreadLive.Status.entries) {
+            val live = ThreadLive(rev = 1, at = 0, status = status, working = "thinking")
+            assertEquals(status.name, ThreadStatus.Mode.Waiting, ThreadStatus.mode(worker("needs_input"), live, streaming = true))
+        }
+        val idle = ThreadLive(rev = 2, at = 0, status = ThreadLive.Status.Idle, working = "idle")
+        assertEquals(ThreadStatus.Mode.Pondering, ThreadStatus.mode(worker("working"), idle, streaming = false))
+        assertEquals(ThreadStatus.Mode.Pondering, ThreadStatus.mode(worker("starting"), idle, streaming = false))
+        assertEquals(ThreadStatus.Mode.Idle, ThreadStatus.mode(worker("idle"), idle, streaming = false))
+        assertEquals(ThreadStatus.Mode.Idle, ThreadStatus.mode(worker("exited"), idle, streaming = false))
     }
 
     @Test
-    fun reportsCurrentPhaseNotRecordedOutput() {
-        assertEquals("Thinking", ThreadStatus.line(working, live.copy(working = "thinking"), emptyList(), 0)?.label)
-        assertEquals("Writing", ThreadStatus.line(working, live.copy(status = ThreadLive.Status.Responding), emptyList(), 0)?.label)
-        assertEquals("Working…", ThreadStatus.line(working, null, listOf(entry), 0)?.label)
-        assertEquals("Starting worker…", ThreadStatus.line(working.copy(status = "starting"), live, emptyList(), 0)?.label)
-        assertEquals(null, ThreadStatus.line(working.copy(status = "idle"), live, emptyList(), 0))
+    fun theModeComesFromTheOfficesLiveStateFirst() {
+        val live = ThreadLive(rev = 1, at = 0, status = ThreadLive.Status.Responding, working = "streaming_assistant_message")
+        assertEquals(ThreadStatus.Mode.Responding, ThreadStatus.mode(worker("working"), live, streaming = false))
+        assertEquals(ThreadStatus.Mode.Compacting, ThreadStatus.mode(worker("working"), live.copy(status = ThreadLive.Status.Compacting), false))
+        assertEquals(ThreadStatus.Mode.Idle, ThreadStatus.mode(worker("idle"), live.copy(status = ThreadLive.Status.Idle), false))
     }
 
     @Test
-    fun distinguishesPermissionAndQuestionFromActiveTools() {
-        val running = live.copy(tools = listOf(tool))
-        val permission = ThreadStatus.line(working.copy(status = "needs_input"), running.copy(working = "waiting_for_tool_confirmation"), emptyList(), 0)
-        assertEquals(ThreadStatus.Line("Waiting for you: permission needed", waiting = true), permission)
-        val question = ThreadStatus.line(working, running.copy(status = ThreadLive.Status.Waiting, waiting = ThreadLive.Waiting("question")), emptyList(), 0)
-        assertEquals(ThreadStatus.Line("Waiting for you: answer needed", waiting = true), question)
+    fun withoutItTheWorkersStatusDecides() {
+        assertEquals(ThreadStatus.Mode.Waiting, ThreadStatus.mode(worker("needs_input"), null, false))
+        assertEquals(ThreadStatus.Mode.Idle, ThreadStatus.mode(worker("idle"), null, false))
+        assertEquals(ThreadStatus.Mode.Compacting, ThreadStatus.mode(worker("working", ThreadStatus.WORKER_COMPACTING), null, false))
+        assertEquals(ThreadStatus.Mode.Responding, ThreadStatus.mode(worker("working"), null, streaming = true))
+        assertEquals(ThreadStatus.Mode.Pondering, ThreadStatus.mode(worker("working"), null, streaming = false))
+    }
+
+    @Test
+    fun phrasesAreFactorysAndNeverRepeatBackToBack() {
+        assertEquals(92, ThreadStatus.PONDERS.size)
+        assertEquals(10, ThreadStatus.RESPONDS.size)
+        assertEquals(77, ThreadStatus.WAITS.size)
+        assertEquals("Following a thread here...", ThreadStatus.PONDERS.first())
+        assertEquals(listOf("Compacting conversation…"), ThreadStatus.phrases(ThreadStatus.Mode.Compacting))
+        val r = java.util.Random(7)
+        var last = -1
+        repeat(500) {
+            val next = ThreadStatus.pick(ThreadStatus.Mode.Responding, last, r::nextInt)
+            assertNotEquals(last, next)
+            assertTrue(next in 0 until 10)
+            last = next
+        }
+        assertEquals(0, ThreadStatus.pick(ThreadStatus.Mode.Compacting, 0) { 0 })
     }
 }
 
 class ThreadLiveTest {
-    @Test
-    fun appendsOnlyToMatchingSessionRevisionAndUtf16Length() {
-        val state = ThreadLiveState()
-        val text = "x".repeat(39_999) + "🚀" + " tail"
-        val live = ThreadLive.of(OfficeJson.parseToJsonElement(
-            """{"rev":5,"at":0,"status":"responding","stream":{"kind":"text","text":"$text"},"tools":[{"name":"Execute","output":"$text"}]}""",
-        ))!!
-        val patch = ServerMsg.ThreadStream("w", "s", 7, 5, text.length, " and new")
-        assertEquals(ThreadLiveState.Append.Resync, state.append(patch))
-        assertTrue(state.receive("s", live))
-        assertEquals(40_000, live.stream?.text?.length)
-        assertTrue(live.tools.single().output!!.endsWith("🚀 tail"))
-        assertEquals(ThreadLiveState.Append.Resync, state.append(patch.copy(base = 6)))
-        assertEquals(ThreadLiveState.Append.Resync, state.append(patch.copy(from = text.length - 1)))
-        assertEquals(ThreadLiveState.Append.Resync, state.append(patch.copy(sessionId = "other")))
-        assertEquals(ThreadLiveState.Append.Applied, state.append(patch))
-        assertEquals(7L, state.live?.rev)
-        assertTrue(state.live?.stream?.text?.endsWith(" tail and new") == true)
-        assertEquals(text.length + patch.text.length, state.live?.stream?.length)
-        assertEquals(ThreadLiveState.Append.Ignore, state.append(patch))
-        assertTrue(state.receive("s", live.copy(rev = 8, stream = null)))
-        assertEquals(ThreadLiveState.Append.Resync, state.append(patch.copy(base = 8, rev = 9)))
-    }
-
     @Test
     fun liveUpdatesMustMatchTheWorkersCurrentSessionEvenWhenMissing() {
         val state = ThreadLiveState()
@@ -163,26 +167,5 @@ class ThreadLiveTest {
         assertEquals(4200L, e.tookMs)
         assertEquals("c1", e.child)
         assertEquals(null, e.doneAt)
-    }
-
-    @Test
-    fun snapshotPreservesLongRepliesThoughtsAndToolTails() {
-        val full = "A line of prose that should stay intact.\n".repeat(1600) + "END-OF-REPLY-SENTINEL"
-        assertTrue(full.length > 60_000)
-        for (kind in listOf("text", "thinking")) {
-            val entry = ThreadEntry.of(buildJsonObject {
-                put("id", JsonPrimitive("long"))
-                put("seq", JsonPrimitive(1))
-                put("role", JsonPrimitive("assistant"))
-                put("kind", JsonPrimitive(kind))
-                put("text", JsonPrimitive(full))
-            })
-            assertEquals(full, entry?.text)
-        }
-        val tool = ThreadEntry.of(OfficeJson.parseToJsonElement(
-            """{"id":"tool:call","seq":2,"role":"assistant","kind":"tool","output":"[2250 earlier lines hidden]\nFINAL-OUTPUT-LINE","outputRef":"140.0.0123456789abcdef0123456789abcdef"}""",
-        ))!!
-        assertEquals("140.0.0123456789abcdef0123456789abcdef", tool.outputRef)
-        assertEquals("[2250 earlier lines hidden]\nFINAL-OUTPUT-LINE", ThreadView.outputText(tool, pictures = false))
     }
 }

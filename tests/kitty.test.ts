@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  countCtrlEnterInputs,
   decodeBase64,
   decodePlaceholderCell,
   encodeKittyKey,
+  isCancelInput,
+  isClearQueueInput,
   isKittyPlaceholderCell,
   KITTY_DIACRITICS,
   KITTY_KB_ALL_FLAGS,
@@ -158,6 +161,20 @@ test('encodeKittyKey handles progressive flags 0, 1, 2, 4, 8 and 16 while preser
   assert.deepEqual(encodeKittyKey(key('a', { repeat: true, code: 'KeyA' }), full), { do: 'send', data: '\x1b[97;1:2;97u' });
   assert.deepEqual(encodeKittyKey(key('a', { type: 'keyup', code: 'KeyA' }), full), { do: 'send', data: '\x1b[97;1:3u' });
   assert.deepEqual(encodeKittyKey(key('Shift', { code: 'ShiftLeft', shiftKey: true }), full), { do: 'send', data: '\x1b[57441;2u' });
+});
+
+test('worker input counters recognize both legacy and Kitty CSI u queue, clear and cancel keys', () => {
+  assert.equal(countCtrlEnterInputs('\x1b[13;5u'), 1);
+  assert.equal(countCtrlEnterInputs('\x1b[13;5:2;13u\x1b[57414;5u'), 2);
+  assert.equal(countCtrlEnterInputs('\x1b[13;5:3u'), 0, 'keyup does not count as another queued turn');
+  assert.equal(isClearQueueInput('\x18'), true);
+  assert.equal(isClearQueueInput('\x1b[120;5u'), true);
+  assert.equal(isClearQueueInput('\x1b[120;5:3u'), false);
+  assert.equal(isCancelInput('\x1b'), true);
+  assert.equal(isCancelInput('\x03'), true);
+  assert.equal(isCancelInput('\x1b[27u'), true);
+  assert.equal(isCancelInput('\x1b[99;5u'), true);
+  assert.equal(isCancelInput('\x1b[27;1:3u'), false);
 });
 
 test('KittyApcSplitter reassembles APC G across arbitrary byte splits and terminators', () => {

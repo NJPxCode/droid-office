@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { Answers } from '../src/server/answers.js';
 import { createOfficeMcp, OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER, type OfficeMcpFloor } from '../src/server/office-mcp/index.js';
 import { Team, type TeamWorkers } from '../src/server/team.js';
 import { ASK_REPLY_MS, TALK_MAX_MS, TALK_MIN_MS, Visits, type VisitWorkers } from '../src/server/visits.js';
@@ -35,6 +36,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
   const escapes: string[] = [];
   const emitted: ServerMsg[] = [];
   const tails = new Map([['Nibble', 'line 1\nline 2\n$ npm test\nok']]);
+  const screens = new Map<string, 'asking' | 'idle' | 'busy'>();
   const failures = new Map<string, string>();
   const workers: VisitWorkers & TeamWorkers & OfficeMcpFloor['workers'] = {
     list: () => [...people.values()],
@@ -55,6 +57,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
       escapes.push(id);
       return true;
     },
+    turnScreen: (id) => screens.get(id) ?? (people.get(id)?.status === 'working' ? 'busy' : 'idle'),
     officeDefault: undefined,
     deskOccupied: () => false,
     hire: () => 'Unused',
@@ -65,7 +68,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
   const team = new Team(workers, { dataDir: dir, dir, git: true, settings: () => settings, toast() {} });
   const whiteboard = new WhiteboardStore(dir);
   const floor: OfficeMcpFloor = { id: 'floor', name: 'Floor', dir, workers, team, visits, whiteboard };
-  const office = createOfficeMcp({ settings: () => settings, floor: (id) => (people.has(id) ? floor : undefined) });
+  const office = createOfficeMcp({ answers: new Answers(), settings: () => settings, floor: (id) => (people.has(id) ? floor : undefined) });
   const http = createServer((req, res) => {
     if (req.url === OFFICE_MCP_PATH) void office.handle(req, res);
     else res.writeHead(404).end();
@@ -101,7 +104,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
     w.status = status;
     visits.onWorker(w);
   };
-  return { connect, people, settings, typed, escapes, emitted, tails, failures, visits, advance, setStatus };
+  return { connect, people, settings, typed, escapes, emitted, tails, screens, failures, visits, advance, setStatus };
 }
 
 const walk = (from = 'desk-3', to = 'desk-9') => visitWalkMs(visitRoute(from, to, 0));
@@ -181,7 +184,7 @@ test('tell and handoff queue immediately, walk honestly and deliver normal or ur
   r.advance(walk() + 250);
   assert.deepEqual(r.escapes, ['Nibble']);
   assert.equal(messages(r, 'Nibble').length, 1, 'urgent delivery waits for cancellation to settle');
-  r.setStatus('Nibble', 'idle');
+  r.screens.set('Nibble', 'idle');
   r.advance(250);
   assert.match(messages(r, 'Nibble')[1].text, /Task: Session tests\nWrite the tests/);
   assert.match(messages(r, 'Nibble')[1].text, /Delivery: urgent/);
@@ -221,11 +224,11 @@ test('reply delivery queues safely behind dialogs and resumes a sleeping asker w
   const ask = await asker.callTool({ name: 'visit_message', arguments: { name: 'Nibble', kind: 'ask', text: 'Ready?' } });
   const id = String(ask.structuredContent?.visit);
   r.advance(walk() + TALK_MIN_MS + walk() + 500);
-  r.people.get('Pixel')!.menu = { question: 'Ready?', choices: [{ number: 1, label: 'Yes' }], freeText: false };
+  r.screens.set('Pixel', 'asking');
   const reply = await host.callTool({ name: 'visit_reply', arguments: { visit: id, text: 'Ready.' } });
   assert.equal(reply.structuredContent?.queued, true);
   assert.deepEqual(messages(r, 'Pixel'), []);
-  r.people.get('Pixel')!.menu = undefined;
+  r.screens.set('Pixel', 'idle');
   r.setStatus('Pixel', 'offline');
   r.advance(250);
   assert.equal(messages(r, 'Pixel')[0].resume, true);

@@ -92,7 +92,7 @@ export interface QuestionDisplay {
 }
 
 /**
- * The card for the pending menu. WorkerInfo.ask has the exact text from the daemon; the
+ * The card for the menu on screen. The hook's pending ask (WorkerInfo.ask) has the exact text; the
  * Thread's pending tool call is the fallback for an office that doesn't send one. Every numbered
  * option is matched in order: ambiguous or mismatching questions cannot relabel an answer.
  */
@@ -142,24 +142,6 @@ export function reviewAnswers(review: readonly string[]): { question: string; an
   return pairs;
 }
 
-export interface ThreadQuestionAnswer {
-  question: string;
-  answer: string;
-}
-
-/** The persisted AskUser result, not the questionnaire input or the assistant's account of it. */
-export function answeredQuestions(output: string): ThreadQuestionAnswer[] {
-  return output
-    .split(/(?:^|\r?\n)\d+\.\s+\[question\]\s*/i)
-    .slice(1, 21)
-    .flatMap((block) => {
-      const match = /^([\s\S]+?)\r?\n\[answer\][ \t]*([\s\S]*)$/i.exec(block);
-      const question = match?.[1]?.trim();
-      const answer = match?.[2]?.trim();
-      return question && answer ? [{ question, answer }] : [];
-    });
-}
-
 export type QuestionStepState = 'done' | 'current' | 'upcoming';
 export interface QuestionStep {
   /** The question's topic (AskUser's tab name), else the start of the question. */
@@ -181,8 +163,8 @@ function stepLabel(question: AskedQuestion): string {
 }
 
 /**
- * Where the pending menu sits in its questionnaire: one step per question, plus a review step
- * for legacy menus when `hasReview` is true. Empty for a lone question, or when the
+ * Where the menu on screen sits in its questionnaire, for a step bar: one step per question, plus
+ * Droid's final terminal review when `hasReview` is true. Empty for a lone question, or when the
  * menu matches no single question. `answers` holds what this client sent, by 1-based position.
  */
 export function questionSteps(menu: Menu, display: QuestionDisplay, all: readonly AskedQuestion[], answers: Readonly<Record<number, string>> = {}, hasReview = true): QuestionStep[] {

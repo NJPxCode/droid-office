@@ -11,7 +11,7 @@ import kotlinx.serialization.json.contentOrNull
  * What a worker's turn is doing right now, beyond what its session file says yet (`ThreadLive` in
  * src/shared/thread-live.ts, sent as `thread.live` while `thread.watch` is on): its phase for the
  * status line, the message it is still writing, the tools running, and its session settings. Each
- * snapshot replaces the last whole; `thread.stream` appends text to a matching revision.
+ * one replaces the last whole; [ThreadLiveState] keeps the newest by [rev].
  */
 data class ThreadLive(
     val rev: Long,
@@ -30,6 +30,8 @@ data class ThreadLive(
     val settings: ThreadSessionSettings? = null,
     /** The office-driven rewind in progress, if any. */
     val rewind: Rewind? = null,
+    /** Droid's side chat (/btw) as the terminal shows it, while it is open. */
+    val side: String? = null,
 ) {
     /** Factory's droidStatusIndicator states. */
     enum class Status(val wire: String) {
@@ -45,15 +47,7 @@ data class ThreadLive(
     }
 
     /** The assistant message being written, as plain text read off the terminal. */
-    data class Stream(
-        val kind: String,
-        val text: String,
-        val since: Long,
-        /** Full wire length in UTF-16 code units (including the prefix we stopped displaying). */
-        val length: Int = text.length,
-    ) {
-        fun append(suffix: String): Stream = copy(text = streamTail(text + suffix), length = length + suffix.length)
-    }
+    data class Stream(val kind: String, val text: String, val since: Long)
 
     data class Tool(
         val id: String?,
@@ -88,7 +82,7 @@ data class ThreadLive(
                 after = o.str("after"),
                 stream = (o["stream"] as? JsonObject)?.let { s ->
                     val text = s.str("text") ?: return@let null
-                    Stream(s.str("kind") ?: "text", streamTail(text), s.long("since") ?: at, text.length)
+                    Stream(s.str("kind") ?: "text", text.take(STREAM_CHARS), s.long("since") ?: at)
                 },
                 tools = (o["tools"] as? JsonArray)?.mapNotNull { t ->
                     val obj = t as? JsonObject ?: return@mapNotNull null
@@ -99,24 +93,19 @@ data class ThreadLive(
                         startedAt = obj.long("startedAt") ?: at,
                         phase = obj.str("phase") ?: "running",
                         session = obj.str("session"),
-                        output = obj.str("output")?.let(::streamTail),
+                        output = obj.str("output")?.take(STREAM_CHARS),
                         more = obj.long("more")?.toInt(),
                     )
                 }?.take(64).orEmpty(),
                 waiting = (o["waiting"] as? JsonObject)?.let { Waiting(it.str("kind") ?: "other", it.str("toolId")) },
                 settings = ThreadSessionSettings.of(o["settings"]),
                 rewind = (o["rewind"] as? JsonObject)?.let { r -> r.str("entryId")?.let { Rewind(it, r.long("since") ?: at) } },
+                side = (o["side"] as? JsonObject)?.str("text")?.take(STREAM_CHARS),
             )
         }
+
+        private const val STREAM_CHARS = 40_000
     }
-}
-
-private const val STREAM_CHARS = 40_000
-
-private fun streamTail(text: String): String {
-    val start = text.length - STREAM_CHARS
-    if (start <= 0) return text
-    return text.substring(start + if (text[start].isLowSurrogate()) 1 else 0)
 }
 
 /** A session's model, effort, mode and autonomy, from its `settings.json` next to the session file. */
@@ -147,8 +136,6 @@ data class ThreadSessionSettings(
 
 /** The newest [ThreadLive] for one worker's session: one with a [ThreadLive.rev] no newer than what is held is dropped. */
 class ThreadLiveState {
-    enum class Append { Applied, Ignore, Resync }
-
     var session: String? = null
         private set
     var live: ThreadLive? = null
@@ -167,15 +154,9 @@ class ThreadLiveState {
         return true
     }
 
-    fun append(delta: ServerMsg.ThreadStream): Append {
-        val held = live
-        if (held != null && delta.rev <= held.rev && session == delta.sessionId) return Append.Ignore
-        val stream = held?.stream
-        if (held == null || stream == null || session != delta.sessionId || held.rev != delta.base ||
-            stream.length != delta.from || delta.rev <= delta.base || delta.text.length > Int.MAX_VALUE - delta.from
-        ) return Append.Resync
-        live = held.copy(rev = delta.rev, stream = stream.append(delta.text))
-        return Append.Applied
+    fun clear() {
+        session = null
+        live = null
     }
 }
 

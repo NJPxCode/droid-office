@@ -1,12 +1,11 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { INCLUDE_FILE, SETUP_FILE, detectSetup, parsePatterns, parseSetupFile, resolveSetup, type ResolvedSetup, type WorktreeSetupFile, type WorktreeSetupOverride, type WorktreeSetupState } from '../shared/worktree-setup.js';
-import { runAsNode } from './worker-runtime/process.js';
 
 /** A floor's own setup, in its checkout's .droid-office/. */
 const OVERRIDE_FILE = 'worktree-setup.json';
-/** The setup script run before a shell or daemon session starts in a new worktree (see SETUP_SCRIPT). */
+/** The script a worker's terminal runs before its agent (see SETUP_SCRIPT), in the data dir. */
 const SCRIPT_FILE = 'worktree-setup.cjs';
 /** Where the plans for terminals that haven't run theirs yet wait, in the data dir. */
 const PLANS_DIR = 'setup';
@@ -111,27 +110,13 @@ export function copiesFrom(root: string, patterns: string[]): string[] {
   }
 }
 
-/** Writes the setup plan for a new worktree; the script deletes it once read. */
+/** Writes the plan a worker's terminal runs before its agent; the script deletes it once read. */
 export function writePlan(dataDir: string, workerId: string, steps: SetupStep[]): string {
   const dir = path.join(dataDir, PLANS_DIR);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, `${workerId}.json`);
   writeFileSync(file, JSON.stringify({ steps }), { mode: 0o600 });
   return file;
-}
-
-export interface SetupFailure {
-  command: string;
-  code: number;
-  label?: string;
-  output?: string;
-}
-
-export interface WorktreeSetupRunResult {
-  commands: string[];
-  failed: SetupFailure[];
-  exitCode: number;
-  output: string;
 }
 
 /** Writes SETUP_SCRIPT into the data dir (again on every start, so an upgrade runs the new one). */
@@ -142,78 +127,12 @@ export function writeSetupScript(dataDir: string): string {
 }
 
 /**
- * Runs `worktree-setup.cjs <plan> <resultFile>` without a PTY before a daemon worker's session starts,
- * routing `process.execPath` through `runAsNode` for packaged Electron builds.
- */
-export function runWorktreeSetup(scriptFile: string, planFile: string, baseEnv: Record<string, string>, signal?: AbortSignal): Promise<WorktreeSetupRunResult> {
-  const resultFile = `${planFile}.result.json`;
-  const env: Record<string, string> = { ...baseEnv };
-  if (runAsNode().sh) env.ELECTRON_RUN_AS_NODE = '1';
-  // Daemon setup writes its structured outcome to resultFile directly rather than posting HTTP hooks.
-  delete env.DROID_OFFICE_HOOK_URL;
-  delete env.DROID_OFFICE_HOOK_TOKEN;
-  return new Promise((resolve) => {
-    let output = '';
-    const keep = (chunk: Buffer | string) => {
-      output = (output + chunk.toString()).slice(-8000);
-    };
-    const child = spawn(process.execPath, [scriptFile, planFile, resultFile], {
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    child.stdout?.on('data', keep);
-    child.stderr?.on('data', keep);
-    const onAbort = () => {
-      try {
-        child.kill('SIGTERM');
-      } catch {
-        // already exited
-      }
-    };
-    if (signal?.aborted) onAbort();
-    else signal?.addEventListener('abort', onAbort, { once: true });
-    const finish = (code: number | null, errText?: string) => {
-      signal?.removeEventListener('abort', onAbort);
-      let commands: string[] = [];
-      let failed: SetupFailure[] = [];
-      try {
-        const parsed = JSON.parse(readFileSync(resultFile, 'utf8')) as { commands?: unknown; failed?: unknown };
-        if (Array.isArray(parsed.commands)) commands = parsed.commands.filter((c): c is string => typeof c === 'string');
-        if (Array.isArray(parsed.failed)) {
-          failed = parsed.failed.filter((f): f is SetupFailure => !!f && typeof (f as SetupFailure).command === 'string' && typeof (f as SetupFailure).code === 'number');
-        }
-      } catch {
-        // Script exited before writing resultFile (e.g. spawn error or signal).
-      } finally {
-        rmSync(resultFile, { force: true });
-        rmSync(planFile, { force: true });
-      }
-      const exitCode = code ?? 1;
-      if (exitCode !== 0 && !failed.length && !signal?.aborted) {
-        const cleanOut = (errText ? `${output}\n${errText}` : output)
-          .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-          .replace(/\r/g, '')
-          .trim()
-          .split('\n')
-          .slice(-40)
-          .join('\n');
-        failed.push({ command: commands.join(' && ') || 'worktree-setup', code: exitCode, ...(cleanOut ? { output: cleanOut } : {}) });
-      }
-      resolve({ commands, failed, exitCode, output });
-    };
-    child.once('error', (err) => finish(127, err.message));
-    child.once('close', (code) => finish(code));
-  });
-}
-
-/**
- * Runs in a shell worker's PTY (or headlessly before a daemon session starts) with
- * the office's own node: for each step of the plan file it's given, copies the checkout's untracked
- * files that match the step's patterns into the worktree (clones where the file system can, never over
- * a file that's there), then runs the step's command there with DROID_OFFICE_ROOT_PATH and
- * DROID_OFFICE_WORKTREE_PATH set. In a terminal (2 args) it reports through the worker's hook URL and
- * always exits 0; headlessly (3rd arg resultFile) it writes `{ commands, failed }` and exits non-zero
- * if any step failed. Plain CommonJS with no dependencies, so any node can run it.
+ * Runs in a worker's terminal ahead of its agent, with the office's own node: for each step of the
+ * plan file it's given, copies the checkout's untracked files that match the step's patterns into
+ * the worktree (clones where the file system can, never over a file that's there), then runs the
+ * step's command there with DROID_OFFICE_ROOT_PATH and DROID_OFFICE_WORKTREE_PATH set. It tells the
+ * office when it starts and how it went through the worker's own hook URL. It always exits 0: the
+ * agent starts either way. Plain CommonJS with no dependencies, so any node can run it.
  */
 const SETUP_SCRIPT = `'use strict';
 const { execFileSync, spawn } = require('child_process');
@@ -271,14 +190,14 @@ function copy(step) {
 
 // Piped rather than inherited so the end of what it printed can go to the office: Droid clears the
 // terminal when it starts.
-function run(step, env, headless) {
+function run(step, env) {
   return new Promise((done) => {
     let tail = '';
     const keep = (chunk) => {
       process.stdout.write(chunk);
       tail = (tail + chunk.toString()).slice(-6000);
     };
-    const child = spawn(step.setup, { cwd: step.dir, env, shell: true, stdio: [headless ? 'ignore' : 'inherit', 'pipe', 'pipe'] });
+    const child = spawn(step.setup, { cwd: step.dir, env, shell: true, stdio: ['inherit', 'pipe', 'pipe'] });
     child.stdout.on('data', keep);
     child.stderr.on('data', keep);
     child.on('error', (err) => done({ code: 127, tail: tail + String(err.message) }));
@@ -288,13 +207,12 @@ function run(step, env, headless) {
 
 async function main() {
   const file = process.argv[2];
-  const resultFile = process.argv[3];
   let plan;
   try {
     plan = JSON.parse(fs.readFileSync(file, 'utf8'));
     fs.rmSync(file, { force: true });
   } catch {
-    return 0;
+    return;
   }
   const steps = Array.isArray(plan.steps) ? plan.steps : [];
   const commands = steps.filter((s) => s.setup).map((s) => s.setup);
@@ -308,7 +226,7 @@ async function main() {
     const started = Date.now();
     const env = { ...process.env, DROID_OFFICE_ROOT_PATH: step.root, DROID_OFFICE_WORKTREE_PATH: step.dir };
     delete env.ELECTRON_RUN_AS_NODE;
-    const { code, tail } = await run(step, env, Boolean(resultFile));
+    const { code, tail } = await run(step, env);
     const took = Math.round((Date.now() - started) / 1000) + 's';
     if (code === 0) say('\\x1b[32m✓ Set up in ' + took + '\\x1b[0m');
     else {
@@ -318,18 +236,11 @@ async function main() {
     }
   }
   say('');
-  if (resultFile) {
-    try {
-      fs.writeFileSync(resultFile, JSON.stringify({ commands, failed }), { mode: 0o600 });
-    } catch {}
-    return failed.length ? 1 : 0;
-  }
   await report({ phase: 'done', failed });
-  return 0;
 }
 
 main().then(
-  (code) => process.exit(code || 0),
+  () => process.exit(0),
   () => process.exit(0),
 );
 `;

@@ -233,8 +233,7 @@ export function buildFloorDecisionsBatch(floor: VibesFloorView, activeWorkers: W
     const taskLine = w.task ? redactGeminiSecrets(`${w.task.name}: ${w.task.summary}`, extraSecrets).slice(0, 240) : 'none';
     const rawTail = floor.tail(w.id, TAIL_LINES) ?? '';
     const safeTail = redactGeminiSecrets(rawTail, extraSecrets).trim().slice(-MAX_TAIL_CHARS);
-    const openMenu = w.menu ?? w.cloud?.menu;
-    const askDesc = w.ask ? w.ask.kind : openMenu ? 'question' : 'none';
+    const askDesc = w.ask ? w.ask.kind : 'none';
     const prDesc = w.pr ? `#${w.pr.number}` : 'none';
 
     const workerBlock = [

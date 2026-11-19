@@ -8,6 +8,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { Answers } from '../src/server/answers.js';
 import { buildGrokWebhookPayload, buildTeamWebhookItem, redactWebhookSecret, sendGrokWebhook, type GrokWebhookPayload } from '../src/server/grok-webhook.js';
 import { createOfficeMcp } from '../src/server/office-mcp/index.js';
 import { RemoteMcp, remoteMcpListener } from '../src/server/remote-mcp-http.js';
@@ -17,22 +18,14 @@ import { Team, type TeamEvent, type TeamSignal, type TeamWorkers } from '../src/
 import { Visits } from '../src/server/visits.js';
 import type { WakeGate, WakePacket } from '../src/server/wake-filter.js';
 import { WhiteboardStore } from '../src/server/whiteboard.js';
-import type { Menu } from '../src/shared/asks.js';
+import { readMenu } from '../src/shared/asks.js';
 import { SUBAGENT_DEFAULTS, type WorkerInfo } from '../src/shared/protocol.js';
 import { validateGrokWebhookUrl } from '../src/shared/remote-mcp.js';
 
 type Cleanup = { after(fn: () => void | Promise<void>): void };
 
 const DUMMY_TOKEN = 'crsr_test_0123456789abcdef0123456789abcdef';
-const SAMPLE_MENU: Menu = {
-  question: 'Which file should I create?',
-  choices: [
-    { number: 1, label: 'hello.txt', description: 'A greeting' },
-    { number: 2, label: 'bye.txt' },
-    { number: 3, label: 'Other (type your answer)' },
-  ],
-  freeText: true,
-};
+const DIGITS = ['│ Which file should I create? │', '│ 1. hello.txt │', '│    A greeting │', '│ 2. bye.txt │', '│ 3. Other (type your answer) │', '│ Press a number to answer, Esc to skip │'];
 
 /** Node fetch ignores a caller's Host header; emulate Tailscale Serve with a real HTTP request. */
 const proxyFetch: typeof fetch = async (input, init) => {
@@ -407,6 +400,7 @@ test('Grok Bot leads receive immediate team_report, lead_notify, floor hook, inb
   const people = new Map<string, WorkerInfo>();
   const tokens = new Map<string, string>();
   let seq = 0;
+  let screenRows: string[] = ['working'];
   const alphaDir = path.join(dir, 'alpha');
   mkdirSync(alphaDir, { recursive: true });
 
@@ -448,13 +442,16 @@ test('Grok Bot leads receive immediate team_report, lead_notify, floor hook, inb
       people.delete(wid);
       return {};
     },
-    tail: () => 'working',
+    tail: () => screenRows.join('\n'),
+    screenLines: () => screenRows,
+    screenMenu: () => readMenu(screenRows),
+    write: () => true,
     setTask() {},
   };
 
   const team = new Team({ ...workers, get }, { dataDir: alphaDir, dir: alphaDir, git: false, settings: () => settings, toast() {}, now: () => now });
   rig.after(() => team.stop());
-  const visits = new Visits({ ...workers, get, tell: workers.prompt, cancelTurn: () => false }, { on: () => settings.visits, emit() {}, now: () => now });
+  const visits = new Visits({ ...workers, get, tell: workers.prompt, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {}, now: () => now });
   rig.after(() => visits.stop());
   const whiteboard = new WhiteboardStore(alphaDir);
   rig.after(() => whiteboard.stop());
@@ -470,7 +467,7 @@ test('Grok Bot leads receive immediate team_report, lead_notify, floor hook, inb
   };
 
   // Mount both the local worker MCP server and the Tailscale remote MCP listener.
-  const mcpDeps = { remote: office, floor: floorLookup, settings: () => settings };
+  const mcpDeps = { answers: new Answers(), remote: office, floor: floorLookup, settings: () => settings };
   const localMcp = createOfficeMcp(mcpDeps);
   const localServer = createServer((req, res) => {
     void localMcp.handle(req, res);
@@ -639,11 +636,11 @@ test('Grok Bot leads receive immediate team_report, lead_notify, floor hook, inb
   assert.equal(receiver.received.length, 5, 'non-Grok bot never triggers webhook');
   assert.equal(office.inbox(claw.worker.id).messages.length, 1);
 
-  // 7. Server-side floor notifications: structured needs_input AskUser prompt and stopped push automatically.
+  // 7. Server-side floor hooks: terminal needs_input AskUser prompt and stopped push automatically.
+  screenRows = DIGITS;
   now += 1000;
   grokSub.status = 'needs_input';
   grokSub.ask = { kind: 'question', questions: [{ question: 'Which file should I create?', options: ['hello.txt', 'bye.txt', 'Other (type your answer)'], multiSelect: false }] };
-  grokSub.menu = SAMPLE_MENU;
   team.onWorker(grokSub);
   await receiver.waitForCount(6);
   assert.equal(receiver.received[5].body.event, 'needs_input');
@@ -654,7 +651,6 @@ test('Grok Bot leads receive immediate team_report, lead_notify, floor hook, inb
 
   now += 1000;
   delete grokSub.ask;
-  delete grokSub.menu;
   grokSub.status = 'exited';
   grokSub.exitCode = 1;
   team.onWorker(grokSub);
@@ -801,11 +797,14 @@ test('the noise gate defers routine lead_notify updates, holds batch reports fro
       return {};
     },
     tail: () => 'working',
+    screenLines: () => ['working'],
+    screenMenu: () => undefined,
+    write: () => true,
     setTask() {},
   };
   const team = new Team({ ...workers, get }, { dataDir: alphaDir, dir: alphaDir, git: false, settings: () => settings, toast() {}, wakeFilter: gate });
   rig.after(() => team.stop());
-  const visits = new Visits({ ...workers, get, tell: workers.prompt, cancelTurn: () => false }, { on: () => settings.visits, emit() {} });
+  const visits = new Visits({ ...workers, get, tell: workers.prompt, cancelTurn: () => false, turnScreen: () => undefined }, { on: () => settings.visits, emit() {} });
   rig.after(() => visits.stop());
   const whiteboard = new WhiteboardStore(alphaDir);
   rig.after(() => whiteboard.stop());
@@ -816,7 +815,7 @@ test('the noise gate defers routine lead_notify updates, holds batch reports fro
     const f = floors.find((x) => x.workers.get(wid));
     return f ? { ...f, name: f.def.name } : undefined;
   };
-  const mcpDeps = { remote: office, floor: floorLookup, settings: () => settings, wakeFilter: gate };
+  const mcpDeps = { answers: new Answers(), remote: office, floor: floorLookup, settings: () => settings, wakeFilter: gate };
   const localMcp = createOfficeMcp(mcpDeps);
   const localUrl = new URL(
     '/office/mcp',

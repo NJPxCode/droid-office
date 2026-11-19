@@ -3,8 +3,6 @@
 // messages. Read by src/server/factory/sessions.ts; drawn by the lounge TV (world/factory-tv.ts),
 // and a cloud worker's messages by its Thread (cloud-thread.ts).
 
-import { thinkingDuration } from './thread-live.js';
-
 export type FactorySessionStatus = 'idle' | 'pending' | 'running';
 
 /** Where the Factory web app shows a session (its own share links are `<app>/sessions/<id>`). */
@@ -250,7 +248,7 @@ export function artifactLabel(a: FactorySessionArtifact): string {
 /** One piece of a message, cut down to what the transcript shows. */
 export type FactoryBlock =
   | { type: 'text'; text: string }
-  | { type: 'thinking'; text: string; tookMs?: number }
+  | { type: 'thinking'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; text: string; isError: boolean; images?: number }
   | { type: 'image'; mediaType: string; data?: string }
@@ -309,10 +307,8 @@ function blockOf(raw: unknown): FactoryBlock | undefined {
   switch (b.type) {
     case 'text':
       return typeof b.text === 'string' && b.text.trim() ? { type: 'text', text: cut(b.text, TEXT_MAX) } : undefined;
-    case 'thinking': {
-      const tookMs = thinkingDuration(b.durationMs ?? b.tookMs);
-      return typeof b.thinking === 'string' && b.thinking.trim() ? { type: 'thinking', text: cut(b.thinking, RESULT_MAX), ...(tookMs !== undefined ? { tookMs } : {}) } : undefined;
-    }
+    case 'thinking':
+      return typeof b.thinking === 'string' && b.thinking.trim() ? { type: 'thinking', text: cut(b.thinking, RESULT_MAX) } : undefined;
     case 'tool_use':
       return { type: 'tool_use', id: optStr(b.id) ?? '', name: optStr(b.name) ?? 'tool', input: inputOf(b.input) };
     case 'tool_result': {

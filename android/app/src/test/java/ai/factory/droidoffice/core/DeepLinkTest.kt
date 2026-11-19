@@ -12,14 +12,14 @@ class DeepLinkTest {
     fun parsesHttpTailscaleLinksForEveryTarget() {
         assertEquals(
             DeepLink(
-                target = DeepLinkTarget.Worker(workerId = "gizmo-c1cb", floorId = "droid-office"),
+                target = DeepLinkTarget.Worker(workerId = "gizmo-c1cb", floorId = "droid-office", view = WorkerLinkView.Tty),
                 officeBase = tailnetBase,
             ),
             DeepLinks.parse("$tailnetBase/open/worker/gizmo-c1cb?floor=droid-office"),
         )
         assertEquals(
             DeepLink(
-                target = DeepLinkTarget.Worker(workerId = "gizmo-c1cb", floorId = "droid-office"),
+                target = DeepLinkTarget.Worker(workerId = "gizmo-c1cb", floorId = "droid-office", view = WorkerLinkView.Thread),
                 officeBase = tailnetBase,
             ),
             DeepLinks.parse("$tailnetBase/open/worker/gizmo-c1cb?floor=droid-office&view=thread"),
@@ -49,7 +49,7 @@ class DeepLinkTest {
     fun parsesCustomSchemeCanonicalAndShorthandForms() {
         assertEquals(
             DeepLink(
-                target = DeepLinkTarget.Worker(workerId = "w-42", floorId = "alpha"),
+                target = DeepLinkTarget.Worker(workerId = "w-42", floorId = "alpha", view = WorkerLinkView.Tty),
                 officeBase = tailnetBase,
                 officeId = "off-1",
             ),
@@ -90,7 +90,7 @@ class DeepLinkTest {
         val afterGithubLink = DeepLinks.parse("PR https://github.com/nikships/droid-office/pull/1 is ready — jump in: $tailnetBase/open/worker/gizmo-c1cb?floor=main")
         assertEquals(
             DeepLink(
-                target = DeepLinkTarget.Worker(workerId = "gizmo-c1cb", floorId = "main"),
+                target = DeepLinkTarget.Worker(workerId = "gizmo-c1cb", floorId = "main", view = WorkerLinkView.Tty),
                 officeBase = tailnetBase,
             ),
             afterGithubLink,

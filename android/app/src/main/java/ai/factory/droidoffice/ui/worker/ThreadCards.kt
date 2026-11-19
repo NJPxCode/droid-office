@@ -557,23 +557,6 @@ private fun Capped(follows: Boolean, content: @Composable () -> Unit) {
 
 @Composable
 private fun ActionRow(a: ThreadModelAction, c: Cards, dense: Boolean) {
-    if (a.answers.isNotEmpty()) {
-        Column(
-            Modifier.fillMaxWidth().tagged(Tags.Worker.threadAnsweredQuestion(a.id))
-                .background(ThreadPalette.Surface, Rounded4).padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            for ((question, answer) in a.answers) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(question, style = MaterialTheme.typography.bodyMedium, color = ThreadPalette.Text)
-                    SelectionContainer {
-                        Text("You answered: $answer", style = MaterialTheme.typography.bodySmall, color = ThreadPalette.TextSecondary)
-                    }
-                }
-            }
-        }
-        return
-    }
     val isOpen = ThreadView.Open.action(a, c.open)
     val (verb, subject) = ToolCards.words(a)
     ToolRow(
@@ -594,12 +577,11 @@ private fun ActionRow(a: ThreadModelAction, c: Cards, dense: Boolean) {
 /** One thought, with the shell's Factory timing, shimmer and disclosure motion. */
 @Composable
 private fun ThoughtRow(t: ThreadBlock.Thought, c: Cards) {
+    val isOpen = ThreadView.Open.block(t, c.open)
     val entry = c.loaded[t.id]
-    val revealed = LocalThreadReveal.current?.value?.takeIf { it.entryId == t.id }
-    val isOpen = ThreadView.Open.block(t, c.open) || (revealed != null && c.open[t.id] != false)
     ThinkingBlock(
         id = t.id,
-        text = revealed?.text ?: ThreadView.thought(t, entry),
+        text = ThreadView.thought(t, entry),
         live = t.live,
         open = isOpen,
         onToggle = { c.onFlip(t.id, isOpen) },
@@ -649,7 +631,6 @@ private fun CommandRow(a: ThreadModelAction, c: Cards, nested: Boolean) {
         } else null,
     ) {
         ToolBox {
-            FullToolOutput(entry)
             val moreKey = "output:" + a.id
             val expanded = c.open[moreKey] == true
             Clamp(OUTPUT_MAX, expanded, onExpand = { c.onFlip(moreKey, false) }, label = "Expand command output", tag = Tags.Worker.threadMore(a.id)) {
@@ -692,7 +673,7 @@ private fun commandText(command: String, output: String?, working: Boolean, load
                 withStyle(SpanStyle(color = if (l.dim) ToolDetail else ThreadPalette.TextSecondary)) { append(l.text.ifEmpty { " " }) }
             }
             if (more > 0) dim("... and $more more ${if (more == 1) "line" else "lines"}")
-            if (clipped) dim("Showing the first $OUTPUT_CHARS of ${output.length} characters.")
+            if (clipped) dim("Showing the first $OUTPUT_CHARS of ${output.length} characters. Raw TTY has the rest.")
         }
     }
 }
@@ -1044,13 +1025,8 @@ private fun ActionDetailsBody(a: ThreadModelAction, entry: ThreadEntry?, modifie
                 val pictures = d.images.isNotEmpty()
                 if (d.recorded) {
                     if (d.output.isNotEmpty() || !pictures) {
-                        Mono(
-                            d.result, d.output.ifEmpty { "(empty)" },
-                            if (a.state == ActivityState.Failed) ThreadPalette.Danger else ThreadPalette.TextSecondary,
-                            limit = null,
-                        )
+                        Mono(d.result, d.output.ifEmpty { "(empty)" }, if (a.state == ActivityState.Failed) ThreadPalette.Danger else ThreadPalette.TextSecondary)
                     }
-                    FullToolOutput(entry)
                     if (pictures) ThreadPictures(d.images, a.title, a.detail, end = false)
                 } else {
                     Text(d.result, style = endStyle())
@@ -1062,14 +1038,14 @@ private fun ActionDetailsBody(a: ThreadModelAction, entry: ThreadEntry?, modifie
 }
 
 @Composable
-private fun Mono(label: String, body: String, color: Color, limit: Int? = SHOWN_CHARS) {
+private fun Mono(label: String, body: String, color: Color) {
     Text(label, style = endStyle())
-    val shown = if (limit == null) body else body.take(limit)
+    val shown = if (body.length > SHOWN_CHARS) body.take(SHOWN_CHARS) else body
     SelectionContainer {
         Text(shown, style = LocalOfficeType.current.monoBody.copy(fontSize = 11.sp, lineHeight = 17.sp, color = color))
     }
     if (shown.length < body.length) {
-        Text("Showing the first $limit of ${body.length} characters.", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ToolDetail))
+        Text("Showing the first $SHOWN_CHARS of ${body.length} characters. Raw TTY has the rest.", style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = ToolDetail))
     }
 }
 

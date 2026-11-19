@@ -12,7 +12,7 @@ import { build } from 'vite';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { loadConfig } from '../src/server/config.js';
 import { leaveFloorTerminals, startServer } from '../src/server/server.js';
-import { TestDaemon } from './daemon-fixture.js';
+import { HOOK_VERSION } from '../src/server/workers.js';
 import { DevicesStore } from '../src/server/devices.js';
 import { OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEADER } from '../src/server/office-mcp/index.js';
 import { ORCHESTRATOR_ID } from '../src/shared/mission-control.js';
@@ -20,7 +20,7 @@ import type { ClientMsg, ServerMsg } from '../src/shared/protocol.js';
 import type { PairingState } from '../src/shared/devices.js';
 import { tailnetProxy } from './tailnet-proxy.js';
 
-async function office(t: TestContext, home?: string, agent?: string, daemon?: TestDaemon) {
+async function office(t: TestContext, home?: string, agent?: string) {
   const dir = home ?? mkdtempSync(path.join(os.tmpdir(), 'dashboard-'));
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
   let stopped = false;
@@ -47,7 +47,7 @@ async function office(t: TestContext, home?: string, agent?: string, daemon?: Te
   }
   const cfg = loadConfig(['--home', dir, '--projects', dir, dir, '--weather', 'clear', '--host', '0.0.0.0', ...(agent ? ['--agent', agent] : [])]);
   cfg.port = 0;
-  server = await startServer(cfg, { localDaemon: daemon ?? new TestDaemon(cfg.dataDir), droidSessionsDir: dir });
+  server = await startServer(cfg);
   const port = (server.server.address() as AddressInfo).port;
   return { server, dir, stop, base: `http://127.0.0.1:${port}`, port };
 }
@@ -129,7 +129,7 @@ exit 0
   assert.equal(welcome.missionControl?.orchestrator.agent, undefined, 'readiness changes need no first prompt or PTY');
 });
 
-test('a ride drops the previous floor’s terminals but keeps the Mission Control attachment', () => {
+test('a ride keeps the Orchestrator’s terminal open and still due the snapshot a slow link was waiting for', () => {
   const c = { attached: new Set(['w-1', ORCHESTRATOR_ID, 'office-shell']), stale: new Set(['w-1', ORCHESTRATOR_ID]) };
   leaveFloorTerminals(c);
   assert.deepEqual([[...c.attached], [...c.stale]], [[ORCHESTRATOR_ID], [ORCHESTRATOR_ID]]);
@@ -138,77 +138,107 @@ test('a ride drops the previous floor’s terminals but keeps the Mission Contro
   assert.deepEqual([floorOnly.attached.size, floorOnly.stale.size], [0, 0]);
 });
 
-/** Trimmed Droid setup responses; session launches bypass this executable. */
+/** A signed-in Droid that records each launch's Office MCP credential and stays open like a session. */
 const signedInDroid = `#!/usr/bin/env node
+const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (args[0] === '--version') { console.log('0.249.0'); process.exit(0); }
 // Trimmed auth.verify body from tests/setup-droid-state.test.ts's real Droid doctor output.
 if (args[0] === 'doctor') { process.stdout.write('{"ok":true,"results":[{"id":"auth.verify","status":"pass","detail":"authenticated as o***@example.com via stored login session"}]}'); process.exit(0); }
-process.exit(0);
+if (args.includes('--output-format')) process.exit(0);
+fs.appendFileSync(process.env.FAKE_AGENT_LOG, JSON.stringify({ workerId: process.env.DROID_OFFICE_WORKER_ID, hookToken: process.env.DROID_OFFICE_HOOK_TOKEN, hookUrl: process.env.DROID_OFFICE_HOOK_URL }) + '\\n');
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => fs.appendFileSync(process.env.FAKE_AGENT_LOG, JSON.stringify({ workerId: process.env.DROID_OFFICE_WORKER_ID, stdin: chunk }) + '\\n'));
+process.stdin.resume();
 `;
 
-type Launch = TestDaemon['launches'][number];
+type Launch = { workerId: string; hookToken: string; hookUrl: string; stdin?: string };
 
 /** An office whose Droid is `signedInDroid`, so the Orchestrator can start, with each launch it made. */
 async function missionOffice(t: TestContext) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'mission-office-'));
   const clients: Client[] = [];
   let running: Awaited<ReturnType<typeof office>> | undefined;
-  const daemon = new TestDaemon(dir);
+  const before = process.env.FAKE_AGENT_LOG;
   t.after(async () => {
     try {
       await Promise.allSettled(clients.map((c) => c.close()));
       await running?.stop();
     } finally {
+      if (before === undefined) delete process.env.FAKE_AGENT_LOG;
+      else process.env.FAKE_AGENT_LOG = before;
       rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
     }
   });
   execFileSync('git', ['init', '-q'], { cwd: dir });
   const agent = path.join(dir, 'droid');
   writeFileSync(agent, signedInDroid, { mode: 0o700 });
-  /** Messages sent to a worker over the daemon. */
-  const typed = (workerId: string) => {
-    const sessions = new Set(daemon.launches.filter((launch) => launch.options.mcp?.workerId === workerId).map((launch) => launch.sessionId));
-    return daemon.messages.filter((message) => sessions.has(message.sessionId)).map((message) => message.text);
-  };
+  const log = path.join(dir, 'launches.jsonl');
+  writeFileSync(log, '');
+  process.env.FAKE_AGENT_LOG = log;
+  const records = (): Launch[] =>
+    readFileSync(log, 'utf8')
+      .split('\n')
+      // A poll can land mid-append; a finished record ends with a newline.
+      .slice(0, -1)
+      .map((line) => JSON.parse(line) as Launch);
+  const launches = () => records().filter((l) => l.stdin === undefined);
+  /** Every message pasted into a worker's terminal, oldest first. */
+  const typed = (workerId: string) =>
+    [
+      ...records()
+        .filter((l) => l.workerId === workerId && l.stdin !== undefined)
+        .map((l) => l.stdin)
+        .join('')
+        .matchAll(/\x1b\[200~([\s\S]*?)\x1b\[201~/g),
+    ].map((m) => m[1]);
   /** The `count`th session the office started for a worker. */
   const launched = async (workerId: string, count = 1): Promise<Launch> => {
     const end = Date.now() + 8000;
     for (;;) {
-      const mine = daemon.launches.filter((l) => l.options.mcp?.workerId === workerId);
+      const mine = launches().filter((l) => l.workerId === workerId);
       if (mine.length >= count) return mine[count - 1];
       if (Date.now() > end) assert.fail(`timed out waiting for launch ${count} of ${workerId}`);
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
   };
-  /** The Office MCP as one launched session reaches it: the loopback listener, with its worker credential. */
+  /** The Office MCP as one launched session reaches it: the loopback listener, with its hook credential. */
   const mcp = async (launch: Launch) => {
-    const { hookUrl, workerId, workerHookToken } = launch.options.mcp!;
     const client = new Client({ name: 'mission-office', version: '1' });
     clients.push(client);
-    await client.connect(new StreamableHTTPClientTransport(new URL(OFFICE_MCP_PATH, hookUrl), { requestInit: { headers: { [OFFICE_MCP_WORKER_HEADER]: workerId, Authorization: `Bearer ${workerHookToken}` } } }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(OFFICE_MCP_PATH, launch.hookUrl), { requestInit: { headers: { [OFFICE_MCP_WORKER_HEADER]: launch.workerId, Authorization: `Bearer ${launch.hookToken}` } } }));
     return async (name: string, args: Record<string, unknown> = {}) => {
       const r = await client.callTool({ name, arguments: args });
       return { error: r.isError === true, text: (r.content as { text?: string }[]).map((c) => c.text ?? '').join('\n'), data: (r.structuredContent ?? {}) as Record<string, unknown> };
     };
   };
-  running = await office(t, dir, agent, daemon);
+  /** A hook from one session, as Droid's hook command sends it; what the office answers is what Droid reads. */
+  const hook = async (launch: Launch, event: string, extra: Record<string, unknown> = {}) => {
+    const res = await fetch(`${launch.hookUrl}/hooks/droid?worker=${launch.workerId}&event=${event}&v=${HOOK_VERSION}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${launch.hookToken}` },
+      body: JSON.stringify({ session_id: `session-${launch.workerId}`, hook_event_name: event, ...extra }),
+    });
+    assert.equal(res.status, 200, event);
+    return res.text();
+  };
+  running = await office(t, dir, agent);
   return {
     dir,
     launched,
     typed,
     mcp,
-    daemon,
+    hook,
     get base() {
       return running!.base;
     },
     get server() {
       return running!.server;
     },
-    /** Reopen the same office while its daemon stays up. */
+    /** The office goes down keeping its terminals, and a new one opens on the same folder. */
     async restart() {
       await running!.stop(true);
-      running = await office(t, dir, agent, daemon);
+      running = await office(t, dir, agent);
     },
   };
 }
@@ -224,7 +254,7 @@ async function ownerWindow(t: TestContext, base: string) {
   return owner;
 }
 
-test('the Orchestrator finds Mission Control in office_roster and can inspect itself there', async (t) => {
+test('the Orchestrator finds Mission Control in office_roster and may read only its own terminal there', async (t) => {
   const o = await missionOffice(t);
   const owner = await ownerWindow(t, o.base);
   owner.send({ t: 'orchestrator.prompt', prompt: 'Plan the release', requestId: 'first' });
@@ -246,7 +276,7 @@ test('the Orchestrator finds Mission Control in office_roster and can inspect it
   assert.match(home.text, /building agent in Mission Control/);
 });
 
-test('the Orchestrator opens a Thread and rejects raw terminal input', async (t) => {
+test('a read of the Orchestrator’s conversation and a resize of its terminal each get a receipt', async (t) => {
   const o = await missionOffice(t);
   const owner = await ownerWindow(t, o.base);
   owner.send({ t: 'thread.read', workerId: ORCHESTRATOR_ID, request: 'page', requestId: 'read' });
@@ -255,18 +285,16 @@ test('the Orchestrator opens a Thread and rejects raw terminal input', async (t)
   owner.send({ t: 'orchestrator.prompt', prompt: 'Plan the release', requestId: 'first' });
   assert.equal((await owner.wait('action.result', (m) => m.requestId === 'first')).ok, true);
   const call = await o.mcp(await o.launched(ORCHESTRATOR_ID));
-  owner.send({ t: 'worker.attach', workerId: ORCHESTRATOR_ID, stream: false, requestId: 'open' });
+  owner.send({ t: 'worker.attach', workerId: ORCHESTRATOR_ID, requestId: 'open' });
   assert.equal((await owner.wait('action.result', (m) => m.requestId === 'open')).ok, true);
-  owner.send({ t: 'term.input', workerId: ORCHESTRATOR_ID, data: 'raw input', requestId: 'raw' });
-  assert.equal((await owner.wait('action.result', (m) => m.requestId === 'raw')).ok, false);
-  assert.equal(
-    owner.messages.some((m) => m.t === 'term.snapshot' && m.workerId === ORCHESTRATOR_ID),
-    false,
-  );
+  owner.send({ t: 'term.resize', workerId: ORCHESTRATOR_ID, cols: 100, rows: 30, requestId: 'size' });
+  await owner.wait('action.result', (m) => m.requestId === 'size');
+  const [{ worker }] = o.server.owner.mission();
+  assert.deepEqual([worker.cols, worker.rows], [100, 30]);
   // Through the Office MCP the read is the office's answer at once, not a wait for a receipt that never comes.
   const thread = await call('office_worker_thread', { workerId: ORCHESTRATOR_ID });
   assert.equal(thread.data.pending, undefined, thread.text);
-  assert.match(thread.text, /conversation file is not available yet/);
+  assert.match(thread.text, /no conversation yet/);
 });
 
 test('a prompt from a floor reaches the Orchestrator with that floor named once, and its Thread keeps what the owner typed', async (t) => {
@@ -276,6 +304,7 @@ test('a prompt from a floor reaches the Orchestrator with that floor named once,
   owner.send({ t: 'orchestrator.prompt', prompt: 'Get all open PRs merged', requestId: 'first' });
   assert.equal((await owner.wait('action.result', (m) => m.requestId === 'first')).ok, true);
   const session = await o.launched(ORCHESTRATOR_ID);
+  await o.hook(session, 'SessionStart', { source: 'startup' });
   const until = async <T>(read: () => T | undefined | false) => {
     const end = Date.now() + 8000;
     for (;;) {
@@ -291,9 +320,9 @@ test('a prompt from a floor reaches the Orchestrator with that floor named once,
   // Droid escapes a reserved tag in typed input (`<system-reminder>` arrives as `&lt;system-reminder&gt;`): this line has none, so the model reads it as sent.
   assert.equal(typed.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), typed.replace(/&/g, '&amp;'));
   assert.equal(/[<>]/.test(typed), false);
-  o.daemon.notify(session.sessionId, { type: 'create_message', message: { id: 'u1', role: 'user', content: typed } });
+  await o.hook(session, 'UserPromptSubmit', { prompt: typed });
   assert.equal(o.server.owner.mission()[0].worker.activity, 'Get all open PRs merged', 'the card shows what the owner typed');
-  o.daemon.notify(session.sessionId, { type: 'agent_turn_completed' });
+  await o.hook(session, 'Stop');
   // A worker sent the same way takes the same path: the companion's worker.prompt for the Orchestrator.
   owner.send({ t: 'worker.prompt', workerId: ORCHESTRATOR_ID, prompt: 'And the issues', requestId: 'second' });
   assert.equal((await owner.wait('action.result', (m) => m.requestId === 'second')).ok, true);
@@ -369,7 +398,7 @@ async function orchestratorTeam(t: TestContext) {
   return { o, owner, lead, sub, id, leadOf };
 }
 
-test('at turn completion the Orchestrator receives its own team’s news, never another lead’s', async (t) => {
+test('a Stop the office holds for the Orchestrator carries its own team’s news, never another lead’s', async (t) => {
   const { o, owner, sub, id } = await orchestratorTeam(t);
   const session = await o.launched(ORCHESTRATOR_ID);
   const mine = o.server.floors()[0].workers.get(id)!.name;
@@ -381,12 +410,14 @@ test('at turn completion the Orchestrator receives its own team’s news, never 
   const theirs = hired.data.worker as { id: string; name: string };
   const otherSub = await o.mcp(await o.launched(theirs.id));
 
+  await o.hook(session, 'SessionStart');
+  await o.hook(session, 'UserPromptSubmit', { prompt: 'Plan the release' });
   assert.equal((await sub('team_report', { text: 'Found the tests folder' })).error, false);
   assert.equal((await otherSub('team_report', { text: 'Lint is clean' })).error, false);
-  o.daemon.notify(session.sessionId, { type: 'agent_turn_completed' });
-  const notice = o.typed(ORCHESTRATOR_ID)[1] ?? '';
-  assert.ok(notice.includes(`${mine} reported back.`), notice);
-  assert.ok(!notice.includes(theirs.name), notice);
+  const held = JSON.parse(await o.hook(session, 'Stop')) as { decision: string; reason: string };
+  assert.equal(held.decision, 'block');
+  assert.ok(held.reason.includes(`${mine} reported back.`), held.reason);
+  assert.ok(!held.reason.includes(theirs.name), held.reason);
 });
 
 test('the Orchestrator’s team survives it being off across an office restart, and reports to it again once it is on', async (t) => {

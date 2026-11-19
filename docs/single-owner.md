@@ -6,13 +6,13 @@ account system, password, session cookie, or login page.
 
 ## Server and browser responsibilities
 
-The Node server owns the local `droid daemon` client, shell PTYs, boards, pipelines, floors,
+The Node server owns worker processes, PTYs, boards, pipelines, floors,
 and persisted state. Browser windows render that state and send actions.
-Each connection has its own floor, Thread and shell terminal subscriptions, not a user identity.
-Several windows or devices can watch the same worker Thread or shell PTY. Closing one leaves the others
-attached. For shell PTYs, the last window to type determines the PTY's size.
+Each connection has its own floor and terminal subscriptions, not a user identity.
+Several windows or devices can watch the same PTY. Closing one leaves the others
+attached. The last window to type determines the PTY's size.
 
-Worker status comes from `droid daemon` session notifications (and Factory cloud polling for cloud workers). Terminal or composer input does
+Worker status comes from Droid's hooks. Terminal input does
 not create typing presence.
 Single-player games and local issue-card carrying remain browser features.
 

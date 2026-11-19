@@ -1,6 +1,6 @@
 const reduced = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/** Transcript motion: following the bottom as it grows, and a 180 ms ease-out jump to it. */
+/** Factory's transcript motion: exponential follow and a 180 ms ease-out jump to the bottom. */
 export class ThreadScrollMotion {
   private frame = 0;
   private generation = 0;
@@ -22,14 +22,28 @@ export class ThreadScrollMotion {
     this.settled();
   }
 
-  /**
-   * Keeps the bottom in view as the transcript grows, in the same frame: the newest line never trails a
-   * paint behind. A jump to the bottom still easing in is left to land, since it aims at the bottom as it goes.
-   */
   follow() {
-    if (this.frame) return;
-    this.scroll.scrollTop = this.scroll.scrollHeight;
-    this.settled();
+    // Large appends also change content-visibility estimates; gliding through those estimates can
+    // leave the reader above the new bottom. Reserve the glide for incremental streaming.
+    if (reduced() || this.scroll.scrollHeight - this.scroll.clientHeight - this.scroll.scrollTop > 240) return this.snap();
+    this.cancel();
+    const generation = this.generation;
+    let previous = performance.now();
+    const step = (now: number) => {
+      if (generation !== this.generation) return;
+      const remaining = this.scroll.scrollHeight - this.scroll.clientHeight - this.scroll.scrollTop;
+      if (remaining <= 2) {
+        this.scroll.scrollTop = this.scroll.scrollHeight;
+        this.frame = 0;
+        this.settled();
+        return;
+      }
+      const dt = Math.min(100, Math.max(1, now - previous));
+      previous = now;
+      this.scroll.scrollTop += remaining * (1 - Math.exp(-dt / 50));
+      this.frame = requestAnimationFrame(step);
+    };
+    this.frame = requestAnimationFrame(step);
   }
 
   quick() {
