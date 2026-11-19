@@ -340,6 +340,9 @@ function taskRow(action: ThreadModelAction, entry: ThreadEntry | undefined, ctx:
 }
 
 function genericRow(action: ThreadModelAction, entry: ThreadEntry | undefined, ctx: ThreadActivityContext, rowLive: boolean, asking: boolean, nested: boolean): HTMLElement {
+  if (action.answers?.length) {
+    return h('dl.wt-answered-question', { 'aria-label': 'Answered questions' }, ...action.answers.flatMap(({ question, answer }) => [h('dt', {}, question), h('dd', {}, 'You answered: ', h('strong', {}, answer))]));
+  }
   const state = rowState(action, rowLive, ctx.live?.(action.id));
   const name = action.icon;
   const waiting = asking && state === 'working';

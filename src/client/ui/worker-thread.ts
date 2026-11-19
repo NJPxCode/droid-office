@@ -473,7 +473,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     const busy = isBusy(worker.status);
     const fromEntries = latestThreadPlan(history.entries, busy);
     if (fromEntries) return fromEntries;
-    if (worker.todos && !todosFinished(worker.todos)) {
+    if (busy && worker.todos && !todosFinished(worker.todos)) {
       return {
         steps: [],
         done: worker.todos.done,
@@ -1157,7 +1157,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
 
   /** An entry's pictures, each opening at full size, read from `owner`'s session. A cloud worker's session has none here. */
   const pictures = (entry: ThreadEntry | undefined, title: string, about?: string, owner: WorkerInfo = worker) => {
-    const imgs = !owner.cloud && opts.floor ? (entry?.images ?? []) : [];
+    const imgs = !owner.cloud ? (entry?.images ?? []) : [];
     if (!imgs.length) return null;
     const gallery = imgs.map((image, i) => ({
       src: withToken(`/api/thread/image?${new URLSearchParams({ floor: opts.floor ?? '', worker: owner.id, image: image.id })}`),
@@ -1243,22 +1243,24 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         return node;
       }
       // The live stretch and one the worker is asking in stay as steps; the fold is for work that is done.
-      return work === 'fold' && !row.live && !asking ? foldActivity(node, row, toggles) : node;
+      const answered = row.blocks.some((block) => block.kind === 'tools' && block.actions.some((action) => action.answers?.length));
+      return work === 'fold' && !row.live && !asking && !answered ? foldActivity(node, row, toggles) : node;
     }
 
     node.classList.add(row.role, row.kind === 'message' ? 'text' : 'notice');
+    const entry = loaded.get(row.id);
     if (row.kind === 'notice') {
-      const compaction = loaded.get(row.id)?.name === 'compaction' || row.id.startsWith('compaction:');
+      const compaction = entry?.name === 'compaction' || row.id.startsWith('compaction:');
       if (compaction) {
         node.append(h('div.wt-compact-divider', { role: 'separator' }, h('span', {}, 'Compacted')));
         return node;
       }
-      const imgs = row.tone === 'attachment' ? pictures(loaded.get(row.id), row.role === 'user' ? 'Picture you sent' : `Picture from ${author.name}`, undefined, author) : null;
-      node.append(imgs ?? h('p.wt-turn', { class: row.tone }, row.text));
+      const imgs = pictures(entry, row.role === 'user' ? 'Picture you sent' : `Picture from ${author.name}`, undefined, author);
+      if (imgs) node.append(imgs);
+      if (!imgs || row.tone !== 'attachment') node.append(h('p.wt-turn', { class: row.tone }, row.text));
       return node;
     }
 
-    const entry = loaded.get(row.id);
     const text = entry?.text ?? '';
     if (row.role === 'assistant') {
       if (row.startsTurn) {
@@ -1273,7 +1275,9 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         onOpenPath: onOpenPathFor(author),
         ...(canOpenFiles(author) ? { imageUrl: (path: string) => threadFileImageUrl({ floor: opts.floor ?? '', workerId: author.id, path }) } : {}),
       });
-      node.append(body);
+      const sent = pictures(entry, `Picture from ${author.name}`, undefined, author);
+      if (sent) node.append(sent);
+      if (text || !sent) node.append(body);
       if (renderOpts.turnEnd) node.append(threadMessageActions({ text: () => text, at: entryAt(entry) }));
       return node;
     }
@@ -1634,25 +1638,28 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     liveMd = undefined;
   };
 
-  type ShownStream = { kind: 'thinking' | 'text'; text: string; since: number; after: string };
+  type ShownStream = NonNullable<LiveView['stream']> & { after: string };
   /**
    * A stream that ended before its entry landed in the transcript (the daemon writes a message once it
    * is whole, so a reply's thinking lands with its text): still shown until it does, so nothing vanishes
    * and then jumps back in. Thinking shows as the finished thought it becomes.
    */
-  let heldThoughts: (ShownStream & { tookMs: number; endedAt: number })[] = [];
+  let heldThoughts: (ShownStream & { tookMs?: number; endedAt: number })[] = [];
   let heldText: (ShownStream & { endedAt: number }) | undefined;
   const HELD_IDLE_MS = 2500;
   let heldTimer: ReturnType<typeof setTimeout> | undefined;
-  const streamKey = (s: { kind: string; since: number }) => `${s.kind}:${s.since}`;
+  const streamKey = (s: { kind: string; since: number; entryId?: string }) => `${s.kind}:${s.entryId ?? s.since}`;
   const liveStreamOf = (view: LiveView | undefined): ShownStream | undefined => (view?.stream && view.after !== undefined && view.status !== 'idle' ? { ...view.stream, after: view.after } : undefined);
   /** Before `next` replaces the live view: keeps the stream it ends. */
   const holdEnded = (next: LiveView) => {
+    for (const thought of heldThoughts) {
+      if (thought.entryId) thought.tookMs = next.completedThinking?.[thought.entryId] ?? thought.tookMs;
+    }
     const ended = liveStreamOf(liveView);
     const still = liveStreamOf(next);
     if (!ended || (still && streamKey(still) === streamKey(ended)) || ended.after !== history.entries.at(-1)?.id) return;
     const endedAt = performance.now();
-    if (ended.kind === 'thinking') heldThoughts = [...heldThoughts, { ...ended, tookMs: Date.now() - (liveView?.skew ?? 0) - ended.since, endedAt }].slice(-4);
+    if (ended.kind === 'thinking') heldThoughts = [...heldThoughts, { ...ended, tookMs: ended.entryId ? next.completedThinking?.[ended.entryId] : undefined, endedAt }].slice(-4);
     else heldText = { ...ended, endedAt };
   };
   const dropHeld = () => {

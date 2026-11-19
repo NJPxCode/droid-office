@@ -476,6 +476,7 @@ object Tags {
         const val THREAD_ERROR = "worker.thread.error"
         /** In place of the composer while the worker waits on an AskUser question. */
         const val THREAD_WAITING = "worker.thread.waiting"
+        fun threadAnsweredQuestion(id: String) = "worker.thread.answered_question/$id"
         /** Reserved: former Raw TTY button in [THREAD_WAITING]. */
         const val THREAD_WAITING_TTY = "worker.thread.waiting.raw_tty"
         /** After Load earlier pushed the newest entries out: loads the newest page again. */

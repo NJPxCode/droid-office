@@ -557,6 +557,23 @@ private fun Capped(follows: Boolean, content: @Composable () -> Unit) {
 
 @Composable
 private fun ActionRow(a: ThreadModelAction, c: Cards, dense: Boolean) {
+    if (a.answers.isNotEmpty()) {
+        Column(
+            Modifier.fillMaxWidth().tagged(Tags.Worker.threadAnsweredQuestion(a.id))
+                .background(ThreadPalette.Surface, Rounded4).padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            for ((question, answer) in a.answers) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(question, style = MaterialTheme.typography.bodyMedium, color = ThreadPalette.Text)
+                    SelectionContainer {
+                        Text("You answered: $answer", style = MaterialTheme.typography.bodySmall, color = ThreadPalette.TextSecondary)
+                    }
+                }
+            }
+        }
+        return
+    }
     val isOpen = ThreadView.Open.action(a, c.open)
     val (verb, subject) = ToolCards.words(a)
     ToolRow(

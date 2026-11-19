@@ -55,6 +55,8 @@ export interface Worker {
   liveStream?: { kind: 'thinking' | 'text'; text: string; since: number; messageId?: string; blockIndex?: number };
   /** Start times of active thinking blocks (`${messageId}:${blockIndex}` -> epoch ms). */
   thinkingStartedAt: Map<string, number>;
+  /** Start of the thinking phase before its first visible token, consumed by the first block. */
+  thinkingPhaseSince?: number;
   /** Completed thinking durations (`${messageId}:${blockIndex}` -> durationMs) from `thinking_text_complete`. */
   thinkingDurations: Map<string, number>;
   /** Running tool calls reported by `tool_call` / `tool_progress_update`. */

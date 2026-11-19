@@ -379,7 +379,7 @@ internal fun Thread(
     val allWorkers = remember(data) { data.allDeskWorkers }
     val activePlan = remember(state.entries, w.state.busy, w.todos) {
         val fromEntries = ThreadView.latestPlan(state.entries, w.state.busy)
-        if (fromEntries != null) fromEntries.takeUnless { it.stale } else ThreadView.fallbackPlan(w.todos)
+        if (fromEntries != null) fromEntries.takeUnless { it.stale } else if (w.state.busy) ThreadView.fallbackPlan(w.todos) else null
     }
     val pictures = remember(effectiveFloor, w.id) { effectiveFloor?.let { PictureSource(it, w.id) } }
     val floorDir = remember(data.floors, effectiveFloor) { data.floors.firstOrNull { it.id == effectiveFloor }?.dir }
@@ -880,6 +880,9 @@ private fun Message(
     } else {
         Column(tag.then(if (offerActions) Modifier.clickable(onClick = onActions) else Modifier)) {
             val files = LocalFilePreview.current
+            if (images.isNotEmpty() && LocalPictureSource.current != null) {
+                ThreadPictures(images, "Picture from ${w.name}", null, end = false)
+            }
             SelectionContainer { MarkdownText(text, streaming = streaming, onOpenPath = files?.let { it::open }, rich = true, fadeInBlocks = false) }
             m.turnChanges?.let { TurnChanges(m.id, it, floorDir, Modifier.padding(top = 10.dp)) }
             AnimatedVisibility(actions && offerActions) {
@@ -892,10 +895,14 @@ private fun Message(
 @Composable
 private fun Notice(w: WorkerInfo, n: ThreadRow.Notice, entry: ThreadEntry?) {
     val tag = Modifier.fillMaxWidth().tagged(Tags.Worker.threadEntry(n.id))
+    val images = entry?.images.orEmpty()
+    val canShowImages = images.isNotEmpty() && LocalPictureSource.current != null
+    if (canShowImages && n.tone != NoticeTone.Attachment) {
+        ThreadPictures(images, "Picture from ${w.name}", null, end = false)
+    }
     when (n.tone) {
         NoticeTone.Attachment -> Box(tag, contentAlignment = if (n.role == ThreadRole.User) Alignment.CenterEnd else Alignment.CenterStart) {
-            val images = entry?.images.orEmpty()
-            if (images.isNotEmpty() && LocalPictureSource.current != null) {
+            if (canShowImages) {
                 ThreadPictures(images, if (n.role == ThreadRole.User) "Picture you sent" else "Picture from ${w.name}", null, end = n.role == ThreadRole.User)
             } else {
                 Text(n.text, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary))

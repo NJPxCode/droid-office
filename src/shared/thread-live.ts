@@ -33,6 +33,8 @@ export interface ThreadLiveStream {
   kind: 'thinking' | 'text';
   text: string;
   since: number;
+  /** Canonical entry this stream will become, when the daemon names it. */
+  entryId?: string;
 }
 
 export interface ThreadLive {
@@ -45,11 +47,17 @@ export interface ThreadLive {
   phaseSince?: number;
   after?: string;
   stream?: ThreadLiveStream;
+  /** Recently completed thoughts, including those not yet written to the transcript. */
+  completedThinking?: Record<string, number>;
   tools: ThreadLiveTool[];
   waiting?: { kind: 'permission' | 'question' | 'spec' | 'other'; toolId?: string };
   settings?: ThreadSessionSettings;
   /** A rewind the office is running in the daemon (worker.rewind), until it ends. */
   rewind?: { entryId: string; since: number };
+}
+
+export function thinkingDuration(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
 }
 
 /** Factory's status for a working state (its uEc): an open question or permission wins. */

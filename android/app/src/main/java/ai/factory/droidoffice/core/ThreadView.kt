@@ -253,7 +253,10 @@ object ThreadView {
         val done = list.count { it.done }
         val current = list.firstOrNull { it.active }?.text
         val allDone = done == total
-        val stale = allDone && !busy && entries.any { it.seq > planSeq && it.kind == ThreadKind.Text && it.role == ThreadRole.User }
+        val stale = (!busy && !allDone) || entries.any {
+            it.seq > planSeq && ((it.kind == ThreadKind.Text && it.role == ThreadRole.User) ||
+                (!allDone && it.kind == ThreadKind.Notice && it.id.startsWith("turn:")))
+        }
         return ActivePlan(
             steps = list,
             done = done,

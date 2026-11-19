@@ -29,7 +29,7 @@ export interface ThreadEntry {
   at?: number;
   /** A tool's: when its result was written. */
   doneAt?: number;
-  /** A thought's: how long the model took on the message it came in, from the record before it. */
+  /** A thought's recorded duration, from its block or the daemon's completion event. */
   tookMs?: number;
   /** A Task call's: the session of the subagent it started (`thread.read` with `child`). */
   child?: string;

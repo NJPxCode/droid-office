@@ -231,7 +231,8 @@ class ThreadViewTest {
 
         val nextPrompt = ThreadEntry("u2", 5, ThreadRole.User, ThreadKind.Text, text = "Now polish the diff view")
         assertTrue(ThreadView.latestPlan(listOf(doneCall, nextPrompt), busy = false)!!.stale)
-        assertFalse(ThreadView.latestPlan(listOf(doneCall, nextPrompt), busy = true)!!.stale)
+        assertTrue(ThreadView.latestPlan(listOf(doneCall, nextPrompt), busy = true)!!.stale)
+        assertTrue(ThreadView.latestPlan(listOf(todoCall), busy = false)!!.stale)
     }
 
     @Test

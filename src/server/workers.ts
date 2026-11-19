@@ -600,6 +600,7 @@ export class WorkerManager {
       daemon: {
         working: w.workingState,
         ...(w.liveStream ? { stream: w.liveStream } : {}),
+        ...(w.thinkingDurations.size ? { completedThinking: Object.fromEntries([...w.thinkingDurations].slice(-4)) } : {}),
         tools: [...w.liveTools.values()],
         ...(w.liveSettings ? { settings: w.liveSettings } : {}),
         ...(label ? { label } : {}),

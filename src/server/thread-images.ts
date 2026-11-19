@@ -149,7 +149,7 @@ function picture(value: unknown): Picture | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const part = value as Record<string, unknown>;
   const source = part.source && typeof part.source === 'object' ? (part.source as Record<string, unknown>) : {};
-  const type = source.media_type as ThreadImage['type'];
+  const type = (source.media_type ?? source.mediaType) as ThreadImage['type'];
   if (part.type !== 'image' || source.type !== 'base64' || !TYPES.has(type) || typeof source.data !== 'string' || !BASE64.test(source.data)) return undefined;
   return { type, data: source.data };
 }

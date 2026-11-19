@@ -161,9 +161,9 @@ test('pictures in tool results and messages are referenced by id and served from
     ]),
   ]);
   const page = await reader.read(source);
-  const [sent, read, mislabelled] = [page.entries[1], page.entries[2], page.entries[3]];
-  assert.equal(sent.kind, 'notice');
-  assert.equal(sent.text, '[Image attachment]');
+  const [sent, read, mislabelled] = page.entries;
+  assert.equal(sent.kind, 'text');
+  assert.equal(sent.text, 'What is on this screen?');
   assert.deepEqual(
     sent.images?.map(({ type, width, height }) => ({ type, width, height })),
     [{ type: 'image/jpeg', width: 540, height: 1200 }],
@@ -929,13 +929,55 @@ test('entries carry when they were written, a tool when it finished, and a thoug
   const [prompt, thought, tool, compacted] = page.entries;
   assert.equal(prompt.at, Date.parse(at(10)));
   assert.equal(thought.kind, 'thinking');
-  assert.equal(thought.tookMs, 3000, 'from the hook record before it, not durationMs');
+  assert.equal(thought.tookMs, 20, 'the explicit block duration wins over the time between records');
   assert.equal(tool.at, Date.parse(at(14)));
   assert.equal(tool.doneAt, Date.parse(at(17)));
   assert.equal(page.entries.length, 4, 'a provider switch is not a compaction');
   assert.equal(compacted.name, 'compaction');
   assert.equal(compacted.text, 'Compacted');
   assert.doesNotMatch(JSON.stringify(page), /PRIVATE_/);
+});
+
+test('late queued turn outcomes are placed before the next prompt without changing its cursor', async (t) => {
+  const { reader, source, file } = await rig(t, [text('turn-a', 'One', 'user'), text('reply-a', 'Started'), text('turn-b', 'Two', 'user'), text('reply-b', 'Finished')]);
+  const prior = await reader.read(source);
+  await appendFile(file, lines({ type: 'agent_turn_outcome', turnId: 'turn-a', reason: 'cancelled', resultKind: 'null' }, { type: 'agent_turn_outcome', turnId: 'turn-b', reason: 'completed', resultKind: 'text' }));
+  const page = await reader.read(source);
+  assert.deepEqual(
+    page.entries.map((e) => e.id),
+    ['turn-a:0', 'reply-a:0', 'turn:turn-a:cancelled', 'turn-b:0', 'reply-b:0', 'turn:turn-b:completed'],
+  );
+  assert.equal(page.entries[3].seq, prior.entries[2].seq);
+  assert.deepEqual(
+    page.presentation?.rows.map((r) => r.id),
+    ['turn-a:0', 'reply-a:0', 'turn:turn-a:cancelled', 'turn-b:0', 'reply-b:0'],
+  );
+  assert.equal((await reader.read(source, prior.entries[2].seq)).entries.at(-1)?.id, 'turn:turn-a:cancelled');
+});
+
+test('daemon compaction and Office deliveries never enter owner prompt history or offer rewind', async (t) => {
+  const records = [
+    text('owner', 'Keep this.', 'user'),
+    message('__internal__system-notice__compaction:sample', 'user', [{ type: 'text', text: 'Conversation history has been compacted. Continue the task.' }]),
+    { ...text('team', 'Droid Office notice: team update\nYour team changed.', 'user'), seq: 2 },
+    text('delivery', 'Droid Office delivery: message from another worker', 'user'),
+    text('reply', 'I saw the update.'),
+  ];
+  const { reader, source, root } = await rig(t, records);
+  const page = await reader.read(source);
+  assert.deepEqual(
+    page.entries.map(({ kind, role }) => [kind, role]),
+    [
+      ['text', 'user'],
+      ['notice', 'system'],
+      ['notice', 'system'],
+      ['notice', 'system'],
+      ['text', 'assistant'],
+    ],
+  );
+  assert.equal(await reader.rewindPoint(source, 'team:0'), undefined);
+  const labels = new WorkerThreadReader(root, { sessions: 2, entries: 0, bytes: 0 }, true);
+  assert.equal(await labels.readText(source), '\n\nuser: Keep this.\n\nassistant: I saw the update.');
 });
 
 test("a Task call names its subagent's session, which reads like the worker's own", async (t) => {

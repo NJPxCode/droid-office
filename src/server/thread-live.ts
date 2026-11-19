@@ -17,6 +17,7 @@ export interface DaemonLiveToolInput {
 export interface DaemonLiveInput {
   working: ThreadLiveWorking;
   stream?: { kind: 'thinking' | 'text'; text: string; since: number; messageId?: string; blockIndex?: number };
+  completedThinking?: Record<string, number>;
   tools?: readonly DaemonLiveToolInput[];
   settings?: ThreadSessionSettings;
   label?: string;
@@ -134,11 +135,12 @@ export class ThreadLiveTracker {
     let stream: ThreadLive['stream'];
     if (busy && daemon?.stream && (working === 'thinking' || working === 'streaming_assistant_message')) {
       const ds = daemon.stream;
-      const landedById = ds.messageId ? entries.some((e) => e.id === `${ds.messageId}:text` || e.id === `${ds.messageId}:${ds.blockIndex ?? 0}`) : false;
+      const entryId = ds.messageId ? `${ds.messageId}:${ds.blockIndex ?? 0}` : undefined;
+      const landedById = ds.messageId ? entries.some((e) => e.id === `${ds.messageId}:text` || e.id === entryId) : false;
       if (ds.text && !landedById && !landed(ds.text, entries)) {
         const key = `${ds.kind}:${ds.messageId ?? ''}:${ds.blockIndex ?? 0}:${textSignature(ds.text).slice(0, 40)}`;
         if (state.stream?.key !== key) state.stream = { key, since: ds.since || now };
-        stream = { kind: ds.kind, text: ds.text, since: state.stream.since };
+        stream = { kind: ds.kind, text: ds.text, since: state.stream.since, ...(entryId ? { entryId } : {}) };
       }
     }
     if (!stream) state.stream = undefined;
@@ -161,6 +163,7 @@ export class ThreadLiveTracker {
       ...(working !== 'idle' ? { phaseSince: state.phaseSince } : {}),
       ...(entries.length ? { after: entries[entries.length - 1].id } : {}),
       ...(stream ? { stream } : {}),
+      ...(daemon?.completedThinking ? { completedThinking: daemon.completedThinking } : {}),
       tools,
       ...(waiting ? { waiting } : {}),
       ...(merged ? { settings: merged } : {}),

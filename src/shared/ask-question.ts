@@ -142,6 +142,24 @@ export function reviewAnswers(review: readonly string[]): { question: string; an
   return pairs;
 }
 
+export interface ThreadQuestionAnswer {
+  question: string;
+  answer: string;
+}
+
+/** The persisted AskUser result, not the questionnaire input or the assistant's account of it. */
+export function answeredQuestions(output: string): ThreadQuestionAnswer[] {
+  return output
+    .split(/(?:^|\r?\n)\d+\.\s+\[question\]\s*/i)
+    .slice(1, 21)
+    .flatMap((block) => {
+      const match = /^([\s\S]+?)\r?\n\[answer\][ \t]*([\s\S]*)$/i.exec(block);
+      const question = match?.[1]?.trim();
+      const answer = match?.[2]?.trim();
+      return question && answer ? [{ question, answer }] : [];
+    });
+}
+
 export type QuestionStepState = 'done' | 'current' | 'upcoming';
 export interface QuestionStep {
   /** The question's topic (AskUser's tab name), else the start of the question. */

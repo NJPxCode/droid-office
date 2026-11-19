@@ -41,6 +41,8 @@ Typing just `/` offers the complete slash-command list. Swipe through the bounde
 Thread follows the newest message without moving away when older pages load. Drag toward earlier messages to pause follow; return to the bottom or tap the down arrow to resume. TodoWrite updates appear only in the plan drawer, not inline in the conversation.
 Live thinking and replies reveal word by word, then hand off to the saved message. Joining an in-progress turn shows what's already been written and reveals new text as it comes in.
 
+Office and compaction messages appear as notices, not as your prompts. Pictures sent with prompts open from their thumbnails; after you submit an AskUser questionnaire, `worker.thread.answered_question/<tool id>` shows the recorded questions and your answers. A plan from a previous turn does not stay above the composer on the next turn.
+
 <p>
   <img src="docs/welcome.jpg" alt="The welcome screen with Scan the office's QR code and Paste a join link" width="24%">
   <img src="docs/scan.jpg" alt="The QR scanner with a frame and a torch button" width="24%">
