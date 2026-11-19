@@ -195,7 +195,8 @@ test('worker-thread subscribes via thread.watch, consumes push snapshots immedia
     },
     { entries: pushedEntries, rows: presentThread(pushedEntries, true) },
   );
-  assert.match(await page.locator('.wt-entry.assistant').innerText(), /Pushed live reply!/);
+  // The snapshot inserts its row immediately, before content-visibility necessarily lays it out.
+  assert.match((await page.locator('.wt-entry.assistant').textContent()) ?? '', /Pushed live reply!/);
 
   // Tick 14 seconds of 1s timer + worker status updates -> zero thread.read polls!
   const readsBefore = await page.evaluate(() => (window as any).sent.filter((m: any) => m.t === 'thread.read').length);
@@ -296,7 +297,7 @@ test('live tool output and nested reading positions survive canonical updates, a
       live: { rev: 1, at: Date.now(), status: 'responding', working: 'executing_tool', after: 'tool:cmd', tools: [{ id: 'tool:cmd', name: 'Execute', phase: 'running', startedAt: Date.now(), output: 'Live output before JSONL result' }] },
     });
   });
-  assert.match(await page.locator('.wt-cmd-out').innerText(), /Live output before JSONL result/);
+  assert.match((await page.locator('.wt-cmd-out').textContent()) ?? '', /Live output before JSONL result/);
   await push([...entries, { ...command, output: 'Canonical final result' }, { id: 'compaction:done', seq: 72, role: 'system', kind: 'notice', name: 'compaction', text: 'Conversation compacted' }], false);
   // Once it finishes it folds away like a finished live group, and opens again on a click.
   assert.equal(await page.locator('[data-disclosure="tool:cmd"] .wt-tr-trigger').getAttribute('aria-expanded'), 'false');
