@@ -196,6 +196,7 @@ export function openFloorOrder(net: Net): void {
     const active = document.activeElement;
     const restore = focusAt >= 0 && (active === document.body || (active !== null && list.contains(active)));
     const focusedId = active?.closest<HTMLElement>('[data-floor-id]')?.dataset.floorId;
+    const control = active?.matches('.floor-off') ? '.floor-off' : '[data-floor-drag]';
     list.replaceChildren(
       ...store.floors.map((f, i) =>
         h(
@@ -210,8 +211,9 @@ export function openFloorOrder(net: Net): void {
     );
     if (!restore) return;
     const rows = [...list.querySelectorAll<HTMLElement>('[data-floor-id]')];
-    const row = rows.find((r) => r.dataset.floorId === focusedId) ?? rows[Math.min(focusAt, rows.length - 1)];
-    row?.querySelector<HTMLElement>('[data-floor-drag]')?.focus();
+    const same = rows.find((r) => r.dataset.floorId === focusedId);
+    if (same) same.querySelector<HTMLElement>(control)?.focus();
+    else rows[Math.min(focusAt, rows.length - 1)]?.querySelector<HTMLElement>('[data-floor-drag]')?.focus();
   };
   const dispose = floorReorder(list, net);
   const off = store.on('floors', render);
