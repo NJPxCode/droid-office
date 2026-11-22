@@ -419,8 +419,11 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
   await show('review');
   assert.equal(await workspace.locator('.qw-question').textContent(), 'Review your answers');
   assert.deepEqual(await states(), ['done', 'done', 'done', 'current']);
+  // The elapsed-time dismissal must still fire if the wall clock does not advance.
+  await page.clock.setFixedTime(new Date());
   await workspace.getByRole('button', { name: 'Submit answers', exact: true }).click();
-  await page.waitForFunction(() => (window as any).actions.length === 2);
+  await page.waitForFunction(() => document.querySelector('.qw-feedback')?.textContent === 'Sent. Pixel is continuing.');
+  assert.equal(await page.evaluate(() => (window as any).actions.length), 2);
   assert.equal(await page.evaluate(() => (window as any).actions[1].menu.review.length), 6);
   assert.equal(await workspace.count(), 1, 'one window served the whole questionnaire');
 
@@ -433,6 +436,7 @@ test('a pane keeps one answer window open across a questionnaire and closes it w
     w.paint();
   });
   await workspace.waitFor({ state: 'detached', timeout: 6000 });
+  await page.clock.setSystemTime(new Date());
 
   // A cloud worker's AskUser has no terminal Review step and no Raw TTY button.
   await page.evaluate(() => {

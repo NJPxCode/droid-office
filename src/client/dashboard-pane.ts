@@ -202,7 +202,7 @@ export function createPane(host: PaneHost, index: number): Pane {
   let series = { key: '', answers: {} as Record<number, string> };
   let answered = false;
   let questionReplying = false;
-  let answerSettlesAt = 0;
+  let answerSettleTimer: number | undefined;
 
   // --- Focus and drag-and-drop ------------------------------------------------------------------
   let focusComposerOnClick = false;
@@ -274,7 +274,8 @@ export function createPane(host: PaneHost, index: number): Pane {
     series = { key: '', answers: {} };
     answered = false;
     questionReplying = false;
-    answerSettlesAt = 0;
+    clearTimeout(answerSettleTimer);
+    answerSettleTimer = undefined;
     question.hidden = true;
     question.replaceChildren();
   }
@@ -765,7 +766,8 @@ export function createPane(host: PaneHost, index: number): Pane {
   function paintQuestion(review = false) {
     const w = id ? host.worker(id) : undefined;
     if (!w || mode === 'empty' || !mode) return;
-    if (w.status !== 'needs_input' && question.hidden && !shownMenu && !questionWorkspace && !questionReplying && Date.now() >= answerSettlesAt) return;
+    const settling = questionReplying || answerSettleTimer !== undefined;
+    if (w.status !== 'needs_input' && question.hidden && !shownMenu && !questionWorkspace && !settling) return;
     const screen = lines(w.id);
     const next = canAnswer(w, screen) ? workerMenu(w, screen) : undefined;
     if (w.status !== 'needs_input') {
@@ -781,7 +783,6 @@ export function createPane(host: PaneHost, index: number): Pane {
       questionDraft.choices = undefined;
     }
     const current = sameMenu(shownMenu, next);
-    const settling = questionReplying || Date.now() < answerSettlesAt;
     const entries = thread?.entries() ?? [];
     const asked = JSON.stringify(pendingQuestions(entries, w.ask).map((q) => [q.question, q.options]));
     if (asked !== series.key) series = { key: asked, answers: {} };
@@ -831,17 +832,17 @@ export function createPane(host: PaneHost, index: number): Pane {
       const error = await host.action({ t: 'worker.answer', workerId: w.id, menu: answerMenu, ...value }, w.id, intended, 'Answer sent.');
       if (id !== w.id || host.floor() !== intended) return;
       questionReplying = false;
+      clearTimeout(answerSettleTimer);
+      answerSettleTimer = undefined;
       if (error) {
-        answerSettlesAt = 0;
         toast(error, 'warn');
       } else {
         const sent = questionPresentation(answerMenu, thread?.entries() ?? [], w.ask);
         if (sent.position) series.answers = { ...series.answers, [sent.position]: replySummary(sent, value) };
         answered = true;
-        const until = Date.now() + 3000;
-        answerSettlesAt = until;
-        setTimeout(() => {
-          if (id !== w.id || answerSettlesAt !== until) return;
+        // The timer owns the settling window; the wall clock may not have reached its deadline.
+        answerSettleTimer = window.setTimeout(() => {
+          answerSettleTimer = undefined;
           questionKey = '';
           paintQuestion();
         }, 3000);
