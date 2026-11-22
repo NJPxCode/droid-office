@@ -5,9 +5,10 @@ import { cannotRun, providerName, type SubscriptionProvider, type SubscriptionPr
 import { copyButton } from './clipboard';
 import { h, openModal, toast, type Modal } from './dom';
 import { field, windowHeader } from './kit';
+import { isModelHidden, visibleModels } from '../../shared/model-visibility';
 import { modelPicker } from './model-picker';
 import { providerLogo } from './model-logo';
-import { droidCatalogue, officeChoice, pickerModel } from './models';
+import { droidCatalogue, officeChoice, pickerModel, type DroidModelOption } from './models';
 import { accountRow, connect, connectingBlock, connectLabel, placeholderProvider, UPDATES_FIRST_NOTE, updatesFirst } from './subscriptions-settings';
 import { progressBar, signInPanel, waitLine } from './welcome-signin';
 import {
@@ -108,12 +109,19 @@ export function openWelcome(net: Net, first?: WelcomeStepId) {
   const picker = modelPicker({ id: 'welcome-model', label: 'Model for new workers', models: [], value: officeChoice().model, none: { label: 'Default', note: 'Droid’s own default' } });
   let picked = false;
   let airgapped = !!store.setup.airgapped;
+  let catalogueModels: DroidModelOption[] = [];
   let modelIds: string[] = [];
+  const syncVisibleIds = () => {
+    modelIds = visibleModels(catalogueModels, store.hiddenModels, store.hideNativeModels).map((m) => m.id);
+  };
   picker.element.addEventListener('change', () => (picked = true));
   picker.element.addEventListener('change', () => paintFooter(shown()));
   const preselect = () => {
+    syncVisibleIds();
     if (picked) return;
-    picker.set(readyModel(store.subscriptions, modelIds, officeChoice().model, justConnected(store.subscriptions, pressed), !!store.setup.airgapped));
+    const saved = officeChoice().model;
+    const allowedSaved = saved && (catalogueModels.length ? modelIds.includes(saved) : !isModelHidden({ id: saved, custom: saved.startsWith('custom:') }, store.hiddenModels, store.hideNativeModels)) ? saved : undefined;
+    picker.set(readyModel(store.subscriptions, modelIds, allowedSaved, justConnected(store.subscriptions, pressed), !!store.setup.airgapped));
   };
   let loading = false;
   const loadModels = () => {
@@ -123,7 +131,7 @@ export function openWelcome(net: Net, first?: WelcomeStepId) {
     void droidCatalogue()
       .then((c) => {
         if (mode !== !!store.setup.airgapped) return;
-        modelIds = c.models.map((m) => m.id);
+        catalogueModels = c.models;
         picker.setModels(c.models.map(pickerModel), store.setup.airgapped ? undefined : { label: 'Default', note: 'Droid’s own default' });
         preselect();
         paintFooter(shown());
@@ -373,6 +381,7 @@ export function openWelcome(net: Net, first?: WelcomeStepId) {
     if (airgapped !== !!store.setup.airgapped) {
       airgapped = !!store.setup.airgapped;
       picked = false;
+      catalogueModels = [];
       modelIds = [];
       picker.setModels([], airgapped ? undefined : { label: 'Default', note: 'Droid’s own default' });
       picker.set('');
@@ -390,7 +399,17 @@ export function openWelcome(net: Net, first?: WelcomeStepId) {
     paintFooter(at);
   };
 
-  const offs = [store.on('setup', paint), store.on('subscriptions', paint), store.on('prompts', preselect)];
+  const offs = [
+    store.on('setup', paint),
+    store.on('subscriptions', paint),
+    store.on('prompts', preselect),
+    store.on('hiddenModels', () => {
+      syncVisibleIds();
+      if (picked && picker.value() && catalogueModels.length && !modelIds.includes(picker.value())) picked = false;
+      preselect();
+      paintFooter(shown());
+    }),
+  ];
   // The "resets in" lines age while the window stays open.
   const timer = setInterval(paint, 30_000);
   const modal = openModal(el, {

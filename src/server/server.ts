@@ -1070,6 +1070,7 @@ export async function startServer(cfg: Config) {
       freshMain: freshMain.state(),
       subagents: subagents.state(),
       hiddenModels: hiddenModels.state(),
+      hideNativeModels: hiddenModels.hideNative(),
       workerLabels: workerLabels.state(),
       workerAnswerMultiSelect: true,
       threadActions: true,
@@ -2116,10 +2117,11 @@ export async function startServer(cfg: Config) {
         toastAll(on ? `🌿 ${who} set fresh workers to start from the latest main` : `🌿 ${who} set fresh workers to start from the branch the checkout is on`);
         break;
       }
-      case 'models.hide': {
-        const error = hiddenModels.set(msg.id, msg.hidden);
+      case 'models.hide':
+      case 'models.hideNative': {
+        const error = msg.t === 'models.hide' ? hiddenModels.set(msg.id, msg.hidden) : hiddenModels.setHideNative(msg.hidden);
         if (error) return stop(error);
-        broadcast({ t: 'models.hidden', ids: hiddenModels.state() });
+        broadcast({ t: 'models.hidden', ids: hiddenModels.state(), hideNative: hiddenModels.hideNative() });
         done();
         break;
       }

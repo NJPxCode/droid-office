@@ -133,6 +133,7 @@ export function modelPicker(opts: ModelPickerOptions): ModelPicker {
       visibleModels(
         source.filter((m) => !opts.customOnly?.() || m.custom),
         store.hiddenModels,
+        store.hideNativeModels,
       ),
     );
   const known = (id: string) => withLiveAvailability(source).find((m) => m.id === id);
@@ -315,11 +316,15 @@ export function modelPicker(opts: ModelPickerOptions): ModelPicker {
       nodes.push(h('div.mp-head', { role: 'presentation' }, s.key.startsWith('g:') ? (s.models[0]?.glyph ? pinwheel() : providerLogo(s.label)) : null, s.label, h('small', {}, s.flat ? '' : String(s.models.length))));
       for (const m of s.models) nodes.push(row(m.id, m, !!s.flat));
     }
-    if (opts.allowCustom && !opts.customOnly?.() && isCustomId(typed) && !known(typed) && !store.hiddenModels.includes(typed)) {
+    const typedIsHidden = store.hiddenModels.includes(typed) || (store.hideNativeModels && !typed.startsWith('custom:'));
+    if (opts.allowCustom && !opts.customOnly?.() && isCustomId(typed) && !known(typed) && !typedIsHidden) {
       customValue = typed;
       nodes.push(row(CUSTOM, undefined, false));
     }
-    ui.list.replaceChildren(...(nodes.length ? nodes : [h('div.mp-empty', {}, h('b', {}, 'No model matches'), h('span', {}, typed ? `Nothing is called “${typed}”. Clear the search or pick another group.` : 'The list is empty.'))]));
+    let emptyText = 'The list is empty.';
+    if (typed) emptyText = `Nothing is called “${typed}”. Clear the search or pick another group.`;
+    else if (store.hideNativeModels) emptyText = 'Native Factory models are hidden in Settings → Models, and no custom models are configured.';
+    ui.list.replaceChildren(...(nodes.length ? nodes : [h('div.mp-empty', {}, h('b', {}, 'No model matches'), h('span', {}, emptyText))]));
     const total = models.length;
     ui.count.textContent = typed || scope ? `${rows.filter((r) => r.model).length} of ${total}` : `${total} models`;
     paintChips();
@@ -337,7 +342,7 @@ export function modelPicker(opts: ModelPickerOptions): ModelPicker {
   };
 
   /** Hidden ids also affect typed custom choices that aren't in this picker's catalogue. */
-  const stamp = () => JSON.stringify([store.hiddenModels, listed().map((m) => [m.id, m.reason, m.note]), noneReason(), offersSubscriptions(store.subscriptions)]);
+  const stamp = () => JSON.stringify([store.hiddenModels, store.hideNativeModels, listed().map((m) => [m.id, m.reason, m.note]), noneReason(), offersSubscriptions(store.subscriptions)]);
 
   const paintOffer = () => {
     const offered = offersSubscriptions(store.subscriptions);
@@ -372,8 +377,10 @@ export function modelPicker(opts: ModelPickerOptions): ModelPicker {
   };
 
   function choose(next: string) {
-    if (next && store.hiddenModels.includes(next)) return;
-    if (next && !canPick(known(next))) return;
+    const target = next ? known(next) : undefined;
+    const isNative = target ? !target.custom : !next.startsWith('custom:');
+    if (next && (store.hiddenModels.includes(next) || (store.hideNativeModels && isNative))) return;
+    if (next && !canPick(target)) return;
     const changed = next !== value;
     value = next;
     if (next) saveRecent(next);
