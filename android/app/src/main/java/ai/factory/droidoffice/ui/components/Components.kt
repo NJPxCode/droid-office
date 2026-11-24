@@ -1,9 +1,11 @@
 package ai.factory.droidoffice.ui.components
 
+import kotlin.math.PI
+import kotlin.math.cos
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.StartOffset
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -41,18 +43,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -112,58 +119,104 @@ fun Modifier.tagged(name: String) = this.semantics {
     testTag = name
 }
 
-/** A square mono pill with a status-colored indicator; it blinks for "needs you", like the office's. [blocked] reads "Blocked" whatever the status. */
+/**
+ * A worker's status as a bare animated mark in its colour, so it reads by shape as well as colour:
+ * bars rising and falling while working, an arc turning while starting, a prompt with a blinking
+ * caret when ready, a pulsing `!` when it needs you (a still amber one when blocked), a check that
+ * draws itself when a turn is done and dims once read, a moon asleep. TalkBack reads the word.
+ */
 @Composable
-fun StatusPill(status: WorkerStatus, modifier: Modifier = Modifier, acked: Boolean = true, tag: String? = null, compact: Boolean = false, blocked: Boolean = false) {
+fun StatusIcon(status: WorkerStatus, modifier: Modifier = Modifier, acked: Boolean = true, tag: String? = null, blocked: Boolean = false, size: Dp = 18.dp) {
     val look = if (blocked) StatusLook("Blocked", Palette.Warning) else statusLook(status, acked)
-    val indicatorOnly = !blocked && compact && (status == WorkerStatus.Working || status == WorkerStatus.Done)
-    val blink = if (look.loud) {
-        val t = rememberInfiniteTransition(label = "blink")
-        t.animateFloat(1f, 0.25f, infiniteRepeatable(tween(600, easing = LinearEasing), RepeatMode.Reverse), label = "blink").value
-    } else 1f
-    Row(
-        modifier
-            // Read as "Needs you" rather than spelled out from the upper-case label.
-            .clearAndSetSemantics {
-                contentDescription = look.label
-                if (tag != null) {
-                    testTagsAsResourceId = true
-                    testTag = tag
+    val mark = when {
+        blocked -> Mark.Blocked
+        status == WorkerStatus.Working -> Mark.Working
+        status == WorkerStatus.Starting -> Mark.Starting
+        status == WorkerStatus.Idle -> Mark.Ready
+        status == WorkerStatus.NeedsInput -> Mark.NeedsYou
+        status == WorkerStatus.Done -> if (acked) Mark.Done else Mark.DoneNew
+        status.asleep -> Mark.Asleep
+        else -> Mark.Unknown
+    }
+    val semantics = modifier.size(size).clearAndSetSemantics {
+        contentDescription = look.label
+        if (tag != null) {
+            testTagsAsResourceId = true
+            testTag = tag
+        }
+    }
+    if (mark == Mark.Asleep) {
+        Box(semantics, contentAlignment = Alignment.Center) { Icon(OfficeIcons.Moon, null, Modifier.size(size * 0.86f), tint = look.color) }
+        return
+    }
+    val phase = if (mark.period > 0) {
+        rememberInfiniteTransition(label = "status").animateFloat(0f, 1f, infiniteRepeatable(tween(mark.period, easing = LinearEasing)), label = "phase")
+    } else null
+    // An unread Done draws its check in once; a read one is already there.
+    val drawn = remember(mark) { Animatable(if (mark == Mark.DoneNew) 0f else 1f) }
+    LaunchedEffect(mark) { if (mark == Mark.DoneNew) drawn.animateTo(1f, tween(460, easing = FastOutSlowInEasing)) }
+    // Every animated value is read only while drawing, so the card never recomposes or relayouts for it.
+    Canvas(semantics) {
+        val s = this.size.minDimension
+        val w = s * 0.12f
+        val t = phase?.value ?: 0f
+        fun at(x: Float, y: Float) = Offset(s * x, s * y)
+        fun exclaim(alpha: Float) {
+            drawLine(look.color.copy(alpha = alpha), at(0.5f, 0.16f), at(0.5f, 0.58f), strokeWidth = w * 1.15f, cap = StrokeCap.Round)
+            drawCircle(look.color.copy(alpha = alpha), radius = w * 0.72f, center = at(0.5f, 0.82f))
+        }
+        when (mark) {
+            Mark.Working -> {
+                val bar = s * 0.17f
+                val gap = s * 0.115f
+                val left = (s - 3 * bar - 2 * gap) / 2
+                for (i in 0 until 3) {
+                    val wave = 0.5f - 0.5f * cos(2f * PI.toFloat() * ((t + i * 0.22f) % 1f))
+                    val h = s * (0.26f + 0.6f * wave)
+                    drawRoundRect(look.color, topLeft = Offset(left + i * (bar + gap), s * 0.88f - h), size = Size(bar, h), cornerRadius = CornerRadius(bar / 2))
                 }
             }
-            .then(
-                if (indicatorOnly) Modifier.size(24.dp)
-                else Modifier
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(if (look.loud) look.color.copy(alpha = 0.12f) else Palette.SurfaceRaised)
-                    .border(1.dp, look.color.copy(alpha = if (look.loud) 0.55f else 0.35f), RoundedCornerShape(3.dp))
-                    .padding(horizontal = 7.dp, vertical = 4.dp),
-            ),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = if (indicatorOnly) Arrangement.Center else Arrangement.spacedBy(6.dp),
-    ) {
-        if (!blocked && (status == WorkerStatus.Working || status == WorkerStatus.Starting)) {
-            WorkingBars(look.color, height = if (indicatorOnly) 12.dp else 8.dp, width = if (indicatorOnly) 12.dp else 9.dp)
-        } else {
-            Box(Modifier.size(if (indicatorOnly) 9.dp else 5.dp).alpha(blink).clip(if (indicatorOnly) CircleShape else RoundedCornerShape(1.dp)).background(look.color))
+            Mark.Starting -> rotate(t * 360f) {
+                drawArc(look.color, startAngle = 0f, sweepAngle = 270f, useCenter = false, topLeft = at(0.14f, 0.14f), size = Size(s * 0.72f, s * 0.72f), style = Stroke(w, cap = StrokeCap.Round))
+            }
+            Mark.Ready -> {
+                drawPath(Path().apply { moveTo(s * 0.14f, s * 0.26f); lineTo(s * 0.40f, s * 0.5f); lineTo(s * 0.14f, s * 0.74f) }, look.color, style = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                if (t < 0.55f) drawLine(look.color, at(0.54f, 0.76f), at(0.86f, 0.76f), strokeWidth = w, cap = StrokeCap.Round)
+            }
+            Mark.NeedsYou -> exclaim(0.4f + 0.6f * (0.5f + 0.5f * cos(2f * PI.toFloat() * t)))
+            Mark.Blocked -> exclaim(1f)
+            Mark.Done, Mark.DoneNew -> {
+                val color = if (mark == Mark.Done) look.color.copy(alpha = 0.6f) else look.color
+                val a = at(0.14f, 0.52f)
+                val b = at(0.39f, 0.77f)
+                val c = at(0.86f, 0.27f)
+                val first = (b - a).getDistance()
+                val second = (c - b).getDistance()
+                val length = drawn.value * (first + second)
+                if (length > 0f) drawLine(color, a, a + (b - a) * (length.coerceAtMost(first) / first), strokeWidth = w, cap = StrokeCap.Round)
+                if (length > first) drawLine(color, b, b + (c - b) * ((length - first) / second), strokeWidth = w, cap = StrokeCap.Round)
+            }
+            Mark.Asleep, Mark.Unknown -> drawLine(look.color, at(0.25f, 0.5f), at(0.75f, 0.5f), strokeWidth = w, cap = StrokeCap.Round)
         }
-        if (!indicatorOnly) Text(look.label.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = look.color, fontSize = 9.5.sp))
     }
 }
 
-/** Three bars that rise and fall in turn: a worker mid-turn. */
+/** What [StatusIcon] draws, and how long one loop of its animation lasts (0: it holds still). */
+private enum class Mark(val period: Int) { Working(900), Starting(900), Ready(1100), NeedsYou(1200), Blocked(0), Done(0), DoneNew(0), Asleep(0), Unknown(0) }
+/** A card's small kind mark (a shell, a cloud computer, a team's size) as an icon, with what it means for TalkBack. */
 @Composable
-fun WorkingBars(color: Color, height: Dp = 8.dp, width: Dp = 9.dp) {
-    val t = rememberInfiniteTransition(label = "bars")
-    val bars = (0 until 3).map { i ->
-        t.animateFloat(0.3f, 1f, infiniteRepeatable(tween(420, easing = FastOutSlowInEasing), RepeatMode.Reverse, StartOffset(i * 140)), label = "bar$i")
-    }
-    Canvas(Modifier.width(width).height(height)) {
-        val w = size.width / 5
-        bars.forEachIndexed { i, a ->
-            val h = size.height * a.value
-            drawRoundRect(color, topLeft = Offset(i * 2 * w, size.height - h), size = androidx.compose.ui.geometry.Size(w, h), cornerRadius = CornerRadius(w / 2))
-        }
+fun CardMark(icon: ImageVector, spoken: String, modifier: Modifier = Modifier, count: Int? = null) {
+    Row(
+        modifier.padding(start = 6.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(Palette.SurfaceHigh)
+            .clearAndSetSemantics { contentDescription = spoken }
+            .padding(horizontal = 5.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Icon(icon, null, Modifier.size(12.dp), tint = Palette.TextSecondary)
+        if (count != null) Text("$count", style = LocalOfficeType.current.eyebrow.copy(fontSize = 10.sp, color = Palette.TextSecondary, letterSpacing = 0.sp))
     }
 }
 

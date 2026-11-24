@@ -121,4 +121,18 @@ class WorkersTest {
         assertNull(Workers.todos(WorkerInfo(id = "x", todos = TodoProgress(4, 3))))
         assertNull(Workers.todos(WorkerInfo(id = "n")))
     }
+    @Test
+    fun headlineSaysTheTitleAndDetailOnce() {
+        assertEquals("Fix login" to "Reading the auth module", Workers.headline("Fix login", "Reading the auth module"))
+        assertEquals("Fix login" to null, Workers.headline("Fix login", "fix login"))
+        val prompt = "Https://claude.ai/artifact/XCYZ do what we can from our side"
+        assertEquals(prompt to null, Workers.headline("Https://claude.ai/artifact/XCYZ…", prompt))
+        assertEquals(prompt to null, Workers.headline("Https://claude.ai/artifact/XCYZ...", prompt))
+        assertEquals("Ship it" to null, Workers.headline("Ship it", null))
+        assertEquals(null to "Working", Workers.headline(null, "Working"))
+        assertEquals("…" to "Anything", Workers.headline("…", "Anything"))
+        assertEquals("Fix login" to "Fix login bug in the auth module", Workers.headline("Fix login", "Fix login bug in the auth module"))
+        assertEquals(null to "hello", Workers.headline("   ", "hello"))
+        assertEquals("Ship it" to null, Workers.headline("Ship it", "  "))
+    }
 }

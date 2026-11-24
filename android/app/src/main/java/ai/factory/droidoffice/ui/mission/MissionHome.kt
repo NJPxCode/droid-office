@@ -66,7 +66,7 @@ import ai.factory.droidoffice.net.nameOf
 import ai.factory.droidoffice.ui.LocalGraph
 import ai.factory.droidoffice.ui.components.EffortDialMark
 import ai.factory.droidoffice.ui.components.Eyebrow
-import ai.factory.droidoffice.ui.components.StatusPill
+import ai.factory.droidoffice.ui.components.StatusIcon
 import ai.factory.droidoffice.ui.components.panel
 import ai.factory.droidoffice.ui.components.parseColor
 import ai.factory.droidoffice.ui.components.statusLook
@@ -162,7 +162,7 @@ private fun OrchestratorCard(agent: MissionAgent?, team: List<MissionTeamMember>
                     Text(ORCHESTRATOR_NAME, style = MaterialTheme.typography.titleMedium, maxLines = 1, modifier = Modifier.weight(1f))
                     Spacer(Modifier.width(6.dp))
                     // Blocked says why in its line, in the warning colour, so the row needs no pill as well.
-                    if (blocked == null) StatusPill(state, acked = w?.acked ?: true, tag = Tags.Mission.ORCHESTRATOR_STATUS, compact = true)
+                    if (blocked == null) StatusIcon(state, acked = w?.acked ?: true, tag = Tags.Mission.ORCHESTRATOR_STATUS)
                 }
                 val model = w?.let(Workers::modelId)?.let(catalogue::nameOf)?.let(Models::plainName)
                 val effort = w?.let(Workers::effort)?.takeIf { model != null }
@@ -179,12 +179,11 @@ private fun OrchestratorCard(agent: MissionAgent?, team: List<MissionTeamMember>
                 }
             }
         }
-        val title = w?.let(Workers::title)
-        val detail = w?.let(Workers::detail) ?: if (blocked == null) MissionControl.READY else null
+        val (title, detail) = Workers.headline(w?.let(Workers::title), w?.let(Workers::detail) ?: if (blocked == null) MissionControl.READY else null)
         if (title != null || detail != null) {
             Column(Modifier.padding(start = 42.dp, top = 8.dp)) {
-                if (title != null) Text(title, style = MaterialTheme.typography.bodyMedium)
-                if (detail != null && detail != title) Text(
+                if (title != null) Text(title, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (detail != null) Text(
                     detail,
                     style = MaterialTheme.typography.bodySmall,
                     color = if (loud) Palette.Text.copy(alpha = 0.85f) else Palette.TextSecondary,
@@ -236,8 +235,11 @@ private fun BotRow(bot: MissionAgent, selected: Boolean, onOpen: () -> Unit) {
         Column(Modifier.weight(1f).padding(start = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(w.name.ifBlank { w.id }, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                Spacer(Modifier.width(6.dp))
-                MissionTag(if (bot.grokBot) "GROK BOT" else "EXTERNAL")
+                // The Grok Bot's tile is its logo; any other bot's only an antenna, so it says what it is.
+                if (!bot.grokBot) {
+                    Spacer(Modifier.width(6.dp))
+                    MissionTag("EXTERNAL")
+                }
             }
             val line = listOfNotNull(MissionControl.botLine(bot), MissionControl.teamLine(bot.team)).joinToString(" · ")
             Text(line, style = MaterialTheme.typography.bodySmall, color = Palette.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
