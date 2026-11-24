@@ -33,6 +33,14 @@ function repoLabel(floor: FloorInfo | undefined): string | undefined {
   return folder && folder.toLowerCase() !== floor.name.trim().toLowerCase() ? folder : undefined;
 }
 
+/** A row's repo where it adds to its floor's name, as Android's `repoBesideFloor`: `nikships/droid-office` on a floor named `droid-office` says nothing new, and neither does `Home` on the Home floor. */
+export function repoBesideFloor(row: Pick<BuildingWorkerRow, 'repo' | 'floorName'>): string | undefined {
+  const name = row.floorName.trim().toLowerCase();
+  if (!name) return row.repo;
+  const repo = row.repo?.toLowerCase() ?? '';
+  return repo === name || repo.split('/').pop() === name ? undefined : row.repo;
+}
+
 function actionable(row: BuildingWorkerRow): boolean {
   return row.kind !== 'bot' && !row.worker.remote;
 }
@@ -95,7 +103,11 @@ export function buildingRoster(input: { floors: readonly FloorInfo[]; building: 
   for (const row of rows.values()) if (row.worker.lead) teams.add(row.worker.lead);
   for (const [id, row] of rows) if (row.kind !== 'desk' && !teams.has(id)) rows.delete(id);
   for (const row of rows.values()) {
-    if (row.worker.lead) row.leadName = rows.get(row.worker.lead)?.worker.name.trim() || row.worker.team?.leadName.trim() || undefined;
+    if (!row.worker.lead) continue;
+    // A team's lead carries its own name as the team's leadName: only a member was hired by someone.
+    const team = row.worker.team;
+    const teamLeadName = team?.role === 'lead' ? undefined : team?.leadName.trim();
+    row.leadName = rows.get(row.worker.lead)?.worker.name.trim() || teamLeadName || undefined;
   }
   return arrangeRows([...rows.values()], floorRank);
 }
