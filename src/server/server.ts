@@ -151,6 +151,7 @@ export async function startServer(cfg: Config) {
   const hostUpdates = new HostUpdates();
   const clients = new Map<string, Client>();
   const floors = new Map<string, Floor>();
+  let closed = false;
   const transport = createClientTransport({ clients, floors });
   const { sendTo, broadcast, toFloor, termData, clearOffFloorThrottle, broadcastOffFloorScreen } = transport;
   const workerThreads = new WorkerThreadReader();
@@ -1625,24 +1626,35 @@ export async function startServer(cfg: Config) {
       }
       case 'floor.add': {
         const dir = str(msg.dir, 1024);
-        const r = building.add(dir, who);
-        if (typeof r === 'string') {
-          sendTo(c, { t: 'floor.added', dir, error: r });
-          return done(r);
+        const finishAdd = (r: FloorDef | string, cloned: boolean) => {
+          if (closed) return;
+          if (typeof r === 'string') {
+            sendTo(c, { t: 'floor.added', dir, error: r });
+            return done(r);
+          }
+          const floor = openFloor(r);
+          if (!floor) {
+            const error = `Added ${r.name}, but couldn't open its floor — see the office's log`;
+            floorsChanged();
+            sendTo(c, { t: 'floor.added', dir, error });
+            return done(error);
+          }
+          // Publish the updated floor list before floor.added, so switching to the new floor sees it in store.floors immediately.
+          publishFloors();
+          console.log(`  ${who} ${cloned ? 'cloned and added' : 'added'} a floor for ${r.repo ?? r.name} (${r.dir})`);
+          toastAll(`🛗 New floor: ${r.name}, added by ${who}`);
+          sendTo(c, { t: 'floor.added', dir, floor: floor.id });
+          done();
+        };
+        if (building.isCloneUrl(dir)) {
+          defer();
+          void building.cloneAndAdd(dir, who).then(
+            (r) => finishAdd(r, true),
+            (err: Error) => finishAdd(err.message || "Couldn't clone repository", true),
+          );
+          break;
         }
-        const floor = openFloor(r);
-        if (!floor) {
-          const error = `Added ${r.name}, but couldn't open its floor — see the office's log`;
-          floorsChanged();
-          sendTo(c, { t: 'floor.added', dir, error });
-          return done(error);
-        }
-        // Publish the updated floor list before floor.added, so switching to the new floor sees it in store.floors immediately.
-        publishFloors();
-        console.log(`  ${who} added a floor for ${r.repo ?? r.name} (${r.dir})`);
-        toastAll(`🛗 New floor: ${r.name}, added by ${who}`);
-        sendTo(c, { t: 'floor.added', dir, floor: floor.id });
-        done();
+        finishAdd(building.add(dir, who), false);
         break;
       }
       case 'floor.remove': {
@@ -2607,6 +2619,7 @@ export async function startServer(cfg: Config) {
 
   /** With `keep` (a restart), workers' terminals keep running for the next office to pick up. */
   const shutdown = (keep = false) => {
+    closed = true;
     threadWatches?.close();
     const labelsStopped = workerLabels.stop();
     hostUpdates.dispose();

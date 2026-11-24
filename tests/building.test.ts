@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Building, type FloorDef } from '../src/server/building.js';
-import { MAX_FLOORS } from '../src/shared/floors.js';
+import { MAX_FLOORS, parseCloneUrl } from '../src/shared/floors.js';
 import { suggestedFolder } from '../src/server/config.js';
 
 function office(t: { after(fn: () => void): void }) {
@@ -550,4 +550,284 @@ test('the home floor is the same directory when it was saved through another pat
   assert.equal(building.hasProjects(), false);
   assert.match(building.remove('home') as string, /always in the building/);
   assert.deepEqual(saved(dataDir), ['home']);
+});
+
+test('parseCloneUrl recognizes GitHub and GitLab HTTPS, SSH, self-hosted and subpage URLs while rejecting bare names and local paths', () => {
+  assert.deepEqual(parseCloneUrl('https://github.com/nikships/droid-office'), {
+    forge: 'github',
+    host: 'github.com',
+    repo: 'nikships/droid-office',
+    name: 'droid-office',
+    path: 'nikships/droid-office',
+    cloneUrl: 'https://github.com/nikships/droid-office.git',
+    ssh: false,
+  });
+  assert.deepEqual(parseCloneUrl('  https://www.github.com/acme/my.app.git  '), {
+    forge: 'github',
+    host: 'github.com',
+    repo: 'acme/my.app',
+    name: 'my.app',
+    path: 'acme/my.app',
+    cloneUrl: 'https://github.com/acme/my.app.git',
+    ssh: false,
+  });
+  assert.equal(parseCloneUrl('https://github.com/acme/web/tree/main/src?tab=1#top')?.repo, 'acme/web');
+  assert.equal(parseCloneUrl('https://user:ghp_secret@github.com/acme/private.git')?.cloneUrl, 'https://github.com/acme/private.git');
+  assert.equal(parseCloneUrl('github.com/acme/web')?.cloneUrl, 'https://github.com/acme/web.git');
+  assert.equal(parseCloneUrl('git://github.com/acme/web.git')?.cloneUrl, 'https://github.com/acme/web.git');
+  assert.deepEqual(parseCloneUrl('git@github.com:acme/web.git'), {
+    forge: 'github',
+    host: 'github.com',
+    repo: 'acme/web',
+    name: 'web',
+    path: 'acme/web',
+    cloneUrl: 'git@github.com:acme/web.git',
+    ssh: true,
+  });
+  assert.deepEqual(parseCloneUrl('ssh://git@github.com:22/acme/web'), {
+    forge: 'github',
+    host: 'github.com',
+    repo: 'acme/web',
+    name: 'web',
+    path: 'acme/web',
+    cloneUrl: 'git@github.com:acme/web.git',
+    ssh: true,
+  });
+
+  // GitLab: gitlab.com, nested subgroups, /-/ subpages, SSH, self-hosted instances & ports.
+  assert.deepEqual(parseCloneUrl('https://gitlab.com/acme/platform/api/-/merge_requests/12?view=inline#top'), {
+    forge: 'gitlab',
+    host: 'gitlab.com',
+    repo: 'gitlab.com/acme/platform/api',
+    name: 'api',
+    path: 'acme/platform/api',
+    cloneUrl: 'https://gitlab.com/acme/platform/api.git',
+    ssh: false,
+  });
+  assert.deepEqual(parseCloneUrl('git@gitlab.com:acme/platform/api.git'), {
+    forge: 'gitlab',
+    host: 'gitlab.com',
+    repo: 'gitlab.com/acme/platform/api',
+    name: 'api',
+    path: 'acme/platform/api',
+    cloneUrl: 'git@gitlab.com:acme/platform/api.git',
+    ssh: true,
+  });
+  assert.equal(parseCloneUrl('gitlab.com/acme/web')?.cloneUrl, 'https://gitlab.com/acme/web.git');
+  assert.equal(parseCloneUrl('https://www.gitlab.com/acme/web')?.repo, 'gitlab.com/acme/web');
+  assert.equal(parseCloneUrl('https://gitlab.acme.internal:8443/team/service')?.cloneUrl, 'https://gitlab.acme.internal:8443/team/service.git');
+  assert.equal(parseCloneUrl('ssh://git@gitlab.acme.internal:2222/team/service.git')?.cloneUrl, 'ssh://git@gitlab.acme.internal:2222/team/service.git');
+  assert.equal(parseCloneUrl('http://gitlab.local/team/app')?.cloneUrl, 'http://gitlab.local/team/app.git');
+  assert.equal(parseCloneUrl('https://code.acme.com/team/app/-/issues/4')?.repo, 'code.acme.com/team/app');
+  assert.equal(parseCloneUrl('https://code.acme.com/team/app', (h) => h === 'code.acme.com')?.repo, 'code.acme.com/team/app');
+
+  for (const bad of [
+    '',
+    'acme/web',
+    'acme/platform/api',
+    '/Users/nik/repos/droid-office',
+    '~/repos/droid-office',
+    'https://github.com.evil.com/acme/web',
+    'https://example.com/acme/web',
+    'https://github.com/acme',
+    'https://gitlab.com/acme',
+    'https://github.com/acme/..',
+    'https://github.com:acme/web',
+    'github.com:acme/web',
+    'git@gitlab.com:22/acme/web',
+    'https://github.com/acme/web extra',
+  ]) {
+    assert.equal(parseCloneUrl(bad), undefined, `expected undefined for ${bad}`);
+  }
+});
+
+test('cloneAndAdd clones GitHub and GitLab URLs into the workspace folder, reuses matching checkouts, falls back to gh/glab, and protects conflicts', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'droid-office-clone-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dataDir = path.join(root, '.droid-office');
+  const work = path.join(root, 'repos');
+  const bin = path.join(root, 'bin');
+  const logFile = path.join(root, 'clone.log');
+  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(work, { recursive: true });
+  mkdirSync(bin, { recursive: true });
+
+  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  const gitStub = path.join(bin, 'git');
+  writeFileSync(
+    gitStub,
+    `#!/bin/sh
+if [ "$1" = "clone" ]; then
+  url="$3"
+  dest="$4"
+  echo "git:$url:$dest" >> "${logFile}"
+  case "$url" in
+    *fail-auth*)
+      mkdir -p "$dest"
+      echo "fatal: could not read Username for 'https://forge': terminal prompts disabled" >&2
+      exit 128
+      ;;
+    *missing-repo*)
+      echo "remote: Repository not found." >&2
+      echo "fatal: repository not found" >&2
+      exit 128
+      ;;
+    *slow-repo*)
+      sleep 0.25
+      "${realGit}" init -q -b main "$dest"
+      "${realGit}" -C "$dest" remote add origin "$url"
+      exit 0
+      ;;
+  esac
+  "${realGit}" init -q -b main "$dest"
+  "${realGit}" -C "$dest" remote add origin "$url"
+  exit 0
+fi
+exec "${realGit}" "$@"
+`,
+    { mode: 0o755 },
+  );
+  const ghStub = path.join(bin, 'gh');
+  writeFileSync(
+    ghStub,
+    `#!/bin/sh
+if [ "$1" = "repo" ] && [ "$2" = "clone" ]; then
+  repo="$3"
+  dest="$4"
+  echo "gh:$repo:$dest" >> "${logFile}"
+  case "$repo" in
+    *fail-auth*)
+      "${realGit}" init -q -b main "$dest"
+      "${realGit}" -C "$dest" remote add origin "https://github.com/$repo.git"
+      exit 0
+      ;;
+  esac
+  echo "GraphQL: Could not resolve to a Repository" >&2
+  exit 1
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  const glabStub = path.join(bin, 'glab');
+  writeFileSync(
+    glabStub,
+    `#!/bin/sh
+if [ "$1" = "repo" ] && [ "$2" = "clone" ]; then
+  repo="$3"
+  dest="$4"
+  echo "glab:$repo:$dest" >> "${logFile}"
+  case "$repo" in
+    *fail-auth*)
+      "${realGit}" init -q -b main "$dest"
+      "${realGit}" -C "$dest" remote add origin "$repo"
+      exit 0
+      ;;
+  esac
+  echo "404 Project Not Found" >&2
+  exit 1
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+
+  const prevPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${prevPath ?? ''}`;
+  t.after(() => {
+    process.env.PATH = prevPath;
+  });
+
+  const building = new Building(dataDir, work);
+
+  // 1. Clones an HTTPS GitHub URL into projectsDir/<repo> and adds it as a floor.
+  const cloned = await building.cloneAndAdd('https://github.com/acme/starter/tree/main', 'Sam');
+  assert.equal(typeof cloned, 'object', String(cloned));
+  assert.equal((cloned as FloorDef).dir, path.join(work, 'starter'));
+  assert.equal((cloned as FloorDef).repo, 'acme/starter');
+  assert.ok(existsSync(path.join(work, 'starter', '.git')));
+  assert.match(readFileSync(logFile, 'utf8'), /git:https:\/\/github\.com\/acme\/starter\.git:/);
+
+  // 2. Pasting the same URL again sees the existing floor without re-cloning.
+  const dup = await building.cloneAndAdd('https://github.com/acme/starter', 'Sam');
+  assert.match(String(dup), /already has a floor/);
+
+  // 3. Preserves SSH transport for git@github.com URLs.
+  const sshCloned = await building.cloneAndAdd('git@github.com:acme/ssh-app.git', 'Sam');
+  assert.equal(typeof sshCloned, 'object', String(sshCloned));
+  assert.equal((sshCloned as FloorDef).dir, path.join(work, 'ssh-app'));
+  assert.match(readFileSync(logFile, 'utf8'), /git:git@github\.com:acme\/ssh-app\.git:/);
+
+  // 4. Clones a GitLab URL with subgroups and /-/ subpage into projectsDir/<project>.
+  const glCloned = await building.cloneAndAdd('https://gitlab.com/acme/platform/billing/-/merge_requests/7', 'Sam');
+  assert.equal(typeof glCloned, 'object', String(glCloned));
+  assert.equal((glCloned as FloorDef).dir, path.join(work, 'billing'));
+  assert.equal((glCloned as FloorDef).repo, 'gitlab.com/acme/platform/billing');
+  assert.match(readFileSync(logFile, 'utf8'), /git:https:\/\/gitlab\.com\/acme\/platform\/billing\.git:/);
+
+  // 5. Reuses an already-cloned checkout in projectsDir when its origin matches.
+  const preExisting = path.join(work, 'existing');
+  mkdirSync(preExisting, { recursive: true });
+  execFileSync(realGit, ['init', '-q', '-b', 'main', preExisting]);
+  execFileSync(realGit, ['-C', preExisting, 'remote', 'add', 'origin', 'https://github.com/acme/existing.git']);
+  const reused = await building.cloneAndAdd('https://github.com/acme/existing', 'Sam');
+  assert.equal(typeof reused, 'object', String(reused));
+  assert.equal((reused as FloorDef).dir, preExisting);
+  assert.doesNotMatch(readFileSync(logFile, 'utf8'), /acme\/existing/);
+
+  // 6. Refuses cleanly when a folder with the same name already holds a different repo or plain files.
+  const conflict = path.join(work, 'conflict');
+  mkdirSync(conflict, { recursive: true });
+  writeFileSync(path.join(conflict, 'keep.txt'), 'important');
+  const conflictErr = await building.cloneAndAdd('https://github.com/acme/conflict', 'Sam');
+  assert.match(String(conflictErr), /already exists/);
+  assert.equal(readFileSync(path.join(conflict, 'keep.txt'), 'utf8'), 'important');
+
+  // 7. Falls back to `gh repo clone` for GitHub and `glab repo clone` for GitLab on HTTPS auth failure.
+  const viaGh = await building.cloneAndAdd('https://github.com/acme/fail-auth', 'Sam');
+  assert.equal(typeof viaGh, 'object', String(viaGh));
+  assert.equal((viaGh as FloorDef).repo, 'acme/fail-auth');
+  assert.match(readFileSync(logFile, 'utf8'), /gh:acme\/fail-auth:/);
+
+  const viaGlab = await building.cloneAndAdd('https://gitlab.com/acme/gl-fail-auth', 'Sam');
+  assert.equal(typeof viaGlab, 'object', String(viaGlab));
+  assert.equal((viaGlab as FloorDef).repo, 'gitlab.com/acme/gl-fail-auth');
+  assert.match(readFileSync(logFile, 'utf8'), /glab:https:\/\/gitlab\.com\/acme\/gl-fail-auth\.git:/);
+
+  // 8. Returns forge-specific friendly errors and cleans up partial state when cloning fails.
+  const missingGh = await building.cloneAndAdd('https://github.com/acme/missing-repo', 'Sam');
+  assert.match(String(missingGh), /Couldn't find acme\/missing-repo on GitHub/);
+  assert.equal(existsSync(path.join(work, 'missing-repo')), false);
+
+  const missingGl = await building.cloneAndAdd('https://gitlab.com/acme/missing-repo', 'Sam');
+  assert.match(String(missingGl), /Couldn't find gitlab\.com\/acme\/missing-repo on GitLab/);
+  assert.match(String(missingGl), /glab auth login/);
+  assert.equal(existsSync(path.join(work, 'missing-repo')), false);
+
+  // 9. Concurrent clones into the same directory reject the second request without racing.
+  const [firstSlow, secondSlow] = await Promise.all([building.cloneAndAdd('https://github.com/acme/slow-repo', 'Sam'), building.cloneAndAdd('https://github.com/acme/slow-repo', 'Sam')]);
+  assert.equal(typeof firstSlow, 'object', String(firstSlow));
+  assert.match(String(secondSlow), /Already cloning acme\/slow-repo/);
+});
+
+test('cloneAndAdd rejects when the building is full without cloning onto disk', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'droid-office-clone-full-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dataDir = path.join(root, '.droid-office');
+  const work = path.join(root, 'repos');
+  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(work, { recursive: true });
+  const fillers: FloorDef[] = Array.from({ length: MAX_FLOORS }, (_, i) => ({
+    id: `slot-${i}`,
+    name: `slot-${i}`,
+    dir: path.join(work, `slot-${i}`),
+    palette: 0,
+    addedBy: 'Sam',
+    addedAt: 1,
+  }));
+  writeFileSync(path.join(dataDir, 'floors.json'), JSON.stringify(fillers));
+  const building = new Building(dataDir, work);
+  const res = await building.cloneAndAdd('https://github.com/acme/one-too-many', 'Sam');
+  assert.match(String(res), /building is full/);
+  assert.equal(existsSync(path.join(work, 'one-too-many')), false);
 });

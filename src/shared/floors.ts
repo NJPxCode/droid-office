@@ -102,6 +102,92 @@ function gitlabRepo(host: string, rest: string): string | undefined {
   return `${host}/${parts.join('/')}`;
 }
 
+/** A GitHub or GitLab repository URL pasted to clone into the workspace folder and open as a floor. */
+export interface CloneUrl {
+  forge: Forge;
+  /** Canonical hostname (`github.com`, `gitlab.com`, or self-hosted GitLab host). */
+  host: string;
+  /** Normalized repository id (`owner/repo` on GitHub, `host/group/…/project` on GitLab). */
+  repo: string;
+  /** Folder name to clone into (`repo` on GitHub, `project` on GitLab). */
+  name: string;
+  /** Path on its host (`owner/repo` on GitHub, `group/…/project` on GitLab). */
+  path: string;
+  /** Canonical clone URL (`https://…`, `http://…`, `git@host:…`, or `ssh://git@host:port/…`). */
+  cloneUrl: string;
+  /** True when the pasted URL uses SSH (`git@host:…` or `ssh://…`). */
+  ssh: boolean;
+}
+
+/** Whether a hostname is a GitLab instance by domain name (`gitlab.com` or `*.gitlab.*` / `gitlab.*`). */
+export function isGitlabDomain(host: string): boolean {
+  const h = host.toLowerCase();
+  return h === 'gitlab.com' || /(^|\.)gitlab\./.test(h);
+}
+
+/**
+ * Parses an explicit GitHub or GitLab repository URL (`https://github.com/owner/repo`,
+ * `https://gitlab.com/group/subgroup/project`, self-hosted GitLab URLs, SSH `git@…` / `ssh://…`,
+ * or repo subpage URLs such as `/tree/main` or `/-/merge_requests/12`).
+ * Bare `owner/repo` strings return undefined so local project search and relative-path errors stay unambiguous.
+ */
+export function parseCloneUrl(value: unknown, extraGitlabHost?: (host: string) => boolean): CloneUrl | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 400 || /\s/.test(trimmed)) return undefined;
+  const match = /^(?:(https?|ssh|git):\/\/)?(?:([\w.~%-]+(?::[^/@\s]*)?)@)?([a-z0-9.-]+\.[a-z]{2,})(?::(\d+))?([/:])(.+)$/i.exec(trimmed);
+  if (!match) return undefined;
+  const scheme = match[1]?.toLowerCase();
+  const userInfo = match[2];
+  const rawHost = match[3].toLowerCase();
+  const port = match[4];
+  const sep = match[5];
+  // Reject scp-style colons on HTTP(S) URLs or scheme-less host strings without user@.
+  if (sep === ':' && (scheme === 'http' || scheme === 'https' || (!scheme && !userInfo))) return undefined;
+  // Ports require an explicit scheme (e.g. ssh:// or https://).
+  if (port && !scheme) return undefined;
+  const rest = match[6].replace(/[?#].*$/, '').replace(/^\/+|\/+$/g, '');
+  const ssh = scheme === 'ssh' || (!scheme && Boolean(userInfo) && sep === ':');
+
+  const host = rawHost === 'www.github.com' ? 'github.com' : rawHost === 'www.gitlab.com' ? 'gitlab.com' : rawHost;
+  if (host === 'github.com') {
+    const parts = rest.split('/');
+    if (parts.length < 2) return undefined;
+    const owner = parts[0];
+    const name = parts[1].replace(/\.git$/i, '');
+    if (!GH_OWNER.test(owner)) return undefined;
+    if (!GH_NAME.test(name) || name === '.' || name === '..') return undefined;
+    const repo = `${owner}/${name}`;
+    return {
+      forge: 'github',
+      host,
+      repo,
+      name,
+      path: repo,
+      cloneUrl: ssh ? `git@github.com:${repo}.git` : `https://github.com/${repo}.git`,
+      ssh,
+    };
+  }
+
+  const hasGitlabMarker = rest.includes('/-/');
+  if (!isGitlabDomain(host) && !hasGitlabMarker && !extraGitlabHost?.(host)) return undefined;
+  const gl = gitlabRepo(host, rest);
+  if (!gl) return undefined;
+  const pathOnHost = gl.slice(host.length + 1);
+  const name = pathOnHost.split('/').pop()!;
+  const httpScheme = scheme === 'http' && host !== 'gitlab.com' ? 'http' : 'https';
+  const cloneUrl = ssh ? (port ? `ssh://git@${host}:${port}/${pathOnHost}.git` : `git@${host}:${pathOnHost}.git`) : `${httpScheme}://${host}${port ? `:${port}` : ''}/${pathOnHost}.git`;
+  return {
+    forge: 'gitlab',
+    host,
+    repo: gl,
+    name,
+    path: pathOnHost,
+    cloneUrl,
+    ssh,
+  };
+}
+
 /** GitLab repositories carry their host; GitHub's are plain owner/repo. */
 export function forgeOf(repo: string | undefined): Forge | undefined {
   if (!repo) return undefined;

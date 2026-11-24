@@ -1,4 +1,4 @@
-import { MAX_FLOORS } from '../../shared/floors';
+import { MAX_FLOORS, forgeOf, parseCloneUrl } from '../../shared/floors';
 import type { FloorInfo, RepoChoice, ServerMsg } from '../../shared/protocol';
 import type { Net } from '../net';
 import { store } from '../state';
@@ -25,6 +25,20 @@ export function isTypedFloorPath(raw: string): boolean {
   return t.startsWith('/') || t === '~' || t.startsWith('~/');
 }
 
+/** Display path where a pasted GitHub or GitLab URL will be cloned inside the workspace folder. */
+export function cloneTargetPath(projectsDir: string, name: string): string {
+  const base = projectsDir.trim().replace(/\/+$/, '');
+  return base ? `${base}/${name}` : name;
+}
+
+/** Self-hosted GitLab instances already known from existing workspace repos or floors. */
+function knownGitlabHost(repos: readonly RepoChoice[], floors: readonly Pick<FloorInfo, 'repo'>[]): (host: string) => boolean {
+  const hosts = new Set<string>();
+  for (const r of repos) if (r.forge === 'gitlab' && r.repo) hosts.add(r.repo.split('/')[0].toLowerCase());
+  for (const f of floors) if (f.repo && forgeOf(f.repo) === 'gitlab') hosts.add(f.repo.split('/')[0].toLowerCase());
+  return (host) => hosts.has(host);
+}
+
 /** Formats an absolute folder path on the office's machine as `~/…` when the home folder is known. */
 export function shortenFloorPath(dir: string, projectsDir: string, floors: readonly Pick<FloorInfo, 'dir' | 'home'>[]): string {
   let home = floors.find((f) => f.home)?.dir;
@@ -38,22 +52,39 @@ export function shortenFloorPath(dir: string, projectsDir: string, floors: reado
   return dir;
 }
 
-/** Filters discovered workspace checkouts by repository name, raw path or `~/…` display path. */
-export function filterWorkspaceRepos(repos: readonly RepoChoice[], query: string, projectsDir = '', floors: readonly Pick<FloorInfo, 'dir' | 'home'>[] = []): RepoChoice[] {
+/** Filters discovered workspace checkouts by repository name, pasted GitHub/GitLab URL, raw path or `~/…` display path. */
+export function filterWorkspaceRepos(repos: readonly RepoChoice[], query: string, projectsDir = '', floors: readonly Pick<FloorInfo, 'dir' | 'home' | 'repo'>[] = []): RepoChoice[] {
   const q = query.trim().toLowerCase();
   if (!q) return [...repos];
-  return repos.filter((x) => x.name.toLowerCase().includes(q) || x.dir.toLowerCase().includes(q) || shortenFloorPath(x.dir, projectsDir, floors).toLowerCase().includes(q));
+  const cloneRepo = parseCloneUrl(query, knownGitlabHost(repos, floors))?.repo.toLowerCase();
+  return repos.filter(
+    (x) =>
+      (cloneRepo !== undefined && (x.repo?.toLowerCase() === cloneRepo || x.name.toLowerCase() === cloneRepo)) ||
+      x.name.toLowerCase().includes(q) ||
+      x.dir.toLowerCase().includes(q) ||
+      shortenFloorPath(x.dir, projectsDir, floors).toLowerCase().includes(q),
+  );
 }
 
 /**
- * Resolves which directory "Add floor" (or pressing Enter) submits:
+ * Resolves what "Add floor" (or pressing Enter) submits:
  * 1. An explicitly selected row from the checkout list, else
  * 2. A typed `/…` or `~/…` path, else
- * 3. On Enter: the sole matching unadded checkout, or a non-matching typed string so the server explains why it can't be added.
+ * 3. A pasted GitHub or GitLab URL (reusing an existing unadded checkout in the workspace, or cloning into it), else
+ * 4. On Enter: the sole matching unadded checkout, or a non-matching typed string so the server explains why it can't be added.
  */
-export function resolveFloorTarget(opts: { filter: string; selected: string | null; repos: readonly RepoChoice[]; floors: readonly Pick<FloorInfo, 'dir' | 'home'>[]; projectsDir?: string; onEnter?: boolean }): string | undefined {
+export function resolveFloorTarget(opts: { filter: string; selected: string | null; repos: readonly RepoChoice[]; floors: readonly Pick<FloorInfo, 'dir' | 'home' | 'repo'>[]; projectsDir?: string; onEnter?: boolean }): string | undefined {
   if (opts.selected) return opts.selected;
   if (isTypedFloorPath(opts.filter)) return opts.filter.trim();
+  const parsed = parseCloneUrl(opts.filter, knownGitlabHost(opts.repos, opts.floors));
+  if (parsed) {
+    const repoKey = parsed.repo.toLowerCase();
+    const existing = opts.repos.filter((x) => x.repo?.toLowerCase() === repoKey);
+    const unadded = existing.find((x) => !opts.floors.some((f) => f.dir === x.dir));
+    if (unadded) return unadded.dir;
+    if (existing.length > 0) return undefined;
+    return opts.filter.trim();
+  }
   if (!opts.onEnter) return undefined;
   const trimmed = opts.filter.trim();
   if (!trimmed) return undefined;
@@ -99,7 +130,7 @@ export function createAddFloorSection(opts: AddFloorSectionOptions): AddFloorSec
   const input = h('input.input', {
     type: 'text',
     maxlength: 1024,
-    placeholder: 'Search your projects, or type a folder’s full path',
+    placeholder: 'Search projects, paste a GitHub/GitLab URL, or type a folder path',
     'aria-label': 'Project or folder path',
     autocomplete: 'off',
     spellcheck: 'false',
@@ -218,7 +249,32 @@ export function createAddFloorSection(opts: AddFloorSectionOptions): AddFloorSec
     const allMatches = filterWorkspaceRepos(r.list, filter, store.projectsDir.dir, store.floors);
     const visible = allMatches.slice(0, SHOWN);
     if (selected && store.floors.some((f) => f.dir === selected)) selected = null;
+    const full = store.floors.length >= MAX_FLOORS;
+    const extraGitlab = knownGitlabHost(r.list, store.floors);
+    const shortProjectsDir = shortenFloorPath(store.projectsDir.dir, store.projectsDir.dir, store.floors);
+    const cloneUrl = parseCloneUrl(filter, extraGitlab);
     const rows: HTMLElement[] = visible.map(repoRow);
+    if (!rows.length && cloneUrl) {
+      const target = cloneTargetPath(shortProjectsDir, cloneUrl.name);
+      const cloneRow = h(
+        'button.list-row.repo.on.clone-row',
+        {
+          type: 'button',
+          role: 'option',
+          'aria-selected': 'true',
+          disabled: !!adding || !net.up || full,
+          title: `Clone ${cloneUrl.repo} into ${target} and open as a floor`,
+          'data-clone-repo': cloneUrl.repo,
+        },
+        h('span.list-icon.forge', { title: cloneUrl.forge === 'gitlab' ? 'GitLab' : 'GitHub', 'aria-hidden': 'true' }, cloneUrl.forge === 'gitlab' ? '🦊' : '🐙'),
+        h('span.list-main', {}, h('span.list-title', {}, cloneUrl.repo), h('span.list-meta', {}, `Clone into ${target}`)),
+        h('span.list-end', {}, h('span.pill.floor-clone', {}, 'clone')),
+      );
+      cloneRow.addEventListener('click', () => {
+        if (!adding) add(filter.trim());
+      });
+      rows.push(cloneRow);
+    }
     if (!rows.length) {
       rows.push(
         h(
@@ -227,26 +283,28 @@ export function createAddFloorSection(opts: AddFloorSectionOptions): AddFloorSec
           r.loading
             ? `Looking for git projects in ${store.projectsDir.dir || 'the workspace folder'}…`
             : r.error
-              ? 'Could not list workspace projects. Type a folder’s full path or Browse to add one.'
+              ? 'Could not list workspace projects. Paste a GitHub or GitLab URL, type a folder’s full path, or Browse to add one.'
               : filter.trim()
                 ? isTypedFloorPath(filter)
                   ? `Press Add floor to open ${filter.trim()} right where it is.`
-                  : 'Nothing matches. Type a folder’s full path (~/… or /…), or Browse to it.'
-                : `No git projects in ${store.projectsDir.dir || 'the workspace folder'}. Browse to a folder or change the workspace folder below.`,
+                  : 'Nothing matches. Paste a GitHub or GitLab URL to clone, type a folder’s full path (~/… or /…), or Browse to it.'
+                : `No git projects in ${store.projectsDir.dir || 'the workspace folder'}. Paste a GitHub or GitLab URL to clone, browse to a folder, or change the workspace folder below.`,
         ),
       );
     }
     if (allMatches.length > SHOWN) rows.push(h('p.repo-empty.more', {}, `…and ${allMatches.length - SHOWN} more — type to narrow it down`));
     listEl.replaceChildren(...rows);
 
-    const full = store.floors.length >= MAX_FLOORS;
     const pick = resolveFloorTarget({ filter, selected, repos: r.list, floors: store.floors, projectsDir: store.projectsDir.dir });
+    const willClone = !!pick && !!parseCloneUrl(pick, extraGitlab);
+    const addingClone = adding ? parseCloneUrl(adding, extraGitlab) : undefined;
+    const addingText = addingClone ? ` Cloning ${addingClone.repo} into ${cloneTargetPath(shortProjectsDir, addingClone.name)}…` : adding ? ` Adding ${shortenFloorPath(adding, store.projectsDir.dir, store.floors)}…` : '';
     const change = h('button.btn.sm.dir-change', { type: 'button', disabled: !!adding || !net.up, title: 'Look for projects in another folder on the office’s machine (also in ⚙️ Settings)' }, 'Change folder');
     change.addEventListener('click', () => editDir(true));
 
     statusEl.replaceChildren(
       adding
-        ? h('p.note.info.busy', { role: 'status' }, h('span.spinner'), ` Adding ${shortenFloorPath(adding, store.projectsDir.dir, store.floors)}…`)
+        ? h('p.note.info.busy', { role: 'status' }, h('span.spinner'), addingText)
         : h(
             'div.row.between.dir-line',
             {},
@@ -255,7 +313,7 @@ export function createAddFloorSection(opts: AddFloorSectionOptions): AddFloorSec
               {},
               'Looking in ',
               h('code', { title: store.projectsDir.dir }, store.projectsDir.dir || 'the workspace folder'),
-              '. The new floor works in the folder where it is: nothing is cloned or copied. A folder that isn’t a git checkout becomes a plain floor, without boards or worktrees.',
+              '. Existing folders open where they are; pasted GitHub or GitLab URLs clone into this folder. A folder without git becomes a plain floor.',
             ),
             change,
           ),
@@ -264,7 +322,7 @@ export function createAddFloorSection(opts: AddFloorSectionOptions): AddFloorSec
       ...[r.error, error].filter(Boolean).map((e) => h('p.note.bad', { role: 'alert' }, e)),
     );
     submitBtn.disabled = !!adding || !net.up || full || !pick;
-    submitBtn.textContent = adding ? 'Adding…' : 'Add floor';
+    submitBtn.textContent = adding ? (addingClone ? 'Cloning…' : 'Adding…') : willClone ? 'Clone & add' : 'Add floor';
     input.disabled = !!adding;
     refreshBtn.disabled = !!adding || !net.up || r.loading;
     browseBtn.disabled = !!adding || !net.up || full;
@@ -403,7 +461,7 @@ export function openAddFloor(net: Net, onOpenFloor: (floorId: string) => void): 
   const el = h(
     'div.modal.add-floor-modal',
     { role: 'dialog', 'aria-label': 'Add floor' },
-    windowHeader('Add floor', 'Open an existing project checkout or folder on the office’s machine.'),
+    windowHeader('Add floor', 'Open a project folder on the office’s machine, or paste a GitHub or GitLab URL to clone it.'),
     h('div.body', {}, section.el),
     h('footer', {}, h('span.grow', {}, h('span.key', {}, 'Enter'), 'add floor'), cancelBtn, submitBtn),
   );
