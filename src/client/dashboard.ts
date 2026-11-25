@@ -67,7 +67,9 @@ import { INCLUDE_FILE, SETUP_FILE, describeSetup } from '../shared/worktree-setu
 import { ORCHESTRATOR_ID } from '../shared/mission-control';
 import { createMissionRoster } from './dashboard-mission';
 import { missionWorker } from './mission';
+import { startCompanionTheme } from './ui/companion-theme';
 store.decodeBitmaps = false;
+startCompanionTheme();
 const read = (key: string) => {
   try {
     return localStorage.getItem(key) ?? '';
