@@ -44,26 +44,7 @@ export interface ThemeTerminal {
 }
 
 /** Optional surface treatments. Values are trusted CSS from this registry, never saved preferences. */
-export const IMMERSIVE_KEYS = [
-  'heading-font',
-  'caption-font',
-  'panel-radius',
-  'chrome-finish',
-  'panel-edge',
-  'badge-face',
-  'badge-ink',
-  'imprint',
-  'control-finish',
-  'control-radius',
-  'focus-outline',
-  'selection',
-  'row-hover',
-  'row-active',
-  'section-rule',
-  'sheet-finish',
-  'scrollbar-thumb',
-  'control-motion',
-] as const;
+export const IMMERSIVE_KEYS = ['heading-font', 'caption-font', 'chrome-finish', 'panel-edge', 'badge-face', 'badge-ink', 'imprint', 'selection', 'section-rule', 'scrollbar-thumb'] as const;
 export type ImmersiveTheme = Partial<Record<(typeof IMMERSIVE_KEYS)[number], string>>;
 
 export interface CompanionTheme {
@@ -152,24 +133,12 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#f2f0ed', cursor: '#ff6a1f', background: '#050507', selection: '#3a2418' },
     immersive: {
       'heading-font': 'var(--font-mono)',
-      'caption-font': '750 11px/1.5 var(--font-mono)',
-      'panel-radius': '2px 16px 2px 16px',
       'chrome-finish':
         'linear-gradient(105deg, transparent, #10101638 50%, #09090d9c), repeating-linear-gradient(125deg, #33333d99 0 2px, #14141bb3 2px 4px, #08080b88 4px 7px), repeating-linear-gradient(36deg, #35323ddd 0 3px, #0b0b1188 3px 7px)',
       'panel-edge': 'linear-gradient(110deg, var(--accent) 0 28px, transparent 28px 31px, var(--accent) 31px 37px, transparent 37px 40px, var(--accent) 40px 43px, #ff6a1f75 43px, #7484ff78)',
       'badge-face': 'linear-gradient(135deg, #32221d, #101017 64%, #272b46)',
       'badge-ink': '#ff975d',
       imprint: '"CC—01     /     CARBON SERIES" / ""',
-      'control-finish': 'linear-gradient(180deg, #ffffff38 0 1px, transparent 1px 45%, #00000013 47% 94%, #05050870 95%), linear-gradient(115deg, transparent 6px, #03030726 7px 8px, transparent 9px)',
-      'control-radius': '1px 8px 1px 8px',
-      'focus-outline': '4px double #ffa26a',
-      selection: '#673114',
-      'row-hover': 'linear-gradient(90deg, #bc774a 0 2px, #272020 2px, #141419 70%)',
-      'row-active': 'linear-gradient(105deg, #ff8e4b 0 4px, #100e12 4px 7px, #473027 7px, #17151c 60%, #242536)',
-      'section-rule': 'repeating-linear-gradient(118deg, #b46437 0 3px, #241c1b 3px 7px)',
-      'sheet-finish': 'linear-gradient(125deg, #28212aeb, #0c0c10e6 38%, #171823eb), repeating-linear-gradient(45deg, #373342 0 2px, #101017 2px 5px)',
-      'scrollbar-thumb': '#bc865e',
-      'control-motion': '140ms cubic-bezier(.18,.8,.26,1)',
     },
   },
   {
@@ -195,23 +164,11 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#f1eeff', cursor: '#a97bff', background: '#05031a', selection: '#33245c' },
     immersive: {
       'heading-font': '"Avenir Next", Avenir, system-ui, sans-serif',
-      'caption-font': '600 10px/1.6 var(--font-mono)',
-      'panel-radius': '18px',
       'chrome-finish': 'url("/themes/nightly-orbit-chart.svg"), radial-gradient(ellipse at 98% 130%, #412c47cc, transparent 54%), linear-gradient(110deg, #0c1129f2, #171333e8 64%, #231c45f0)',
       'panel-edge': 'linear-gradient(90deg, #50477a, #ac8cf7 42%, #dec1ff 66%, #ffb48b 85%, #865264)',
       'badge-face': 'radial-gradient(ellipse 145% 100% at 61% 144%, #171433 71%, #77538e 73%, #ffc29a 74%, #754e94 77%, #292345 82%, #101329 96%)',
       'badge-ink': '#ffe0c8',
       imprint: '"NIGHT PASS   /   01" / ""',
-      'control-finish': 'linear-gradient(180deg, #dcceff30, transparent 18% 76%, #36244828), linear-gradient(110deg, #c5bcff12, transparent 56%, #ffab8310)',
-      'control-radius': '999px',
-      'focus-outline': '2px solid #ffbf91',
-      selection: '#513870',
-      'row-hover': 'linear-gradient(90deg, #9286c5 0 2px, #292442 2px, #18162f 82%, #29203c)',
-      'row-active': 'linear-gradient(90deg, #ffb389 0 3px, #393056 3px, #26223f 50%, #322033)',
-      'section-rule': 'repeating-linear-gradient(90deg, #ad95cb 0 1px, transparent 1px 6px, #62567e 6px 7px, transparent 7px 12px, #62567e 12px 13px, transparent 13px 18px)',
-      'sheet-finish': 'url("/themes/nightly-orbit-chart.svg"), linear-gradient(118deg, #10152cf5, #1b1732f7 65%, #292039fa)',
-      'scrollbar-thumb': '#9785b9',
-      'control-motion': '180ms cubic-bezier(.2,.65,.25,1)',
     },
   },
   {
@@ -237,23 +194,11 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#f4f1ff', cursor: '#ff3f8e', background: '#05050c', selection: '#4a1a33' },
     immersive: {
       'heading-font': '"Avenir Next Condensed", "Arial Narrow", "Roboto Condensed", sans-serif',
-      'caption-font': '650 11px/1.4 var(--font-mono)',
-      'panel-radius': '2px 2px 12px 2px',
       'chrome-finish': 'url("/themes/neo-tokyo-glass.svg"), linear-gradient(108deg, #362038d9, #0f1021cf 35%, #0c1523de 76%, #11364cdb)',
       'panel-edge': 'linear-gradient(90deg, #ff599d 0 18%, #743155 18% 22%, transparent 22% 23%, #37223e 23% 62%, #0f4d67 62% 86%, transparent 86% 87%, #61e5ff 87%)',
       'badge-face': 'linear-gradient(155deg, #74e8ff 0 2px, #17465b 2px, #101729 46%, #381b3b 70%, #963255)',
       'badge-ink': '#c1f7ff',
       imprint: '"芝浦  /  SHIBAURA" / ""',
-      'control-finish': 'linear-gradient(180deg, #cffaff59 0 1px, transparent 1px 51%, #0a09200c 52%, #10112412), linear-gradient(107deg, transparent 68%, #caf6ff17 69% 73%, transparent 74%)',
-      'control-radius': '2px',
-      'focus-outline': '2px solid #87efff',
-      selection: '#792052',
-      'row-hover': 'linear-gradient(90deg, #64ddf5 0 2px, #123342 2px, #101a29 42%, #191526)',
-      'row-active': 'linear-gradient(90deg, #ff599d 0 3px, #381b35 3px, #201526 32%, #101d2a 91%, #17435a)',
-      'section-rule': 'linear-gradient(90deg, #a63265 0 14px, transparent 14px 17px, #e05293 17px 21px, transparent 21px 25px, #224657 25px 72%, transparent 72% 73%, #36869b 73%)',
-      'sheet-finish': 'linear-gradient(157deg, #311d36f2, #111222f5 32%, #0c1523f5 74%, #173244f2)',
-      'scrollbar-thumb': '#6eabbd',
-      'control-motion': '110ms cubic-bezier(.16,.85,.24,1)',
     },
   },
   {
@@ -279,8 +224,6 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#eef6ef', cursor: '#f3c45a', background: '#030d09', selection: '#2c3a1e' },
     immersive: {
       'heading-font': 'Iowan Old Style, Palatino Linotype, Palatino, Georgia, serif',
-      'caption-font': '600 11px/1.5 Palatino, Georgia, serif',
-      'panel-radius': '24px 24px 7px 7px / 13px 13px 7px 7px',
       // Backlit shoji at the edges, falling into dark pond lacquer behind the lettering.
       'chrome-finish':
         'linear-gradient(96deg, transparent, #061710e8 36%, #0a1c16e0 67%, transparent), repeating-linear-gradient(90deg, #0b1511cc 0 2px, #ceac6145 2px 3px, transparent 3px 29px), repeating-linear-gradient(0deg, #101a14c2 0 2px, #b69f6440 2px 3px, transparent 3px 23px), radial-gradient(ellipse at 0 85%, #785126c9, #253729ce 34%, #152c24ed 73%, #3b4930d9)',
@@ -289,16 +232,6 @@ export const COMPANION_THEMES = [
         'radial-gradient(circle at 78% 20%, #fff3b7 0 1px, #b4d98166 2px, transparent 7px), repeating-radial-gradient(ellipse at 0 110%, transparent 0 7px, #d0b07655 8px, transparent 9px 14px), linear-gradient(145deg, #48533a, #102c23 60%, #071a15)',
       'badge-ink': '#ffe1a0',
       imprint: '"蛍   /   POND PAVILION" / ""',
-      'control-finish': 'linear-gradient(180deg, #ffedbf3d 0 1px, transparent 1px 48%, #172a2014 72%, #171b1438), linear-gradient(110deg, #d4b47812, transparent 38%, #69b8970d)',
-      'control-radius': '11px 11px 4px 4px / 7px 7px 4px 4px',
-      'focus-outline': '2px solid #b7efbf',
-      selection: '#305b45',
-      'row-hover': 'radial-gradient(circle at 5px 50%, #e4efb1 0 1px, #78aa7355 2px, transparent 6px), linear-gradient(90deg, #2e4736, #12261d 64%)',
-      'row-active': 'radial-gradient(circle at 5px 50%, #fff2b7 0 2px, #bd984255 3px, transparent 7px), linear-gradient(90deg, #4b3a23, #243a2d 40%, #12281f)',
-      'section-rule': 'linear-gradient(90deg, #ae8854, #d9bc77 11%, #36573f 29%, transparent 70%)',
-      'sheet-finish': 'repeating-linear-gradient(178deg, transparent 0 13px, #afae7e09 14px, transparent 15px 19px), radial-gradient(ellipse at 95% 0, #354a38, #162c23 46%, #0b1e17 86%)',
-      'scrollbar-thumb': '#92ab83',
-      'control-motion': '220ms cubic-bezier(.22,.72,.28,1)',
     },
   },
   {
@@ -324,24 +257,12 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#fbefea', cursor: '#ff5a36', background: '#080303', selection: '#4a1d14' },
     immersive: {
       'heading-font': '"Avenir Next Condensed", "Arial Narrow", sans-serif',
-      'caption-font': 'bold 13px/1.2 "DIN Condensed", "Arial Narrow", sans-serif',
-      'panel-radius': '3px',
       'chrome-finish':
         'url("/themes/orbital-foundry-plate.svg"), radial-gradient(ellipse at 100% 110%, #804326a8 0, #422e2d88 10%, #22283466 35%, transparent 55%), linear-gradient(165deg, #39414cc2, #202730ba 26%, #131821c2 67%, #2d3035ba)',
       'panel-edge': 'repeating-linear-gradient(90deg, #361e1c 0 3px, #aa522a 3px 6px, #ff913b 6px 13px, #ffe4a0 13px 27px, #f38c3d 27px 35px, #5a3327 35px 38px, #20232a 38px 48px)',
       'badge-face': 'radial-gradient(circle, #171d25 32%, #563c30 34% 40%, #ffbd6f 41% 43%, #a44d22 45% 51%, #20252d 53% 64%, #4d5158 65%, #171d25 70%)',
       'badge-ink': '#ffe6a7',
       imprint: '"RING MILL   /   DIE 07" / ""',
-      'control-finish': 'linear-gradient(0deg, #080c145e 0 2px, transparent 2px calc(100% - 2px), #fff1cf40 calc(100% - 2px)), repeating-linear-gradient(90deg, transparent 0 2px, #75818d0d 2px 3px)',
-      'control-radius': '2px',
-      'focus-outline': '3px dashed #ffcd76',
-      selection: '#674023',
-      'row-hover': 'linear-gradient(90deg, #e39c51 0 3px, #32323a 3px, #222831 35%, #171e26)',
-      'row-active': 'linear-gradient(90deg, #ffe29c 0 2px, #e97930 2px 5px, #201916 5px 8px, #463025 8px, #272b32 55%, #19212a)',
-      'section-rule': 'repeating-linear-gradient(90deg, #666e77 0 16px, #171c23 16px 19px, #d28542 19px 21px, #171c23 21px 24px)',
-      'sheet-finish': 'url("/themes/orbital-foundry-plate.svg"), linear-gradient(112deg, #323944, #1b232c 36%, #171b22 70%, #392a26)',
-      'scrollbar-thumb': '#b58b65',
-      'control-motion': '90ms steps(3, end)',
     },
   },
   {
@@ -367,23 +288,11 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#eaf8fb', cursor: '#2ee6d6', background: '#010910', selection: '#0f3a44' },
     immersive: {
       'heading-font': '"Avenir Next", Avenir, "Trebuchet MS", sans-serif',
-      'caption-font': '600 10px/1.6 var(--font-mono)',
-      'panel-radius': '26px',
       'chrome-finish': 'url("/themes/abyssal-biolume-soundings.svg"), radial-gradient(ellipse at 85% -35%, #604c9c70, transparent 54%), linear-gradient(165deg, #0e3f4de8, #031423ed 56%, #101932e0)',
       'panel-edge': 'linear-gradient(90deg, transparent, #27b5c2 16%, #a6fff0 26%, #277e9d 40%, #47468b 70%, #9b86ff 88%, transparent)',
       'badge-face': 'repeating-radial-gradient(circle at center, transparent 0 6px, #74ebe44a 6.5px 7px, transparent 7.5px 12px), conic-gradient(from 32deg, #133b4b, #073044 58%, #13727a 87%, #4fa9ab 99%, #133b4b)',
       'badge-ink': '#c6fff7',
       imprint: '"HADAL SURVEY   /   6 000 M" / ""',
-      'control-finish': 'linear-gradient(180deg, #c9fff445 0 1px, #a3efe113 1px, transparent 48%, #07062c16 77%, #03131f38)',
-      'control-radius': '999px',
-      'focus-outline': '3px double #9efdf0',
-      selection: '#473c74',
-      'row-hover': 'radial-gradient(ellipse at 0 50%, #19515c, transparent 64%), linear-gradient(95deg, #0a2636, #10192d)',
-      'row-active': 'linear-gradient(90deg, #9af9ee 0 2px, #104956 2px, #10303c 17%, #111c34 72%, #2c2550)',
-      'section-rule': 'repeating-linear-gradient(90deg, #71bcb7 0 1px, transparent 1px 8px, #366774 8px 9px, transparent 9px 16px, #366774 16px 17px, transparent 17px 24px)',
-      'sheet-finish': 'radial-gradient(ellipse at 0 0, #154554d9, transparent 43%), radial-gradient(ellipse at 100% 100%, #292547db, transparent 56%), linear-gradient(145deg, #061925ed, #051320f2)',
-      'scrollbar-thumb': '#6dbcb9',
-      'control-motion': '210ms cubic-bezier(.2,.68,.22,1)',
     },
   },
   {
@@ -409,23 +318,11 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#f5f0ff', cursor: '#f0cb91', background: '#0a0712', selection: '#49355f' },
     immersive: {
       'heading-font': 'Palatino, "Palatino Linotype", Georgia, serif',
-      'caption-font': '600 11px/1.5 Georgia, serif',
-      'panel-radius': '34% 34% 6px 6px / 24px 24px 6px 6px',
       'chrome-finish': 'linear-gradient(100deg, #21122c70, #21122cd6 48%, #21122c70), url("/themes/astral-cathedral-arcade.svg"), linear-gradient(160deg, #483054ed, #26162ff2 58%, #39223ee6)',
       'panel-edge': 'linear-gradient(90deg, #8561a2, #c584b7 28%, #edc88d 46%, #57385e 49%, #fff0cd 50%, #57385e 51%, #edc88d 54%, #c584b7 72%, #8561a2)',
       'badge-face': 'conic-gradient(from 45deg, #392944, #5b406f 25%, #32203d 25%, #543857 50%, #714e7d 50%, #4b345b 75%, #33233f 75%, #392944)',
       'badge-ink': '#ffe3ad',
       imprint: '"✧  VESPER CHAPEL" / ""',
-      'control-finish': 'linear-gradient(180deg, #fff2d438, transparent 34%, #41224e12 78%, #8e604d33), linear-gradient(90deg, #ecc48657 1px, transparent 1px calc(100% - 1px), #ecc48657 1px)',
-      'control-radius': '16px 16px 4px 4px / 9px 9px 4px 4px',
-      'focus-outline': '3px double #fff0cf',
-      selection: '#604272',
-      'row-hover': 'radial-gradient(ellipse at left, #51334f, #2b2036 72%)',
-      'row-active': 'linear-gradient(90deg, #c39765 0 1px, #26182e 1px 3px, #c39765 3px 4px, #49314e 4px, #302039 65%, #352840)',
-      'section-rule': 'linear-gradient(90deg, transparent, #a98571 40%, transparent 48%, #efca8d 50%, transparent 52%, #a98571 60%, transparent)',
-      'sheet-finish': 'linear-gradient(105deg, #1f1629ed 20%, #211629f2 65%, #2e1d3866), url("/themes/astral-cathedral-arcade.svg"), linear-gradient(145deg, #38253e, #231529)',
-      'scrollbar-thumb': '#bea27c',
-      'control-motion': '210ms cubic-bezier(.25,.65,.3,1)',
     },
   },
   {
@@ -451,23 +348,11 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#fff4f8', cursor: '#efacc0', background: '#160e13', selection: '#63374d' },
     immersive: {
       'heading-font': 'Iowan Old Style, Palatino Linotype, Palatino, Georgia, serif',
-      'caption-font': 'italic 500 11px/1.5 Georgia, serif',
-      'panel-radius': '26px 8px 26px 8px',
       'chrome-finish': 'url("/themes/sakura-mist-sprig.svg"), repeating-linear-gradient(168deg, transparent 0 4px, #f1cbcf08 4px 5px, transparent 5px 9px), linear-gradient(112deg, #372231e8, #503042da 32%, #372335db 62%, #583c4edd)',
       'panel-edge': 'linear-gradient(90deg, transparent 2%, #be8e9f77 14%, #edb5c7 27%, #fff0de 29%, #b3869e 33%, #966b8866 58%, transparent 94%)',
       'badge-face': 'conic-gradient(from 26deg at 35% 28%, #854f67, #533448 15%, #694459 35%, #462e43 55%, #75465f 79%, #a16b80)',
       'badge-ink': '#ffebdc',
       imprint: '"HANAMI   /   花見" / ""',
-      'control-finish': 'linear-gradient(164deg, #fcd8d521, transparent 43%, #3c193113 72%, #f5cfcb1f), linear-gradient(180deg, #f8d8d236, transparent 2px)',
-      'control-radius': '16px 6px 16px 6px',
-      'focus-outline': '3px double #ffe4cd',
-      selection: '#713f59',
-      'row-hover': 'linear-gradient(105deg, #a97589 0 2px, #4a3142 2px, #3d2939 42%, #312432)',
-      'row-active': 'linear-gradient(105deg, #f7c3bf 0 3px, #744e60 3px 5px, #573747 5px, #453042 56%, #53374c)',
-      'section-rule': 'radial-gradient(ellipse 10px 2px at 20px 50%, #e5b0b9 58%, transparent 73%), linear-gradient(90deg, transparent 3px, #b482976e 14px, #d0a1ae88 44px, transparent 90%)',
-      'sheet-finish': 'url("/themes/sakura-mist-sprig.svg"), repeating-linear-gradient(6deg, transparent 0 6px, #edc4bb06 6px 7px), linear-gradient(128deg, #432c3cef, #291e2bf2 54%, #473345ec)',
-      'scrollbar-thumb': '#ba8d9f',
-      'control-motion': '270ms cubic-bezier(.22,.64,.3,1)',
     },
   },
   {
@@ -747,6 +632,14 @@ export function accentInk(theme: Pick<CompanionTheme, 'accent' | 'bg'>): string 
 
 // ---- CSS -------------------------------------------------------------------------------------------
 
+/** Only paint supported surfaces. Omitted keys leave the component kit in charge. */
+export function immersiveEntries(theme: CompanionTheme) {
+  return IMMERSIVE_KEYS.flatMap((key) => {
+    const value = theme.immersive?.[key];
+    return value === undefined ? [] : [[key, value] as const];
+  });
+}
+
 /** Pane opacity at each glass level, from the theme's own. */
 export function glassAlpha(theme: Pick<CompanionTheme, 'glass'>, level: GlassLevel): number {
   if (level === 'solid') return 1;
@@ -813,7 +706,7 @@ export function companionThemeVars(theme: CompanionTheme, level: GlassLevel = 'f
   const chrome = chromeAlpha(theme, level);
   const ink = accentInk(theme);
   return {
-    ...Object.fromEntries(Object.entries(theme.immersive ?? {}).map(([key, value]) => [`--th-${key}`, value])),
+    ...Object.fromEntries(immersiveEntries(theme).map(([key, value]) => [`--th-${key}`, value])),
     '--bg': theme.bg,
     '--surface': mixHex(theme.bg, theme.text, 0.035),
     '--surface-raised': mixHex(theme.bg, theme.text, 0.06),
