@@ -750,11 +750,12 @@ class OfficeConnection(
                     r.floor to r.workers.filter { w -> MissionControl.isDeskWorker(w, missionState) }.associateBy(WorkerInfo::id)
                 }?.toMutableMap()
                 val bPulls = msg.building?.associate { r -> r.floor to r.pulls }?.toMutableMap()
-                if (bWorkers != null && msg.view.floor != null) {
-                    bWorkers[msg.view.floor] = msg.view.workers.filter { w -> MissionControl.isDeskWorker(w, missionState) }.associateBy(WorkerInfo::id)
+                val viewFloor = msg.view.floor
+                if (bWorkers != null && viewFloor != null) {
+                    bWorkers[viewFloor] = msg.view.workers.filter { w -> MissionControl.isDeskWorker(w, missionState) }.associateBy(WorkerInfo::id)
                 }
-                if (bPulls != null && msg.view.floor != null) {
-                    bPulls[msg.view.floor] = msg.view.pulls.items
+                if (bPulls != null && viewFloor != null) {
+                    bPulls[viewFloor] = msg.view.pulls.items
                 }
                 _data.update {
                     it.copy(
@@ -933,8 +934,9 @@ class OfficeConnection(
         val mission = currentData.mission
         val floorWorkers = view.workers.filter { w -> MissionControl.isDeskWorker(w, mission) }.associateBy(WorkerInfo::id)
         _data.update { d ->
-            val nextBuildingWorkers = if (d.hasBuildingRoster && view.floor != null) d.buildingWorkers + (view.floor to floorWorkers) else d.buildingWorkers
-            val nextBuildingPulls = if (d.hasBuildingRoster && view.floor != null) d.buildingPulls + (view.floor to view.pulls.items) else d.buildingPulls
+            val viewFloor = view.floor
+            val nextBuildingWorkers = if (d.hasBuildingRoster && viewFloor != null) d.buildingWorkers + (viewFloor to floorWorkers) else d.buildingWorkers
+            val nextBuildingPulls = if (d.hasBuildingRoster && viewFloor != null) d.buildingPulls + (viewFloor to view.pulls.items) else d.buildingPulls
             d.copy(
                 officeId = officeId,
                 floors = floors ?: d.floors,

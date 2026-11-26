@@ -1,0 +1,63 @@
+package ai.factory.droidoffice.core
+
+import java.net.InetAddress
+import java.net.URLDecoder
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+/** The pure Kotlin stand-ins commonMain uses give what the JDK calls they replaced gave. */
+class CommonParityTest {
+    private val texts = listOf("", "abc", "a😀b", "😀😀", "\uD83D", "x\uDE00y", "\uDE00\uD83D", "é́ü", "😀\uD83D")
+
+    @Test
+    fun codePointsMatchTheJdk() {
+        for (s in texts) {
+            assertArrayEquals(s, s.codePoints().toArray(), CodePoints.of(s))
+            assertEquals(s, s.codePointCount(0, s.length), CodePoints.count(s, 0, s.length))
+            for (i in s.indices) {
+                assertEquals("$s @$i", s.codePointAt(i), CodePoints.at(s, i))
+                assertEquals("$s count from $i", s.codePointCount(i, s.length), CodePoints.count(s, i, s.length))
+            }
+            val total = s.codePointCount(0, s.length)
+            for (n in 0..total) assertEquals("$s +$n", s.offsetByCodePoints(0, n), CodePoints.offset(s, 0, n))
+            for (n in 0..total) assertEquals("$s -$n", s.offsetByCodePoints(s.length, -n), CodePoints.offset(s, s.length, -n))
+        }
+        for (cp in listOf(0x41, 0xE9, 0x1F600, 0x1D538, 0x10FFFF)) {
+            assertEquals(String(Character.toChars(cp)), CodePoints.toString(cp))
+            assertEquals(Character.charCount(cp), CodePoints.charCount(cp))
+        }
+    }
+
+    @Test
+    fun urlDecodingMatchesUrlDecoder() {
+        val inputs = listOf(
+            "", "plain", "a+b", "%41%42", "caf%C3%A9", "%F0%9F%98%80", "%E2%82", "%ff%fe", "100%25",
+            "%", "%4", "a%4", "%zz", "%-1", "%+1", "%41%", "%2B%2b", "x%20y%3Dz",
+        )
+        for (s in inputs) {
+            val expected = runCatching { URLDecoder.decode(s, "UTF-8") }
+            val actual = runCatching { UrlDecoder.decode(s) }
+            assertEquals(s, expected.getOrNull(), actual.getOrNull())
+            assertEquals(s, expected.exceptionOrNull()?.javaClass, actual.exceptionOrNull()?.javaClass)
+        }
+    }
+
+    @Test
+    fun ipv6LiteralsMatchInetAddress() {
+        val literals = listOf(
+            "::", "::1", "fe80::1", "fd7a:115c:a1e0::1", "2001:4860:4860::8888",
+            "1:2:3:4:5:6:7:8", "1::8", "1:2:3:4:5:6:7::", "::ffff:192.168.1.2", "::192.168.1.2",
+            "64:ff9b::10.0.0.1", "FEC0::ABCD",
+        )
+        for (literal in literals) {
+            assertArrayEquals(literal, InetAddress.getByName(literal).address, Routes.parseIpv6(literal))
+        }
+        // A zone names an interface this machine may not have, so InetAddress can't be the judge.
+        assertArrayEquals(Routes.parseIpv6("fe80::1"), Routes.parseIpv6("fe80::1%wlan0"))
+        for (bad in listOf("1:2", "1::2::3", ":1::", "1:2:3:4:5:6:7:8:9", "12345::", "g::1", "::1.2.3", "1:2:3:4:5:6:7:8::")) {
+            assertNull(bad, Routes.parseIpv6(bad))
+        }
+    }
+}

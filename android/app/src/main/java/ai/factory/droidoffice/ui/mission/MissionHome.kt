@@ -184,7 +184,8 @@ private fun OrchestratorCard(agent: MissionAgent?, team: List<MissionTeamMember>
                 val rest = buildList {
                     MissionControl.teamLine(team)?.let(::add)
                     w?.let { Workers.workedMs(it, now) }?.takeIf { it >= 1_000 }?.let { add(Workers.duration(it)) }
-                    if ((state == WorkerStatus.NeedsInput || (state == WorkerStatus.Done && w?.acked == false)) && w?.waitingSince != null) add(Workers.ago(w.waitingSince, now))
+                    val waitingSince = w?.waitingSince
+                    if ((state == WorkerStatus.NeedsInput || (state == WorkerStatus.Done && w?.acked == false)) && waitingSince != null) add(Workers.ago(waitingSince, now))
                 }.joinToString(" · ").uppercase()
                 val style = LocalOfficeType.current.eyebrow.copy(fontSize = 10.sp)
                 Row(Modifier.tagged(Tags.Mission.ORCHESTRATOR_META), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {

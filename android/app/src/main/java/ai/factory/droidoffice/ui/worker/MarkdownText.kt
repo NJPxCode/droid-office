@@ -472,10 +472,11 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
             }
         }
         is JsonWidget.Node.Divider -> {
-            if (node.title != null) {
+            val title = node.title
+            if (title != null) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
-                    Text(node.title.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.padding(horizontal = 8.dp))
+                    Text(title.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.padding(horizontal = 8.dp))
                     Box(Modifier.weight(1f).height(1.dp).background(ThreadPalette.Border))
                 }
             } else {
@@ -541,11 +542,13 @@ private fun RenderWidgetNode(node: JsonWidget.Node, mono: FontFamily) {
             }
         }
         is JsonWidget.Node.ProgressBar -> {
-            val mod = if (node.widthDp != null) Modifier.widthIn(max = node.widthDp.dp).fillMaxWidth() else Modifier.fillMaxWidth()
+            val widthDp = node.widthDp
+            val mod = if (widthDp != null) Modifier.widthIn(max = widthDp.dp).fillMaxWidth() else Modifier.fillMaxWidth()
             Column(mod, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    if (node.label != null) {
-                        Text(node.label, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val label = node.label
+                    if (label != null) {
+                        Text(label, style = MaterialTheme.typography.bodySmall.copy(color = ThreadPalette.TextSecondary), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     } else {
                         Spacer(Modifier.weight(1f))
                     }

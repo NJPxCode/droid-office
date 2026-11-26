@@ -307,8 +307,9 @@ fun AppRoot(graph: AppGraph, incoming: MutableStateFlow<Incoming?>) {
                 if (link.phase != Phase.Connected || link.officeId != targetOfficeId || data.officeId != targetOfficeId || !data.synced) {
                     return@LaunchedEffect
                 }
-                val resolvedFloor = if (t.floorId != null) {
-                    DeepLinks.resolveFloorId(data.floors, t.floorId)
+                val linkFloor = t.floorId
+                val resolvedFloor = if (linkFloor != null) {
+                    DeepLinks.resolveFloorId(data.floors, linkFloor)
                 } else {
                     data.floorId
                 }

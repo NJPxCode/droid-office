@@ -744,7 +744,8 @@ private fun meta(w: WorkerInfo, now: Long): String {
     val parts = mutableListOf<String>()
     val worked = Workers.workedMs(w, now)
     if (worked >= 1_000) parts += Workers.duration(worked)
-    if ((w.state == WorkerStatus.NeedsInput || (w.state == WorkerStatus.Done && !w.acked)) && w.waitingSince != null) parts += Workers.ago(w.waitingSince, now)
+    val waitingSince = w.waitingSince
+    if ((w.state == WorkerStatus.NeedsInput || (w.state == WorkerStatus.Done && !w.acked)) && waitingSince != null) parts += Workers.ago(waitingSince, now)
     return parts.joinToString(" · ").uppercase()
 }
 

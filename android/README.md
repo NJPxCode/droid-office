@@ -133,7 +133,7 @@ In Thread, the list follows the newest entry and stays at the bottom through new
 
 While a turn runs, what waits in Droid's queue shows in Factory's panel at the top of the composer (`composer.queue`): **Steering messages** sent mid-turn, then **Queued messages** waiting for the turn's end (`composer.queue.item/<n>`, from 1), oldest first, with **Clear all** and a queued-count footer. The list is the one Droid shows above its input box, read off the worker's screen, so a message queued from the desktop or the web shows too; a phone-sized terminal that wraps Droid's queue hint onto two rows never shows the hint as a message. Droid shows each message as one line, maybe cut short: one this phone sent shows its whole text, and another client's says **Shortened** or how many more lines it has. A message just queued shows at once, before Droid draws it, and goes once Droid's queue no longer has it and the conversation shows it. While the screen can't be read (a dialog is open, or there is no screen yet), the messages this phone queued show instead. **Clear all** (`composer.queue.clear`), there while the panel shows a queue, sends Ctrl+U then Ctrl+X, Droid's own keys for clearing a stray draft and its queue. On offices with `worker.queue`, rows also offer **Send now**, **Remove from queue** and **Edit message** (`composer.queue.send_now|remove|edit/<n>`). Messages queued from the phone are kept through switching views, rotation, a restart or a force-stop, in a file per worker (not backed up; at most 12 workers, least recently written dropped first, each up to 32 messages), until the conversation shows them, Droid's queue no longer has them, a new session starts or the office is forgotten. Owner-cancelled tool execution is **Cancelled**, not a red failure; the underlying error remains in its details.
 
-Every screen and control has a stable name from [`core/Tags.kt`](app/src/main/java/ai/factory/droidoffice/core/Tags.kt), which `uiautomator dump` prints as the node's `resource-id`. An agent can see where the app is and tap a control by name instead of by its text or position:
+Every screen and control has a stable name from [`core/Tags.kt`](core/src/commonMain/kotlin/ai/factory/droidoffice/core/Tags.kt), which `uiautomator dump` prints as the node's `resource-id`. An agent can see where the app is and tap a control by name instead of by its text or position:
 
 ```bash
 # What's on screen: each tagged node with its text and bounds.
@@ -192,7 +192,9 @@ The keystore and its passwords are kept outside the repository by the maintainer
 
 | Path | Contents |
 | --- | --- |
-| `app/src/main/java/ai/factory/droidoffice/core/` | Pure Kotlin, no Android: the pairing link parser, route kinds and the route race, the WebSocket protocol, the terminal screen model and cell layout (character widths, box glyphs, numbered menus), worker grouping, labels and model names, and the Whiteboard (its board model, sync, ops and ping eligibility, and the live card page's routes, byte ranges and messages in `WbPage.kt`) |
+| `core/` | Kotlin Multiplatform module shared with the iOS companion (`core/src/commonMain/`, package `ai.factory.droidoffice.core`). Pure Kotlin, no Android or JVM APIs: the pairing link parser, route kinds and the route race, the WebSocket protocol, the terminal screen model and cell layout (character widths, box glyphs, numbered menus), worker grouping, labels and model names, and the Whiteboard (its board model, sync, ops and ping eligibility, and the live card page's routes, byte ranges and messages in `WbPage.kt`). What it needs from the platform (URI parsing, number and date formats, collation) is in `Platform.kt`, answered by `androidMain` and `iosMain` |
+| `core/src/androidHostTest/` | JUnit tests for `core/`, run on the JVM, and the golden files the Node suite shares |
+| `app/src/main/java/ai/factory/droidoffice/core/` | The Android-only part of the `core` package: APK update checks (`AppUpdate.kt`, `UpdateController.kt`) and the on-disk queue receipts (`Receipts.kt`) |
 | `data/` | Paired offices and settings (DataStore) and the Keystore token vault |
 | `net/` | The HTTP API (OkHttp), the cleartext guard and the network monitor |
 | `session/` | `OfficeConnection`, the one connection to the current office (route race, WebSocket, reconnects, who holds it open), and `Pairer` |
@@ -200,5 +202,5 @@ The keystore and its passwords are kept outside the repository by the maintainer
 | `notify/` | Notifications, direct replies and the Stay connected foreground service |
 | `ui/` | Compose screens: `onboarding/`, `home/`, `worker/`, `board/`, `offices/`, plus the theme and shared components |
 | `app/src/main/assets/` | The WebView pages: `terminal/` (xterm.js) and `whiteboard/` (the live card: the sandboxed frame, the office's bridge and the marks over it) |
-| `app/src/test/` | JUnit tests for `core/` |
+| `app/src/test/` | JUnit tests for the app's own code, including the Android-only `core` files |
 | `docs/` | The screenshots on this page |
