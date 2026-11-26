@@ -178,7 +178,7 @@ test('orchestration-eval rig serves live Office MCP roles, keeps solo workers le
   const leadBreakdown = breakdowns.get('floor-lead')!;
   assert.ok(soloBreakdown.systemPromptChars <= leadBreakdown.systemPromptChars);
   assert.ok(soloBreakdown.mcpInstructionsChars + 2000 < leadBreakdown.mcpInstructionsChars, 'solo workers save >2,000 chars of MCP lead/quota manuals on startup');
-  assert.deepEqual(counts, { orchestrator: 28, 'external-bot': 30, 'floor-lead': 29, 'solo-worker': 29, subagent: 10 });
+  assert.deepEqual(counts, { orchestrator: 33, 'external-bot': 30, 'floor-lead': 29, 'solo-worker': 29, subagent: 10 });
 });
 
 test('orchestration-eval scenario suite has unique ids and grades live MCP interactions end to end', async (t) => {
