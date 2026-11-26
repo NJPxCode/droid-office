@@ -9,7 +9,7 @@ import { AGENT_EFFORTS, type AgentChoice, type WorkerInfo } from '../shared/prot
 import { isAsleep } from '../shared/status.js';
 import type { ScreenFrame } from './screen-frame.js';
 import { missionTeam } from './building-agent.js';
-import { BUILDING_TOOLS } from './office-mcp/index.js';
+import { BUILDING_TOOLS, ORCHESTRATOR_WHITEBOARD_TOOLS } from './office-mcp/index.js';
 import { officePrompt, type PromptSource } from './prompts.js';
 import { floorHint } from '../shared/prompts.js';
 import type { Team } from './team.js';
@@ -24,7 +24,7 @@ const ORCHESTRATOR_DIR = 'orchestrator';
  * (`droid-office___team_hire`, `mcp__droid-office__team_hire`). The Orchestrator calls these without Droid's
  * permission prompt: nobody sits at its terminal to approve a hire. Every other tool keeps its prompt.
  */
-const ORCHESTRATOR_ALLOWED_TOOLS = `^(droid-office___|mcp__droid-office__)(${[...BUILDING_TOOLS].join('|')})$`;
+const ORCHESTRATOR_ALLOWED_TOOLS = `^(droid-office___|mcp__droid-office__)(${[...BUILDING_TOOLS, ...ORCHESTRATOR_WHITEBOARD_TOOLS].join('|')})$`;
 const ALLOWED = 'The Orchestrator works through the Office MCP: its own tools there need no approval.';
 
 /** One open floor, as the Orchestrator's team spans them. */

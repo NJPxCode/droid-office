@@ -13,6 +13,7 @@ import { closedUnionAt, createOfficeMcp, OFFICE_MCP_PATH, OFFICE_MCP_WORKER_HEAD
 import { Team, type TeamWorkers } from '../src/server/team.js';
 import { Visits } from '../src/server/visits.js';
 import { WhiteboardStore, type CardRenders, type PinnedCard, type RenderImage, type RenderOutcome, type WhiteboardRenderer } from '../src/server/whiteboard.js';
+import type { RemoteOffice } from '../src/server/remote-office.js';
 import { SUBAGENT_DEFAULTS, type WorkerInfo } from '../src/shared/protocol.js';
 import { OWNER, OWNER_AUTHOR, findCard, readPoint, type Op } from '../src/shared/whiteboard.js';
 import type { ReadOut } from '../src/server/whiteboard-agent.js';
@@ -51,7 +52,7 @@ class Renderer implements WhiteboardRenderer {
   stop() {}
 }
 
-async function rig(t: { after(fn: () => void | Promise<void>): void }) {
+async function rig(t: { after(fn: () => void | Promise<void>): void }, building = false) {
   const dir = mkdtempSync(path.join(tmpdir(), 'office-mcp-whiteboard-'));
   const cwd = path.join(dir, '.droid-office', 'worktrees', 'sub');
   mkdirSync(cwd, { recursive: true });
@@ -91,7 +92,23 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
   const store = new WhiteboardStore(dir, { renderer, readers: () => [OWNER, ...people.map((person) => person.id)] });
   store.start();
   const floor: OfficeMcpFloor = { id: 'floor', name: 'Main', dir, workers, team, visits, whiteboard: store };
-  const mcp = createOfficeMcp({ answers: new Answers(), settings: () => settings, floor: (id) => (workers.get(id) ? floor : undefined) });
+  const otherDir = path.join(dir, 'other');
+  mkdirSync(otherDir);
+  const otherStore = new WhiteboardStore(otherDir, { renderer: new Renderer() });
+  otherStore.start();
+  const floors = [
+    { ...floor, def: { name: 'Main' } },
+    { ...floor, id: 'other', dir: otherDir, def: { name: 'Main' }, whiteboard: otherStore },
+  ];
+  const orchestrator = worker('orchestrator', { name: 'Orchestrator', deskId: '' });
+  const remote = building ? ({ floors: () => floors, store: { isGrokBot: () => false } } as unknown as RemoteOffice) : undefined;
+  const mcp = createOfficeMcp({
+    answers: new Answers(),
+    settings: () => settings,
+    floor: (id) => (workers.get(id) ? floor : undefined),
+    remote,
+    orchestrator: building ? { cwd, authenticate: (id, token) => (id === 'orchestrator' && token === 'token-orchestrator' ? orchestrator : undefined) } : undefined,
+  });
   let disconnected: (() => void) | undefined;
   const http = createServer((req, res) => {
     void mcp.handle(req, res);
@@ -113,6 +130,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
     team.stop();
     visits.stop();
     store.stop();
+    otherStore.stop();
     rmSync(dir, { recursive: true, force: true });
   });
   const connect = async (id: string) => {
@@ -136,7 +154,7 @@ async function rig(t: { after(fn: () => void | Promise<void>): void }) {
     assert.equal(result.kind, 'ack', JSON.stringify(result));
   };
   const url = new URL(`http://127.0.0.1:${(http.address() as AddressInfo).port}${OFFICE_MCP_PATH}`);
-  return { dir, cwd, url, disconnect, client, connect, call, ok, card, owner, store, renderer };
+  return { dir, cwd, url, disconnect, client, connect, call, ok, card, owner, store, otherStore, floors, renderer };
 }
 
 const textOf = (result: { content: unknown }) =>
@@ -161,6 +179,61 @@ test('both lead and subagent discover all six Whiteboard tools and their complet
   for (const detail of ['reviewable screenshots', 'name its title and id', 'Read feedback', 'window.whiteboard', 'data-wb-id', '1280', 'Never put secrets', 'state.fields', 'Linked cards', 'board.json', 'whiteboard_guide'])
     assert.ok(instructions.includes(detail), detail);
   for (const detail of ['data-wb-ping="', 'pinged.<name>', 'data-wb-ping-state']) assert.ok(instructions.includes(detail), detail);
+});
+
+test('the Orchestrator writes to the selected floor through every Whiteboard tool', async (t) => {
+  const r = await rig(t, true);
+  const client = await r.connect('orchestrator');
+  const call = (name: string, args: Record<string, unknown> = {}) => client.callTool({ name, arguments: args });
+  const ok = async (name: string, args: Record<string, unknown> = {}) => {
+    const result = await call(name, args);
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    return result.structuredContent!;
+  };
+  assert.deepEqual(
+    (await client.listTools()).tools
+      .map((tool) => tool.name)
+      .filter((name) => name.startsWith('whiteboard_'))
+      .sort(),
+    TOOL_NAMES,
+  );
+  assert.match(client.getInstructions() ?? '', /Name the floor on Whiteboard calls/);
+  assert.equal((await ok('whiteboard_guide', { topic: 'tokens', exportLogosTo: 'logos' })).topic, 'tokens');
+  assert.ok(readFileSync(path.join(r.cwd, 'logos', 'rotor-white.svg')).length > 0);
+  for (const floor of [undefined, 'Main', 'missing']) {
+    const result = await call('whiteboard_card', { floor, action: 'create', card: 'bad', title: 'Bad', source: { canvas: true } });
+    assert.equal(result.isError, true, String(floor));
+  }
+  for (const [name, args] of [
+    ['whiteboard_state', { card: 'bad', op: 'set', value: {} }],
+    ['whiteboard_marks', { card: 'bad', kind: 'sticky', op: 'add', text: 'Bad' }],
+    ['whiteboard_apply', { ops: [{ op: 'card.create', card: 'bad', kind: 'canvas', title: 'Bad' }] }],
+  ] as const) {
+    assert.equal((await call(name, args)).isError, true, `${name} needs an unambiguous floor`);
+    assert.equal((await r.call(name, { ...args, floor: 'other' })).isError, true, `${name} cannot reach another floor from a desk`);
+  }
+  assert.equal(r.store.board.cards.length, 0);
+  assert.equal(r.otherStore.board.cards.length, 0);
+  writeFileSync(path.join(r.cwd, 'plan.md'), '# From scratch folder\n');
+  await ok('whiteboard_card', { floor: 'other', action: 'create', card: 'plan', source: { markdownFile: 'plan.md' }, show: true });
+  assert.equal(r.otherStore.board.cards[0].title, 'From scratch folder');
+  assert.equal(r.store.board.cards.length, 0);
+  await ok('whiteboard_card', { floor: r.floors[1].dir, action: 'update', card: 'plan', title: 'Revised' });
+  await ok('whiteboard_state', { floor: 'other', card: 'plan', op: 'set', path: 'fields.answer', value: 'yes' });
+  assert.equal((await ok('whiteboard_state', { floor: 'other', card: 'plan', op: 'get', path: 'fields.answer' })).value, 'yes');
+  await ok('whiteboard_marks', { floor: 'other', card: 'plan', kind: 'sticky', op: 'add', text: 'Feedback', anchor: { at: { x: 10, y: 20 } } });
+  await ok('whiteboard_apply', { floor: 'other', ops: [{ op: 'card.title', card: 'plan', title: 'Batch' }] });
+  assert.equal(r.otherStore.board.cards[0].title, 'Batch');
+  assert.equal(readOf(await ok('whiteboard_read', { floor: 'other' })).cards[0].id, 'plan');
+  const refused = await r.call('whiteboard_card', { floor: 'other', action: 'create', title: 'No', source: { canvas: true } });
+  assert.equal(refused.isError, true, 'floor workers cannot write to a different floor');
+  await ok('whiteboard_card', { floor: 'other', action: 'remove', card: 'plan' });
+  assert.equal(r.otherStore.board.cards.length, 0);
+  r.floors.splice(1);
+  await ok('whiteboard_card', { action: 'create', card: 'single', title: 'Single floor', source: { canvas: true } });
+  assert.equal(r.store.board.cards[0].id, 'single');
+  r.floors.splice(0);
+  assert.equal((await call('whiteboard_apply', { ops: [] })).isError, true);
 });
 
 test('reads move only returned read points, preserve full feedback, and sanitize text but not exact JSON', async (t) => {

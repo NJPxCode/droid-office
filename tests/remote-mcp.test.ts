@@ -845,6 +845,7 @@ test('external-bot tools/list returns exactly the supported tools and their docu
     'visit_reply',
     'team',
     'models_list',
+    'whiteboard_guide',
     'whiteboard_card',
     'whiteboard_state',
     'whiteboard_marks',

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { CARRY_ON_PROMPT, HOOK_VERSION, NAMES, SPOOL_MAX_BYTES, STOP_GRACE_MS, WorkerManager, setupFailedNote, type WorkerEvents } from '../src/server/workers.js';
 import { Orchestrator } from '../src/server/orchestrator.js';
 import { Team } from '../src/server/team.js';
-import { BUILDING_TOOLS } from '../src/server/office-mcp/index.js';
+import { BUILDING_TOOLS, ORCHESTRATOR_WHITEBOARD_TOOLS } from '../src/server/office-mcp/index.js';
 import type { ToolRefresh } from '../src/server/hook-refresh.js';
 import { Worktrees } from '../src/server/worktrees.js';
 import type { PromptSource } from '../src/server/prompts.js';
@@ -560,7 +560,7 @@ test('the Orchestrator approves only Office MCP tools; its shell, edits and othe
   assert.deepEqual(Object.keys(said.hookSpecificOutput), ['hookEventName', 'permissionDecision', 'permissionDecisionReason']);
   assert.equal(said.hookSpecificOutput.hookEventName, 'PreToolUse');
   const approved = new RegExp(allow.matcher);
-  for (const tool of BUILDING_TOOLS) {
+  for (const tool of [...BUILDING_TOOLS, ...ORCHESTRATOR_WHITEBOARD_TOOLS]) {
     assert.match(`droid-office___${tool}`, approved, 'the name Droid sends today');
     assert.match(`mcp__droid-office__${tool}`, approved, 'and the one its hooks reference documents');
   }
@@ -574,7 +574,7 @@ test('the Orchestrator approves only Office MCP tools; its shell, edits and othe
     'mcp__github__create_issue',
     'droidproxy___run',
     // The office's own tools a building agent has no use of, and names that only start or end like one of its own.
-    'droid-office___whiteboard_apply',
+    'droid-office___visit_message',
     'droid-office___team_hire_anything',
     'droid-office___other___team_hire',
     'mcp__droid-office__other__team_hire',

@@ -90,17 +90,13 @@ function applyOnFloor(floor: { id: string; dir: string; whiteboard: WhiteboardSt
   return officeResult(`Done at revision ${out.rev}.${extra.card ? ` Card: ${extra.card}.` : ''}${extra.id ? ` Mark: ${extra.id}.` : ''}`, { ok: true, rev: out.rev, ...(deepLink ? { deepLink } : {}), ...extra });
 }
 
-function apply(caller: OfficeMcpCaller, ops: Record<string, unknown>[], extra: Record<string, unknown> = {}, linkBase?: string) {
-  return applyOnFloor(ownFloor(caller), caller, ops, extra, linkBase);
-}
-
-function resolveReadFloor(caller: OfficeMcpCaller, deps: OfficeMcpDeps, floorRef?: string): { id: string; name: string; dir: string; whiteboard: WhiteboardStore } | string {
+function resolveBoardFloor(caller: OfficeMcpCaller, deps: OfficeMcpDeps, floorRef?: string): { id: string; name: string; dir: string; whiteboard: WhiteboardStore } | string {
   if (!caller.building) {
     const own = ownFloor(caller);
     if (floorRef !== undefined) {
       const want = floorRef.trim();
       const matchesOwn = want === own.id || want.toLowerCase() === own.name.toLowerCase() || (path.isAbsolute(want) && path.resolve(want) === path.resolve(own.dir));
-      if (!matchesOwn) return 'Floor workers read only their own floor’s Whiteboard';
+      if (!matchesOwn) return 'Floor workers can access only their own floor’s Whiteboard';
     }
     return own;
   }
@@ -108,7 +104,7 @@ function resolveReadFloor(caller: OfficeMcpCaller, deps: OfficeMcpDeps, floorRef
   if (!all.length) return 'No floor is open.';
   if (floorRef === undefined) {
     if (all.length === 1) return { id: all[0].id, name: all[0].def.name, dir: all[0].dir, whiteboard: all[0].whiteboard };
-    return 'Name the floor whose Whiteboard to read: pass floor with an open floor’s id, name or path from office_floors.';
+    return 'Name the floor whose Whiteboard to read or write: pass floor with an open floor’s id, name or path from office_floors.';
   }
   const named = floorNamed(all, floorRef);
   if (typeof named === 'string') return named;
@@ -236,11 +232,10 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
     },
     officeAccess.worker,
     (args, caller) => {
-      const floor = ownFloor(caller);
       const topic = args.topic ?? 'all';
       let exported: string[] | undefined;
       if (args.exportLogosTo !== undefined) {
-        const res = exportBrandLogos(args.exportLogosTo, caller.cwd ?? floor.dir);
+        const res = exportBrandLogos(args.exportLogosTo, caller.cwd ?? ownFloor(caller).dir);
         if (typeof res === 'string') return officeError(res);
         exported = res.files;
       }
@@ -272,7 +267,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
     },
     officeAccess.worker,
     async (args, caller, signal) => {
-      const floor = resolveReadFloor(caller, deps, args.floor);
+      const floor = resolveBoardFloor(caller, deps, args.floor);
       if (typeof floor === 'string') return officeError(floor);
       const out = await readBoard(floor.whiteboard, readerOf(workerAuthor(caller.worker)), { id: floor.id, name: floor.name }, { cards: args.cards, onlyChanged: args.onlyChanged, png: args.png, signal });
       const result = officeResult('');
@@ -331,6 +326,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
       description:
         'Create, update, link/unlink, remove, or show a Markdown, video, image, HTML, or canvas card. Create needs source (title inferred from # Heading or filename for markdown/video/image when omitted); update needs title and/or non-canvas source and preserves marks/state. Unlink linked content before replacing it. Pass show: true on create/update/link to select on the 3D wall; action: "show" with grid: true selects the grid.',
       inputSchema: z.object({
+        floor: floorArg,
         action: z.enum(['create', 'update', 'link', 'unlink', 'remove', 'show']),
         card: z.string().optional().describe('Card id (optional on create).'),
         title: z.string().optional(),
@@ -342,25 +338,26 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
     },
     officeAccess.worker,
     async (args, caller) => {
+      const floor = resolveBoardFloor(caller, deps, args.floor);
+      if (typeof floor === 'string') return officeError(floor);
       const linkBase = mcpDeepLinkBase(deps);
+      const apply = (ops: Record<string, unknown>[], extra: Record<string, unknown> = {}, base = linkBase) => applyOnFloor(floor, caller, ops, extra, base);
       const card = args.card ?? (args.action === 'create' ? newId('c') : undefined);
       if (args.action === 'show') {
         if (args.grid && card) return officeError('Choose a card or grid:true, not both.');
-        const floor = ownFloor(caller);
-        return apply(caller, [{ op: 'show', selection: card ? { kind: 'card', id: card } : { kind: 'grid' } }], card ? { card, shown: true } : { deepLink: floorDeepLink(floor.id, linkBase) }, linkBase);
+        return apply([{ op: 'show', selection: card ? { kind: 'card', id: card } : { kind: 'grid' } }], card ? { card, shown: true } : { deepLink: floorDeepLink(floor.id, linkBase) });
       }
       if (!card) return officeError('Give the card id. whiteboard_read lists cards.');
       const picked = args.source ? sourceOf(args.source) : undefined;
       if (typeof picked === 'string') return officeError(picked);
       const content = picked && picked.kind !== 'canvas' ? { load: picked.load } : undefined;
-      const floor = ownFloor(caller);
       const cwd = caller.cwd ?? floor.dir;
       if (args.action === 'create') {
         const title = inferTitle(args.title, picked, cwd);
         if (!title || !picked) return officeError('Create needs a nonempty title and a source: html, markdown, markdownFile, file, dir, video, image, link or canvas.');
         const ops: Record<string, unknown>[] = [{ op: 'card.create', card, title, kind: picked.kind === 'canvas' ? 'canvas' : 'html', ...(content ? { content } : {}) }];
         if (args.show) ops.push({ op: 'show', selection: { kind: 'card', id: card } });
-        const result = apply(caller, ops, { card, ...(args.show ? { shown: true } : {}) }, linkBase);
+        const result = apply(ops, { card, ...(args.show ? { shown: true } : {}) });
         if (!result.isError) {
           const created = await readBoard(floor.whiteboard, caller.worker.id, floor, { cards: [card] });
           const details = created.cards[0];
@@ -378,15 +375,15 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
         if (content) ops.push({ op: 'card.content', card, content });
         if (!ops.length) return officeError('Update needs a title or source.');
         if (args.show) ops.push({ op: 'show', selection: { kind: 'card', id: card } });
-        return attachCardImages(apply(caller, ops, { card, ...(args.show ? { shown: true } : {}) }, linkBase), floor, card, caller);
+        return attachCardImages(apply(ops, { card, ...(args.show ? { shown: true } : {}) }), floor, card, caller);
       }
       if (args.action === 'link') {
         if (picked?.kind !== 'link') return officeError('Link needs source: {link: "file-or-folder", entry?: "index.html"}.');
         const ops: Record<string, unknown>[] = [{ op: 'card.linkTo', card, path: picked.load.link, ...(picked.load.entry === undefined ? {} : { entry: picked.load.entry }) }];
         if (args.show) ops.push({ op: 'show', selection: { kind: 'card', id: card } });
-        return attachCardImages(apply(caller, ops, { card, ...(args.show ? { shown: true } : {}) }, linkBase), floor, card, caller);
+        return attachCardImages(apply(ops, { card, ...(args.show ? { shown: true } : {}) }), floor, card, caller);
       }
-      return apply(caller, [{ op: args.action === 'remove' ? 'card.rm' : 'card.unlink', card }], { card }, linkBase);
+      return apply([{ op: args.action === 'remove' ? 'card.rm' : 'card.unlink', card }], { card });
     },
   );
   server.tool(
@@ -394,15 +391,22 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
       name: 'whiteboard_state',
       description:
         'Get, set, merge, or delete a dotted state path (e.g. fields.email, pinged.accept; omit for root). Merge recursively writes leaves and replaces arrays; same-leaf writes are last-writer-wins. Reading state does not mark feedback read.',
-      inputSchema: z.object({ card: z.string(), op: z.enum(['get', 'set', 'merge', 'del']), path: z.string().optional(), value: z.json().optional().describe('JSON value for set/merge (root set and merge require an object).') }),
+      inputSchema: z.object({
+        floor: floorArg,
+        card: z.string(),
+        op: z.enum(['get', 'set', 'merge', 'del']),
+        path: z.string().optional(),
+        value: z.json().optional().describe('JSON value for set/merge (root set and merge require an object).'),
+      }),
       annotations: { openWorldHint: false },
     },
     officeAccess.worker,
     async (args, caller) => {
+      const floor = resolveBoardFloor(caller, deps, args.floor);
+      if (typeof floor === 'string') return officeError(floor);
       const linkBase = mcpDeepLinkBase(deps);
       const path = dotted(args.path);
       if (args.op === 'get') {
-        const floor = ownFloor(caller);
         const out = await readBoard(floor.whiteboard, caller.worker.id, floor, { cards: [args.card] });
         const card = out.cards[0];
         if (!card) return officeError(`No such card: ${args.card}. Use whiteboard_read to list cards.`);
@@ -412,7 +416,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
           : officeResult(JSON.stringify(value, null, 2), { card: args.card, deepLink: cardDeepLink(args.card, floor.id, linkBase), path, value });
       }
       if (args.op !== 'del' && args.value === undefined) return officeError('Give a JSON value for set or merge.');
-      return apply(caller, [{ op: `state.${args.op}`, card: args.card, path, ...(args.op === 'del' ? {} : { value: args.value }) }], { card: args.card }, linkBase);
+      return applyOnFloor(floor, caller, [{ op: `state.${args.op}`, card: args.card, path, ...(args.op === 'del' ? {} : { value: args.value }) }], { card: args.card }, linkBase);
     },
   );
   server.tool(
@@ -420,6 +424,7 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
       name: 'whiteboard_marks',
       description: 'Add or modify a comment thread (add/reply/edit/resolve/reopen/reattach/remove), sticky (add/edit/move/reattach/remove), or picture (add/file/move/reattach/remove) on a card.',
       inputSchema: z.object({
+        floor: floorArg,
         card: z.string(),
         kind: z.enum(['comment', 'sticky', 'picture']),
         op: z.enum(['add', 'reply', 'edit', 'resolve', 'reopen', 'move', 'file', 'reattach', 'remove']),
@@ -435,6 +440,8 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
     },
     officeAccess.worker,
     (args, caller) => {
+      const floor = resolveBoardFloor(caller, deps, args.floor);
+      if (typeof floor === 'string') return officeError(floor);
       const allowed = { comment: ['add', 'reply', 'edit', 'resolve', 'reopen', 'reattach', 'remove'], sticky: ['add', 'edit', 'move', 'reattach', 'remove'], picture: ['add', 'file', 'move', 'reattach', 'remove'] };
       if (!allowed[args.kind].includes(args.op)) return officeError(`${args.kind} supports ${allowed[args.kind].join(', ')}.`);
       if (args.op !== 'add' && !args.id) return officeError('Give the existing mark id. Read the card to find it.');
@@ -457,8 +464,8 @@ export function register(server: OfficeMcpServer, deps: OfficeMcpDeps): void {
         if (args.op === 'add' || args.op === 'reply') op.message = newId('m');
         else if (args.message !== undefined) op.message = args.message;
       }
-      const out = apply(caller, [op], { card: args.card, id, ...(typeof op.message === 'string' ? { message: op.message } : {}) }, mcpDeepLinkBase(deps));
-      return args.kind === 'picture' && (args.op === 'add' || args.op === 'file') ? attachCardImages(out, ownFloor(caller), args.card, caller) : out;
+      const out = applyOnFloor(floor, caller, [op], { card: args.card, id, ...(typeof op.message === 'string' ? { message: op.message } : {}) }, mcpDeepLinkBase(deps));
+      return args.kind === 'picture' && (args.op === 'add' || args.op === 'file') ? attachCardImages(out, floor, args.card, caller) : out;
     },
   );
   server.tool(
@@ -472,10 +479,13 @@ sticky.add {card,id,anchor,box?,text?,color?}; sticky.edit {card,id,text?,color?
 picture.add {card,id,file,anchor,box?}; picture.file {card,id,file}; picture.move {card,id,box}; picture.reattach {card,id,anchor}; picture.rm {card,id}.
 show {selection:{kind:"grid"}|{kind:"card",id}}; read {cards:[ids],rev}.
 Content: {load:{html}|{markdown,theme?,actions?}|{markdownFile,theme?,actions?}|{file}|{dir,entry?}|{video,poster?,caption?,theme?}|{image,caption?,theme?}|{link,entry?}}. Picture file: {load:"path"}. Disk inputs resolve against your working folder, package entries stay inside their folder. Batch anchors use the stored form {kind:"point",point:{x,y}} or {kind:"element",wbId?,selector?,quote?,offset?:{x,y},point:{x,y}}, not whiteboard_marks shorthand. Use the focused tools for ordinary work.`,
-      inputSchema: z.object({ ops: z.array(z.record(z.string(), z.unknown())).describe('Ordered operations; any invalid op rejects the whole batch.') }),
+      inputSchema: z.object({ floor: floorArg, ops: z.array(z.record(z.string(), z.unknown())).describe('Ordered operations; any invalid op rejects the whole batch.') }),
       annotations: { openWorldHint: false },
     },
     officeAccess.worker,
-    (args, caller) => apply(caller, args.ops),
+    (args, caller) => {
+      const floor = resolveBoardFloor(caller, deps, args.floor);
+      return typeof floor === 'string' ? officeError(floor) : applyOnFloor(floor, caller, args.ops);
+    },
   );
 }
