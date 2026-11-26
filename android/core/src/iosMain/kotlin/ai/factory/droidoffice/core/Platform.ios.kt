@@ -13,10 +13,13 @@ import platform.Foundation.NSNumberFormatter
 import platform.Foundation.NSNumberFormatterDecimalStyle
 import platform.Foundation.NSNumberFormatterRoundHalfUp
 import platform.Foundation.NSString
+import platform.Foundation.NSTimeZone
 import platform.Foundation.NSURLComponents
 import platform.Foundation.compare
 import platform.Foundation.create
+import platform.Foundation.autoupdatingCurrentLocale
 import platform.Foundation.dateWithTimeIntervalSince1970
+import platform.Foundation.localTimeZone
 
 internal actual fun parseUri(text: String): UriParts? {
     val components = NSURLComponents.componentsWithString(text) ?: return null
@@ -29,16 +32,21 @@ internal actual fun parseUri(text: String): UriParts? {
     )
 }
 
+// Foundation formatters are costly to build and safe to share across threads, so each is made once.
+private val decimalFormatters = Array(4) { decimalFormatter(it) }
+
+private fun decimalFormatter(decimals: Int) = NSNumberFormatter().apply {
+    locale = NSLocale(localeIdentifier = "en_US_POSIX")
+    numberStyle = NSNumberFormatterDecimalStyle
+    usesGroupingSeparator = false
+    roundingMode = NSNumberFormatterRoundHalfUp
+    minimumIntegerDigits = 1u
+    minimumFractionDigits = decimals.toULong()
+    maximumFractionDigits = decimals.toULong()
+}
+
 internal actual fun formatDecimals(value: Double, decimals: Int): String {
-    val formatter = NSNumberFormatter().apply {
-        locale = NSLocale(localeIdentifier = "en_US_POSIX")
-        numberStyle = NSNumberFormatterDecimalStyle
-        usesGroupingSeparator = false
-        roundingMode = NSNumberFormatterRoundHalfUp
-        minimumIntegerDigits = 1u
-        minimumFractionDigits = decimals.toULong()
-        maximumFractionDigits = decimals.toULong()
-    }
+    val formatter = decimalFormatters.getOrNull(decimals) ?: decimalFormatter(decimals)
     return formatter.stringFromNumber(NSNumber(double = value)) ?: value.toString()
 }
 
@@ -56,16 +64,21 @@ internal actual fun isUppercaseCodePoint(codePoint: Int): Boolean {
     return text.lowercase() != text && text.uppercase() == text
 }
 
+private val rootLocale = NSLocale(localeIdentifier = "")
+
 @OptIn(BetaInteropApi::class, ExperimentalForeignApi::class)
 internal actual fun collate(a: String, b: String): Int {
     val left = NSString.create(string = a)
-    return left.compare(b, options = 0u, range = NSMakeRange(0u, left.length), locale = NSLocale(localeIdentifier = "")).toInt()
+    return left.compare(b, options = 0u, range = NSMakeRange(0u, left.length), locale = rootLocale).toInt()
 }
 
-internal actual fun localDateTime(epochMillis: Long): String {
-    val formatter = NSDateFormatter().apply {
-        dateStyle = NSDateFormatterMediumStyle
-        timeStyle = NSDateFormatterShortStyle
-    }
-    return formatter.stringFromDate(NSDate.dateWithTimeIntervalSince1970(epochMillis / 1000.0))
+// The autoupdating locale and time zone follow a change in Settings without a new formatter.
+private val dateTimeFormatter = NSDateFormatter().apply {
+    locale = NSLocale.autoupdatingCurrentLocale
+    timeZone = NSTimeZone.localTimeZone
+    dateStyle = NSDateFormatterMediumStyle
+    timeStyle = NSDateFormatterShortStyle
 }
+
+internal actual fun localDateTime(epochMillis: Long): String =
+    dateTimeFormatter.stringFromDate(NSDate.dateWithTimeIntervalSince1970(epochMillis / 1000.0))

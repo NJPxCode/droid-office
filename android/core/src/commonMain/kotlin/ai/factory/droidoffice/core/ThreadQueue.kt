@@ -4,6 +4,8 @@ import kotlin.time.Clock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 
+private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
+
 /**
  * The messages this phone sent to Droid's queue, held until the conversation shows them, as the web
  * holds them (src/shared/thread-queue.ts). Droid's own queue, read off its screen ([DroidQueue]), is
@@ -43,7 +45,7 @@ class ThreadQueue(saved: String? = null) {
 
     fun snapshot(): String = OfficeJson.encodeToString(Saved.serializer(), Saved(session, sequence, pending, consumed.toList()))
 
-    fun sent(text: String, hasImage: Boolean, after: Long = sequence, at: Long = Clock.System.now().toEpochMilliseconds()) {
+    fun sent(text: String, hasImage: Boolean, after: Long = sequence, at: Long = nowMs()) {
         pending = (pending + Prompt(++serial, text, hasImage, after, at)).takeLast(32)
     }
 
@@ -96,7 +98,7 @@ class ThreadQueue(saved: String? = null) {
      * Droid to have drawn them. A message here that Droid hasn't shown for [GRACE_MS] has left the
      * queue, drained or cleared, and is forgotten. Without the screen ([droid] null), every message here.
      */
-    fun shown(droid: List<DroidQueue.Row>?, now: Long = Clock.System.now().toEpochMilliseconds()): List<Shown> {
+    fun shown(droid: List<DroidQueue.Row>?, now: Long = nowMs()): List<Shown> {
         fun own(p: Prompt) = Shown("sent:${p.id}", p.text, p.hasImage, preview = false, more = 0)
         if (droid == null) return pending.map(::own)
         val used = HashSet<Int>()
@@ -134,7 +136,7 @@ class ThreadQueue(saved: String? = null) {
     }
 
     /** [shown] split into Droid's groups: [droid] null when its screen doesn't say, so all that is known is what was queued from here. */
-    fun panel(droid: DroidQueue.PendingSnapshot?, now: Long = Clock.System.now().toEpochMilliseconds()): Panel {
+    fun panel(droid: DroidQueue.PendingSnapshot?, now: Long = nowMs()): Panel {
         val steering = droid?.steering.orEmpty().mapIndexed { i, p ->
             Panel.Item("steer:$i:${p.row.text}", DroidQueue.Group.Steering, i, p.row.text, false, p.row.cut || p.row.more > 0, p.row.more)
         }

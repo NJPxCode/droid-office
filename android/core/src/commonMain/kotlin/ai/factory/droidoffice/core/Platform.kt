@@ -23,5 +23,5 @@ internal expect fun isUppercaseCodePoint(codePoint: Int): Boolean
 /** Root-locale collation: the order JavaScript's `localeCompare` gives on the web. */
 internal expect fun collate(a: String, b: String): Int
 
-/** "Nov 4, 2026, 4:31 AM": a medium date and a short time in the device's language and time zone. */
+/** A medium date and a short time in the device's language and time zone: "Nov 4, 2026, 4:31 AM" on Android in English. */
 internal expect fun localDateTime(epochMillis: Long): String

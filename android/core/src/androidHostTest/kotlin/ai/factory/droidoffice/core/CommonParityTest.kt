@@ -34,14 +34,16 @@ class CommonParityTest {
     fun urlDecodingMatchesUrlDecoder() {
         val inputs = listOf(
             "", "plain", "a+b", "%41%42", "caf%C3%A9", "%F0%9F%98%80", "%E2%82", "%ff%fe", "100%25",
-            "%", "%4", "a%4", "%zz", "%-1", "%+1", "%41%", "%2B%2b", "x%20y%3Dz",
+            "%", "%4", "a%4", "%zz", "%-1", "%41%", "%2B%2b", "x%20y%3Dz", "a+%2B+b",
         )
         for (s in inputs) {
-            val expected = runCatching { URLDecoder.decode(s, "UTF-8") }
-            val actual = runCatching { UrlDecoder.decode(s) }
-            assertEquals(s, expected.getOrNull(), actual.getOrNull())
-            assertEquals(s, expected.exceptionOrNull()?.javaClass, actual.exceptionOrNull()?.javaClass)
+            val plus = runCatching { URLDecoder.decode(s, "UTF-8") }.getOrNull()
+            assertEquals(s, plus, UrlDecoder.decodeOrNull(s))
+            val literalPlus = runCatching { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") }.getOrNull()
+            assertEquals("$s with + kept", literalPlus, UrlDecoder.decodeOrNull(s, plusIsSpace = false))
         }
+        // Android's URLDecoder refuses a sign in an escape, which the desktop JDK here would read as hex.
+        for (s in listOf("%+1", "%1+", "a%+fb")) assertNull(s, UrlDecoder.decodeOrNull(s))
     }
 
     @Test

@@ -60,13 +60,20 @@ object Routes {
         else -> false
     }
 
-    /** IPv6 loopback (::1), link-local (fe80::/10), site-local (fec0::/10) and unique-local (fc00::/7). */
+    /**
+     * IPv6 loopback (::1), link-local (fe80::/10) and site-local (fec0::/10), which together are
+     * fe80::/9, unique-local (fc00::/7), and an IPv4-mapped address by its IPv4 part.
+     */
     private fun isPrivateV6(b: ByteArray): Boolean {
+        if (isV4Mapped(b)) return isPrivateV4(b.copyOfRange(12, 16))
         val a0 = b[0].toInt() and 0xff
         val a1 = b[1].toInt() and 0xff
         val loopback = (0 until 15).all { b[it].toInt() == 0 } && b[15].toInt() == 1
-        return loopback || (a0 == 0xfe && (a1 and 0xc0) == 0x80) || (a0 == 0xfe && (a1 and 0xc0) == 0xc0) || (a0 and 0xfe) == 0xfc
+        return loopback || (a0 == 0xfe && a1 >= 0x80) || (a0 and 0xfe) == 0xfc
     }
+
+    /** ::ffff:a.b.c.d */
+    private fun isV4Mapped(b: ByteArray): Boolean = (0 until 10).all { b[it].toInt() == 0 } && b[10].toInt() == -1 && b[11].toInt() == -1
 
     fun isPrivateV4(b: ByteArray): Boolean {
         val a0 = b[0].toInt() and 0xff
@@ -96,15 +103,16 @@ object Routes {
         val left = hexGroups(halves[0]) ?: return null
         val right = if (halves.size == 2) hexGroups(halves[1]) ?: return null else emptyList()
         val zeros = 8 - left.size - right.size
-        if (if (halves.size == 2) zeros < 1 else zeros != 0) return null
+        // "::" stands for at least one group of zeros; without it the groups must fill all eight.
+        val fits = if (halves.size == 2) zeros >= 1 else zeros == 0
+        if (!fits) return null
         val out = ByteArray(16)
         for ((i, g) in (left + List(zeros) { 0 } + right).withIndex()) {
             out[2 * i] = (g ushr 8).toByte()
             out[2 * i + 1] = g.toByte()
         }
         v4Tail?.copyInto(out, 12)
-        val mapped = (0 until 10).all { out[it].toInt() == 0 } && out[10].toInt() == -1 && out[11].toInt() == -1
-        return if (mapped) out.copyOfRange(12, 16) else out
+        return if (isV4Mapped(out)) out.copyOfRange(12, 16) else out
     }
 
     /** Colon-separated groups of one to four hex digits; empty for an empty [part], null if any is malformed. */

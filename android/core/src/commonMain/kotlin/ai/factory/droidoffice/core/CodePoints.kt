@@ -57,7 +57,7 @@ internal object CodePoints {
         if (offset >= 0) {
             repeat(offset) {
                 if (x >= s.length) throw IndexOutOfBoundsException("offset $offset from $index, length ${s.length}")
-                x += if (s[x].isHighSurrogate() && x + 1 < s.length && s[x + 1].isLowSurrogate()) 2 else 1
+                x += charCount(at(s, x))
             }
         } else {
             repeat(-offset) {

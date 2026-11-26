@@ -17,13 +17,15 @@ export function checksFor(files, { manual = false, androidVersionChanged = false
       touches(config) ||
       touches(/^tools\/orchestration-eval\//) ||
       touches(
-        /^(?:src\/|bin\/|skills\/|tests\/|native\/|\.husky\/|android\/app\/src\/main\/assets\/|android\/core\/src\/androidHostTest\/resources\/(?:thread-presentation|floor-relevance)-golden\.json$|tools\/(?:props|frame-bench)\/|tools\/(?:android-terminal|android-model-icons|thread-fixture)\.mjs$|README\.md$|docs\/guide\/|biome\.jsonc$|\.oxlintrc\.json$|\.env\.example$|\.gitignore$|\.agents\/skills\/(?:office-clone|office-3d-testing|office-thermals|performance-proof|verify-droid-office)\/|\.agents\/skills\/office-video-capture\/references\/example-launch\/example-composition\.html$)/,
+        /^(?:src\/|bin\/|skills\/|tests\/|native\/|\.husky\/|android\/app\/src\/main\/assets\/|android\/core\/src\/androidHostTest\/resources\/|android\/core\/src\/commonMain\/kotlin\/ai\/factory\/droidoffice\/core\/(?:EffortDial|FactoryLimits|MissionControl|ModelBrand|Protocol|SlashCommands)\.kt$|tools\/(?:props|frame-bench)\/|tools\/(?:android-terminal|android-model-icons|thread-fixture)\.mjs$|README\.md$|docs\/guide\/|biome\.jsonc$|\.oxlintrc\.json$|\.env\.example$|\.gitignore$|\.agents\/skills\/(?:office-clone|office-3d-testing|office-thermals|performance-proof|verify-droid-office)\/|\.agents\/skills\/office-video-capture\/references\/example-launch\/example-composition\.html$)/,
       ),
     website: all || touches(packages) || touches(/^(?:website\/|firebase\.json$|\.firebaserc$|biome\.jsonc$|\.oxlintrc\.json$)/),
     // Client changes also rebuild the Mac app that ships them.
     mac: all || touches(packages) || touches(config) || touches(/^(?:src\/|bin\/|skills\/|build\/|native\/|electron-builder\.yml$)/),
     // Root npm dependency/script edits don't rebuild Android; its terminal dependencies are vendored.
     android: all || androidVersionChanged || touches(/^(?:android\/(?!docs\/|.*\.md$)|tools\/android-model-icons\.mjs$)/),
+    // Only the shared core and the Gradle build around it compile for iOS; app-only edits skip the Mac.
+    ios: all || touches(/^android\/(?:core\/(?!.*\.md$)|gradle\/|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$)/),
   };
 }
 

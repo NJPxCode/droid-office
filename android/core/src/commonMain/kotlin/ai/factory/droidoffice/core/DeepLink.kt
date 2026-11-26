@@ -181,7 +181,7 @@ object DeepLinks {
         val out = ArrayList<String>()
         for (part in rawPath.split('/')) {
             if (part.isEmpty()) continue
-            val decoded = decodePath(part) ?: return null
+            val decoded = UrlDecoder.decodeOrNull(part, plusIsSpace = false) ?: return null
             out += decoded
         }
         return out
@@ -220,22 +220,10 @@ object DeepLinks {
         for (pair in rawQuery.split('&')) {
             if (pair.isEmpty()) continue
             val eq = pair.indexOf('=')
-            val key = decodeQuery(if (eq < 0) pair else pair.substring(0, eq)) ?: continue
-            val value = if (eq < 0) "" else decodeQuery(pair.substring(eq + 1)) ?: continue
+            val key = UrlDecoder.decodeOrNull(if (eq < 0) pair else pair.substring(0, eq)) ?: continue
+            val value = if (eq < 0) "" else UrlDecoder.decodeOrNull(pair.substring(eq + 1)) ?: continue
             out.getOrPut(key) { mutableListOf() }.add(value)
         }
         return out
-    }
-
-    private fun decodePath(s: String): String? = try {
-        UrlDecoder.decode(s.replace("+", "%2B"))
-    } catch (_: IllegalArgumentException) {
-        null
-    }
-
-    private fun decodeQuery(s: String): String? = try {
-        UrlDecoder.decode(s)
-    } catch (_: IllegalArgumentException) {
-        null
     }
 }

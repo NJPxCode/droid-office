@@ -1,6 +1,5 @@
 package ai.factory.droidoffice.core
 
-
 /** Model-first marks, kept in step with src/client/ui/model-brand.ts. A gateway is not a model. */
 object ModelBrand {
     /** Only these upstream marks have no colored variant; tests check against MODEL_BRANDS. */
@@ -40,10 +39,14 @@ object ModelBrand {
     fun viaDroidProxy(id: String?, name: String? = null): Boolean =
         (id != null && droidProxy.containsMatchIn(id)) || name?.startsWith("DroidProxy:", ignoreCase = true) == true
 
-    fun provider(key: String?): String? = key?.lowercase()?.replace(Regex("[^a-z0-9]"), "")?.let(providers::get)
+    private val notAlnum = Regex("[^a-z0-9]")
+    private val customPrefix = Regex("""^custom:(?:[^:]+:)?""", RegexOption.IGNORE_CASE)
+    private val providerPrefix = Regex("""^[^:]+:\s*""")
+
+    fun provider(key: String?): String? = key?.lowercase()?.replace(notAlnum, "")?.let(providers::get)
     fun of(id: String? = null, name: String? = null, provider: String? = null): String? {
         for (text in listOfNotNull(id, name)) {
-            val bare = text.replace(Regex("""^custom:(?:[^:]+:)?""", RegexOption.IGNORE_CASE), "").replace(Regex("""^[^:]+:\s*"""), "").replace('_', '-')
+            val bare = text.replace(customPrefix, "").replace(providerPrefix, "").replace('_', '-')
             families.firstOrNull { it.second.containsMatchIn(bare) }?.let { return it.first }
         }
         return provider(provider)

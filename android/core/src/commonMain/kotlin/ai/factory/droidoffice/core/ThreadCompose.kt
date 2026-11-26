@@ -1,7 +1,5 @@
 package ai.factory.droidoffice.core
 
-import kotlin.math.abs
-
 /**
  * Composer text edits for the Thread, as the web composer makes them (src/client/ui/thread-compose.ts):
  * quoting a selection from the conversation into a reply, and large pastes held as chips that expand
@@ -28,11 +26,8 @@ object ThreadCompose {
 
     private fun lineCount(text: String) = if (text.isEmpty()) 0 else text.split('\n').size
 
-    private fun count(n: Int): String {
-        val digits = abs(n.toLong()).toString()
-        val grouped = digits.reversed().chunked(3).joinToString(",").reversed()
-        return if (n < 0) "-$grouped" else grouped
-    }
+    /** [n] (a count, never negative) with thousands separators: 12,345. */
+    private fun count(n: Int): String = n.toString().reversed().chunked(3).joinToString(",").reversed()
 
     fun isLargePaste(text: String): Boolean {
         val normalized = normalize(text)

@@ -102,7 +102,7 @@ Run from `android/`:
 | Task | Command |
 | --- | --- |
 | Unit tests | `./gradlew testDebugUnitTest` |
-| Lint (any error fails) | `./gradlew lintDebug` |
+| Lint (any error fails) | `./gradlew lintDebug :core:lint` |
 | Debug APK (`ai.factory.droidoffice.debug`, installs next to a release build) | `./gradlew assembleDebug` |
 | Install the debug APK on a connected phone or emulator | `./gradlew installDebug` |
 | Release APK, minified with R8 | `./gradlew assembleRelease` |

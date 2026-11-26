@@ -125,7 +125,7 @@ object Markdown {
         if (file != null) s = s.substring(file.range.last + 1)
         else if (urlScheme.containsMatchIn(s) || s.startsWith("//") || s.startsWith('#') || s.startsWith('?')) return null
         if (percentEscape.containsMatchIn(s)) {
-            s = runCatching { UrlDecoder.decode(s.replace("+", "%2B")) }.getOrNull() ?: return null
+            s = UrlDecoder.decodeOrNull(s, plusIsSpace = false) ?: return null
         }
         return s.takeIf { it.isNotEmpty() && '\u0000' !in it }
     }

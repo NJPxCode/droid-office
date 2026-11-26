@@ -1,6 +1,5 @@
 package ai.factory.droidoffice.core
 
-
 /** The phone's counterpart to model-search.ts: no Android state, views or network. */
 object ModelSearch {
     fun visible(models: List<Model>, hidden: Set<String>, hideNative: Boolean = false): List<Model> =
@@ -47,8 +46,11 @@ object ModelSearch {
     fun scopes(models: List<Model>): List<Scope> = models.groupingBy { it.scope }.eachCount()
         .map { Scope(it.key, it.value) }.sortedBy { when (it.name) { "Yours" -> -1; "Other" -> 1; "Legacy", "Not listed" -> 2; else -> 0 } }
 
-    fun squash(text: String) = text.lowercase().replace(Regex("""[^\p{L}\p{N}]+"""), "")
-    private fun words(query: String) = query.lowercase().split(Regex("""\s+""")).filter { it.isNotEmpty() }
+    private val notLetterOrDigit = Regex("""[^\p{L}\p{N}]+""")
+    private val whitespace = Regex("""\s+""")
+
+    fun squash(text: String) = text.lowercase().replace(notLetterOrDigit, "")
+    private fun words(query: String) = query.lowercase().split(whitespace).filter { it.isNotEmpty() }
 
     fun score(model: Model, query: String): Int {
         val want = words(query)

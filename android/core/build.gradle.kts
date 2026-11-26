@@ -8,6 +8,8 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
     alias(libs.plugins.kotlin.serialization)
+    // The multiplatform library plugin has no lint task for androidMain and commonMain without it.
+    alias(libs.plugins.android.lint)
 }
 
 kotlin {
@@ -21,7 +23,7 @@ kotlin {
         withHostTest {}
     }
 
-    // Built only on a Mac with Xcode; elsewhere Kotlin skips these targets.
+    // Kotlin/Native compiles these on a macOS host; Xcode is not needed to compile them.
     iosArm64()
     iosSimulatorArm64()
 
@@ -36,4 +38,10 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
         }
     }
+}
+
+lint {
+    abortOnError = true
+    // New library versions ship constantly; a newer one existing is not a defect in this build.
+    disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion")
 }

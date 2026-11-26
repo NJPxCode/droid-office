@@ -117,9 +117,5 @@ object Pairing {
         return out
     }
 
-    private fun decode(s: String): String = try {
-        UrlDecoder.decode(s)
-    } catch (_: IllegalArgumentException) {
-        s
-    }
+    private fun decode(s: String): String = UrlDecoder.decodeOrNull(s) ?: s
 }

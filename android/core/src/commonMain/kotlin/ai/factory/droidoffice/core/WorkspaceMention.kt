@@ -1,6 +1,5 @@
 package ai.factory.droidoffice.core
 
-
 /**
  * `@file` workspace mentions in the Thread composer, as the web composer reads them
  * (src/client/ui/thread-mention.ts): where an `@<query>` token is under the cursor, how the
@@ -16,8 +15,6 @@ object WorkspaceMention {
     data class Applied(val value: String, val cursor: Int)
 
     const val DEFAULT_LIMIT = 12
-
-    private fun compare(a: String, b: String): Int = collate(a, b)
 
     /**
      * The `@<query>` token at [cursor]: at the start of the draft or after whitespace, with no
@@ -107,7 +104,7 @@ object WorkspaceMention {
                 when {
                     da != db -> da - db
                     a.kind != b.kind -> if (a.kind == Kind.Dir) -1 else 1
-                    else -> compare(ca, cb)
+                    else -> collate(ca, cb)
                 }
             }.take(max)
         }
@@ -127,7 +124,7 @@ object WorkspaceMention {
                 when {
                     a.depth != b.depth -> a.depth - b.depth
                     a.item.kind != b.item.kind -> if (a.item.kind == Kind.Dir) -1 else 1
-                    else -> compare(a.clean, b.clean)
+                    else -> collate(a.clean, b.clean)
                 }
             }.take(max).map { it.item }
         }
@@ -143,7 +140,7 @@ object WorkspaceMention {
                 a.score != b.score -> a.score - b.score
                 a.clean.length != b.clean.length -> a.clean.length - b.clean.length
                 a.item.kind != b.item.kind -> if (a.item.kind == Kind.File) -1 else 1
-                else -> compare(a.clean, b.clean)
+                else -> collate(a.clean, b.clean)
             }
         }.take(max).map { it.item }
     }

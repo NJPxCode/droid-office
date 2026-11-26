@@ -4,13 +4,13 @@ Droid Office for Android: Kotlin, Jetpack Compose and Material 3 (`app` module),
 
 ## Commands
 
-Run from `android/` with JDK 17+ (CI uses 21; SDK from `ANDROID_HOME` or `local.properties`). Before a PR touching Android, run `./gradlew testDebugUnitTest :core:testAndroidHostTest lintDebug assembleRelease` (`assembleRelease` exercises R8, which CI runs only on `main`; root `npm test` covers the WebView JS assets):
+Run from `android/` with JDK 17+ (CI uses 21; SDK from `ANDROID_HOME` or `local.properties`). Before a PR touching Android, run `./gradlew testDebugUnitTest :core:testAndroidHostTest lintDebug :core:lint assembleRelease` (`assembleRelease` exercises R8, which CI runs only on `main`; root `npm test` covers the WebView JS assets):
 
 | Task | Command |
 | --- | --- |
 | Unit tests (JVM) | `./gradlew testDebugUnitTest :core:testAndroidHostTest` |
-| Shared core for iOS (compiles without Xcode) | `./gradlew :core:compileKotlinIosArm64 :core:compileKotlinIosSimulatorArm64` |
-| Android Lint (warnings as errors) | `./gradlew lintDebug` |
+| Shared core for iOS (needs a Mac, not Xcode) | `./gradlew :core:compileKotlinIosArm64 :core:compileKotlinIosSimulatorArm64` |
+| Android Lint (warnings as errors) | `./gradlew lintDebug :core:lint` |
 | Install debug APK on connected device | `./gradlew installDebug` |
 | Release APK with R8 | `./gradlew assembleRelease` |
 

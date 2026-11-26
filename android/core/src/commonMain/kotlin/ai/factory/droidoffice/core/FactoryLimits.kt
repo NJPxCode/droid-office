@@ -11,15 +11,9 @@ data class FactoryLimitWindow(val usedPercent: Double = 0.0, val windowEnd: Stri
         windowEnd?.let { runCatching { Instant.parse(it).toEpochMilliseconds() }.getOrNull() }
             ?: if (fetchedAt != null && secondsRemaining != null && secondsRemaining.isFinite() && secondsRemaining >= 0) {
                 val ms = secondsRemaining * 1000.0
-                if (ms <= Long.MAX_VALUE.toDouble()) runCatching { addExact(fetchedAt, ms.roundToLong()) }.getOrNull() else null
+                // ms is not negative, so the sum wraps below fetchedAt only on overflow.
+                if (ms <= Long.MAX_VALUE.toDouble()) (fetchedAt + ms.roundToLong()).takeIf { it >= fetchedAt } else null
             } else null
-}
-
-/** [a] + [b], throwing [ArithmeticException] on overflow as `Math.addExact` does. */
-private fun addExact(a: Long, b: Long): Long {
-    val sum = a + b
-    if (((a xor sum) and (b xor sum)) < 0) throw ArithmeticException("long overflow")
-    return sum
 }
 
 @Serializable
