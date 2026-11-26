@@ -16,6 +16,16 @@ export interface TailscaleSelf {
 
 /** Where the CLI is: on PATH, inside the Mac app, or Homebrew's (an app's PATH often lacks it). */
 const TAILSCALE_BINARIES = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale'];
+let binaries: readonly string[] = TAILSCALE_BINARIES;
+
+/**
+ * Pins every `tailscale` call this process makes to one executable (DROID_OFFICE_TAILSCALE_BIN), with
+ * no PATH lookup and no fallback to an installed CLI, so an office under test can only reach a stub.
+ * Undefined restores the search.
+ */
+export function useTailscaleBinary(bin: string | undefined): void {
+  binaries = bin ? [bin] : TAILSCALE_BINARIES;
+}
 
 /** What `tailscale status --json` says about this machine, or undefined when it isn't up on a tailnet. */
 export function parseTailscaleStatus(json: unknown): TailscaleSelf | undefined {
@@ -78,11 +88,23 @@ export function withServeLock<T>(task: () => Promise<T>): Promise<T> {
  * it still points at the office's previous backend, else the first port nothing else uses.
  */
 export function planServe(routes: readonly ServeRoute[], target: string, preferred?: number, previousTarget?: string): { port: number; existing: boolean } | undefined {
+  return planPort(routes, target, SERVE_PORTS, preferred, previousTarget, () => true);
+}
+
+/** The only public ports Funnel listens on (https://tailscale.com/kb/1223/funnel), least commonly used first. */
+export const FUNNEL_PORTS = [10000, 8443, 443];
+
+/** planServe for the guest backend's Funnel mapping: only Funnel's ports, and an existing mapping counts only when it is public. */
+export function planFunnel(routes: readonly ServeRoute[], target: string, preferred?: number, previousTarget?: string): { port: number; existing: boolean } | undefined {
+  return planPort(routes, target, FUNNEL_PORTS, preferred && FUNNEL_PORTS.includes(preferred) ? preferred : undefined, previousTarget, (r) => r.funnel);
+}
+
+function planPort(routes: readonly ServeRoute[], target: string, ports: readonly number[], preferred: number | undefined, previousTarget: string | undefined, complete: (r: ServeRoute) => boolean) {
   const ours = routes.find((r) => r.proxy === target);
-  if (ours) return { port: ours.port, existing: true };
+  if (ours) return { port: ours.port, existing: complete(ours) };
   const taken = new Map(routes.map((r) => [r.port, r]));
   if (preferred !== undefined && previousTarget && taken.get(preferred)?.proxy === previousTarget) return { port: preferred, existing: false };
-  const port = [preferred, ...SERVE_PORTS].find((p) => p !== undefined && !taken.has(p));
+  const port = [preferred, ...ports].find((p) => p !== undefined && !taken.has(p));
   return port === undefined ? undefined : { port, existing: false };
 }
 
@@ -108,13 +130,16 @@ export function serveFailure(output: string): { message: string; fixUrl?: string
 export class TailscaleCli {
   private bin?: string;
 
+  /** Without `bins`, the CLI is looked up as useTailscaleBinary says at each call. */
   constructor(
-    private readonly bins: readonly string[] = TAILSCALE_BINARIES,
+    private readonly bins?: readonly string[],
     private readonly run: CliRun = runCli,
   ) {}
 
   async self(): Promise<TailscaleSelf | undefined> {
-    for (const bin of this.bin ? [this.bin, ...this.bins.filter((b) => b !== this.bin)] : this.bins) {
+    const bins = this.bins ?? binaries;
+    if (this.bin && !bins.includes(this.bin)) this.bin = undefined;
+    for (const bin of this.bin ? [this.bin, ...bins.filter((b) => b !== this.bin)] : bins) {
       const r = await this.run(bin, ['status', '--json'], 3000);
       if (!r.ok) continue;
       try {
@@ -154,6 +179,23 @@ export class TailscaleCli {
     if (!this.bin) return false;
     return (await this.run(this.bin, ['serve', '--yes', `--https=${port}`, 'off'], 10_000)).ok;
   }
+
+  /**
+   * Publishes `target` at https://<this machine>:<port> on the internet (`tailscale funnel`, kept across
+   * restarts by tailscaled). Port must be one of FUNNEL_PORTS. The first use on a tailnet prints an admin
+   * link to approve Funnel and waits for it, hence the timeout.
+   */
+  async funnel(port: number, target: string): Promise<{ ok: true } | { ok: false; message: string; fixUrl?: string }> {
+    if (!this.bin) return { ok: false, message: 'Tailscale isn’t running on this computer.' };
+    const r = await this.run(this.bin, ['funnel', '--bg', '--yes', `--https=${port}`, target], 20_000);
+    return r.ok ? { ok: true } : { ok: false, ...serveFailure(`${r.stdout}\n${r.stderr}`) };
+  }
+
+  /** Removes the Funnel (and its proxy) on one port. */
+  async unfunnel(port: number): Promise<boolean> {
+    if (!this.bin) return false;
+    return (await this.run(this.bin, ['funnel', '--yes', `--https=${port}`, 'off'], 10_000)).ok;
+  }
 }
 
 function statusFrom(bin: string, timeoutMs: number): Promise<TailscaleSelf | undefined> {
@@ -170,7 +212,7 @@ function statusFrom(bin: string, timeoutMs: number): Promise<TailscaleSelf | und
 }
 
 /** This machine on its tailnet, from the first CLI that answers; undefined without Tailscale, signed out or stopped. */
-export async function tailscaleSelf(bins: readonly string[] = TAILSCALE_BINARIES, timeoutMs = 2000): Promise<TailscaleSelf | undefined> {
+export async function tailscaleSelf(bins: readonly string[] = binaries, timeoutMs = 2000): Promise<TailscaleSelf | undefined> {
   for (const bin of bins) {
     const self = await statusFrom(bin, timeoutMs);
     if (self) return self;

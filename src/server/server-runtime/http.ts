@@ -3,7 +3,7 @@ import type { Config } from '../config.js';
 import { serveDeepLinkBounce } from '../deep-links.js';
 import { DEEP_LINK_OPEN_PREFIX } from '../../shared/deep-links.js';
 import { COMPANION_OFF } from '../../shared/devices.js';
-import { isLocalRequest, lanAllowed } from '../lan.js';
+import { isGuestRequest, isLocalRequest, lanAllowed } from '../lan.js';
 import type { DevicesStore } from '../devices.js';
 import type { WebCompanion } from '../web-companion.js';
 import type { TailnetHttps } from '../tailnet-https.js';
@@ -25,11 +25,12 @@ import { resolveSoundCloudStation } from '../soundcloud.js';
 import type { ImageProxy } from '../decor.js';
 import { CARD_ROUTE } from '../whiteboard.js';
 import type { Client } from './client.js';
-import type { createAccess } from './access.js';
+import { ownerDevices, type createAccess } from './access.js';
 import type { createAutomation } from './automation.js';
 import type { createWhiteboardRuntime } from './whiteboard.js';
 import type { createStaticFiles } from './static-files.js';
 import { isFloorHttpPath, type createFloorHttp } from './floor-http.js';
+import type { createGuestHttp } from './guest-http.js';
 import { readBody, sameOrigin, send, statusRequest } from './http-utils.js';
 import { str } from './validation.js';
 
@@ -59,6 +60,8 @@ interface HttpContext extends ReturnType<typeof createAccess>, ReturnType<typeof
   images: ImageProxy;
   serveCard: ReturnType<typeof createWhiteboardRuntime>['serveCard'];
   floorRequest: ReturnType<typeof createFloorHttp>;
+  /** Share-link management (`/api/guest-links*`): everything for the office's own page; read, revoke and off for other owner requests. */
+  guestOwnerRequest: ReturnType<typeof createGuestHttp>['ownerRequest'];
 }
 
 /** Ordered public bootstrap, authentication, office-wide APIs, floor APIs, then static fallback. */
@@ -86,6 +89,7 @@ export function createHttpHandler(ctx: HttpContext) {
     images,
     serveCard,
     floorRequest,
+    guestOwnerRequest,
     access,
     ownPage,
     officeCard,
@@ -98,6 +102,8 @@ export function createHttpHandler(ctx: HttpContext) {
     serveIndex,
   } = ctx;
   return async (req: http.IncomingMessage, res: http.ServerResponse) => {
+    // The guest backend has its own handler (guest-http.ts); a guest request never reaches office routes.
+    if (isGuestRequest(req)) return send(res, 404, { error: 'Not found' });
     try {
       let url: URL;
       let p: string;
@@ -242,6 +248,13 @@ export function createHttpHandler(ctx: HttpContext) {
         }
         return send(res, 405, { error: 'Method not allowed' });
       }
+      // Share links for external guests. The office's own page manages everything; any other owner request
+      // (a paired device, the LAN token, the tailnet listener) may only look, revoke and turn sharing off.
+      if (p === '/api/guest-links' || p.startsWith('/api/guest-links/')) {
+        const manage = !gate.device && ownPage(req) ? 'full' : 'limited';
+        if (manage === 'limited' && req.method !== 'GET' && !ownRequest()) return send(res, 403, { error: 'Forbidden' });
+        return await guestOwnerRequest(req, res, p, url, manage);
+      }
       // External workers' MCP on the tailnet. Its state holds every bot's credential, so only the office's own page.
       if (p === '/api/remote-mcp') {
         const remoteMcp = ctx.remoteMcp();
@@ -304,7 +317,7 @@ export function createHttpHandler(ctx: HttpContext) {
           200,
           officeStatus(
             [...floors.values()].map((f) => ({ id: f.id, name: f.def.name, workers: f.everyone() })),
-            [...clients.values()].map((c) => ({ device: c.device, phone: !!c.phoneSizes })),
+            ownerDevices(clients.values()),
             orchestratorNeedsOwner(missionState()) ? [orchestrator.info!] : [],
           ),
         );

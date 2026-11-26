@@ -1,0 +1,280 @@
+// The guest backend: a third loopback listener, published to the internet through Tailscale Funnel only
+// while external sharing is on (docs/guest-sharing.md). Every request and upgrade it accepts is marked a
+// guest request (lan.ts markGuest): never local, never the owner, authenticated only by a share link's
+// token. It is separate from the main listener and from the tailnet Serve backend (tailnet-https.ts),
+// which keeps refusing Funnel traffic, and it maps only Funnel ports nothing else uses.
+
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { createServer, type IncomingMessage, type RequestListener } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { Duplex } from 'node:stream';
+import path from 'node:path';
+import { isLoopback, markGuest } from './lan.js';
+import { FUNNEL_PORTS, planFunnel, TailscaleCli, withServeLock } from './tailscale.js';
+import type { GuestTransportState } from '../shared/guest-links.js';
+
+export const GUEST_FUNNEL_FILE = 'guest-funnel.json';
+
+interface Saved {
+  /** The office that wrote the file (its data folder's real path). A copy in another office is not its own. */
+  office?: string;
+  backendPort?: number;
+  httpsPort?: number;
+  /** Set before `tailscale funnel` runs and cleared once the mapping is gone, so an unclean exit is noticed. */
+  published?: boolean;
+}
+
+export interface GuestFunnelOptions {
+  dataDir: string;
+  request: RequestListener;
+  upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
+  cli?: TailscaleCli;
+  retryMs?: number;
+  /** Called after each start, retry or stop settles, so owner pages can show the new state. */
+  onState?: () => void;
+  /** Why this office never publishes the guest backend (DROID_OFFICE_GUEST_SHARING=off); it then never runs the CLI. */
+  locked?: string;
+}
+
+/**
+ * The guest backend's HTTP server. It answers only loopback connections (tailscaled's Funnel proxy)
+ * addressed to its own public origin; with or without `Tailscale-Funnel-Request`, every one is a guest.
+ */
+export function guestBackendListener(opts: Pick<GuestFunnelOptions, 'request' | 'upgrade'> & { origin(): string | undefined }) {
+  const accepts = (req: IncomingMessage) => {
+    const origin = opts.origin();
+    if (!origin || !isLoopback(req.socket.remoteAddress)) return false;
+    if (req.headers.host !== new URL(origin).host || (req.headers.origin && req.headers.origin !== origin)) return false;
+    markGuest(req);
+    // Never let trustProxy turn a forwarded host into an alternate same-origin authority.
+    delete req.headers['x-forwarded-host'];
+    return true;
+  };
+  const server = createServer((req, res) => {
+    if (!accepts(req)) return void res.writeHead(403, { 'cache-control': 'no-store' }).end();
+    opts.request(req, res);
+  });
+  server.on('upgrade', (req, socket, head) => {
+    if (!accepts(req)) return socket.destroy();
+    opts.upgrade(req, socket, head);
+  });
+  const sockets = new Set<Duplex>();
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  server.headersTimeout = 10_000;
+  return {
+    server,
+    close() {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    },
+  };
+}
+
+/** Publishes the guest backend through Funnel while on; removes only its own mapping when turned off. */
+export class GuestFunnel {
+  private saved: Saved = {};
+  private on = false;
+  private listener?: ReturnType<typeof guestBackendListener>;
+  private publicOrigin?: string;
+  private status: GuestTransportState['status'] = 'off';
+  private reason?: string;
+  private fixUrl?: string;
+  private retry?: NodeJS.Timeout;
+  private work: Promise<unknown> = Promise.resolve();
+  private closed = false;
+  private readonly cli: TailscaleCli;
+  private readonly file: string;
+  private readonly office: string;
+
+  constructor(private readonly opts: GuestFunnelOptions) {
+    this.file = path.join(opts.dataDir, GUEST_FUNNEL_FILE);
+    this.cli = opts.cli ?? new TailscaleCli();
+    let office = path.resolve(opts.dataDir);
+    try {
+      office = realpathSync(office);
+    } catch {
+      // Not created yet; the resolved path is what it will be.
+    }
+    this.office = office;
+    try {
+      const raw = JSON.parse(readFileSync(this.file, 'utf8')) as Saved;
+      // A file copied from another office (a clone, a test run) describes that office's mapping: never
+      // reuse, replace or remove it from here.
+      if (raw.office === this.office) {
+        const port = (p?: number) => (p !== undefined && Number.isInteger(p) && p > 0 && p < 65536 ? p : undefined);
+        const https = port(raw.httpsPort);
+        this.saved = { office, backendPort: port(raw.backendPort), httpsPort: https && FUNNEL_PORTS.includes(https) ? https : undefined, published: raw.published === true };
+      }
+    } catch {
+      // Never published yet.
+    }
+  }
+
+  /**
+   * Startup. Sharing on publishes again, reusing this office's own mapping (`funnel --bg` outlives the
+   * process) or pointing it at the new backend port. Sharing off removes a mapping an unclean exit left
+   * behind. Locked never runs the CLI, so it can only say how to remove a leftover mapping.
+   */
+  start(on: boolean): Promise<GuestTransportState> {
+    const leftover = this.saved.published ? this.saved.httpsPort : undefined;
+    if (this.opts.locked) {
+      if (leftover) console.warn(`  🔗  ${this.opts.locked} This office may have left its Funnel mapping on port ${leftover} published after an unclean exit; remove it with: tailscale funnel --https=${leftover} off`);
+      if (on) this.on = true;
+      return Promise.resolve(this.state());
+    }
+    if (on) return this.set(true);
+    return leftover ? this.queue(() => this.unpublish()) : Promise.resolve(this.state());
+  }
+
+  state(): GuestTransportState {
+    if (this.opts.locked) return { status: this.on ? 'unavailable' : 'off', locked: this.opts.locked };
+    return {
+      status: this.status,
+      ...(this.publicOrigin ? { origin: this.publicOrigin } : {}),
+      ...(this.reason ? { reason: this.reason } : {}),
+      ...(this.fixUrl ? { fixUrl: this.fixUrl } : {}),
+    };
+  }
+
+  /** The public guest origin while serving. */
+  origin(): string | undefined {
+    return this.publicOrigin;
+  }
+
+  /** On starts the guest backend and its Funnel mapping; off closes every guest connection at once and removes the mapping. */
+  set(on: boolean): Promise<GuestTransportState> {
+    this.on = on;
+    if (!on) this.disconnect();
+    return this.queue(() => (on ? this.enable() : this.unpublish()));
+  }
+
+  /** Shutdown: closes the listener and removes the Funnel mapping. Its port is remembered, so the URL is the same next start. */
+  async stop(): Promise<void> {
+    this.closed = true;
+    this.disconnect();
+    await this.queue(() => this.unpublish());
+  }
+
+  private queue(task: () => Promise<void>): Promise<GuestTransportState> {
+    const run = this.work
+      .then(() => withServeLock(task))
+      .catch((err: Error) => {
+        if (this.active()) {
+          this.publicOrigin = undefined;
+          this.status = 'unavailable';
+          this.reason = err.message;
+        }
+      });
+    this.work = run;
+    return run.then(() => {
+      this.opts.onState?.();
+      return this.state();
+    });
+  }
+
+  private active(): boolean {
+    return !this.closed && this.on;
+  }
+
+  private async enable() {
+    clearTimeout(this.retry);
+    if (!this.active() || this.opts.locked) return;
+    if (!this.publicOrigin) this.status = 'starting';
+    this.reason = this.fixUrl = undefined;
+    try {
+      const self = await this.cli.self();
+      if (!this.active()) return;
+      if (!self?.dnsName) throw new Error('Start Tailscale and enable MagicDNS on this computer. Sharing will retry automatically.');
+      const routes = await this.cli.routes(self.dnsName);
+      if (!this.active()) return;
+      if (!routes) throw new Error('Could not read Tailscale Serve settings. Update Tailscale and retry.');
+      if (!this.listener) {
+        const listener = guestBackendListener({ ...this.opts, origin: () => this.publicOrigin });
+        const first = this.saved.backendPort ?? 0;
+        try {
+          for (const port of first ? [first, 0] : [0]) {
+            try {
+              await new Promise<void>((resolve, reject) => {
+                listener.server.once('error', reject);
+                listener.server.listen(port, '127.0.0.1', () => {
+                  listener.server.off('error', reject);
+                  resolve();
+                });
+              });
+              break;
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE' || port === 0) throw err;
+            }
+          }
+        } catch (err) {
+          listener.close();
+          throw err;
+        }
+        if (!this.active()) return listener.close();
+        this.listener = listener;
+      }
+      const backendPort = (this.listener.server.address() as AddressInfo).port;
+      const target = `http://127.0.0.1:${backendPort}`;
+      const previous = this.saved.backendPort ? `http://127.0.0.1:${this.saved.backendPort}` : undefined;
+      const plan = planFunnel(routes, target, this.saved.httpsPort, previous);
+      if (!plan) throw new Error('No free Tailscale Funnel port. Funnel can only use ports 443, 8443 and 10000; free one of them and retry.');
+      // Remember ownership before the CLI runs, so turning sharing off also cleans up an interrupted enable.
+      this.save({ backendPort, httpsPort: plan.port, published: true });
+      if (!plan.existing) {
+        const done = await this.cli.funnel(plan.port, target);
+        if (!done.ok) {
+          this.fixUrl = done.fixUrl;
+          throw new Error(done.message);
+        }
+      }
+      if (!this.active()) return;
+      this.publicOrigin = `https://${self.dnsName}${plan.port === 443 ? '' : `:${plan.port}`}`;
+      this.status = 'serving';
+    } finally {
+      if (this.active() && this.status !== 'serving') this.retry = setTimeout(() => void this.set(true), (this.opts.retryMs ?? 30_000) * (this.fixUrl ? 10 : 1)).unref();
+    }
+  }
+
+  /**
+   * Removes the Funnel mapping on the saved port, only while it still points at this office's backend.
+   * While sharing stays off and the mapping may still be published (Tailscale didn't answer, or removing it
+   * failed), it says so and tries again: tailscaled would otherwise keep publishing a port nothing owns.
+   */
+  private async unpublish() {
+    const { backendPort, httpsPort } = this.saved;
+    if (this.opts.locked || backendPort === undefined || httpsPort === undefined || this.active()) return;
+    try {
+      const self = await this.cli.self();
+      const routes = self?.dnsName ? await this.cli.routes(self.dnsName) : undefined;
+      if (!routes) return;
+      const target = `http://127.0.0.1:${backendPort}`;
+      const ours = routes.find((r) => r.port === httpsPort && r.proxy === target);
+      // Gone, or now someone else's: either way nothing of this office's is published there.
+      if (!ours || (await this.cli.unfunnel(httpsPort))) this.save({ backendPort, httpsPort, published: false });
+    } finally {
+      if (this.closed || this.active()) {
+        // Shutting down, or turned back on: enable() owns the mapping now.
+      } else if (this.saved.published) {
+        this.reason = `The public address could not be removed yet. Retrying… To remove it now, run: tailscale funnel --https=${httpsPort} off`;
+        clearTimeout(this.retry);
+        this.retry = setTimeout(() => void this.queue(() => this.unpublish()), this.opts.retryMs ?? 30_000).unref();
+      } else this.reason = undefined;
+    }
+  }
+  private disconnect() {
+    clearTimeout(this.retry);
+    this.publicOrigin = this.reason = this.fixUrl = undefined;
+    this.status = 'off';
+    this.listener?.close();
+    this.listener = undefined;
+  }
+
+  private save(next: Omit<Saved, 'office'>) {
+    this.saved = { office: this.office, ...next };
+    // Fail closed if ownership cannot be persisted; never create an untracked public mapping.
+    writeFileSync(this.file, `${JSON.stringify(this.saved)}\n`, { mode: 0o600 });
+  }
+}

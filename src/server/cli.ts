@@ -16,7 +16,7 @@ if (argv[0] === 'browser') {
   process.exit(await browserCommand(argv.slice(1)));
 }
 
-const [{ renderUnicodeCompact }, { loadConfig, ensureSelfSigned }, { startServer }, { tildify }, { FACTORY_SKILLS_DIR }, { COMPANION_PATH }, { enforcedAgentArgs }] = await Promise.all([
+const [{ renderUnicodeCompact }, { loadConfig, ensureSelfSigned }, { startServer }, { tildify }, { FACTORY_SKILLS_DIR }, { COMPANION_PATH }, { enforcedAgentArgs }, { onStopSignals }] = await Promise.all([
   import('uqr'),
   import('./config.js'),
   import('./server.js'),
@@ -24,6 +24,7 @@ const [{ renderUnicodeCompact }, { loadConfig, ensureSelfSigned }, { startServer
   import('./subagents.js'),
   import('../shared/devices.js'),
   import('./workers.js'),
+  import('./stop-signals.js'),
 ]);
 
 const cfg = loadConfig(argv);
@@ -32,6 +33,7 @@ cfg.skillsDir = FACTORY_SKILLS_DIR;
 cfg.renders = true;
 cfg.remoteMcp = !/^(0|off|false|no)$/i.test(process.env.DROID_OFFICE_REMOTE_MCP?.trim() ?? '');
 cfg.tailnetHttps = !/^(0|off|false|no)$/i.test(process.env.DROID_OFFICE_TAILNET_HTTPS?.trim() ?? '');
+cfg.guestSharing = !/^(0|off|false|no)$/i.test(process.env.DROID_OFFICE_GUEST_SHARING?.trim() ?? '');
 await ensureSelfSigned(cfg);
 // A new office started in a terminal: where projects go, GitHub or GitLab, and the first floor, before it opens.
 if (!cfg.project) {
@@ -49,19 +51,10 @@ try {
   process.exit(1);
 }
 
-let closing = false;
 // Install shutdown handlers before waiting for Tailscale: certificate approval can take time.
-const stop = (signal: NodeJS.Signals) => {
-  if (closing) process.exit(1);
-  closing = true;
-  const keep = signal === 'SIGTERM';
-  console.log(keep ? '\n  closing the office — workers keep running for the next one…' : '\n  closing the office…');
-  void office.shutdown(keep).finally(() => setTimeout(() => process.exit(0), 300));
-};
+onStopSignals((keep) => office.shutdown(keep));
 // One bad request must never take down every running worker.
 process.on('unhandledRejection', (err) => console.error('droid-office: unhandled rejection', err));
-process.on('SIGINT', stop);
-process.on('SIGTERM', stop);
 
 const scheme = cfg.tls ? 'https' : 'http';
 const localUrl = `${scheme}://localhost:${cfg.port}`;

@@ -9,6 +9,7 @@ import { teamCounts } from '../shared/team';
 import { statusDot, statusIcon, workerDot, workerStatusIcon, WORKER_MIME } from './dashboard-pane';
 import { reconcileChildren, todoMeter } from './dashboard-roster';
 import { botLine, buildingAgent, orchestratorBlocked, orchestratorLine } from './mission';
+import { GUEST_ORCHESTRATOR_BLOCKED } from './dashboard-guest';
 import { h, STATUS_LABEL, timeAgo } from './ui/dom';
 import { grokBotLogo, icon, orchestratorIcon } from './ui/icons';
 import { modelBadgeLabel, modelBadgeNode } from './ui/models';
@@ -24,6 +25,8 @@ export interface MissionRosterState {
   here(id: string): WorkerInfo | undefined;
   /** The Orchestrator's shortcut, shown on its row. */
   shortcut?: string;
+  /** False on a share link: an Orchestrator that's off is left out rather than pointing at Settings. */
+  owner?: boolean;
 }
 
 export interface MissionRosterHost {
@@ -178,7 +181,7 @@ export function createMissionRoster(el: HTMLElement, host: MissionRosterHost) {
     const team = agent.team;
     const model = w.activeModel ?? w.model;
     const effort = w.activeEffort ?? w.effort;
-    const line = orchestrator ? orchestratorLine(s.mission) : botLine(agent);
+    const line = orchestrator ? (blocked && s.owner === false ? GUEST_ORCHESTRATOR_BLOCKED : orchestratorLine(s.mission)) : botLine(agent);
     const status = blocked ? 'blocked' : (STATUS_LABEL[w.status] ?? w.status);
     const lastUsed = !orchestrator && agent.lastUsedAt ? `used ${timeAgo(agent.lastUsedAt)}` : '';
     const todos = orchestrator ? w.todos : undefined;
@@ -285,7 +288,7 @@ export function createMissionRoster(el: HTMLElement, host: MissionRosterHost) {
     if (orchestrator) {
       children.push(paintAgent(orchestrator, next));
       seen.add(ORCHESTRATOR_ID);
-    } else {
+    } else if (next.owner !== false) {
       off.disabled = !next.live;
       children.push(off);
     }

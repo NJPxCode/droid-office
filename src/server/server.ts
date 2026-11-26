@@ -8,11 +8,15 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Config } from './config.js';
 import type { AddressInfo } from 'node:net';
-import { lanIPv4s, mintLanToken, tailscaleIPv4s } from './lan.js';
+import { isGuestRequest, lanIPv4s, mintLanToken, tailscaleIPv4s } from './lan.js';
 import { DevicesStore } from './devices.js';
-import { TailscaleWatch } from './tailscale.js';
+import { TailscaleWatch, useTailscaleBinary } from './tailscale.js';
 import { WebCompanion } from './web-companion.js';
 import { TailnetHttps } from './tailnet-https.js';
+import { GuestLinks, type GuestGrant } from './guest-links.js';
+import { GUEST_WS_PROTOCOL } from '../shared/guest-links.js';
+import { GuestAudit } from './guest-audit.js';
+import { GuestFunnel } from './guest-funnel.js';
 import type { PairedDevice } from '../shared/devices.js';
 import { MAX_REPOS, childEnv, resolveAgent, syncDroidProfile, type RepoSource } from './workers.js';
 import { DROID_MODEL_MAX } from './agents.js';
@@ -86,6 +90,9 @@ import { createOwnerOffice } from './server-runtime/owner.js';
 import { createAccess } from './server-runtime/access.js';
 import { createHttpHandler } from './server-runtime/http.js';
 import { createFloorHttp } from './server-runtime/floor-http.js';
+import { createGuestHttp } from './server-runtime/guest-http.js';
+import { createGuestGate, guestName } from './server-runtime/guest-gate.js';
+import { GUEST_ORCHESTRATOR_BLOCKED, type GuestNamed } from '../shared/guest-policy.js';
 import type { Client, ToastLevel } from './server-runtime/client.js';
 import { readBody, send, sameOrigin, refuseUpgrade } from './server-runtime/http-utils.js';
 import { str, num, repoOf, imageIds } from './server-runtime/validation.js';
@@ -136,6 +143,8 @@ export function leaveFloorTerminals(c: Pick<Client, 'attached' | 'stale'>) {
 }
 
 export async function startServer(cfg: Config) {
+  // Before anything asks Tailscale: an office pinned to a stub must never reach the real CLI.
+  useTailscaleBinary(cfg.tailscaleBin);
   const publicDir = findPublicDir();
   const appDir = sourceAppDir();
   const hotReload = new HotReload({ appDir, dataDir: cfg.dataDir, publicDir });
@@ -155,6 +164,29 @@ export async function startServer(cfg: Config) {
   let closed = false;
   const transport = createClientTransport({ clients, floors });
   const { sendTo, broadcast, toFloor, termData, clearOffFloorThrottle, broadcastOffFloorScreen } = transport;
+  // Share links for external guests (see guest-links.ts): token hashes only, sharing off until the owner turns it on.
+  const guestLinks = new GuestLinks({
+    dataDir: cfg.dataDir,
+    names: ({ floorId, workerId }) => {
+      const floor = floorId ? floors.get(floorId) : undefined;
+      const worker = workerId ? floor?.everyone().find((w) => w.id === workerId) : undefined;
+      return { ...(floor ? { floorName: floor.def.name } : {}), ...(worker ? { workerName: worker.name } : {}) };
+    },
+  });
+  // Owner pages re-read /api/guest-links on this signal; guests never receive it (see guest-policy.ts).
+  let guestLinksTimer: NodeJS.Timeout | undefined;
+  let guestAuditChanged = false;
+  const guestLinksChanged = (audit = false) => {
+    guestAuditChanged ||= audit;
+    guestLinksTimer ??= setTimeout(() => {
+      const withAudit = guestAuditChanged;
+      guestLinksTimer = undefined;
+      guestAuditChanged = false;
+      broadcast({ t: 'guestLinks.changed', ...(withAudit ? { audit: true } : {}) });
+    }, 250).unref();
+  };
+  guestLinks.onChange(() => guestLinksChanged());
+  const guestAudit = new GuestAudit({ dataDir: cfg.dataDir, onAppend: () => guestLinksChanged(true) });
   const workerThreads = new WorkerThreadReader();
   let threadWatches: ThreadWatchHub | undefined;
   const threadLive = new ThreadLiveTracker();
@@ -211,10 +243,11 @@ export async function startServer(cfg: Config) {
     for (const f of floors.values()) if (f.workers.get(workerId)) return f;
     return undefined;
   };
-  const toastFloor = (floor: Floor | undefined, text: string, level: ToastLevel = 'info', workerId?: string) => {
+  /** `workerId`: the worker it is about; `about`: other workers its text names (one that left keeps its repos), so guests see it only when they see them all. */
+  const toastFloor = (floor: Floor | undefined, text: string, level: ToastLevel = 'info', workerId?: string, about?: readonly GuestNamed[]) => {
     if (!floor) return;
     acting.getStore()?.(text);
-    toFloor(floor, workerId === undefined ? { t: 'toast', text, level } : { t: 'toast', text, level, workerId });
+    toFloor(floor, workerId === undefined ? { t: 'toast', text, level } : { t: 'toast', text, level, workerId }, false, about);
   };
   const floorInfos = (): FloorInfo[] =>
     [...floors.values()].map((f) => {
@@ -243,7 +276,9 @@ export async function startServer(cfg: Config) {
   };
   /** Tells just this person why their request didn't happen; nothing when there's no error. */
   const warn = (c: Client, error: string | undefined) => {
-    if (error) sendTo(c, { t: 'toast', text: error, level: 'warn' });
+    if (!error) return;
+    c.lastWarning = error;
+    sendTo(c, { t: 'toast', text: error, level: 'warn' });
   };
   const answers = new Answers();
 
@@ -755,13 +790,13 @@ export async function startServer(cfg: Config) {
         if (c) sendTo(c, { t: 'changes', state });
       }
     },
-    workerChanged: (floor, w) => {
+    workerChanged: (floor, w, about) => {
       answers.changed(typeof w === 'string' ? w : w.id, typeof w === 'string' ? undefined : w.status);
       if (typeof w === 'string') threadWatches?.unwatchWorker(w);
       else threadWatches?.notifyWorker(w.id);
       if (typeof w === 'string' || w.status !== 'needs_input') clearOffFloorThrottle(typeof w === 'string' ? w : w.id);
       if (floors.get(floor.id) === floor) {
-        if (typeof w === 'string') broadcast({ t: 'building.remove', floor: floor.id, workerId: w });
+        if (typeof w === 'string') broadcast({ t: 'building.remove', floor: floor.id, workerId: w }, undefined, false, about);
         else {
           broadcast({ t: 'building.worker', floor: floor.id, worker: w });
           if (w.status === 'needs_input') broadcastOffFloorScreen(floor, w.id);
@@ -783,9 +818,11 @@ export async function startServer(cfg: Config) {
     screenChanged: (workerId) => threadWatches?.screenChanged(workerId),
     connections: (floor) => {
       let n = 0;
-      for (const c of clients.values()) if (c.floor === floor.id) n++;
+      // The owner looking keeps a floor's boards fresh; a share link's guest does not.
+      for (const c of clients.values()) if (c.floor === floor.id && !c.guest) n++;
       return n;
     },
+    watches: (clientId) => !clients.get(clientId)?.guest,
     leaveOnMerge: () => leaveOnMerge.on,
     freshMain: () => freshMain.on,
     subagents: () => subagents.settings,
@@ -872,6 +909,8 @@ export async function startServer(cfg: Config) {
         if (worker.status === 'needs_input') broadcastOffFloorScreen(floor, worker.id);
       }
       if (floor.board.pulls.items.length) broadcast({ t: 'building.pulls', floor: floor.id, pulls: floor.board.pulls.items });
+      // A floor or single-worker link waiting in the lobby for its floor is back on it.
+      for (const c of clients.values()) if (c.guest && c.guest.session.scope !== 'office' && c.floor === null && c.guest.floorId === floor.id) goToFloor(c, floor);
       return floor;
     } catch (err) {
       console.error(`droid-office: couldn't open the ${def.name} floor: ${(err as Error).message}`);
@@ -960,9 +999,10 @@ export async function startServer(cfg: Config) {
   const automation = createAutomation(clients, sendTo);
   const automationRequest = automation.request;
 
-  const { serveCard, whiteboardRequest, sendBoard, applyBoard, pingWorker } = createWhiteboardRuntime({ floors, prompts, sendTo, warn });
+  const { serveCard, whiteboardRequest, sendBoard, applyBoard, pingWorker } = createWhiteboardRuntime({ floors, prompts, sendTo, warn, sees: (c, workerId) => guestGate.sees(c, workerId) });
 
   const floorRequest = createFloorHttp({ floors, orchestrator, workerFloor, workerThreads, factory, setup, whiteboardRequest });
+  const guestHttp = createGuestHttp({ guestLinks, guestAudit, guestFunnel: () => guestFunnel, floors, orchestrator, workersOf, availableDroidModels, droidCommands, floorRequest, ...staticFiles });
   const handler = createHttpHandler({
     cfg,
     lanToken,
@@ -986,6 +1026,7 @@ export async function startServer(cfg: Config) {
     images,
     serveCard,
     floorRequest,
+    guestOwnerRequest: guestHttp.ownerRequest,
     remoteMcp: () => remoteMcp,
     tailnetHttps: () => httpsGateway,
     ...accessRuntime,
@@ -995,7 +1036,17 @@ export async function startServer(cfg: Config) {
   const server = cfg.tls ? https.createServer({ cert: cfg.tls.cert, key: cfg.tls.key }, handler) : http.createServer(handler);
 
   // --- WebSocket -------------------------------------------------------------------------------
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: 2 * 1024 * 1024,
+    // A guest page offers [GUEST_WS_PROTOCOL, token]: answer with the protocol, never the token. Everyone else keeps ws's default (the first offered).
+    handleProtocols: (protocols, req) => (isGuestRequest(req) ? (protocols.has(GUEST_WS_PROTOCOL) ? GUEST_WS_PROTOCOL : false) : (protocols.values().next().value ?? false)),
+  });
+  /** Whether an upgrade offers the guest subprotocol, which only the guest backend answers. */
+  const offersGuestProtocol = (req: http.IncomingMessage) =>
+    String(req.headers['sec-websocket-protocol'] ?? '')
+      .split(',')
+      .some((p) => p.trim() === GUEST_WS_PROTOCOL);
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy());
     let url: URL;
@@ -1010,6 +1061,15 @@ export async function startServer(cfg: Config) {
     // the Origin check: a browser can't set that header on a WebSocket, so no web page can send it.
     // `?d=` can come from a page, so it doesn't. One check per connection; nothing per message.
     if (url.pathname !== '/ws') return refuseUpgrade(socket);
+    // The guest backend (guest-funnel.ts) checked Host and Origin; a guest authenticates only with its share link's token.
+    if (isGuestRequest(req)) {
+      const verdict = guestLinks.authenticate(req, url);
+      if (!verdict.ok) return refuseUpgrade(socket);
+      wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, url, undefined, verdict.grant));
+      return;
+    }
+    // A share link's token opens nothing outside the guest backend.
+    if (offersGuestProtocol(req)) return refuseUpgrade(socket);
     const gate = access(req, url);
     if (!gate.ok || (!(gate.device && gate.header) && !sameOrigin(req, cfg))) return refuseUpgrade(socket);
     if (!companion.on && (gate.device?.kind === 'browser' || url.searchParams.get('client') === 'dashboard')) return refuseUpgrade(socket);
@@ -1023,13 +1083,30 @@ export async function startServer(cfg: Config) {
     upgrade: (req, socket, head) => server.emit('upgrade', req, socket, head),
   });
   tailnetHttps = httpsGateway;
+  // The guest backend, published through Funnel only while external sharing is on (see guest-funnel.ts).
+  const guestFunnel = new GuestFunnel({
+    dataDir: cfg.dataDir,
+    request: guestHttp.guestRequest,
+    upgrade: (req, socket, head) => server.emit('upgrade', req, socket, head),
+    onState: () => guestLinksChanged(),
+    ...(cfg.guestSharing ? {} : { locked: 'External sharing is disabled by DROID_OFFICE_GUEST_SHARING=off.' }),
+  });
 
-  const onConnection = (ws: WebSocket, url: URL, device?: PairedDevice) => {
+  /**
+   * Where a guest arrives: a floor or single-worker link on its own floor (the lobby when that floor is
+   * closed), an office-wide link on the floor it asks for when that is open, else the first floor. Never the roof.
+   */
+  const guestLanding = (grant: GuestGrant, wanted: string | null): Floor | undefined => {
+    if (grant.session.scope !== 'office') return grant.floorId ? floors.get(grant.floorId) : undefined;
+    return (wanted ? floors.get(wanted) : undefined) ?? floors.values().next().value;
+  };
+
+  const onConnection = (ws: WebSocket, url: URL, device?: PairedDevice, guest?: GuestGrant) => {
     const id = randomBytes(5).toString('hex');
     // Back on the floor they were on before a reload, a restart or closing the tab, else the first floor.
     const wanted = url.searchParams.get('floor');
     // A floor that's gone since (taken off the building, or its checkout deleted) sends them up to the roof.
-    const landing = returnLanding(wanted, [...floors.keys()], ROOF);
+    const landing = guest ? { onRoof: false, floorId: guestLanding(guest, wanted)?.id, back: false, gone: false } : returnLanding(wanted, [...floors.keys()], ROOF);
     const onRoof = landing.onRoof;
     const floor = landing.floorId ? floors.get(landing.floorId) : undefined;
     // Back where they were standing on it too; anywhere else, they arrive by elevator.
@@ -1041,8 +1118,8 @@ export async function startServer(cfg: Config) {
       via: !onRoof && !floor ? 'lobby' : saved ? 'saved' : landing.gone ? 'roof' : 'elevator',
       ...(landing.gone ? { removed: true } : {}),
     };
-    // The connection names itself (?name=, or the `profile` message): display provenance only.
-    const name = str(url.searchParams.get('name'), 24).trim() || `Guest ${id.slice(0, 3)}`;
+    // The connection names itself (?name=, or the `profile` message): display provenance only. A guest is named by its link.
+    const name = guest ? guestName(guest) : str(url.searchParams.get('name'), 24).trim() || `Guest ${id.slice(0, 3)}`;
     const colorParam = url.searchParams.get('color') ?? '';
     const client: Client = {
       id,
@@ -1054,13 +1131,16 @@ export async function startServer(cfg: Config) {
       isAlive: true,
       peer: { name, color: COLOR_RE.test(colorParam) ? colorParam : '#4f86f7' },
       ...(device ? { device: device.id, ...(device.kind !== 'browser' ? { phoneSizes: new PhoneSizes() } : {}) } : {}),
-      dashboard: url.searchParams.get('client') === 'dashboard' || device?.kind === 'browser',
+      dashboard: !!guest || url.searchParams.get('client') === 'dashboard' || device?.kind === 'browser',
       requests: new Set(),
       boards: new Map(),
+      ...(guest ? { guest } : {}),
     };
     clients.set(id, client);
     ws.on('pong', () => (client.isAlive = true));
-    if (floor) floorActivity.visited(floor.id);
+    // Revoking the link, its expiry or turning sharing off closes this socket with the contract's code.
+    const unregisterGuest = guest ? guestLinks.register(guest, (code, reason) => ws.close(code, reason)) : undefined;
+    if (floor && !guest) floorActivity.visited(floor.id);
 
     sendTo(client, {
       t: 'welcome',
@@ -1090,6 +1170,7 @@ export async function startServer(cfg: Config) {
       subscriptions: subscriptions.state(),
       missionControl: missionState(),
       building: buildingRoster(),
+      ...(guest ? { guest: guest.session } : {}),
       ...(onRoof ? roofView() : floorView(floor)),
     });
     screensOf(client, floor);
@@ -1097,9 +1178,9 @@ export async function startServer(cfg: Config) {
     if (floor) sendTo(client, { t: 'visits', visits: floor.visits.list() });
     floorsChanged();
     if (floor) {
-      floor.arrived();
-      // Anyone whose process ended since (exited, or failed to resume) gets up as you walk in.
-      floor.workers.wakeAll();
+      floor.arrived(!guest);
+      // Anyone whose process ended since (exited, or failed to resume) gets up as you walk in. A guest wakes nobody.
+      if (!guest) floor.workers.wakeAll();
     }
 
     ws.on('message', (raw) => {
@@ -1115,6 +1196,7 @@ export async function startServer(cfg: Config) {
     });
     ws.on('close', () => {
       clients.delete(id);
+      unregisterGuest?.();
       for (const r of client.phoneSizes?.restores((wid) => workersOf(wid)?.get(wid)) ?? []) workersOf(r.workerId)?.resize(r.workerId, r.size.cols, r.size.rows);
       orchestrator.workers.detachAll(id);
       automation.disconnect(id);
@@ -1148,8 +1230,8 @@ export async function startServer(cfg: Config) {
     screensOf(c, floor);
     sendBoard(c, floor);
     sendTo(c, { t: 'visits', visits: floor.visits.list() });
-    floor.arrived();
-    floor.workers.wakeAll();
+    floor.arrived(!c.guest);
+    if (!c.guest) floor.workers.wakeAll();
     officeVibes.syncViewers(true);
     floorsChanged();
   };
@@ -1185,6 +1267,15 @@ export async function startServer(cfg: Config) {
     floorsSent = JSON.stringify(list);
     broadcast({ t: 'floors', floors: list });
     for (const c of clients.values()) {
+      // A floor or single-worker link reaches nothing else: its guests wait in the lobby, told nothing about other floors.
+      const scoped = !!c.guest && c.guest.session.scope !== 'office';
+      if (scoped) {
+        if (c.floor === floor.id) {
+          toLobby(c);
+          sendTo(c, { t: 'toast', text: 'This floor is no longer shared.', level: 'warn' });
+        }
+        continue;
+      }
       if (c.floor === floor.id || (!next && c.floor === ROOF)) {
         if (next) goToFloor(c, next);
         else toLobby(c);
@@ -1231,7 +1322,7 @@ export async function startServer(cfg: Config) {
   const takeLinear = (c: Client, floor: Floor, ref: string, w: { id: string; name: string }, auto: boolean) => {
     void floor.linear.take(ref, w, { auto }).then(({ ticket, error }) => {
       if (error) return warn(c, `Couldn't hand ${ref} to ${w.name} in Linear: ${error}`);
-      if (ticket) toastFloor(floor, `◆ ${w.name} took ${ticket.identifier} in Linear: ${ticket.title}`);
+      if (ticket) toastFloor(floor, `◆ ${w.name} took ${ticket.identifier} in Linear: ${ticket.title}`, 'info', w.id);
     });
   };
 
@@ -1267,17 +1358,49 @@ export async function startServer(cfg: Config) {
   };
 
   /** Opens a worker's terminal for `c`. */
-  const attachTerminal = (wid: string, c: Client) => workersOf(wid)?.attach(wid, c.id);
+  /** A share link's guest streams a terminal without being the owner looking (workers.ts attach). */
+  const attachTerminal = (wid: string, c: Client) => workersOf(wid)?.attach(wid, c.id, !c.guest);
 
   const handleBoardCommand = createBoardCommands({ floorOf, sendTo, toastFloor });
 
+  const guestGate = createGuestGate({
+    floors,
+    guestLinks,
+    guestAudit,
+    sendTo,
+    workerInfo: (workerId) => workersOf(workerId)?.get(workerId) ?? cloud.find(workerId)?.info,
+  });
+
   const handleMessage = (c: Client, msg: ClientMsg) => {
+    // A share link's guest: default deny before anything else reads the message (shared/guest-policy.ts).
+    let settleGuest: ((error: string | undefined) => void) | undefined;
+    if (c.guest) {
+      const guest = c as Client & { guest: GuestGrant };
+      const admitted = guestGate.admit(guest, msg);
+      if (!admitted) return;
+      // An audit entry means the office acted: written once the handler settles without refusing, never before.
+      let settled = false;
+      c.lastWarning = undefined;
+      settleGuest = (error) => {
+        if (settled) return;
+        settled = true;
+        if (!error) guestGate.record(guest, msg, admitted);
+      };
+    }
     const who = c.peer.name;
     const requestId = str(msg.requestId, 64);
     let finished = false;
     // An awaited action calls done() from a later callback. Do not complete the receipt at the end of this turn.
     let pending = false;
+    // A handler that learns its outcome later (a forge call, a Whiteboard commit) takes the guest's audit:
+    // done() and unanswered() then leave it to that handler's settle.
+    let auditHeld = false;
+    const auditOutcome = (): ((error?: string) => void) => {
+      auditHeld = true;
+      return (error) => settleGuest?.(error);
+    };
     const done = (error?: string, workerId?: string, note?: string) => {
+      if (!auditHeld) settleGuest?.(error);
       if (!requestId || finished) return;
       finished = true;
       sendTo(c, { t: 'action.result', requestId, ok: !error, ...(error ? { error } : {}), ...(workerId ? { workerId } : {}), ...(note ? { note } : {}) });
@@ -1297,6 +1420,7 @@ export async function startServer(cfg: Config) {
     /** A request id is a receipt request. Sync handlers that did not answer, and actions the companion does not await, still close the receipt so the client does not wait out its timeout. */
     const unanswered = () => {
       if (pending || finished) return;
+      if (!auditHeld) settleGuest?.(c.lastWarning);
       // A handler that neither answered nor warned may have done nothing at all (an unknown id it ignores).
       if (c.owner && !c.owner.refused) c.owner.unconfirmed = true;
       done(c.owner ? c.owner.refused : 'This action was not confirmed. Check the office before trying again; it was not replayed.');
@@ -1341,7 +1465,10 @@ export async function startServer(cfg: Config) {
     const promptOrchestrator = (m: { prompt: string; images?: string[]; queue?: boolean }) => {
       const images = imageIds(m.images);
       const at = floorOf(c);
-      const err = orchestrator.prompt(str(m.prompt, 20000), images, m.queue === true, at && { name: at.def.name, dir: at.dir });
+      const blocked = c.guest ? orchestrator.blocked()?.why : undefined;
+      const said = orchestrator.prompt(str(m.prompt, 20000), images, m.queue === true, at && { name: at.def.name, dir: at.dir });
+      // What blocks it is the owner's setup (their sign-in, their model's subscription): a guest gets one fixed line.
+      const err = blocked !== undefined && said === blocked ? GUEST_ORCHESTRATOR_BLOCKED : said;
       orchestrator.workers.unstage(images);
       warn(c, err);
       done(err, ORCHESTRATOR_ID);
@@ -1463,12 +1590,12 @@ export async function startServer(cfg: Config) {
       switch (msg.t) {
         case 'worker.attach': {
           if (msg.stream === false) {
-            if (!orch.open(ORCHESTRATOR_ID, c.id)) return done('The Orchestrator has no terminal yet. Send it a prompt first.');
+            if (!orch.open(ORCHESTRATOR_ID, c.id, !c.guest)) return done('The Orchestrator has no terminal yet. Send it a prompt first.');
             c.attached.add(ORCHESTRATOR_ID);
             c.stale.delete(ORCHESTRATOR_ID);
             return done();
           }
-          const snap = orch.attach(ORCHESTRATOR_ID, c.id);
+          const snap = orch.attach(ORCHESTRATOR_ID, c.id, !c.guest);
           if (!snap) return done('The Orchestrator has no terminal yet. Send it a prompt first.');
           c.attached.add(ORCHESTRATOR_ID);
           sendTo(c, { t: 'term.snapshot', workerId: ORCHESTRATOR_ID, ...snap });
@@ -1579,7 +1706,7 @@ export async function startServer(cfg: Config) {
         const floor = floors.get(str(msg.floor, 64));
         if (!floor) warn(c, 'No such floor');
         else {
-          floorActivity.visited(floor.id);
+          if (!c.guest) floorActivity.visited(floor.id);
           goToFloor(c, floor, arrivalSpot(msg.at));
           floorsChanged();
         }
@@ -1737,7 +1864,12 @@ export async function startServer(cfg: Config) {
           const across = repos.length ? ` across ${[floor.def.name, ...repos.map((x) => x.name)].join(' + ')}` : '';
           if (typeof r === 'string') refuse(r);
           else
-            toastFloor(floor, kind === 'shell' ? `${who} opened a shell at a desk` : `${who} hired ${r.name}${issue ? ` for issue #${issue}` : ticket ? ` for ${ticket}` : r.prompt ? ' with a task' : ''}${kind === 'agent' ? across : ''}`);
+            toastFloor(
+              floor,
+              kind === 'shell' ? `${who} opened a shell at a desk` : `${who} hired ${r.name}${issue ? ` for issue #${issue}` : ticket ? ` for ${ticket}` : r.prompt ? ' with a task' : ''}${kind === 'agent' ? across : ''}`,
+              'info',
+              r.id,
+            );
           if (typeof r !== 'string') done(undefined, r.id);
           if (typeof r !== 'string' && issue) takeIssue(c, floor, issue);
           if (typeof r !== 'string' && ticket) takeLinear(c, floor, ticket, r, who === AUTOPILOT_NAME);
@@ -1766,7 +1898,7 @@ export async function startServer(cfg: Config) {
         void w.floor.workers.fork(w.wid, who, str(msg.prompt, 20000) || undefined).then(
           (result) => {
             if (typeof result === 'string') return refuse(result);
-            toastFloor(w.floor, `${who} forked ${w.info.name} into ${result.name}`);
+            toastFloor(w.floor, `${who} forked ${w.info.name} into ${result.name}`, 'info', result.id, [w.info]);
             done(undefined, result.id);
           },
           (error: unknown) => refuse(error instanceof Error ? error.message : 'The office could not confirm the fork. Check the floor before trying again.'),
@@ -1796,12 +1928,13 @@ export async function startServer(cfg: Config) {
         const { floor, info } = w;
         // The worker leaves right away; its worktree is dealt with after that, and the outcome follows.
         const cleanup = floor.team.sendingHome(info.id, 'owner', () => floor.workers.kill(info.id, CLEANUPS.has(String(msg.cleanup)) ? msg.cleanup : undefined));
-        toastFloor(floor, `${who} sent ${info.name} home`);
+        // It leaves right away: `about` keeps the floors it worked in for guests' scope.
+        toastFloor(floor, `${who} sent ${info.name} home`, 'info', undefined, [info]);
         defer();
         void cleanup.then(
           ({ note, error }) => {
-            if (note) toastFloor(floor, note);
-            if (error) toastFloor(floor, error, 'warn');
+            if (note) toastFloor(floor, note, 'info', undefined, [info]);
+            if (error) toastFloor(floor, error, 'warn', undefined, [info]);
             done(error, info.id);
           },
           (error: unknown) => refuse(error instanceof Error ? error.message : 'The office could not confirm sending the worker home.'),
@@ -1820,18 +1953,20 @@ export async function startServer(cfg: Config) {
         const w = worker(msg.workerId);
         if (!w) break;
         const { floor } = w;
-        // With `all`, every worker on the floor whose worktree was deleted, this one first.
+        // With `all`, every worker on the floor whose worktree was deleted, this one first; for a guest, only those its link sees.
         const ids = [
           w.wid,
           ...(msg.all === true
             ? floor.workers
                 .list()
-                .filter((x) => x.lost && x.id !== w.wid)
+                .filter((x) => x.lost && x.id !== w.wid && guestGate.sees(c, x.id))
                 .map((x) => x.id)
             : []),
         ];
+        const settle = auditOutcome();
         void (async () => {
           const names: string[] = [];
+          const rebuilt: GuestNamed[] = [];
           const notes: string[] = [];
           for (const id of ids) {
             const info = floor.workers.get(id);
@@ -1842,19 +1977,21 @@ export async function startServer(cfg: Config) {
             else if (!r.rebuilt) sendTo(c, { t: 'toast', text: r.note ?? `${info.name}'s worktree is already there`, level: 'info' });
             else {
               names.push(info.name);
+              rebuilt.push(info);
               if (r.note) notes.push(r.note);
             }
           }
+          settle(names.length ? undefined : 'Nothing was rebuilt');
           if (!names.length) return;
           const whose = names.length === 1 ? `${names[0]}'s worktree` : `the worktrees of ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-          toastFloor(floor, `🌿 ${who} rebuilt ${whose}${notes.length ? ` — ${notes.join('; ')}` : ''}`);
+          toastFloor(floor, `🌿 ${who} rebuilt ${whose}${notes.length ? ` — ${notes.join('; ')}` : ''}`, 'info', undefined, rebuilt);
         })();
         break;
       }
       case 'worker.attach': {
         const wid = str(msg.workerId, 32);
         if (msg.stream === false) {
-          if (workersOf(wid)?.open(wid, c.id)) {
+          if (workersOf(wid)?.open(wid, c.id, !c.guest)) {
             c.attached.add(wid);
             c.stale.delete(wid);
           }
@@ -1907,7 +2044,7 @@ export async function startServer(cfg: Config) {
           done(err, target?.wid ?? w?.wid);
           const issue = target?.info.kind === 'agent' ? issueNumber(msg.issue) : undefined;
           if (target && !err && issue) {
-            toastFloor(target.floor, `${who} handed issue #${issue} to ${target.info.name}`);
+            toastFloor(target.floor, `${who} handed issue #${issue} to ${target.info.name}`, 'info', target.info.id);
             takeIssue(c, target.floor, issue);
           }
           const ticket = target?.info.kind === 'agent' ? linearIssueRef(msg.linear) : undefined;
@@ -1974,10 +2111,10 @@ export async function startServer(cfg: Config) {
             const name = info?.name ?? 'the worker';
             const words = forgeWords(floor.board.forge);
             const [one] = r.prs;
-            if (r.prs.length === 1 && one && !one.repo) toastFloor(floor, one.existed ? `${name}'s branch already has ${words.pr} ${words.ref(one.number)}` : `${who} opened ${words.pr} ${words.ref(one.number)} for ${name}`);
+            if (r.prs.length === 1 && one && !one.repo) toastFloor(floor, one.existed ? `${name}'s branch already has ${words.pr} ${words.ref(one.number)}` : `${who} opened ${words.pr} ${words.ref(one.number)} for ${name}`, 'info', wid);
             else {
               const list = r.prs.map((p) => `${p.repo} ${words.ref(p.number)}`).join(', ');
-              toastFloor(floor, r.prs.every((p) => p.existed) ? `${name}'s ${words.pull}s are already open: ${list}` : `${who} opened ${name}'s ${words.pull}s: ${list}`);
+              toastFloor(floor, r.prs.every((p) => p.existed) ? `${name}'s ${words.pull}s are already open: ${list}` : `${who} opened ${name}'s ${words.pull}s: ${list}`, 'info', wid);
             }
             const dirty = r.prs.filter((p) => p.dirty);
             if (dirty.length)
@@ -2110,7 +2247,7 @@ export async function startServer(cfg: Config) {
       case 'pipelines.rerun':
       case 'pipelines.cancel':
       case 'pipelines.run':
-        handleBoardCommand(c, msg, here);
+        handleBoardCommand(c, msg, here, auditOutcome());
         break;
       case 'gong': {
         const floor = floorOf(c);
@@ -2216,7 +2353,7 @@ export async function startServer(cfg: Config) {
         break;
       }
       case 'whiteboard.apply':
-        applyBoard(c, str(msg.floor, 64), msg.envelope);
+        applyBoard(c, str(msg.floor, 64), msg.envelope, auditOutcome());
         break;
       case 'whiteboard.sync': {
         const floor = floors.get(str(msg.floor, 64));
@@ -2225,7 +2362,7 @@ export async function startServer(cfg: Config) {
         break;
       }
       case 'whiteboard.ping':
-        pingWorker(c, str(msg.worker, 32));
+        pingWorker(c, str(msg.worker, 32), auditOutcome());
         break;
       case 'prompts.set': {
         if (!isPromptId(msg.id) || (msg.text !== null && typeof msg.text !== 'string')) return;
@@ -2633,6 +2770,7 @@ export async function startServer(cfg: Config) {
   await hotReload.start();
   workerLabels.start();
   const httpsReady = cfg.tailnetHttps ? httpsGateway.start() : Promise.resolve(httpsGateway.state());
+  void guestFunnel.start(guestLinks.on);
 
   /** With `keep` (a restart), workers' terminals keep running for the next office to pick up. */
   const shutdown = (keep = false) => {
@@ -2664,7 +2802,12 @@ export async function startServer(cfg: Config) {
     remoteOffice.stop();
     remoteMcp?.stop();
     httpsGateway.stop();
-    return labelsStopped;
+    clearTimeout(guestLinksTimer);
+    guestLinks.stop();
+    guestAudit.stop();
+    // Nothing public stays mapped while the office is closed; the port is remembered for a stable URL.
+    const guestStopped = guestFunnel.stop();
+    return Promise.all([labelsStopped, guestStopped]).then(() => undefined);
   };
 
   return {
@@ -2681,5 +2824,7 @@ export async function startServer(cfg: Config) {
     owner: ownerOffice,
     projectsDir: () => building.projectsDir,
     resolvedAgent: agentPath,
+    /** Share links, their audit, and the guest backend's request handler (tests drive it without Funnel). */
+    guests: { links: guestLinks, audit: guestAudit, request: guestHttp.guestRequest },
   };
 }

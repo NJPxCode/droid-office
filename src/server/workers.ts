@@ -7,6 +7,7 @@ import headless from '@xterm/headless';
 import serialize from '@xterm/addon-serialize';
 import unicode11 from '@xterm/addon-unicode11';
 import type { AgentChoice, AgentEffort, GhPull, TeamBadge, TerminalHit, WorkerAsk, WorkerInfo, WorkerKind, WorkerRepo, WorkerStatus, WorkerTask } from '../shared/protocol.js';
+import type { GuestNamed } from '../shared/guest-policy.js';
 import type { ToolRefresh } from './hook-refresh.js';
 import { leadBadge, memberBadge } from '../shared/team.js';
 import { OFFICE_SHELL_ID } from '../shared/office-shell.js';
@@ -167,11 +168,12 @@ export interface OpenedPr {
 
 export interface WorkerEvents {
   update(info: WorkerInfo): void;
-  remove(workerId: string, shot?: boolean): void;
+  /** `repos`: the other repositories it worked in, which it no longer lists once it has left. */
+  remove(workerId: string, shot?: boolean, repos?: WorkerInfo['repos']): void;
   data(workerId: string, data: string, connectionIds: string[]): void;
   screen(workerId: string, frame: ScreenFrame): unknown;
-  /** `workerId` names the worker it is about, when one is (a shot worker's dismissal). */
-  toast(text: string, level: 'info' | 'warn' | 'error', workerId?: string): void;
+  /** `workerId` names the worker it is about, when one is (a shot worker's dismissal), and `about` workers its text names that may have left. */
+  toast(text: string, level: 'info' | 'warn' | 'error', workerId?: string, about?: readonly GuestNamed[]): void;
   /** The office moved the project's checkout onto `branch` (see Worktrees.freshen). */
   checkout?(branch: string): void;
   /** A worker's tool call finished that may have changed what the office shows (see hook-refresh.ts). */
@@ -677,7 +679,7 @@ export class WorkerManager {
       if (typeof made === 'string') return made;
       if ('repos' in made) {
         ({ worktree: wt, repos: others } = made);
-        for (const note of made.notes) this.events.toast(`🌿 ${name}'s worktree of ${note}`, 'info');
+        for (const note of made.notes) this.events.toast(`🌿 ${name}'s worktree of ${note}`, 'info', undefined, [{ id, repos: others }]);
       } else {
         const { note, ...ref } = made;
         wt = ref;
@@ -1159,7 +1161,7 @@ export class WorkerManager {
     this.scrollback.remove(id);
     this.drops.remove(id);
     rmSync(this.spool.file(id), { force: true });
-    this.events.remove(id);
+    this.events.remove(id, false, w.info.repos);
     this.persist();
     return true;
   }
@@ -1238,10 +1240,10 @@ export class WorkerManager {
     if (!superShot) return undefined;
     void this.kill(id, undefined, undefined, undefined, true).then(
       ({ note, error }) => {
-        if (note) this.events.toast(note, 'info', id);
-        if (error) this.events.toast(error, 'warn', id);
+        if (note) this.events.toast(note, 'info', id, [w.info]);
+        if (error) this.events.toast(error, 'warn', id, [w.info]);
       },
-      (err: Error) => this.events.toast(`Couldn't dismiss ${w.info.name}: ${err.message}`, 'warn', id),
+      (err: Error) => this.events.toast(`Couldn't dismiss ${w.info.name}: ${err.message}`, 'warn', id, [w.info]),
     );
     return undefined;
   }
@@ -1303,7 +1305,7 @@ export class WorkerManager {
         // a leftover overlay is harmless: the next launch rewrites it
       }
     }
-    this.events.remove(id, shot);
+    this.events.remove(id, shot, w.info.repos);
     // Its subagents stay at their desks, working for nobody now.
     for (const sub of this.workers.values()) {
       if (sub.info.lead !== id) continue;
@@ -1552,18 +1554,25 @@ export class WorkerManager {
     this.resume(w.info.id);
   }
 
-  /** Marks one connection as viewing a worker without streaming its raw terminal (Thread view). */
-  open(id: string, clientId: string): boolean {
+  /**
+   * Marks one connection as viewing a worker without streaming its raw terminal (Thread view). Without
+   * `watch` (a share link's guest) it is not the owner looking: the worker is neither open nor seen.
+   */
+  open(id: string, clientId: string, watch = true): boolean {
     const w = this.workers.get(id);
     if (!w) return false;
     this.unsubscribeStream(id, clientId);
+    if (!watch) return true;
     this.addViewer(id, clientId);
     this.acknowledgeOpen(w);
     return true;
   }
 
-  /** Subscribes one connection to a worker's terminal; opening it acknowledges its wait for attention. */
-  attach(id: string, clientId: string): { data: string; cols: number; rows: number; shared: boolean } | undefined {
+  /**
+   * Subscribes one connection to a worker's terminal; opening it acknowledges its wait for attention.
+   * Without `watch` (a share link's guest) it only streams: the worker is neither open nor seen.
+   */
+  attach(id: string, clientId: string, watch = true): { data: string; cols: number; rows: number; shared: boolean } | undefined {
     const w = this.workers.get(id);
     if (!w) return undefined;
     let subs = this.subscribers.get(id);
@@ -1573,8 +1582,10 @@ export class WorkerManager {
     }
     const shared = [...subs].some((cid) => cid !== clientId);
     subs.add(clientId);
-    this.addViewer(id, clientId);
-    this.acknowledgeOpen(w);
+    if (watch) {
+      this.addViewer(id, clientId);
+      this.acknowledgeOpen(w);
+    }
     const data = w.snapshot ? w.snapshot() : offlineBanner(w.info);
     return { data, cols: w.info.cols, rows: w.info.rows, shared };
   }

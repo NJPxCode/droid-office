@@ -3,6 +3,7 @@
 // worker who last edited the card's page. The press sets `state.pinged[name]`, which keeps the button
 // disabled until the worker deletes it; a press that can't reach anyone is taken back.
 
+import { GUEST_REFUSED } from '../shared/guest-policy.js';
 import type { WorkerInfo } from '../shared/protocol.js';
 import { workerMessageVars } from '../shared/prompts.js';
 import { buttonDelivery, buttonTarget, type ButtonDelivery } from '../shared/whiteboard-ping.js';
@@ -44,10 +45,17 @@ export function freshPresses(board: Board, ops: readonly unknown[]): ButtonPress
   return out;
 }
 
-/** Types one recorded press into the worker who last edited its card's page, on `board` as it is after the batch. */
-export function deliverPress(board: Board, press: ButtonPress, everyone: readonly WorkerInfo[], workers: PressWorkers, floor: string, prompts?: PromptSource): PressOutcome {
+/**
+ * Types one recorded press into the worker who last edited its card's page, on `board` as it is after the batch.
+ * `reaches`: whether whoever pressed may have the office tell that worker, by id, whether it is here or has left
+ * (a share link's guest: a worker its link sees).
+ */
+export function deliverPress(board: Board, press: ButtonPress, everyone: readonly WorkerInfo[], workers: PressWorkers, floor: string, prompts?: PromptSource, reaches: (workerId: string) => boolean = () => true): PressOutcome {
   const card = findCard(board, press.card);
   if (!card) return { ok: false, error: 'The card is gone.' };
+  // Decided before any reason about that worker (lost, left) is put into words.
+  const by = card.stamps.content?.author;
+  if (by?.kind === 'worker' && !reaches(by.id)) return { ok: false, error: GUEST_REFUSED };
   const target = buttonTarget(card, everyone);
   if (!target.ok) return { ok: false, error: target.reason };
   const w = everyone.find((x) => x.id === target.id);

@@ -14,10 +14,12 @@ interface WhiteboardContext {
   prompts: OfficePrompts;
   sendTo: SendTo;
   warn(c: Client, error: string | undefined): void;
+  /** Whether `c` may have the office tell worker `workerId` something (a share link's guest: only workers its link sees). */
+  sees(c: Client, workerId: string): boolean;
 }
 
 /** HTTP capability/file/render routes and the window's committed Whiteboard batches. */
-export function createWhiteboardRuntime({ floors, prompts, sendTo, warn }: WhiteboardContext) {
+export function createWhiteboardRuntime({ floors, prompts, sendTo, warn, sees }: WhiteboardContext) {
   /** `/whiteboard/c/<cap>/<path>`: whichever floor's store the capability belongs to answers, or nobody does. */
   const serveCard = (req: http.IncomingMessage, res: http.ServerResponse, rest: string) => {
     const slash = rest.indexOf('/');
@@ -128,7 +130,8 @@ export function createWhiteboardRuntime({ floors, prompts, sendTo, warn }: White
     }
   };
   /** The owner's batch from the window, answered to `c` once it's committed (or why it wasn't). */
-  const applyBoard = (c: Client, floorId: string, raw: unknown) => {
+  /** `settle` hears whether the change was committed (no error) before any button press in it is delivered. */
+  const applyBoard = (c: Client, floorId: string, raw: unknown, settle: (error?: string) => void = () => {}) => {
     const floor = floors.get(floorId);
     if (!floor) return warn(c, 'That floor is no longer in the building');
     const env = parseEnvelope(raw);
@@ -144,6 +147,8 @@ export function createWhiteboardRuntime({ floors, prompts, sendTo, warn }: White
     }
     const head = { epoch: env.epoch, seq: env.seq };
     if (out.kind === 'ack') {
+      // A retry the record recognised was committed (and settled) the first time.
+      settle(out.duplicate ? 'Already applied' : undefined);
       sendTo(c, { t: 'whiteboard', floor: floor.id, update: { kind: 'ack', ...head, rev: out.rev } });
       // A retry the record recognised applied nothing new, so a press in it was already delivered.
       if (!out.duplicate) pressButtons(c, floor, presses);
@@ -159,15 +164,18 @@ export function createWhiteboardRuntime({ floors, prompts, sendTo, warn }: White
     for (const press of presses) {
       const card = findCard(floor.whiteboard.board, press.card);
       if (!card || !pinged(card.state, press.name)) continue;
-      const out = deliverPress(floor.whiteboard.board, press, floor.everyone(), floor.workers, floor.def.name, prompts);
+      const out = deliverPress(floor.whiteboard.board, press, floor.everyone(), floor.workers, floor.def.name, prompts, (id) => sees(c, id));
       if (out.ok) continue;
       floor.whiteboard.applyOffice([{ op: 'state.del', card: press.card, path: [PINGED_KEY, press.name] }]);
       warn(c, `“${press.ping.label || press.name}” didn't reach a worker: ${out.error}`);
     }
   };
   /** Ping a worker: the Whiteboard line typed into its terminal, as its status allows (see whiteboard-ping.ts). */
-  const pingWorker = (c: Client, id: string) => {
-    const pinged = (ok: boolean, rest: { how?: 'type' | 'resume' | 'queue'; error?: string }) => sendTo(c, { t: 'whiteboard.pinged', worker: id, ok, ...rest });
+  const pingWorker = (c: Client, id: string, settle: (error?: string) => void = () => {}) => {
+    const pinged = (ok: boolean, rest: { how?: 'type' | 'resume' | 'queue'; error?: string }) => {
+      settle(ok ? undefined : (rest.error ?? 'Not pinged'));
+      sendTo(c, { t: 'whiteboard.pinged', worker: id, ok, ...rest });
+    };
     let floor: Floor | undefined;
     let info: ReturnType<Floor['everyone']>[number] | undefined;
     for (const f of floors.values()) {

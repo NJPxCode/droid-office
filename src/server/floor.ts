@@ -31,6 +31,7 @@ import type { WakeGate, WakeLeadView, WakeTeammate } from './wake-filter.js';
 import { Visits } from './visits.js';
 import type { DroidModelCatalogue } from './droid-models.js';
 import type { SubagentSettings } from '../shared/protocol.js';
+import type { GuestNamed } from '../shared/guest-policy.js';
 import type { ModelAvailability, ModelUsage } from '../shared/subscriptions.js';
 import type { BenchmarkModel } from '../shared/benchmarks.js';
 import type { FactoryState } from '../shared/factory.js';
@@ -74,22 +75,24 @@ export interface FloorContext {
   linearHire(floor: Floor, prompt: string, identifier: string, model?: string): Promise<{ workerId?: string; error?: string }>;
   /** The office's prompts and the worker a new one starts on when nobody picks, as set in Settings. */
   prompts: PromptSource;
-  /** To everyone on this floor. */
-  emit(floor: Floor, msg: ServerMsg, droppable?: boolean): unknown;
-  /** To everyone on this floor; `workerId` names the worker it is about, when one is. */
-  toast(floor: Floor, text: string, level?: ToastLevel, workerId?: string): void;
+  /** To everyone on this floor; `about` the workers it names that may have left, for guests' scope. */
+  emit(floor: Floor, msg: ServerMsg, droppable?: boolean, about?: readonly GuestNamed[]): unknown;
+  /** To everyone on this floor; `workerId` names the worker it is about, when one is, and `about` any other workers its text names. */
+  toast(floor: Floor, text: string, level?: ToastLevel, workerId?: string, about?: readonly GuestNamed[]): void;
   /** A worker's terminal output, for whoever has that terminal open. */
   termData(workerId: string, data: string, connectionIds: string[]): void;
   /** What a worker changed, for whoever has its Changes window open. */
   changes(state: ChangesState, clients: string[]): void;
-  /** A worker on this floor changed, or left (then just its id). */
-  workerChanged(floor: Floor, w: WorkerInfo | string): void;
+  /** A worker on this floor changed, or left (then just its id, and `about` it with the floors it worked in). */
+  workerChanged(floor: Floor, w: WorkerInfo | string, about?: readonly GuestNamed[]): void;
   /** A worker needing input updated its terminal screen, so off-floor companions keep its menu live. */
   offFloorScreen?(floor: Floor, workerId: string): void;
   /** A local worker repainted: its watched Thread's live output may have moved without a hook. */
   screenChanged?(workerId: string): void;
   /** How many owner connections are on this floor right now. */
   connections(floor: Floor): number;
+  /** Whether a connection is the owner looking (a share link's guest is not); default yes. */
+  watches?(clientId: string): boolean;
   /** ⚙️ Settings: a worker whose pull request merged goes home by itself. */
   leaveOnMerge(): boolean;
   /** ⚙️ Settings: a fresh worker starts from the latest of the default branch (see WorkerManager.freshMain). */
@@ -312,11 +315,13 @@ export class Floor {
           this.linear?.workersChanged();
           if (worker.pr && this.linear?.linkOf(worker.id)) void this.linear.sync(this.board.pulls.items);
         },
-        remove: (workerId, shot) => {
+        remove: (workerId, shot, repos) => {
           this.changes?.forget(workerId);
-          ctx.emit(this, { t: 'worker.remove', workerId, ...(shot ? { shot } : {}) });
+          // Gone from the roster now: only `left` still says which floors it worked in.
+          const left = [{ id: workerId, ...(repos ? { repos } : {}) }];
+          ctx.emit(this, { t: 'worker.remove', workerId, ...(shot ? { shot } : {}) }, false, left);
           workerLeft(workerId, ctx.building, this);
-          ctx.workerChanged(this, workerId);
+          ctx.workerChanged(this, workerId, left);
           this.linear?.workersChanged();
           void this.linear?.sync(this.board.pulls.items);
         },
@@ -327,7 +332,7 @@ export class Floor {
           if (this.workers.get(workerId)?.status === 'needs_input') ctx.offFloorScreen?.(this, workerId);
           return dropped;
         },
-        toast: (text, level, workerId) => ctx.toast(this, text, level, workerId),
+        toast: (text, level, workerId, about) => ctx.toast(this, text, level, workerId, about),
         checkout: (branch) => {
           this.project.branch = branch;
           this.branchInfo = { baseBranch: this.workers.baseBranch, selectedBranch: this.workers.selectedBranch };
@@ -369,6 +374,7 @@ export class Floor {
         },
         // Not droppable: unlike a PTY's, this screen is only sent again once its transcript moves.
         screen: (workerId, frame) => ctx.emit(this, { t: 'screen', workerId, ...frame, full: true }),
+        watches: (clientId) => ctx.watches?.(clientId) ?? true,
       },
     );
     this.workers.holds = {
@@ -468,7 +474,7 @@ export class Floor {
         ...(ctx.factory ? { factory: ctx.factory.bind(ctx) } : {}),
         ...(ctx.recheckFactoryLimits ? { recheckFactoryLimits: ctx.recheckFactoryLimits.bind(ctx) } : {}),
         prompts: ctx.prompts,
-        toast: (text, level, workerId) => ctx.toast(this, text, level, workerId),
+        toast: (text, level, workerId, about) => ctx.toast(this, text, level, workerId, about),
         ...(ctx.wakeFilter ? { wakeFilter: ctx.wakeFilter } : {}),
         leadView: (lead) => ctx.leadView?.(lead),
         teammatesElsewhere: (lead, rich) => ctx.teammatesElsewhere?.(this, lead, rich) ?? [],
@@ -494,7 +500,7 @@ export class Floor {
         on: () => ctx.subagents().visits,
         emit: (msg) => ctx.emit(this, msg),
         prompts: ctx.prompts,
-        toast: (text, level, workerId) => ctx.toast(this, text, level, workerId),
+        toast: (text, level, workerId, about) => ctx.toast(this, text, level, workerId, about),
       },
     );
     this.visits.start();
@@ -536,7 +542,7 @@ export class Floor {
       (branch) => openPull(this, branch),
       {
         state: (state, ids) => ctx.changes(state, ids),
-        toast: (text, level) => ctx.toast(this, text, level),
+        toast: (text, level, workerId) => ctx.toast(this, text, level, workerId),
         refreshGitHub: () => void this.board.refresh(),
       },
       this.board,
@@ -687,10 +693,11 @@ export class Floor {
 
   private goHome(worker: WorkerInfo, why: string, head?: string, heads?: Record<string, string | undefined>) {
     const done = this.workers.kill(worker.id, undefined, head, heads);
-    this.ctx.toast(this, `🏠 ${worker.name} went home: ${why}`);
+    // It has left by the time these go out: `about` keeps the floors it worked in.
+    this.ctx.toast(this, `🏠 ${worker.name} went home: ${why}`, 'info', undefined, [worker]);
     void done.then(({ note, error }) => {
-      if (note) this.ctx.toast(this, note);
-      if (error) this.ctx.toast(this, error, 'warn');
+      if (note) this.ctx.toast(this, note, 'info', undefined, [worker]);
+      if (error) this.ctx.toast(this, error, 'warn', undefined, [worker]);
     });
   }
 
@@ -699,11 +706,14 @@ export class Floor {
     return [...this.workers.list(), ...this.cloud.list()];
   }
 
-  /** Someone just walked in: boards that haven't been looked at in a while get fetched again. */
-  arrived() {
+  /**
+   * Someone just walked in: boards that haven't been looked at in a while get fetched again. A share
+   * link's guest (not `owner`) sees no Jira or Linear, and a Linear refresh can hand out autopilot work.
+   */
+  arrived(owner = true) {
     if (Date.now() - Math.max(this.board.issues.fetchedAt, this.board.pulls.fetchedAt) > REFRESH_MS) void this.board.refresh();
-    if (Date.now() - this.jira.fetchedAt > REFRESH_MS) void this.jira.refresh();
-    if (Date.now() - this.linear.fetchedAt > REFRESH_MS) void this.linear.refresh();
+    if (owner && Date.now() - this.jira.fetchedAt > REFRESH_MS) void this.jira.refresh();
+    if (owner && Date.now() - this.linear.fetchedAt > REFRESH_MS) void this.linear.refresh();
     if (Date.now() - this.pipelines.state.fetchedAt > PIPELINES_STALE_MS) void this.pipelines.refresh();
   }
 
