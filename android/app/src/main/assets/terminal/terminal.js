@@ -20,7 +20,7 @@ import {
   kittyImageSignature,
   KittyKeyboardState,
 } from './kitty.js';
-import { THEME } from './theme.js';
+import { minimumContrast, THEME } from './theme.js';
 import { attachPixelScroll } from './vendor/pixel-scroll.js';
 
 /** Readable text, in CSS pixels before the phone's font scale (the native app's 12.5 sp). */
@@ -44,10 +44,11 @@ const term = new Terminal({
   fontFamily: FONT,
   fontSize: READABLE_PX,
   lineHeight: 1.1,
+  allowTransparency: true,
   theme: THEME,
   // Droid can draw in its light theme's near-black (its queue hint's key names, a reply), which
   // vanishes on this black: lift any text that can't be read against its own background.
-  minimumContrastRatio: 4.5,
+  minimumContrastRatio: minimumContrast(THEME.background),
   scrollback: 5000,
   allowProposedApi: true,
   disableStdin: true,
@@ -826,7 +827,8 @@ window.office = {
     switch (msg.t) {
       case 'colors':
         term.options.theme = { ...THEME, ...msg.theme };
-        document.documentElement.style.backgroundColor = document.body.style.backgroundColor = term.options.theme.background;
+        term.options.minimumContrastRatio = minimumContrast(term.options.theme.background);
+        document.documentElement.style.setProperty('--terminal-ground', term.options.theme.background);
         break;
       case 'config':
         term.options.fontSize = READABLE_PX * (msg.fontScale > 0 ? msg.fontScale : 1);
