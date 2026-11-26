@@ -14,16 +14,18 @@ The eight `family: 'artwork'` entries in [`companion-themes.ts`](../src/shared/c
 | Nightly Orbit (`nightly-orbit`) | Planetary dawn and stars; orbital charts and a night-pass station plate | [Before](assets/companion-themes/nightly-orbit/before.webp) · [After](assets/companion-themes/nightly-orbit/after.webp) · [Station](assets/companion-themes/nightly-orbit/station.webp) · [Layout](assets/companion-themes/nightly-orbit/layout.webp) |
 | Neo Tokyo (`neo-tokyo`) | Neon river and rain; pink and cyan reflections on Shibaura glass | [Before](assets/companion-themes/neo-tokyo/before.webp) · [After](assets/companion-themes/neo-tokyo/after.webp) · [Nameplate](assets/companion-themes/neo-tokyo/nameplate.webp) · [Directory](assets/companion-themes/neo-tokyo/directory.webp) |
 | Kyoto Firefly (`kyoto-firefly`) | Garden fireflies; backlit shoji, pond lacquer and lantern-gold edges | [Before](assets/companion-themes/kyoto-firefly/before.webp) · [After](assets/companion-themes/kyoto-firefly/after.webp) · [Card](assets/companion-themes/kyoto-firefly/card.webp) · [Layout](assets/companion-themes/kyoto-firefly/sheet.webp) |
-| Orbital Foundry (`orbital-foundry`) | Ring forge and embers; heat-blued plates and a stamped mill die | [Before](assets/companion-themes/orbital-foundry/before.webp) · [After](assets/companion-themes/orbital-foundry/after.webp) · [Ring mill](assets/companion-themes/orbital-foundry/ring-mill.png) · [Layout](assets/companion-themes/orbital-foundry/layout-sheet.png) |
+| Orbital Foundry (`orbital-foundry`) | Ring forge and embers; a heat-blued floor plate stamped **ORBITAL FOUNDRY**, without edge stripes. Headings and badges use the standard kit. | [Before](assets/companion-themes/orbital-foundry/before.webp) · [After](assets/companion-themes/orbital-foundry/after.webp) |
 | Abyssal (`abyssal-biolume`) | Trench caustics; depth soundings and a luminous survey plate | [Before](assets/companion-themes/abyssal-biolume/before.webp) · [After](assets/companion-themes/abyssal-biolume/after.webp) · [Focus](assets/companion-themes/abyssal-biolume/focus.webp) · [Layout](assets/companion-themes/abyssal-biolume/layout.webp) |
 | Astral Cathedral (`astral-cathedral`) | Floating monoliths and nebula; vaulted chapel arches in plum and gold | [Before](assets/companion-themes/astral-cathedral/before.webp) · [After](assets/companion-themes/astral-cathedral/after.webp) · [Card](assets/companion-themes/astral-cathedral/detail.webp) · [Directory](assets/companion-themes/astral-cathedral/directory.webp) |
 | Sakura Mist (`sakura-mist`) | Drifting petals; blossom sprigs, silk panels and a Hanami nameplate | [Before](assets/companion-themes/sakura-mist/before.webp) · [After](assets/companion-themes/sakura-mist/after.webp) · [Card](assets/companion-themes/sakura-mist/blossom-card.webp) · [Layout](assets/companion-themes/sakura-mist/layout-sheet.webp) |
 
-The remaining themes have no bundled wallpaper. **Aurora, Blueprint, Outrun, Solar Silk and Deep Field** use full-screen aurora, grid, synthwave, silk and nebula shaders respectively. **Velvet, Glacier, Dune, Phosphor and Graphite** use static gradients; Phosphor adds scanlines. **OG** is the default and paints no theme overrides.
+**OG** is the Classic theme and the default for new or unrecognized saved theme IDs. It paints no overrides. For artwork themes, **Motion** controls whether ambient light moves (Live) or holds one frame (Still).
 
 ## Restraint Budget
 
 The wallpaper and the floor nameplate identify the theme. The work controls identify what you can do. Start by **deleting** overrides, not by replacing one button skin with another.
+
+Orbital Foundry omits `panel-edge`, `heading-font`, `badge-face` and `badge-ink` and uses the kit defaults for those surfaces; the other seven artwork themes use the treatments below.
 
 | Surface | Budget for all eight artwork themes |
 | --- | --- |
