@@ -3,7 +3,7 @@ import type { Floor } from '../floor.js';
 import type { DevicesStore } from '../devices.js';
 import type { WorkerManager } from '../workers.js';
 import type { ServerMsg } from '../../shared/protocol.js';
-import { guestOutbound, guestSeesWorker, type GuestNamed, type GuestSendContext } from '../../shared/guest-policy.js';
+import { guestOutbound, type GuestNamed, type GuestSendContext } from '../../shared/guest-policy.js';
 import type { Client } from './client.js';
 import { guestWorld } from './guest-gate.js';
 
@@ -65,14 +65,10 @@ export function createClientTransport({ clients, floors }: TransportContext) {
   };
   const termData = (workerId: string, data: string, connectionIds: string[]) => {
     const json = JSON.stringify({ t: 'term.data', workerId, data } satisfies ServerMsg);
-    let floorId: string | undefined | null = null;
     for (const id of connectionIds) {
       const c = clients.get(id);
-      if (!c || c.ws.readyState !== WebSocket.OPEN) continue;
-      if (c.guest) {
-        if (floorId === null) floorId = world.floorOf(workerId);
-        if (!guestSeesWorker(c.guest, workerId, floorId, world.reposOf(workerId))) continue;
-      }
+      // Guests have no terminal stream (see shared/guest-policy.ts).
+      if (!c || c.guest || c.ws.readyState !== WebSocket.OPEN) continue;
       // A connection on a slow link skips output and gets a fresh snapshot once it catches up,
       // instead of queueing unbounded data in server memory.
       if (c.stale.has(workerId) || c.ws.bufferedAmount > SLOW_CLIENT_BYTES) c.stale.add(workerId);

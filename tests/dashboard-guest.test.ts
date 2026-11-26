@@ -46,10 +46,10 @@ class Tab {
 
 test('each preset shows only its scope and offers work only when it writes', () => {
   const office = guestAbilities(session('view-office'));
-  assert.deepEqual(office, { guest: true, work: false, missionControl: true, missionWork: false, floorSwitch: true, floorAdmin: false, building: true, roster: true, whiteboard: true, owner: false });
+  assert.deepEqual(office, { guest: true, work: false, missionControl: true, missionWork: false, floorSwitch: true, floorAdmin: false, building: true, roster: true, whiteboard: true, owner: false, tty: false });
   assert.deepEqual(guestAbilities(session('edit-office')), { ...office, work: true, missionWork: true });
   const floor = guestAbilities(session('view-floor'));
-  assert.deepEqual(floor, { guest: true, work: false, missionControl: false, missionWork: false, floorSwitch: false, floorAdmin: false, building: false, roster: true, whiteboard: true, owner: false, floor: 'floor-a' });
+  assert.deepEqual(floor, { guest: true, work: false, missionControl: false, missionWork: false, floorSwitch: false, floorAdmin: false, building: false, roster: true, whiteboard: true, owner: false, tty: false, floor: 'floor-a' });
   assert.deepEqual(guestAbilities(session('edit-floor')), { ...floor, work: true });
   assert.deepEqual(guestAbilities(session('view-worker')), {
     guest: true,
@@ -62,6 +62,7 @@ test('each preset shows only its scope and offers work only when it writes', () 
     roster: false,
     whiteboard: false,
     owner: false,
+    tty: false,
     worker: 'pixel',
     floor: 'floor-a',
   });
@@ -69,10 +70,11 @@ test('each preset shows only its scope and offers work only when it writes', () 
     const a = guestAbilities(session(preset));
     assert.equal(a.owner, false, preset);
     assert.equal(a.floorAdmin, false, preset);
+    assert.equal(a.tty, false, `${preset}: guests read workers through their Thread`);
   }
   // A session never grants more than its preset: a view preset that claims to write still can't.
   assert.equal(guestAbilities(session('view-floor', { write: true })).work, false);
-  assert.equal(OWNER_ABILITIES.owner && OWNER_ABILITIES.work && OWNER_ABILITIES.floorAdmin, true);
+  assert.equal(OWNER_ABILITIES.owner && OWNER_ABILITIES.work && OWNER_ABILITIES.floorAdmin && OWNER_ABILITIES.tty, true);
 });
 
 test('a session from the office is checked against its preset', () => {

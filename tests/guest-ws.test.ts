@@ -263,3 +263,54 @@ test('a floor guest rebuilding every lost worktree rebuilds only the workers its
     'no frame names it',
   );
 });
+
+test('guests read workers through their Thread: no terminal stream, no resizing, and no shells', { timeout: 60_000 }, async (t) => {
+  const r = await rig(t, { commits: true });
+  const { owner, alphaId, a1 } = r;
+  const hired = await owner.act({ t: 'worker.spawn', deskId: 'auto', kind: 'agent' });
+  assert.equal(hired.ok, true, hired.error);
+  const agent = hired.workerId!;
+  await owner.wait('worker.update', (m) => m.worker.id === agent);
+
+  // The Share window offers no shell, and a single-worker link to one is refused.
+  const listed = await r.api<GuestLinksState>('GET', '/api/guest-links');
+  const alpha = listed.body.targets.find((f) => f.id === alphaId)!;
+  assert.deepEqual(
+    alpha.workers.map((w) => w.id),
+    [agent],
+  );
+  const toShell = await r.api<{ error: string }>('POST', '/api/guest-links', { label: 'Shell', preset: 'view-worker', floorId: alphaId, workerId: a1, expiry: 'never' });
+  assert.equal(toShell.status, 400);
+
+  const ef = r.guest((await r.link('Alex - alpha', 'edit-floor', { floorId: alphaId })).token);
+  const welcome = await ef.wait('welcome');
+  assert.deepEqual(
+    welcome.workers.map((w) => w.id),
+    [agent],
+    'the floor’s shells never reach a guest',
+  );
+
+  // The owner's terminal streams; the guest's attach opens the worker for its Thread only.
+  owner.send({ t: 'worker.attach', workerId: agent });
+  await owner.wait('term.snapshot', (m) => m.workerId === agent);
+  ef.send({ t: 'worker.attach', workerId: agent });
+  const typed = await ef.act({ t: 'term.input', workerId: agent, data: 'guest-keys\r' });
+  assert.equal(typed.ok, true, 'an edit guest still types keys, as its Thread does');
+  owner.send({ t: 'term.input', workerId: agent, data: 'owner-echo\r' });
+  await owner.wait('term.data', (m) => m.workerId === agent && m.data.includes('owner-echo'));
+  const resized = await ef.act({ t: 'term.resize', workerId: agent, cols: 40, rows: 10 });
+  assert.equal(resized.ok, false, 'a guest never resizes the owner’s terminal');
+  assert.equal((await ef.act({ t: 'worker.spawn', deskId: 'auto', kind: 'shell' })).ok, false, 'a guest never hires a shell');
+  ef.send({ t: 'ping', at: 3 });
+  await ef.wait('pong');
+  assert.deepEqual(
+    ef.messages.filter((m) => m.t === 'term.snapshot' || m.t === 'term.data').map((m) => m.t),
+    [],
+    'no terminal frame reaches the guest',
+  );
+  assert.deepEqual(
+    ef.messages.filter((m) => JSON.stringify(m).includes(a1)),
+    [],
+    'no frame names a shell',
+  );
+});

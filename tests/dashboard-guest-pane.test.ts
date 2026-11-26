@@ -8,7 +8,7 @@ import { FIXTURE } from '../tools/thread-fixture.mjs';
 
 const status = browserStatus();
 
-test('a share link’s view-only pane watches its worker without offering any work, and a write link keeps the work', { skip: status.installed ? false : `Chromium is not installed in ${status.path}` }, async (t) => {
+test('a share link’s view-only pane watches its worker without offering any work, a write link keeps the work, and neither has a terminal', { skip: status.installed ? false : `Chromium is not installed in ${status.path}` }, async (t) => {
   const browser = await launchBrowser();
   t.after(closeBrowser);
   const context = await newIsolatedContext(browser, { viewport: { width: 1280, height: 720 } });
@@ -92,11 +92,13 @@ test('a share link’s view-only pane watches its worker without offering any wo
       work: () => work,
       owner: () => false,
       pinned: () => pinned,
+      tty: () => false,
     });
     w.panes = [w.PaneUI.createPane(host(false, true), 0), w.PaneUI.createPane(host(true, false), 1)];
     document.querySelector('.dash-workspace')!.append(...w.panes.map((pane: any) => pane.el));
     w.paint = () =>
-      w.panes.forEach((pane: any, index: number) => pane.update({ worker: w.workers[index], view: 'thread', focused: index === 0, maximized: false, canMaximize: false, covered: false, candidates: [], anyone: true, takeFocus: false }));
+      // Both remember Raw TTY from an owner's session; a share link shows the Thread anyway.
+      w.panes.forEach((pane: any, index: number) => pane.update({ worker: w.workers[index], view: 'terminal', focused: index === 0, maximized: false, canMaximize: false, covered: false, candidates: [], anyone: true, takeFocus: false }));
     w.paint();
   }, captured);
   const view = page.locator('.dash-pane').nth(0);
@@ -126,6 +128,13 @@ test('a share link’s view-only pane watches its worker without offering any wo
   assert.ok(editActions.includes('Send home'), editActions.join());
   assert.equal(await edit.locator('textarea.wt-input').count(), 1, 'a write link keeps the composer');
   assert.equal(await edit.locator('.dash-pane-close').isVisible(), true);
+  // No terminal on either link: no Thread/TTY switch, no flip to the raw terminal, no Raw TTY fallback.
+  for (const pane of [view, edit]) {
+    assert.equal(await pane.getAttribute('data-mode'), 'thread');
+    assert.equal(await pane.locator('.dash-pane-views:visible, .dash-pane-flip:visible').count(), 0);
+    assert.equal(await pane.locator('button:has-text("Raw TTY"):visible, button:has-text("TTY"):visible').count(), 0);
+    assert.equal(await pane.locator('.xterm').count(), 0);
+  }
 
   // A question: the view-only pane says so and offers no way to answer; the write pane offers its answer button.
   await page.evaluate(() => {
@@ -141,6 +150,7 @@ test('a share link’s view-only pane watches its worker without offering any wo
   assert.match(await view.locator('.dash-question').innerText(), /waiting for an answer|is asking/);
   assert.equal(await view.locator('.dash-question button.btn.accent').count(), 0);
   assert.match(await edit.locator('.dash-question').innerText(), /needs you|needs your answer/);
+  assert.doesNotMatch(await edit.locator('.dash-question').innerText(), /TTY/);
   await page.screenshot({ path: '/tmp/sprocket-shots/unit-view-question.png' });
 
   // Nothing the view-only pane showed sent work or called the page's work hooks.

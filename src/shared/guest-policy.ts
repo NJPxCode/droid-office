@@ -4,7 +4,7 @@
 // classified fails typecheck here. Default deny: anything outside the link's scope is never sent, and
 // anything a guest sends outside its scope or permission is refused without saying whether it exists.
 
-import type { ClientMsg, FloorInfo, FloorRoster, FloorView, GhIssue, GhPull, GhState, ServerMsg, WorkerInfo } from './protocol.js';
+import type { ClientMsg, FloorInfo, FloorRoster, FloorView, GhIssue, GhPull, GhState, ServerMsg, WorkerInfo, WorkerKind } from './protocol.js';
 import { GUEST_PRESET_INFO, type GuestAuditAction, type GuestPreset } from './guest-links.js';
 import { ORCHESTRATOR_ID, type MissionControlState } from './mission-control.js';
 import { OFFICE_SHELL_ID } from './office-shell.js';
@@ -29,6 +29,8 @@ export interface GuestWorld {
   isOpen(floorId: string): boolean;
   /** The other floors a worker works in too (its `repos`), when it has any. */
   reposOf(workerId: string): readonly string[] | undefined;
+  /** What kind of worker a desk or cloud worker on an open floor is. */
+  kindOf(workerId: string): WorkerKind | undefined;
   /** The visiting worker and the one it visits, for a visit still on its way, at a desk or just over. */
   visitOf(visitId: string): { visitor: string; host: string } | undefined;
 }
@@ -50,9 +52,10 @@ const canWrite = (g: GuestScopeGrant) => GUEST_PRESET_INFO[g.preset].write;
  * known, and `repos` the other floors it works in. A worker across repositories reaches every one of them
  * (their changes, pull requests and its terminal's workspace), so a floor link leaves out a worker that
  * works in any other floor. A single-worker link keeps the worker the owner picked, without those floors.
+ * A plain shell is never in scope: guests have no terminals, and a shell has nothing else to show.
  */
-export function guestSeesWorker(g: GuestScopeGrant, workerId: string, floorId: string | undefined, repos: readonly string[] | undefined): boolean {
-  if (!workerId || workerId === OFFICE_SHELL_ID) return false;
+export function guestSeesWorker(g: GuestScopeGrant, workerId: string, floorId: string | undefined, repos: readonly string[] | undefined, kind: WorkerKind | undefined): boolean {
+  if (!workerId || workerId === OFFICE_SHELL_ID || kind === 'shell') return false;
   if (workerId === ORCHESTRATOR_ID) return officeWide(g);
   const scope = GUEST_PRESET_INFO[g.preset].scope;
   if (scope === 'worker') return workerId === g.workerId && (floorId === undefined || floorId === g.floorId);
@@ -70,13 +73,13 @@ export function guestWorkerInfo(w: WorkerInfo, g: GuestScopeGrant): WorkerInfo {
 
 /** Whether a worker a message is about is in scope: where it sits now (else `floorId`), and every floor it works in. */
 function seesNamed(g: GuestScopeGrant, world: GuestWorld, w: GuestNamed, floorId: string | undefined): boolean {
-  return guestSeesWorker(g, w.id, world.floorOf(w.id) ?? floorId, [...(repoFloors(w) ?? []), ...(world.reposOf(w.id) ?? [])]);
+  return guestSeesWorker(g, w.id, world.floorOf(w.id) ?? floorId, [...(repoFloors(w) ?? []), ...(world.reposOf(w.id) ?? [])], w.kind ?? world.kindOf(w.id));
 }
 
 /** The worker a message carries, as guest `g` may receive it, or undefined when it is out of scope. */
 function scopedWorker(w: WorkerInfo, g: GuestScopeGrant, floorId: string | undefined, world: GuestWorld): WorkerInfo | undefined {
   const repos = [...(repoFloors(w) ?? []), ...(world.reposOf(w.id) ?? [])];
-  return guestSeesWorker(g, w.id, floorId, repos) ? guestWorkerInfo(w, g) : undefined;
+  return guestSeesWorker(g, w.id, floorId, repos, w.kind ?? world.kindOf(w.id)) ? guestWorkerInfo(w, g) : undefined;
 }
 
 /** Whether a floor's own content (boards, pipelines, Whiteboard, visits) is in scope. A single-worker link sees none. */
@@ -138,8 +141,8 @@ export const GUEST_INBOUND: { readonly [K in ClientMsg['t']]: GuestInbound<Msg<K
   'worker.rewind': write(WORKER, 'worker'),
   'worker.setting': write(WORKER, 'worker'),
   'worker.side': write(WORKER, 'worker'),
-  // A view-only guest never resizes the owner's terminal; a write guest's size is not an audited change.
-  'term.resize': write(WORKER, null),
+  // Guests have no terminal: a terminal's size is the owner's alone.
+  'term.resize': NEVER,
   'shell.attach': NEVER,
   'shell.detach': NEVER,
   'shell.input': NEVER,
@@ -268,6 +271,8 @@ export function guestAdmit(g: GuestScopeGrant, msg: unknown, here: string | null
   const m = msg as Record<string, unknown>;
   // Guests have no Linear board: a ticket handed over with a hire or prompt moves on the owner's Linear account.
   if ((t === 'worker.spawn' || t === 'worker.prompt') && m.linear !== undefined) return undefined;
+  // A shell is all terminal, and guests have none.
+  if (t === 'worker.spawn' && m.kind === 'shell') return undefined;
   const ok = (target: GuestTargetRef): GuestAdmitted => ({ write: isWrite, audit, target });
   const target = rule.target;
   switch (target.kind) {
@@ -280,7 +285,7 @@ export function guestAdmit(g: GuestScopeGrant, msg: unknown, here: string | null
       if (!id) return undefined;
       if (id === ORCHESTRATOR_ID) return officeWide(g) ? ok({ kind: 'missionControl' }) : undefined;
       const floorId = world.floorOf(id);
-      if (!floorId || !world.isOpen(floorId) || !guestSeesWorker(g, id, floorId, world.reposOf(id))) return undefined;
+      if (!floorId || !world.isOpen(floorId) || !guestSeesWorker(g, id, floorId, world.reposOf(id), world.kindOf(id))) return undefined;
       return ok({ kind: 'worker', workerId: id, floorId });
     }
     case 'floor': {
@@ -327,8 +332,8 @@ export interface GuestSendContext {
   about?: readonly GuestNamed[];
 }
 
-/** A worker a message names, with its repositories when it may have left already. */
-export type GuestNamed = Pick<WorkerInfo, 'id'> & Partial<Pick<WorkerInfo, 'repos'>>;
+/** A worker a message names, with its repositories and kind when it may have left already. */
+export type GuestNamed = Pick<WorkerInfo, 'id'> & Partial<Pick<WorkerInfo, 'repos' | 'kind'>>;
 
 interface GuestView {
   grant: GuestScopeGrant;
@@ -475,8 +480,9 @@ export const GUEST_OUTBOUND: { readonly [K in ServerMsg['t']]: GuestOutbound<Out
   'worker.open': ABOUT_WORKER,
   'worker.worktree': ABOUT_WORKER,
   screen: ABOUT_WORKER,
-  'term.snapshot': ABOUT_WORKER,
-  'term.data': ABOUT_WORKER,
+  // Guests read a worker through its Thread: a terminal's screen is laid out for the owner's window.
+  'term.snapshot': DROP,
+  'term.data': DROP,
   'gh.issues': FLOOR_CONTENT,
   'gh.pulls': FLOOR_CONTENT,
   'gh.merged': FLOOR_CONTENT,
@@ -552,7 +558,7 @@ export function guestOutbound(g: GuestScopeGrant, msg: ServerMsg, ctx: GuestSend
       if (typeof id !== 'string' || (rule.write && !canWrite(g))) return undefined;
       const floor = rule.floor?.(msg) ?? world.floorOf(id) ?? ctx.floor;
       if (ctx.about?.some((w) => !seesNamed(g, world, w, floor))) return undefined;
-      return guestSeesWorker(g, id, floor, world.reposOf(id)) ? (msg as GuestServerMsg) : undefined;
+      return guestSeesWorker(g, id, floor, world.reposOf(id), world.kindOf(id)) ? (msg as GuestServerMsg) : undefined;
     }
     case 'floor': {
       const floor = rule.floor?.(msg) ?? ctx.floor ?? ctx.here ?? undefined;

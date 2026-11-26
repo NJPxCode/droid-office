@@ -86,6 +86,8 @@ export interface ThreadOptions {
   promptWakes?: boolean;
   /** Watch only: no composer, queue, model settings, Stop, Resume, rewind or picture drops; the conversation still updates live. */
   readOnly?: boolean;
+  /** The page shows no terminal (a share link): no Raw TTY to fall back on, and slash commands that open one of Droid's dialogs are refused. */
+  noTerminal?: boolean;
 }
 
 const RECONCILE_INTERVAL_MS = 15_000;
@@ -133,7 +135,8 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
   const cloud = !!worker.cloud;
   const readOnly = !!opts.readOnly;
   const screen = cloud ? undefined : opts.screen;
-  const fallback = cloud ? 'open it in Factory' : 'open Raw TTY';
+  const fallback = cloud ? 'open it in Factory' : opts.noTerminal ? '' : 'open Raw TTY';
+  const orFallback = fallback ? `, or ${fallback}` : '';
   let connected = false;
   let active = false;
   let disposed = false;
@@ -1207,7 +1210,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     else empty.setAttribute('role', 'status');
     empty.setAttribute('aria-busy', String(!intro && connected && !error && !received));
     if (intro) empty.replaceChildren(intro);
-    else if (error) empty.textContent = `Conversation unavailable. Retry below, or ${fallback}.`;
+    else if (error) empty.textContent = `Conversation unavailable. Retry below${orFallback}.`;
     else if (!connected) empty.textContent = 'Waiting for the office to reconnect…';
     else if (!received)
       empty.replaceChildren(
@@ -1564,7 +1567,7 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
     error = threadSnapshotError(worker, msg.error, !received && Date.now() < startupReadUntil);
     if (!msg.error) {
       history.apply(msg);
-      if (history.unsupported) error = `This office sent a Thread this page can’t read. Reload the page, or ${fallback}.`;
+      if (history.unsupported) error = `This office sent a Thread this page can’t read. Reload the page${orFallback}.`;
       opts.onEntries?.();
       received = true;
       paintEntries(older);
@@ -1595,7 +1598,12 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
       updateControls();
       return;
     }
-    const refused = cloud ? undefined : slashRefusal(text, worker.name, isBusy(worker.status), assist.slashList());
+    const dialog = !cloud && opts.noTerminal ? slashOf(text)?.command : undefined;
+    const refused = cloud
+      ? undefined
+      : dialog?.kind === 'tty'
+        ? `/${dialog.name} opens one of Droid’s dialogs, which only its terminal shows. The owner can run it.`
+        : slashRefusal(text, worker.name, isBusy(worker.status), assist.slashList());
     if (refused) {
       told = refused;
       updateControls();
@@ -1712,7 +1720,11 @@ export function mountWorkerThread(net: Net, opts: ThreadOptions): WorkerThread {
         // A cloud worker's conversation is a read of its Factory session, which can take a while.
         if (pending && now - pending.at > (cloud ? 20_000 : 8000)) {
           pending = undefined;
-          error = cloud ? 'The office did not return this conversation. Retry, or open it in Factory.' : 'The office did not return this conversation. Retry, or use Raw TTY on an older office.';
+          error = cloud
+            ? 'The office did not return this conversation. Retry, or open it in Factory.'
+            : opts.noTerminal
+              ? 'The office did not return this conversation. Retry.'
+              : 'The office did not return this conversation. Retry, or use Raw TTY on an older office.';
           updateControls();
         }
         if (!error) read(undefined, received ? RECONCILE_INTERVAL_MS : STARTUP_RETRY_MS);

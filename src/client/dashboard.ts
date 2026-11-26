@@ -768,6 +768,7 @@ const paneHost: PaneHost = {
   work: () => abilities.work,
   owner: () => abilities.owner,
   pinned: () => !!abilities.worker,
+  tty: () => abilities.tty,
 };
 /** A file a worker made, as a card on this floor's Whiteboard, opened there. */
 async function toBoard(workerId: string, path: string, intended: string) {
@@ -785,7 +786,7 @@ async function showChanges(id: string) {
   if (!w || w.cloud) return;
   if (w.lost) return toast(`${w.name}'s worktree is missing, so there are no changes to show`, 'warn');
   changesUi ??= await import('./ui/changes');
-  changesUi.openChanges(net, id);
+  changesUi.openChanges(net, id, undefined, undefined, { log: abilities.tty });
 }
 
 /** Where a pane sits: its box, less half the 8px gap on every side that touches another pane. */

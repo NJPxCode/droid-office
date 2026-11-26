@@ -169,7 +169,8 @@ export async function startServer(cfg: Config) {
     dataDir: cfg.dataDir,
     names: ({ floorId, workerId }) => {
       const floor = floorId ? floors.get(floorId) : undefined;
-      const worker = workerId ? floor?.everyone().find((w) => w.id === workerId) : undefined;
+      // A shell is never a link's worker: guests have no terminal.
+      const worker = workerId ? floor?.everyone().find((w) => w.id === workerId && w.kind !== 'shell') : undefined;
       return { ...(floor ? { floorName: floor.def.name } : {}), ...(worker ? { workerName: worker.name } : {}) };
     },
   });
@@ -1589,7 +1590,8 @@ export async function startServer(cfg: Config) {
       const orch = orchestrator.workers;
       switch (msg.t) {
         case 'worker.attach': {
-          if (msg.stream === false) {
+          // Guests have no terminal stream: they open the Orchestrator for its Thread.
+          if (msg.stream === false || c.guest) {
             if (!orch.open(ORCHESTRATOR_ID, c.id, !c.guest)) return done('The Orchestrator has no terminal yet. Send it a prompt first.');
             c.attached.add(ORCHESTRATOR_ID);
             c.stale.delete(ORCHESTRATOR_ID);
@@ -1990,7 +1992,8 @@ export async function startServer(cfg: Config) {
       }
       case 'worker.attach': {
         const wid = str(msg.workerId, 32);
-        if (msg.stream === false) {
+        // Guests have no terminal stream: they open a worker for its Thread.
+        if (msg.stream === false || c.guest) {
           if (workersOf(wid)?.open(wid, c.id, !c.guest)) {
             c.attached.add(wid);
             c.stale.delete(wid);

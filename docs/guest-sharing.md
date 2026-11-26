@@ -24,13 +24,22 @@ decor and the jukebox stay owner-only for every preset, including `edit-office`.
 words are in `src/shared/guest-links.ts`.
 
 - **Single-floor links leave out cross-repository workers.** A `view-floor` or `edit-floor` link does not
-  show a worker that also works in another floor's repository (its `repos`), because its terminal, Changes
+  show a worker that also works in another floor's repository (its `repos`), because its Thread, Changes
   window and pull requests reach that repository. Share such a worker with a single-worker link (view-only;
   the worker arrives without its entries for other floors) or an office link. An HTTP request that names
   another floor's repository with `?repo=` answers 404 unless the link reaches that floor, and a guest's
   hire can add only repositories on floors the link reaches. Such a worker comes and goes without any
   frame to a floor link, its departure included: the office sends a departure with the floors the worker
   worked in, so only links that could see it hear that it left.
+- **Threads, never terminals.** A worker's terminal (its PTY) has one size, the owner's window's, so a
+  guest reads every worker through its Thread, which lays out for any screen. The office never streams a
+  terminal to a guest (`term.snapshot` and `term.data` are dropped, and a guest's `worker.attach` only
+  opens the worker, as a Thread does), refuses a guest's `term.resize` on every preset, and serves none of
+  the terminal's HTTP routes. An edit guest's Thread still types its keys (`term.input`), such as Esc to
+  stop a turn.
+- **No shells.** A plain shell worker is all terminal, so no preset ever sees one: it is left out of every
+  roster, frame and route, the Share window offers no shell for a single-worker link, and a guest's hire
+  of a shell is refused. The office's own shell stays owner-only too.
 - **Changes are for edit presets.** Listing and reading a worker's changes (`changes.watch`,
   `changes.unwatch`, `changes.diff`) needs an edit preset and is not audited; only edit links receive the
   `changes` and `changes.diff` frames. View presets keep only the changed-picture route
@@ -150,12 +159,13 @@ Everything is checked on the server and denied by default.
   | --- | --- | --- |
   | `GET /api/thread/image` (pictures by id), `GET /api/changes/file` (changed pictures) | all | worker in scope |
   | `GET /api/whiteboard/file`, `/render`, `/render/status`, `GET /api/gh/pull`, `/issue`, `/pull/diff` | office and floor presets | floor in scope |
-  | `GET /api/thread/file`, `GET /api/thread/files`, `GET /api/term/file`, `POST /api/term/paths` | write presets | worker in scope; `/api/thread/files` without a worker (the Hire dialog's `@` list): floor in scope, never for a single-worker link |
-  | `POST /api/term/drop`, `POST`/`DELETE /api/prompt/image`, `POST /api/whiteboard/blob`, `GET /api/gh/labels` | write presets | worker or floor in scope |
+  | `GET /api/thread/file`, `GET /api/thread/files` | write presets | worker in scope; `/api/thread/files` without a worker (the Hire dialog's `@` list): floor in scope, never for a single-worker link |
+  | `POST`/`DELETE /api/prompt/image`, `POST /api/whiteboard/blob`, `GET /api/gh/labels` | write presets | worker or floor in scope |
   | `GET /api/agents/droid/models`, `GET /api/agents/droid/commands` | write presets | commands: worker or floor in scope |
 
   Routes that read a file by a path the guest chooses are write-only: a floor's folder can be the owner's
-  whole home folder, and a write guest already has the worker's terminal. `/api/changes/file` serves only
+  whole home folder, and a write guest already prompts the worker. The terminal's routes (`/api/term/*`)
+  answer 404, since guests have no terminal. `/api/changes/file` serves only
   pictures in the worker's own list of changes: the new side must resolve inside the checkout (real path,
   no `..` or symlinks out), and the old side is a blob at the diff's base commit. Whiteboard card frames
   (`/whiteboard/c/<capability>/…`) cannot carry a token. Without one they resolve by capability only on
@@ -180,8 +190,8 @@ Everything is checked on the server and denied by default.
     for a floor link both workers must also still be on the roster. A worker's departure (`worker.remove`,
     `building.remove`) carries the floors it worked in, since it no longer lists them once it has left,
     and passes only to guests that saw it with those floors counted.
-  - *Writes.* A write guest may resize a terminal; a view-only guest may not. Write presets may hire desk,
-    shell and cloud workers on floors in scope. A guest's Whiteboard edits keep the owner as the board's
+  - *Writes.* No guest resizes a terminal. Write presets may hire desk and cloud workers on floors in scope,
+    never a shell. A guest's Whiteboard edits keep the owner as the board's
     author, and the audit names the link. Accepted writes are audited once the office has acted on them.
   - *Writes that reach other workers.* A message names one worker, and the gate checks that one. Where
     the office then acts on more workers, it checks each against the link (`sees` in `guest-gate.ts`): a
@@ -222,19 +232,24 @@ enforces every boundary itself; the page only avoids offering what the office wo
 
 - **Every guest.** The **Shell** button is hidden. Settings, usage, Orchestrator settings, pairing, setup,
   update prompts and adding, reordering or removing floors never appear.
+- **Thread only.** Every pane opens its worker's Thread, even one this browser last showed in TTY. There is
+  no Thread/TTY switch, no **Open Raw TTY** fallback, and the Changes window has no Log view.
+  `CompanionAbilities.tty` is false for every preset. A slash command that opens one of Droid's dialogs
+  (`/model`, `/settings` and the like) is refused in the composer, since only the terminal shows it, and
+  a question only the terminal can answer says the owner answers it there.
 - **Notices and visits.** A floor link shows a notice only when it sees every worker the notice names, and
   shows visits only between two workers it sees. A single-worker link shows no visits. A floor's own news
   that names no worker, its Linear and Jira notices included, appears on links that see that floor.
 - **Orchestrator unavailable.** When the Orchestrator cannot start, office links show **Not available right
   now** with no link to Settings, and a prompt from an `edit-office` link is refused with the same line.
-- **Edit presets only.** Work means prompts, terminal input and resizing, answering questions and
+- **Edit presets only.** Work means prompts, the keys a Thread types, answering questions and
   permission prompts, hiring, interrupting, sending home, forking, resuming, rewinding, the queue, model
   and effort, git and pull requests, and Whiteboard edits. The Changes window opens only on edit presets
   (and not for cloud workers).
 - **View-only pages.** There is no Hire button, no composer, no terminal input and no answers to questions
   or permission prompts. The worker menu offers only opening and copying. The Whiteboard is read-only:
-  cards, marks and comments stay live, and nothing on the board can change. File links in Threads and
-  terminals are inert, and the page never requests the routes the guest backend opens only to write
+  cards, marks and comments stay live, and nothing on the board can change. File links in Threads are
+  inert, and the page never requests the routes the guest backend opens only to write
   presets (`GUEST_WRITE_ONLY_PATHS`).
 
 ### Status screens
@@ -311,7 +326,7 @@ An entry is written once the office knows the write happened, never before:
   recorded again.
 - **Whiteboard pings** when the line is delivered to the worker.
 - **Worktree rebuilds** only when at least one worktree was rebuilt.
-- **Uploads** (files into a terminal, pictures onto the Whiteboard) when the upload succeeds.
+- **Uploads** (pictures for a prompt, pictures onto the Whiteboard) when the upload succeeds.
 - **Other writes** when their handler finishes without refusing them.
 
 Refused attempts, and writes the forge or the office turned down, are not logged.
@@ -354,17 +369,19 @@ Refused attempts, and writes the forge or the office turned down, are not logged
   binary pin.
 - `tests/guest-http.test.ts`: the guest allowlist, scope per preset, cross-repository workers and
   `?repo=`, card frames, the `full` and `limited` owner API, credential isolation between listeners, the
-  menu bar counts, and the Hire dialog's floor file list.
+  menu bar counts, the Hire dialog's floor file list, no terminal routes and no shells.
 - `tests/office-clone.test.ts`: clones leave out `guest-funnel.json` and keep sharing locked.
 - `tests/guest-ws.test.ts`: guests get only their scope on the WebSocket, only write presets change
   anything, a blocked Orchestrator shows guests the fixed line and refuses their prompt with it, a floor
-  guest's bulk rebuild on a floor of mixed scope rebuilds only the workers its link sees, and a
-  cross-repository worker comes and goes without a frame to a floor link.
+  guest's bulk rebuild on a floor of mixed scope rebuilds only the workers its link sees, a
+  cross-repository worker comes and goes without a frame to a floor link, and a guest gets no terminal
+  frames, cannot resize or hire a shell, and never sees a shell or a single-worker link to one.
 - `tests/guest-policy.test.ts`: the inbound and outbound policy, identical refusals, worker and floor
   targets, write-only changes, refused Linear tickets, cross-repository workers and their departure,
   scoped welcome, roster and Mission Control, the Orchestrator's fixed line without a Settings pane,
   toasts that name workers (departed ones included), floor news, visits (one whose host was sent home
-  mid-visit included) and visitors' lines, removal news, and audit wording.
+  mid-visit included) and visitors' lines, removal news, audit wording, no terminal frames, and shells
+  (departed ones included) left out of everything.
 - `tests/whiteboard-buttons.test.ts`: a share link guest's press reaches the page's last editor only when
   its link sees that worker.
 - `tests/guest-audit-outcome.test.ts`: forge and pipeline writes settle their audit only after the forge
@@ -375,6 +392,6 @@ Refused attempts, and writes the forge or the office turned down, are not logged
   what they show.
 - `tests/dashboard-guest.test.ts`: what each preset shows, hello and close outcomes, status screens, the
   per-tab token, the guest-origin screen, the badge, credential isolation and write-only routes.
-- `tests/dashboard-guest-pane.test.ts`: a view-only pane offers no work and a write link keeps it (runs
-  when Chromium is installed).
+- `tests/dashboard-guest-pane.test.ts`: a view-only pane offers no work and a write link keeps it, and
+  both open the Thread with no TTY switch even when TTY was remembered (runs when Chromium is installed).
 - `tests/no-media.test.ts`: guests add no media, chat or presence.

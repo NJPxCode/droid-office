@@ -24,17 +24,25 @@ import { ROOF } from '../src/shared/rooftop.js';
 import { readMenu } from '../src/shared/asks.js';
 import { orchestratorBlocked, orchestratorSettingsPane } from '../src/client/mission.js';
 import { GUEST_ORCHESTRATOR_BLOCKED as CLIENT_GUEST_ORCHESTRATOR_BLOCKED } from '../src/client/dashboard-guest.js';
-import type { ClientMsg, FloorInfo, FloorView, ServerMsg, WorkerInfo } from '../src/shared/protocol.js';
+import type { ClientMsg, FloorInfo, FloorView, ServerMsg, WorkerInfo, WorkerKind } from '../src/shared/protocol.js';
 
 // Floors A and B are open, C was closed; a1/a2 sit on A, b1 on B, c1 on the closed C. ab sits on A and works in B's repository too.
-const SEATS: Record<string, string> = { a1: 'A', a2: 'A', b1: 'B', c1: 'C', ab: 'A' };
+// s1 is a plain shell on A.
+const SEATS: Record<string, string> = { a1: 'A', a2: 'A', b1: 'B', c1: 'C', ab: 'A', s1: 'A' };
+const KINDS: Record<string, WorkerKind> = { s1: 'shell' };
 const REPOS: Record<string, string[]> = { ab: ['B'] };
 const isOpen = (id: string) => id === 'A' || id === 'B';
 // As guestWorld: only open floors seat anyone.
 // Visits under way on A: a1 tells a2, ab tells a1, a2 asks ab.
 // v4: a1 still visiting a host that has been sent home (off the roster).
 const VISITS: Record<string, { visitor: string; host: string }> = { v1: { visitor: 'a1', host: 'a2' }, v2: { visitor: 'ab', host: 'a1' }, v3: { visitor: 'a2', host: 'ab' }, v4: { visitor: 'a1', host: 'left' } };
-const world: GuestWorld = { floorOf: (id) => (isOpen(SEATS[id] ?? '') ? SEATS[id] : undefined), isOpen, reposOf: (id) => REPOS[id], visitOf: (id) => VISITS[id] };
+const world: GuestWorld = {
+  floorOf: (id) => (isOpen(SEATS[id] ?? '') ? SEATS[id] : undefined),
+  isOpen,
+  reposOf: (id) => REPOS[id],
+  kindOf: (id) => (isOpen(SEATS[id] ?? '') ? (KINDS[id] ?? 'agent') : undefined),
+  visitOf: (id) => VISITS[id],
+};
 
 const GRANTS: Record<GuestPreset, GuestScopeGrant> = {
   'view-office': { preset: 'view-office' },
@@ -101,7 +109,7 @@ test('view-only links never write, and write links write only inside their scope
       }
     }
   }
-  assert.equal(GUEST_INBOUND['term.resize'].access, 'write', 'a view-only guest never resizes the owner’s terminal');
+  assert.equal(GUEST_INBOUND['term.resize'].access, 'never', 'no guest resizes the owner’s terminal');
 });
 
 test('worker targets: in scope, other floors, closed floors, missing workers, the Orchestrator and the office shell', () => {
@@ -157,6 +165,42 @@ test('a guest never hands a Linear ticket to a worker: that would move it on the
   }
 });
 
+test('a plain shell never reaches a guest, and a guest never hires one', () => {
+  const shell = { ...worker('s1'), kind: 'shell' } as WorkerInfo;
+  const view = { ...VIEW, workers: [worker('a1'), shell] } as FloorView;
+  const roster = [{ floor: 'A', workers: [worker('a1'), shell], pulls: [] }];
+  for (const preset of GUEST_PRESETS) {
+    const g = GRANTS[preset];
+    for (const t of ['worker.attach', 'thread.read', 'term.input', 'worker.prompt', 'worker.kill']) assert.equal(guestAdmit(g, about(t, 's1'), 'A', world), undefined, `${preset} ${t}`);
+    for (const msg of [
+      { t: 'worker.update', worker: shell },
+      // Its card without a kind: the office still knows what it is.
+      { t: 'worker.update', worker: worker('s1') },
+      { t: 'building.worker', floor: 'A', worker: shell },
+      { t: 'thread.live', workerId: 's1' },
+      { t: 'screen', workerId: 's1' },
+      { t: 'toast', text: 'hi', workerId: 's1' },
+    ])
+      assert.equal(out(preset, msg, ctx({ via: 'floor', floor: 'A' })), undefined, `${preset} ${msg.t}`);
+    // Gone from the roster, it still left as a shell.
+    assert.equal(out(preset, { t: 'worker.remove', workerId: 'gone' }, ctx({ via: 'floor', floor: 'A', about: [{ id: 'gone', kind: 'shell' }] })), undefined, `${preset} departure`);
+    assert.equal(
+      guestFloorView(view, g, world).workers.some((w) => w.id === 's1'),
+      false,
+      preset,
+    );
+    if (guestBuilding(roster, g, world)[0])
+      assert.equal(
+        guestBuilding(roster, g, world)[0]!.workers.some((w) => w.id === 's1'),
+        false,
+        preset,
+      );
+    assert.equal(guestAdmit(g, { t: 'worker.spawn', deskId: 'auto', kind: 'shell' }, 'A', world), undefined, `${preset} shell hire`);
+    assert.equal(!!guestAdmit(g, { t: 'worker.spawn', deskId: 'auto', kind: 'agent' }, 'A', world), WRITES.has(preset), `${preset} agent hire`);
+  }
+  assert.equal(guestSeesWorker({ preset: 'view-worker', floorId: 'A', workerId: 's1' }, 's1', 'A', undefined, 'shell'), false, 'not even a single-worker link to one');
+});
+
 test('floors: scoped links only ever return to their own floor, office links move between open floors', () => {
   for (const preset of GUEST_PRESETS) {
     const g = GRANTS[preset];
@@ -196,12 +240,15 @@ test('outbound: owner-only messages never reach a guest, worker and floor messag
     assert.equal(out(preset, { t: 'no.such.message' }), undefined);
     assert.ok(out(preset, { t: 'pong', at: 1 }));
     assert.ok(out(preset, { t: 'action.result', requestId: 'r', ok: false }));
-    const termData = (id: string) => out(preset, { t: 'term.data', workerId: id, data: 'x' });
-    assert.equal(!!termData('a1'), true);
-    assert.equal(!!termData('a2'), preset !== 'view-worker');
-    assert.equal(!!termData('b1'), OFFICE.has(preset));
-    assert.equal(termData('c1'), undefined);
-    assert.equal(termData(OFFICE_SHELL_ID), undefined);
+    const live = (id: string) => out(preset, { t: 'thread.live', workerId: id });
+    assert.equal(!!live('a1'), true);
+    assert.equal(!!live('a2'), preset !== 'view-worker');
+    assert.equal(!!live('b1'), OFFICE.has(preset));
+    assert.equal(live('c1'), undefined);
+    assert.equal(live(OFFICE_SHELL_ID), undefined);
+    // Guests read workers through their Thread: no terminal stream, even for the worker a link shares.
+    assert.equal(out(preset, { t: 'term.data', workerId: 'a1', data: 'x' }), undefined);
+    assert.equal(out(preset, { t: 'term.snapshot', workerId: 'a1', data: 'x', cols: 80, rows: 24 }, ctx({ via: 'direct' })), undefined);
     assert.equal(!!out(preset, { t: 'worker.update', worker: worker(ORCHESTRATOR_ID) }), OFFICE.has(preset));
     assert.equal(!!out(preset, { t: 'building.worker', floor: 'B', worker: worker('b1') }), OFFICE.has(preset));
     // A worker that just left no longer sits anywhere: the send names its floor.
@@ -368,7 +415,7 @@ test('a worker across repositories is outside floor links, and a single-worker l
 
   const pick: GuestScopeGrant = { preset: 'view-worker', floorId: 'A', workerId: 'ab' };
   assert.ok(guestAdmit(pick, about('worker.attach', 'ab'), 'A', world));
-  assert.ok(guestOutbound(pick, { t: 'term.data', workerId: 'ab', data: 'x' }, ctx(), world));
+  assert.ok(guestOutbound(pick, { t: 'thread.live', workerId: 'ab' }, ctx(), world));
   const update = guestOutbound(pick, { t: 'worker.update', worker: ab }, ctx(), world) as Extract<ServerMsg, { t: 'worker.update' }>;
   assert.equal('repos' in update.worker, false, 'its repository on another floor is left out');
   assert.equal(ab.repos?.length, 1, 'the owner’s card is untouched');

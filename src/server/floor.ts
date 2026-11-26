@@ -315,10 +315,10 @@ export class Floor {
           this.linear?.workersChanged();
           if (worker.pr && this.linear?.linkOf(worker.id)) void this.linear.sync(this.board.pulls.items);
         },
-        remove: (workerId, shot, repos) => {
+        remove: (workerId, shot, repos, kind) => {
           this.changes?.forget(workerId);
-          // Gone from the roster now: only `left` still says which floors it worked in.
-          const left = [{ id: workerId, ...(repos ? { repos } : {}) }];
+          // Gone from the roster now: only `left` still says which floors it worked in and what it was.
+          const left = [{ id: workerId, ...(repos ? { repos } : {}), ...(kind ? { kind } : {}) }];
           ctx.emit(this, { t: 'worker.remove', workerId, ...(shot ? { shot } : {}) }, false, left);
           workerLeft(workerId, ctx.building, this);
           ctx.workerChanged(this, workerId, left);

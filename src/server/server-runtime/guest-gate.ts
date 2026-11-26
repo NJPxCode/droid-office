@@ -26,6 +26,13 @@ export function guestWorld(floors: Map<string, Floor>): GuestWorld {
       }
       return undefined;
     },
+    kindOf(workerId) {
+      for (const f of floors.values()) {
+        const w = f.workers.get(workerId) ?? f.cloud.get(workerId);
+        if (w) return w.kind;
+      }
+      return undefined;
+    },
     visitOf(visitId) {
       for (const f of floors.values()) {
         const v = f.visits.participants(visitId);
@@ -154,7 +161,7 @@ export function createGuestGate({ floors, guestLinks, guestAudit, sendTo, worker
       if (!c.guest) return true;
       const floorId = world.floorOf(workerId);
       if (!floorId) return c.guest.session.scope === 'office';
-      return world.isOpen(floorId) && guestSeesWorker(c.guest, workerId, floorId, world.reposOf(workerId));
+      return world.isOpen(floorId) && guestSeesWorker(c.guest, workerId, floorId, world.reposOf(workerId), world.kindOf(workerId));
     },
     /**
      * Whether guest connection `c` may send `msg`: its link still open, then the policy. A refused

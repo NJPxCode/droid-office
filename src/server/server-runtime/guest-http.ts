@@ -63,18 +63,15 @@ interface GuestHttpContext extends Pick<ReturnType<typeof createStaticFiles>, 's
 /**
  * Floor resources a guest may reach, by path: `methods` for every preset in scope, `write` only for write
  * presets. A route that reads a file by a path the guest chooses is write-only: a floor's directory can be
- * the owner's whole home folder, and a write guest already has the worker's terminal. `audit` marks the
- * routes that change something.
+ * the owner's whole home folder, and a write guest already prompts the worker. `audit` marks the routes
+ * that change something. Guests have no terminal, so none of the terminal's routes are here.
  */
 const GUEST_FLOOR_ROUTES: Record<string, { methods: readonly string[]; write?: readonly string[]; worker: 'required' | 'optional' | 'none'; audit?: boolean }> = {
   '/api/thread/image': { methods: ['GET'], worker: 'required' },
   '/api/thread/file': { methods: [], write: ['GET'], worker: 'required' },
   '/api/thread/files': { methods: [], write: ['GET'], worker: 'required' },
-  '/api/term/paths': { methods: [], write: ['POST'], worker: 'required' },
-  '/api/term/file': { methods: [], write: ['GET'], worker: 'required' },
   // Only pictures in the worker's own list of changes, inside its checkout (changes.ts).
   '/api/changes/file': { methods: ['GET'], worker: 'required' },
-  '/api/term/drop': { methods: [], write: ['POST'], worker: 'required', audit: true },
   '/api/prompt/image': { methods: [], write: ['POST', 'DELETE'], worker: 'optional', audit: true },
   '/api/whiteboard/file': { methods: ['GET'], worker: 'none' },
   '/api/whiteboard/render': { methods: ['GET'], worker: 'none' },
@@ -106,7 +103,7 @@ export function createGuestHttp(ctx: GuestHttpContext) {
     if (workerId === ORCHESTRATOR_ID) return grant.session.missionControl;
     const floor = floorOfWorker(workerId);
     const worker = floor?.everyone().find((w) => w.id === workerId);
-    return !!floor && !!worker && guestSeesWorker(grant, workerId, floor.id, repoFloors(worker));
+    return !!floor && !!worker && guestSeesWorker(grant, workerId, floor.id, repoFloors(worker), worker.kind);
   };
   const auditTarget = (workerId: string, floorId: string | undefined): GuestAuditTarget => {
     if (workerId === ORCHESTRATOR_ID) return { kind: 'missionControl' };
@@ -253,14 +250,7 @@ export function createGuestHttp(ctx: GuestHttpContext) {
       const mutation = method !== 'GET';
       if (route.audit && mutation) {
         const target = auditTarget(workerId, floorId ?? undefined);
-        const detail =
-          p === '/api/prompt/image'
-            ? method === 'DELETE'
-              ? 'Removed a picture from a prompt'
-              : `Picture for a prompt: ${str(url.searchParams.get('name'), 120) || 'untitled'}`
-            : p === '/api/term/drop'
-              ? `File into the terminal: ${str(url.searchParams.get('name'), 120) || 'untitled'}`
-              : 'File added to the Whiteboard';
+        const detail = p === '/api/prompt/image' ? (method === 'DELETE' ? 'Removed a picture from a prompt' : `Picture for a prompt: ${str(url.searchParams.get('name'), 120) || 'untitled'}`) : 'File added to the Whiteboard';
         res.once('finish', () => {
           if (res.statusCode < 300) guestAudit.record({ grant, target, action: p === '/api/whiteboard/blob' ? 'whiteboard' : 'upload', detail });
         });
@@ -280,12 +270,15 @@ export function createGuestHttp(ctx: GuestHttpContext) {
     }
   };
 
-  /** The create form's choices: every open floor and the workers on it now. */
+  /** The create form's choices: every open floor and the workers on it now (never a shell: guests have no terminal). */
   const targets = (): GuestTargetFloor[] =>
     [...floors.values()].map((f) => ({
       id: f.id,
       name: f.def.name,
-      workers: f.everyone().map((w) => ({ id: w.id, name: w.name })),
+      workers: f
+        .everyone()
+        .filter((w) => w.kind !== 'shell')
+        .map((w) => ({ id: w.id, name: w.name })),
     }));
 
   /** The owner's Share list, and what this requester may do with it. */

@@ -30,6 +30,11 @@ export interface CompanionAbilities {
   whiteboard: boolean;
   /** Settings, usage, Orchestrator settings, pairing, setup and update prompts: the owner's alone. */
   owner: boolean;
+  /**
+   * Raw terminals (TTY panes, the Changes window's log, Raw TTY fallbacks). A shared PTY has the owner's
+   * size, so a share link reads every worker through its Thread instead and never sees a shell.
+   */
+  tty: boolean;
   /** The one worker a single-worker link shows, alone in one pane. */
   worker?: string;
   /** The one floor a floor or worker link covers. */
@@ -47,6 +52,7 @@ export const OWNER_ABILITIES: Readonly<CompanionAbilities> = {
   roster: true,
   whiteboard: true,
   owner: true,
+  tty: true,
 };
 
 /** What a link's session lets its page show and do: the preset decides, never more than the session says. */
@@ -67,6 +73,7 @@ export function guestAbilities(session: GuestSession): CompanionAbilities {
     roster: !single,
     whiteboard: !single,
     owner: false,
+    tty: false,
     ...(single && session.workerId ? { worker: session.workerId } : {}),
     ...(!office && session.floorId ? { floor: session.floorId } : {}),
   };
@@ -157,18 +164,7 @@ export function guestUnavailableView(reason: GuestUnavailableReason): { title: s
  * Guest backend routes it opens only to write presets (server-runtime/guest-http.ts): a view-only page
  * never asks for them, so model badges and file links don't send requests the office would refuse.
  */
-export const GUEST_WRITE_ONLY_PATHS: ReadonlySet<string> = new Set([
-  '/api/agents/droid/models',
-  '/api/agents/droid/commands',
-  '/api/thread/file',
-  '/api/thread/files',
-  '/api/term/paths',
-  '/api/term/file',
-  '/api/term/drop',
-  '/api/prompt/image',
-  '/api/whiteboard/blob',
-  '/api/gh/labels',
-]);
+export const GUEST_WRITE_ONLY_PATHS: ReadonlySet<string> = new Set(['/api/agents/droid/models', '/api/agents/droid/commands', '/api/thread/file', '/api/thread/files', '/api/prompt/image', '/api/whiteboard/blob', '/api/gh/labels']);
 
 export const guestMayFetch = (pathname: string, write: boolean): boolean => write || !GUEST_WRITE_ONLY_PATHS.has(pathname);
 

@@ -140,9 +140,11 @@ function shipBlocker(s: ChangesState, name: string, asleep: boolean, uncommitted
 
 /**
  * The Changes window for a worker. A worker across repositories (see WorkerInfo.repos) gets a tab per
- * repository, its own floor's first; `repo` opens on another floor's one.
+ * repository, its own floor's first; `repo` opens on another floor's one. `log: false` (a share link,
+ * which has no terminal) leaves out the Log view of the worker's terminal.
  */
-export function openChanges(net: Net, workerId: string, onTerminal?: () => void, repo?: string) {
+export function openChanges(net: Net, workerId: string, onTerminal?: () => void, repo?: string, opts: { log?: boolean } = {}) {
+  const withLog = opts.log !== false;
   if (current?.workerId === workerId) return current.show(repo);
   const info = store.workers.get(workerId);
   if (!info) return;
@@ -180,7 +182,7 @@ export function openChanges(net: Net, workerId: string, onTerminal?: () => void,
   const el = h(
     'div.modal.full.desk-changes',
     { role: 'dialog', 'aria-label': `${info.name}'s changes`, tabindex: -1 },
-    h('header', {}, colorDot(info.color), h('div.titles', {}, title, branch), h('div.actions', {}, viewSeg, onTerminal ? terminalBtn : null), closeBtn),
+    h('header', {}, colorDot(info.color), h('div.titles', {}, title, branch), h('div.actions', {}, withLog ? viewSeg : null, onTerminal ? terminalBtn : null), closeBtn),
     tabs,
     changesBody,
     logHost,
@@ -241,7 +243,7 @@ export function openChanges(net: Net, workerId: string, onTerminal?: () => void,
   };
 
   const setView = (next: 'diff' | 'log') => {
-    if (next === view) return;
+    if (next === view || (next === 'log' && !withLog)) return;
     view = next;
     for (const [btn, on] of [
       [diffViewBtn, next === 'diff'],

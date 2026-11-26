@@ -67,17 +67,18 @@ async function listen(t: TestContext, handler: RequestListener, origin?: string)
  * workers. w4 sits on floor-a and works in floor-b's repository too.
  */
 function fakeFloors() {
-  const floor = (id: string, name: string, workers: (string | { id: string; repos: string[] })[], cap: string) => ({
+  const floor = (id: string, name: string, workers: (string | { id: string; repos?: string[]; kind?: 'shell' })[], cap: string) => ({
     id,
     dir: `/projects/${id}`,
     def: { name },
-    everyone: () => workers.map((w) => (typeof w === 'string' ? { id: w, name: `Worker ${w}` } : { id: w.id, name: `Worker ${w.id}`, repos: w.repos.map((r) => ({ floor: r })) })),
+    everyone: () =>
+      workers.map((w) => (typeof w === 'string' ? { id: w, name: `Worker ${w}`, kind: 'agent' } : { id: w.id, name: `Worker ${w.id}`, kind: w.kind ?? 'agent', ...(w.repos ? { repos: w.repos.map((r) => ({ floor: r })) } : {}) })),
     whiteboard: {
       serve: (c: string, rel: string) => (c === cap ? { status: 200, headers: { 'content-type': 'text/html' }, body: Buffer.from(`${id}:${rel || 'index'}`) } : undefined),
     },
   });
   return new Map([
-    ['floor-a', floor('floor-a', 'Droid Office', ['w1', 'w2', { id: 'w4', repos: ['floor-b'] }], `k${'a'.repeat(30)}`)],
+    ['floor-a', floor('floor-a', 'Droid Office', ['w1', 'w2', { id: 'w4', repos: ['floor-b'] }, { id: 's5', kind: 'shell' }], `k${'a'.repeat(30)}`)],
     ['floor-b', floor('floor-b', 'Website', ['w3'], `k${'b'.repeat(30)}`)],
   ]);
 }
@@ -91,7 +92,7 @@ function unitRig(t: TestContext) {
     timers: false,
     names: ({ floorId, workerId }) => {
       const f = floorId ? floors.get(floorId) : undefined;
-      const w = workerId ? f?.everyone().find((x) => x.id === workerId) : undefined;
+      const w = workerId ? f?.everyone().find((x) => x.id === workerId && x.kind !== 'shell') : undefined;
       return { ...(f ? { floorName: f.def.name } : {}), ...(w ? { workerName: w.name } : {}) };
     },
   });
@@ -242,7 +243,7 @@ test('each preset reaches only in-scope floors, workers and Mission Control, and
   assert.equal(await status(editFloor, '/api/prompt/image?floor=floor-a&name=bad', 'POST', PNG), 415);
   assert.equal(await status(editFloor, '/api/prompt/image?floor=floor-b', 'POST', PNG), 404);
   assert.equal(await status(editFloor, `/api/prompt/image?worker=${ORCHESTRATOR_ID}`, 'POST', PNG), 404);
-  assert.equal(await status(editFloor, '/api/term/drop?worker=w2&floor=floor-a&name=notes.txt', 'POST', PNG), 200);
+  assert.equal(await status(editFloor, '/api/term/drop?worker=w2&floor=floor-a&name=notes.txt', 'POST', PNG), 404, 'guests have no terminal to drop files into');
   assert.equal(await status(editFloor, '/api/term/drop?worker=w3&name=notes.txt', 'POST', PNG), 404);
   assert.equal(await status(editFloor, '/api/thread/files?worker=w1&q=src'), 200);
   // The Hire dialog's @ list names a floor and no worker: only a floor the link reaches, and only for write presets.
@@ -253,8 +254,9 @@ test('each preset reaches only in-scope floors, workers and Mission Control, and
   assert.equal(await status(make('view-floor', { floorId: 'floor-a' }).token, '/api/thread/files?floor=floor-a'), 404);
   assert.equal(await status(editFloor, '/api/thread/file?worker=w2&path=README.md'), 200);
   assert.equal(await status(editFloor, '/api/thread/file?worker=w3&path=README.md'), 404);
-  assert.equal(await status(editFloor, '/api/term/file?worker=w1&path=README.md'), 200);
-  assert.equal(await status(editFloor, '/api/term/paths?worker=w1', 'POST'), 200, 'resolving paths is not audited as a change');
+  assert.equal(await status(editFloor, '/api/term/file?worker=w1&path=README.md'), 404, 'guests have no terminal file links');
+  assert.equal(await status(editFloor, '/api/term/paths?worker=w1', 'POST'), 404);
+  assert.equal(await status(editFloor, '/api/thread/image?worker=s5&image=x'), 404, 'a shell is never in scope');
   assert.equal(await status(editFloor, '/api/agents/droid/models'), 200);
   assert.equal(await status(editFloor, '/api/agents/droid/commands?worker=w1'), 200);
   assert.equal(await status(editFloor, '/api/agents/droid/commands?floor=floor-a'), 200);
@@ -270,8 +272,8 @@ test('each preset reaches only in-scope floors, workers and Mission Control, and
 
   const editOffice = make('edit-office').token;
   assert.equal(await status(editOffice, `/api/prompt/image?worker=${ORCHESTRATOR_ID}&name=plan.png`, 'POST', PNG), 200);
-  assert.equal(await status(editOffice, '/api/term/drop?worker=w3&floor=floor-b&name=x', 'POST', PNG), 200);
-  assert.equal(await status(editOffice, '/api/term/drop?worker=w3&floor=floor-a&name=x', 'POST', PNG), 404, 'the floor named must be the worker’s');
+  assert.equal(await status(editOffice, '/api/term/drop?worker=w3&floor=floor-b&name=x', 'POST', PNG), 404);
+  assert.equal(await status(editOffice, '/api/thread/image?worker=s5&image=x'), 404);
 
   assert.ok(
     floorCalls.every((c) => c.own === (c.method !== 'GET')),
@@ -282,10 +284,8 @@ test('each preset reaches only in-scope floors, workers and Mission Control, and
     entries.map((e) => [e.linkLabel, e.action, e.target.kind, e.target.workerName ?? e.target.floorName ?? '']).reverse(),
     [
       ['edit-floor link', 'upload', 'floor', 'Droid Office'],
-      ['edit-floor link', 'upload', 'worker', 'Worker w2'],
       ['edit-floor link', 'whiteboard', 'floor', 'Droid Office'],
       ['edit-office link', 'upload', 'missionControl', ''],
-      ['edit-office link', 'upload', 'worker', 'Worker w3'],
     ],
     'accepted writes are audited; refused and failed ones are not',
   );

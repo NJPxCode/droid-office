@@ -75,6 +75,8 @@ export interface PaneHost {
   owner?(): boolean;
   /** True on a single-worker share link: the pane can't be closed, swapped or pointed at a teammate. */
   pinned?(): boolean;
+  /** False on a share link: workers open in their Thread, with no terminal. Absent means true. */
+  tty?(): boolean;
 }
 
 export interface PaneState {
@@ -205,6 +207,7 @@ export function createPane(host: PaneHost, index: number): Pane {
   const works = host.work?.() !== false;
   const owns = host.owner?.() !== false;
   const pinned = host.pinned?.() === true;
+  const tty = host.tty?.() !== false;
   // The pane's number is its handle: drag it onto another pane to swap them.
   const badge = h('span.dash-pane-no', { title: 'Drag to swap panes' }, String(index + 1));
   const who = h('span.dash-pane-who');
@@ -332,11 +335,11 @@ export function createPane(host: PaneHost, index: number): Pane {
     // An external bot runs elsewhere: its pane says what it is and who's on its team.
     if (w.remote) return 'info';
     // Before its first prompt, or asleep, the Orchestrator has no terminal: its Thread is where a prompt starts it.
-    if (w.id === ORCHESTRATOR_ID) return view === 'terminal' && orchestratorAwake(host.mission()) ? 'terminal' : 'thread';
+    if (w.id === ORCHESTRATOR_ID) return tty && view === 'terminal' && orchestratorAwake(host.mission()) ? 'terminal' : 'thread';
     // A cloud worker has no terminal here: its Thread is its Factory session.
     if (w.cloud) return 'thread';
-    if (w.kind === 'agent' && view === 'thread') return 'thread';
-    return !isAsleep(w.status) ? 'terminal' : 'info';
+    if (w.kind === 'agent' && (view === 'thread' || !tty)) return 'thread';
+    return tty && !isAsleep(w.status) ? 'terminal' : 'info';
   }
 
   function build(w: WorkerInfo | undefined, next: PaneMode) {
@@ -392,11 +395,13 @@ export function createPane(host: PaneHost, index: number): Pane {
           host.setView(mate, 'thread');
           host.openBeside(mate);
         },
-        raw: w.cloud
-          ? undefined
-          : () => {
-              if (!orchestrator || orchestratorAwake(host.mission())) host.setView(w.id, 'terminal');
-            },
+        raw:
+          w.cloud || !tty
+            ? undefined
+            : () => {
+                if (!orchestrator || orchestratorAwake(host.mission())) host.setView(w.id, 'terminal');
+              },
+        ...(tty ? {} : { noTerminal: true }),
         floor: intended,
         ...(works ? {} : { readOnly: true }),
         ...(works && host.changes && !w.cloud ? { openChanges: (id: string) => host.changes?.(id) } : {}),
@@ -609,7 +614,7 @@ export function createPane(host: PaneHost, index: number): Pane {
     // The Orchestrator has a terminal only while a session it started is awake.
     const bot = w?.remote ? missionAgent(host.mission(), w.id) : undefined;
     const blocked = w?.id === ORCHESTRATOR_ID && !!orchestratorBlocked(host.mission());
-    const toggles = local && w.kind === 'agent' && (w.id !== ORCHESTRATOR_ID || !!orchestratorAwake(host.mission()));
+    const toggles = tty && local && w.kind === 'agent' && (w.id !== ORCHESTRATOR_ID || !!orchestratorAwake(host.mission()));
     const key = JSON.stringify([w && [w.id, w.name, w.color, w.status, w.acked, w.lead, bot?.grokBot, blocked, headLine(w), w.activeModel ?? w.model, w.activeEffort ?? w.effort], toggles, mode, s.maximized, s.canMaximize, host.live()]);
     if (key === headKey) return;
     headKey = key;
@@ -916,9 +921,11 @@ export function createPane(host: PaneHost, index: number): Pane {
               ? 'The owner answers it.'
               : w.cloud
                 ? 'The office can’t answer this one from here: open its Factory session.'
-                : mode === 'thread'
-                  ? 'This CLI dialog cannot be answered safely here. Open TTY to continue.'
-                  : 'Its screen has no menu the companion can answer safely. Answer it in the terminal below.',
+                : !tty
+                  ? 'This CLI dialog can’t be answered from a shared view. The owner answers it in the terminal.'
+                  : mode === 'thread'
+                    ? 'This CLI dialog cannot be answered safely here. Open TTY to continue.'
+                    : 'Its screen has no menu the companion can answer safely. Answer it in the terminal below.',
           ),
         ),
       );
@@ -990,7 +997,7 @@ export function createPane(host: PaneHost, index: number): Pane {
                         paintQuestion(true);
                       },
                       // A cloud worker has no terminal to fall back on.
-                      raw: w.cloud ? undefined : () => host.setView(w.id, 'terminal'),
+                      raw: w.cloud || !tty ? undefined : () => host.setView(w.id, 'terminal'),
                       onClose: () => {
                         questionWorkspace = undefined;
                       },
