@@ -375,11 +375,21 @@ test("the phone's Raw TTY follows a finger pixel for pixel with native scrolling
   await page.waitForFunction(() => [...document.querySelectorAll('.term-row')].some((row) => row.textContent?.trimEnd() === 'line 190'));
   const before = await rowTop(190);
   assert.notEqual(before, null);
+  const waitRowPast = (threshold: number) =>
+    page.waitForFunction((t) => {
+      for (const row of document.querySelectorAll('.term-row')) if (row.textContent?.trimEnd() === 'line 190') return row.getBoundingClientRect().top > t;
+      return false;
+    }, threshold);
   await touch('touchStart', 200, 180);
-  for (let i = 1; i <= 7; i++) {
-    await touch('touchMove', 200, 180 + i * 8);
-    await page.evaluate(() => new Promise(requestAnimationFrame));
+  // First step clears Chromium's touch slop; waiting on each commit avoids racing the compositor when reading `moved`.
+  await touch('touchMove', 200, 204);
+  await waitRowPast(before!);
+  for (let y = 212; y <= 236; y += 8) {
+    const prev = await rowTop(190);
+    await touch('touchMove', 200, y);
+    await waitRowPast(prev!);
   }
+  await page.evaluate(() => new Promise(requestAnimationFrame));
   const moved = await rowTop(190);
   assert.ok(moved !== null && moved > before! + 15 && moved <= before! + 60, `text moves with the native pan after browser touch slop (${before} to ${moved})`);
   await page.waitForTimeout(300);

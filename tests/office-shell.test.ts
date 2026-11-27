@@ -41,7 +41,7 @@ test('the boss shell runs, restarts after exit, and is picked up after an office
   assert.equal(shell.attach('one')?.shared, true, 'another viewer still counts on reattach');
   shell.detach('two');
 
-  shell.write('echo OFFICE_SHELL_OK\r');
+  shell.write("printf '%s%s\\n' OFFICE_SHELL _OK\r");
   await waitFor(
     () => output.includes('OFFICE_SHELL_OK'),
     () => output,

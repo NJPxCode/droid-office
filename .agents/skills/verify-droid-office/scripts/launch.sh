@@ -14,10 +14,12 @@ CHECKOUT=$(cd "$HERE/../../../.." && pwd)
 source "$HERE/run-process.sh"
 MODE=clone
 CLONE_ARGS=()
+REQ_PORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --fresh) MODE=fresh; shift ;;
-    --office | --port) [[ $# -ge 2 ]] || { echo "launch: $1 needs a value" >&2; exit 2; }; CLONE_ARGS+=("$1" "$2"); shift 2 ;;
+    --office) [[ $# -ge 2 ]] || { echo "launch: $1 needs a value" >&2; exit 2; }; CLONE_ARGS+=("$1" "$2"); shift 2 ;;
+    --port) [[ $# -ge 2 ]] || { echo "launch: $1 needs a value" >&2; exit 2; }; REQ_PORT=$2; CLONE_ARGS+=("$1" "$2"); shift 2 ;;
     -h | --help) sed -n '2,11p' "$0"; exit 0 ;;
     *) echo "launch: unknown option $1" >&2; exit 2 ;;
   esac
@@ -42,6 +44,15 @@ on_exit() {
   exit "$code"
 }
 trap on_exit EXIT
+
+if [[ -n "$REQ_PORT" && "$REQ_PORT" =~ ^[0-9]{1,5}$ ]]; then
+  REQ_PORT_NUM=$((10#$REQ_PORT))
+  [[ "$REQ_PORT_NUM" -ne 4600 ]] || { echo "launch: refusing port $REQ_PORT_NUM: :4600 is the owner's office" >&2; exit 1; }
+  if (( REQ_PORT_NUM >= 1 && REQ_PORT_NUM <= 65535 )) && lsof -nP -iTCP:"$REQ_PORT_NUM" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "launch: :$REQ_PORT_NUM already belongs to another process" >&2
+    exit 1
+  fi
+fi
 
 [[ "$MODE" != fresh ]] || CLONE_ARGS+=(--fresh)
 "$CHECKOUT/.agents/skills/office-clone/scripts/clone-office.sh" --dest "$RUN" ${CLONE_ARGS[@]+"${CLONE_ARGS[@]}"} >"$RUN/clone.log" 2>&1 || {
