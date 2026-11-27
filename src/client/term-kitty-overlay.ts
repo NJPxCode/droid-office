@@ -14,7 +14,7 @@ export interface KittyRowAnchor {
 }
 
 export interface KittyOverlayView {
-  /** The native canvas may capture clicks/mouse reports before a child button sees them. */
+  /** Intercept image-button gestures before the native mouse reporter. */
   capturePointer?: boolean;
   moveWithoutAnchor?: boolean;
   readonly cols: number;
@@ -211,6 +211,7 @@ export function createKittyOverlay(view: KittyOverlayView, opts: KittyTerminalOp
 
   let canvas: HTMLCanvasElement | null = null;
   let ctx: CanvasRenderingContext2D | null = null;
+  let underlay: HTMLCanvasElement | undefined;
   let expandBtn: HTMLButtonElement | null = null;
   let cleanupScreenListeners: (() => void) | null = null;
   let screenEl: HTMLElement | null = null;
@@ -471,13 +472,17 @@ export function createKittyOverlay(view: KittyOverlayView, opts: KittyTerminalOp
   };
 
   const hitAtClient = (clientX: number, clientY: number): DrawnKittyRect | undefined => {
-    if (!screenEl || !drawnRects.length) return undefined;
+    if (!screenEl || !canvas || !drawnRects.length) return undefined;
     const r = screenEl.getBoundingClientRect();
     // Part of the row above or below the screen shows inside the clipping box while it sits between rows.
     const box = extraRows() && pointerEl ? pointerEl.getBoundingClientRect() : r;
     if (clientX < r.left || clientX >= r.right || clientY < box.top || clientY >= box.bottom) return undefined;
-    const px = clientX - r.left;
-    const py = clientY - r.top;
+    // Canvas CSS sizes retain fractional cells; clientWidth/offsetHeight round them.
+    // Map the painted surface back to its local pixels (including fractional scroll padding).
+    const surface = canvas.getBoundingClientRect();
+    if (!surface.width || !surface.height) return undefined;
+    const px = ((clientX - surface.left) * parseFloat(canvas.style.width)) / surface.width;
+    const py = ((clientY - surface.top) * parseFloat(canvas.style.height)) / surface.height + parseFloat(canvas.style.top);
     const hit = hitTestKittyRect(drawnRects, px, py);
     if (!hit || !graphics.get(hit.imageId) || !decoded.get(hit.imageId)?.root) return undefined;
     return hit;
@@ -546,6 +551,7 @@ export function createKittyOverlay(view: KittyOverlayView, opts: KittyTerminalOp
         canvas.width = 0;
         canvas.height = 0;
       }
+      if (underlay?.width) underlay.width = underlay.height = 0;
       return;
     }
     const geom = cellGeometry();
@@ -570,6 +576,20 @@ export function createKittyOverlay(view: KittyOverlayView, opts: KittyTerminalOp
     canvas.style.top = `${-pad}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, pad * dpr);
     ctx.clearRect(0, -pad, geom.cssW, cssH);
+    // A DOM terminal can sandwich its text between two layers. Canvas terminals
+    // keep the original single canvas and draw order.
+    let behind: CanvasRenderingContext2D | null = null;
+    if (underlay && (underlay.width || visibleRects.some((r) => r.z < 0))) {
+      if (underlay.width !== devW || underlay.height !== devH) {
+        underlay.width = devW;
+        underlay.height = devH;
+        underlay.style.width = `${geom.cssW}px`;
+        underlay.style.height = `${cssH}px`;
+      }
+      behind = underlay.getContext('2d');
+      behind?.setTransform(dpr, 0, 0, dpr, 0, pad * dpr);
+      behind?.clearRect(0, -pad, geom.cssW, cssH);
+    }
     drawnRects = [];
     if (!visibleRects.length) {
       syncHoverAfterPaint();
@@ -614,7 +634,7 @@ export function createKittyOverlay(view: KittyOverlayView, opts: KittyTerminalOp
       const dw = r.cols * geom.cellW;
       const dh = r.rows * geom.cellH;
       if (sw > 0 && sh > 0 && dw > 0 && dh > 0) {
-        ctx.drawImage(bmp, sx, sy, sw, sh, dx, dy, dw, dh);
+        (r.z < 0 && behind ? behind : ctx).drawImage(bmp, sx, sy, sw, sh, dx, dy, dw, dh);
         drawnRects.push({ imageId: r.imageId, placementId: r.placementId, dx, dy, dw, dh, z: r.z });
       }
     }
@@ -648,12 +668,13 @@ export function createKittyOverlay(view: KittyOverlayView, opts: KittyTerminalOp
     return cursorMove;
   };
 
-  const mount = (screen: HTMLElement, pointer: HTMLElement) => {
+  const mount = (screen: HTMLElement, pointer: HTMLElement, backgroundLayer?: HTMLCanvasElement) => {
     cleanupScreenListeners?.();
     cleanupScreenListeners = null;
 
     screenEl = screen;
     pointerEl = pointer;
+    underlay = backgroundLayer;
 
     canvas?.remove();
     expandBtn?.remove();
@@ -844,5 +865,28 @@ export function createKittyOverlay(view: KittyOverlayView, opts: KittyTerminalOp
     pointerEl = null;
   };
 
-  return { graphics, mount, handleApcBody, dispose, paintNow, schedulePaint, clearPlacements, clearDecoded, needsPaint: () => view.hasPlaceholder() || graphics.size > 0 || directPlacements.length > 0 || drawnRects.length > 0 };
+  // Native touch callers already classified this gesture as a tap, not a selection,
+  // drag or pinch. Desktop mouse events continue through their existing policies.
+  const expandAtClient = (clientX: number, clientY: number): boolean => {
+    if (!opts.onExpandImage || expanding || !pointerEl) return false;
+    const clip = pointerEl.getBoundingClientRect();
+    if (clientX < clip.left || clientX >= clip.right || clientY < clip.top || clientY >= clip.bottom) return false;
+    const hit = hitAtClient(clientX, clientY);
+    if (!hit) return false;
+    void expandImage(hit.imageId);
+    return true;
+  };
+
+  return {
+    graphics,
+    mount,
+    handleApcBody,
+    dispose,
+    paintNow,
+    schedulePaint,
+    clearPlacements,
+    clearDecoded,
+    expandAtClient,
+    needsPaint: () => view.hasPlaceholder() || graphics.size > 0 || directPlacements.length > 0 || drawnRects.length > 0,
+  };
 }

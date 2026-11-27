@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
 import { build } from 'vite';
+import { browserStatus, closeBrowser, launchBrowser, newIsolatedContext } from '../src/server/whiteboard-browser.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { loadConfig } from '../src/server/config.js';
 import { leaveFloorTerminals, startServer } from '../src/server/server.js';
@@ -596,6 +597,83 @@ test('floor moves from a companion update every client and the next welcome, wit
   assert.equal(JSON.parse(readFileSync(path.join(dir, '.droid-office/floors.json'), 'utf8'))[0].id, added.floor);
 });
 
+test('production terminal Retry recovers rendering and styles after a failed asset load', { skip: !browserStatus().installed }, async (t) => {
+  const { base } = await office(t);
+  const ws = socket(t, base, 'client=dashboard');
+  const { floor } = await ws.wait('welcome');
+  ws.send({ t: 'worker.spawn', deskId: 'auto', kind: 'shell', requestId: 'shell', requestFloor: floor });
+  const { workerId } = await ws.wait('action.result', (msg) => msg.requestId === 'shell');
+  assert.ok(workerId);
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const context = await newIsolatedContext(browser);
+  t.after(() => context.close());
+  const page = await context.newPage();
+  // The page stylesheet remains available. If a terminal-specific stylesheet
+  // is fetched lazily, fail its first request as well as the first WASM load.
+  await page.route(/\/assets\/wterm[^/]*\.css$/, (route) => route.abort(), { times: 1 });
+  let blocked = 0;
+  const wasm = /\/assets\/ghostty-vt-[^/]+\.wasm$/;
+  await page.route(wasm, (route) => {
+    blocked++;
+    return route.abort();
+  });
+  await page.goto(`${base}/dashboard#${new URLSearchParams({ worker: workerId, floor: floor! })}`);
+  const retry = page.getByRole('button', { name: 'Retry', exact: true });
+  await retry.waitFor();
+  if (!blocked) {
+    await Promise.all([page.waitForRequest(wasm), retry.click()]);
+    await retry.waitFor();
+  }
+  assert.ok(blocked);
+  await page.unroute(wasm);
+  await retry.click();
+  const root = page.locator('.term-host .office-wterm:not([inert])');
+  await root.locator('textarea').waitFor({ state: 'attached' });
+  const style = await root.evaluate((el) => {
+    const css = getComputedStyle(el);
+    return [css.position, css.boxSizing, getComputedStyle(el.querySelector('.term-grid')!).whiteSpace, css.overflowX];
+  });
+  assert.deepEqual(style, ['relative', 'border-box', 'pre', 'hidden']);
+});
+
+test('production terminal recovers after the first renderer JavaScript chunk fetch fails', { skip: !browserStatus().installed }, async (t) => {
+  const { base } = await office(t);
+  const socketClient = socket(t, base, 'client=dashboard');
+  const { floor } = await socketClient.wait('welcome');
+  socketClient.send({ t: 'worker.spawn', deskId: 'auto', kind: 'shell', requestId: 'recover-js', requestFloor: floor });
+  const { workerId } = await socketClient.wait('action.result', (m) => m.requestId === 'recover-js');
+  assert.ok(workerId);
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const ctx = await newIsolatedContext(browser);
+  t.after(() => ctx.close());
+  for (const failure of ['one abort', 'outage', 'HTTP 503']) {
+    const page = await ctx.newPage();
+    let requests = 0,
+      offline = true;
+    await page.route(/\/assets\/wterm-core-[^/]+\.js$/, (route) => {
+      requests++;
+      if (!offline || (failure === 'one abort' && requests > 1)) return route.continue();
+      return failure === 'HTTP 503' ? route.fulfill({ status: 503, body: 'Unavailable' }) : route.abort();
+    });
+    await page.goto(`${base}/dashboard#${new URLSearchParams({ worker: workerId, floor: floor! })}`);
+    const root = page.locator('.term-host .office-wterm:not([inert]) textarea');
+    const button = page.getByRole('button', { name: /^(Retry|Reload)$/ });
+    await root.or(button).first().waitFor({ state: 'attached' });
+    const action = (await button.count()) ? await button.innerText() : 'none';
+    const before = requests;
+    const timeOrigin = await page.evaluate(() => performance.timeOrigin);
+    offline = false;
+    if (action !== 'none') await button.click();
+    await root.waitFor({ state: 'attached', timeout: 5000 });
+    assert.equal(await page.evaluate(() => performance.timeOrigin), timeOrigin, 'recovered in the same document');
+    t.diagnostic(JSON.stringify({ failure, action, before, requests }));
+    assert.ok(before >= 1 && requests >= 2);
+    await page.close();
+  }
+});
+
 test('production dashboard has a public data-free bootstrap, gated APIs and no 3D office in its bundle', async (t) => {
   const { base, server } = await office(t);
   const proxy = await tailnetProxy(t, server.server);
@@ -651,15 +729,14 @@ test('production dashboard has a public data-free bootstrap, gated APIs and no 3
     modules.filter((id) => /\/node_modules\/three\/|\/client\/(?:office-map|main|automation|shader-warmup)\.ts|\/client\/world\/(?!glyph\.ts)/.test(id)),
     [],
   );
-  const cold = new Set<string>();
-  const initial = (name: string) => {
-    if (cold.has(name)) return;
-    cold.add(name);
-    for (const next of chunks.get(name)?.imports ?? []) initial(next);
-  };
-  initial(entry.fileName);
-  const coldModules = [...cold].flatMap((name) => Object.keys(chunks.get(name)?.modules ?? {}));
-  assert.ok(!coldModules.some((id) => id.includes('/node_modules/@xterm/xterm/')));
+  // Check every chunk: neither entry nor any lazy feature may ship xterm.
+  const allModules = [...chunks.values()].flatMap((chunk) => Object.keys(chunk.modules));
+  assert.ok(allModules.some((id) => id.includes('/@wterm/dom/')));
+  assert.ok(allModules.some((id) => id.includes('/@wterm/ghostty/')));
+  assert.deepEqual(
+    allModules.filter((id) => id.includes('/@xterm/') || id.endsWith('/term-pixel-scroll.ts')),
+    [],
+  );
 });
 
 test('browser pairing preserves phone flow, refuses foreign origins and local management, survives restart and revokes active sockets', async (t) => {

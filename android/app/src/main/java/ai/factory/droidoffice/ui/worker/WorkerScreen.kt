@@ -83,6 +83,7 @@ import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -95,6 +96,7 @@ import ai.factory.droidoffice.core.Keys
 import ai.factory.droidoffice.core.Menu
 import ai.factory.droidoffice.core.ORCHESTRATOR_ID
 import ai.factory.droidoffice.core.PhoneSizing
+import ai.factory.droidoffice.core.PageMsg
 import ai.factory.droidoffice.core.QuickKeys
 import ai.factory.droidoffice.core.Receipts
 import ai.factory.droidoffice.core.ScreenState
@@ -389,6 +391,7 @@ fun WorkerScreen(
             if (!worker.isCloud) ttyChoice = true
         }
         val tty = !cloud && (ttyChoice ?: if (threadable && store.settings.threadView) false else (link.phase != Phase.Connected || !Asks.canAnswer(worker, screen)))
+        val terminalNav = remember(workerId, tty) { TerminalNavigation() }
         LaunchedEffect(workerId, screen, store.loaded) {
             if (ttyChoice == null && screen != null && store.loaded) ttyChoice = tty
         }
@@ -409,6 +412,7 @@ fun WorkerScreen(
                     ) {
                         Icon(OfficeIcons.Search, "Search session", Modifier.size(16.dp), tint = if (threadSearch) Palette.Accent else Palette.TextSecondary)
                     }
+                    if (tty) TerminalNavActions(terminalNav)
                     InlineViewToggle(tty, pickView)
                 }
             }, resumable = !mission)
@@ -418,14 +422,18 @@ fun WorkerScreen(
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
             }
         }
+        else if (tty) Actions(worker, lead = { TerminalNavActions(terminalNav) })
         else Actions(worker)
+        if (tty && terminalNav.finding) TerminalFindBar(terminalNav)
         Offline(link.phase, thread = !tty, composing = composing && !(!tty && worker.state == WorkerStatus.NeedsInput))
         if (tty) NeedsYou(worker, screen, live && link.phase == Phase.Connected)
-        var phoneSize by remember(workerId) { mutableStateOf<TermSize?>(null) }
+        var pane by remember(workerId, tty) { mutableStateOf(IntSize.Zero) }
+        var measuredFit by remember(workerId, tty, terminalNav.finding) { mutableStateOf<PageMsg.Fit?>(null) }
+        val phoneSize = measuredFit?.forPane(pane.width, pane.height, LocalDensity.current.density)
         var kittyFlags by remember(workerId, tty) { mutableIntStateOf(0) }
         val currentSize = TermSize(worker.cols, worker.rows)
         val canResize = live && link.phase == Phase.Connected && screen != null
-        LaunchedEffect(phone, phoneSize, canResize, currentSize, tty) {
+        LaunchedEffect(phone, phoneSize, canResize, currentSize, tty, terminalNav.finding) {
             if (!canResize) {
                 sizing.disconnected()
                 return@LaunchedEffect
@@ -442,7 +450,7 @@ fun WorkerScreen(
                 val target = phoneSize ?: return@LaunchedEffect
                 // Wait for keyboard and panel animations to settle before resizing the shared PTY.
                 delay(150)
-                sizing.request(currentSize, target)?.let { size ->
+                sizing.request(currentSize, target, finding = terminalNav.finding)?.let { size ->
                     if (connection.send(ClientMsg.termResize(workerId, size.cols, size.rows))) sizing.sent(size)
                 }
             } else {
@@ -509,9 +517,10 @@ fun WorkerScreen(
         } else Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = if (themedPhoneWorker) 4.dp else 10.dp)) {
             Terminal(
                 workerId, screen, if (phone) TermView.Phone else TermView.Desktop, live && link.phase == Phase.Connected,
-                Modifier.fillMaxSize(),
-                onFit = { phoneSize = it },
-                directInput = directInput && !worker.isCloud,
+                Modifier.fillMaxSize().onSizeChanged { pane = it },
+                navigation = terminalNav,
+                onFit = { if (!terminalNav.finding) measuredFit = it },
+                directInput = directInput && !worker.isCloud && !terminalNav.finding,
                 csiEnter = !worker.isShell && !worker.isCloud,
                 onKittyFlags = { kittyFlags = it },
             )

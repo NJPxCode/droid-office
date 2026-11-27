@@ -20,12 +20,19 @@ enum class TermView(val wire: String) {
 /** What the terminal page (assets/terminal/terminal.js) tells the app. */
 sealed interface PageMsg {
     data object Ready : PageMsg
+    data object Unavailable : PageMsg
+    data class Matches(val active: Int, val count: Int, val searching: Boolean, val limited: Boolean) : PageMsg
+    data class Prompts(val available: Boolean) : PageMsg
     /** A snapshot has been written: the terminal shows something. */
     data object Drawn : PageMsg
     /** Bytes for the program: a swipe over a full-screen program, as wheel events or arrow keys. */
     data class Input(val data: String) : PageMsg
     /** The grid that fits the phone at readable text. */
-    data class Fit(val size: TermSize) : PageMsg
+    data class Fit(val size: TermSize, val width: Int, val height: Int) : PageMsg {
+        // WebView reports whole CSS pixels; Compose measures the viewport in device pixels.
+        fun forPane(widthPx: Int, heightPx: Int, density: Float): TermSize? =
+            size.takeIf { kotlin.math.abs(widthPx / density - width) < 1 && kotlin.math.abs(heightPx / density - height) < 1 }
+    }
     data class Bottom(val at: Boolean) : PageMsg
     /** Active Kitty progressive keyboard enhancement flags (`0..31`). */
     data class Kitty(val flags: Int) : PageMsg
@@ -88,18 +95,30 @@ object PictureZoom {
 object TermPage {
     const val MAX_IMAGE_B64 = 16 * 1024 * 1024
 
+    fun acceptsInput(live: Boolean, drawn: Boolean, unavailable: Boolean) = live && drawn && !unavailable
+
     fun decode(json: String): PageMsg? {
         val o = runCatching { OfficeJson.parseToJsonElement(json) as? JsonObject }.getOrNull() ?: return null
         fun str(k: String) = (o[k] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
         fun int(k: String) = (o[k] as? JsonPrimitive)?.intOrNull
+        fun bool(k: String) = (o[k] as? JsonPrimitive)?.booleanOrNull
         return when (str("t")) {
             "ready" -> PageMsg.Ready
+            "unavailable" -> PageMsg.Unavailable
+            "matches" -> {
+                val count = int("count")?.takeIf { it in 0..10_000 } ?: return null
+                val active = int("active")?.takeIf { it in -1 until count } ?: return null
+                PageMsg.Matches(active, count, bool("searching") == true, bool("limited") == true)
+            }
+            "prompts" -> bool("available")?.let { PageMsg.Prompts(it) }
             "drawn" -> PageMsg.Drawn
             "input" -> str("data")?.takeIf { it.isNotEmpty() }?.let { PageMsg.Input(it) }
             "fit" -> {
                 val cols = int("cols") ?: return null
                 val rows = int("rows") ?: return null
-                if (cols > 0 && rows > 0) PageMsg.Fit(TermSize(cols, rows)) else null
+                val width = int("width") ?: return null
+                val height = int("height") ?: return null
+                if (cols > 0 && rows > 0 && width > 0 && height > 0) PageMsg.Fit(TermSize(cols, rows), width, height) else null
             }
             "bottom" -> (o["at"] as? JsonPrimitive)?.booleanOrNull?.let { PageMsg.Bottom(it) }
             "kitty" -> int("flags")?.let { PageMsg.Kitty(it and KittyKeys.ALL_FLAGS) }
@@ -119,6 +138,9 @@ object TermPage {
     }
 
     fun view(view: TermView) = call("view") { put("view", view.wire) }
+
+    fun search(query: String) = call("search") { put("query", query.take(1024)) }
+    fun navigate(prompt: Boolean, forward: Boolean) = call(if (prompt) "prompt" else "match") { put("direction", if (forward) 1 else -1) }
 
     fun colors(foreground: String?, cursor: String?, background: String?, selection: String?, cursorAccent: String? = background) = call("colors") {
         if (foreground != null && cursor != null && background != null && selection != null) {

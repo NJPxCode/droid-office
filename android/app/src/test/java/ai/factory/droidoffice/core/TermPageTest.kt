@@ -10,15 +10,31 @@ import org.junit.Test
 
 class TermPageTest {
     @Test
+    fun inputRequiresAVisibleLiveTerminal() {
+        for (live in listOf(false, true)) for (drawn in listOf(false, true)) for (unavailable in listOf(false, true)) {
+            assertEquals(live && drawn && !unavailable, TermPage.acceptsInput(live, drawn, unavailable))
+        }
+    }
+
+    @Test
     fun readsWhatThePageSays() {
         assertEquals(PageMsg.Ready, TermPage.decode("""{"t":"ready"}"""))
         assertEquals(PageMsg.Drawn, TermPage.decode("""{"t":"drawn"}"""))
         assertEquals(PageMsg.Input("\u001b[<64;5;7M"), TermPage.decode("""{"t":"input","data":"\u001b[<64;5;7M"}"""))
-        assertEquals(PageMsg.Fit(TermSize(45, 36)), TermPage.decode("""{"t":"fit","cols":45,"rows":36}"""))
+        assertEquals(PageMsg.Fit(TermSize(45, 36), 400, 700), TermPage.decode("""{"t":"fit","cols":45,"rows":36,"width":400,"height":700}"""))
         assertEquals(PageMsg.Bottom(false), TermPage.decode("""{"t":"bottom","at":false}"""))
         assertEquals(PageMsg.Kitty(1), TermPage.decode("""{"t":"kitty","flags":1}"""))
         assertEquals(PageMsg.Kitty(31), TermPage.decode("""{"t":"kitty","flags":63}"""))
         assertEquals(PageMsg.Image(640, 360, "iVBORw0KGgo="), TermPage.decode("""{"t":"image","width":640,"height":360,"data":"iVBORw0KGgo="}"""))
+    }
+
+    @Test
+    fun closingFindWaitsForTheMeasurementOfTheRestoredPane() {
+        val find = PageMsg.Fit(TermSize(51, 11), 404, 240)
+        val normal = PageMsg.Fit(TermSize(51, 30), 404, 598)
+        assertEquals(find.size, find.forPane(708, 420, 1.75f))
+        assertNull(find.forPane(708, 1047, 1.75f))
+        assertEquals(normal.size, normal.forPane(708, 1047, 1.75f))
     }
 
     @Test
@@ -31,11 +47,25 @@ class TermPageTest {
             """{"t":"fit","cols":0,"rows":3}""",
             """{"t":"fit","cols":"x"}""",
             """{"t":"bottom"}""",
+            """{"t":"matches","count":3,"active":3}""",
+            """{"t":"matches","count":10001,"active":-1}""",
+            """{"t":"prompts","available":"yes"}""",
             """{"t":"image","width":0,"height":10,"data":"abc"}""",
             """{"t":"image","width":10,"height":10,"data":""}""",
         )) {
             assertNull(bad, TermPage.decode(bad))
         }
+    }
+
+    @Test
+    fun localNavigationNeverTypesIntoThePty() {
+        assertEquals(PageMsg.Unavailable, TermPage.decode("""{"t":"unavailable"}"""))
+        assertEquals(PageMsg.Matches(-1, 0, true, false), TermPage.decode("""{"t":"matches","count":0,"active":-1,"searching":true}"""))
+        assertEquals(PageMsg.Matches(2, 10_000, false, true), TermPage.decode("""{"t":"matches","count":10000,"active":2,"limited":true}"""))
+        assertEquals(PageMsg.Prompts(false), TermPage.decode("""{"t":"prompts","available":false}"""))
+        assertEquals(Json.parseToJsonElement("""{"t":"search","query":"a\"b"}"""), message(TermPage.search("a\"b")))
+        assertEquals(Json.parseToJsonElement("""{"t":"match","direction":1}"""), message(TermPage.navigate(false, true)))
+        assertEquals(Json.parseToJsonElement("""{"t":"prompt","direction":-1}"""), message(TermPage.navigate(true, false)))
     }
 
     @Test
