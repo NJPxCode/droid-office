@@ -1,12 +1,164 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { buildSync } from 'esbuild';
 import { browserStatus, closeBrowser, launchBrowser, newIsolatedContext } from '../src/server/whiteboard-browser.js';
 import { FIXTURE } from '../tools/thread-fixture.mjs';
+import headless from '@xterm/headless';
+import unicode11 from '@xterm/addon-unicode11';
+import { snapshotScreen } from '../src/server/screen-frame.js';
 
 const status = browserStatus();
+
+async function previewFixture(t: TestContext, data: string) {
+  const term = new headless.Terminal({ cols: 40, rows: 10, allowProposedApi: true });
+  t.after(() => term.dispose());
+  term.loadAddon(new unicode11.Unicode11Addon());
+  term.unicode.activeVersion = '11';
+  await new Promise<void>((done) => term.write(data, done));
+  const frame = snapshotScreen(term, [])!;
+  const browser = await launchBrowser();
+  t.after(closeBrowser);
+  const context = await newIsolatedContext(browser);
+  t.after(() => context.close());
+  const page = await context.newPage();
+  await page.setContent('<!doctype html><body></body>');
+  await page.addStyleTag({ content: readFileSync(new URL('../src/client/style.css', import.meta.url), 'utf8') });
+  await page.addScriptTag({
+    content: buildSync({
+      stdin: { contents: "export { createPane } from './dashboard-pane'; export { store } from './state';", resolveDir: fileURLToPath(new URL('../src/client', import.meta.url)) },
+      bundle: true,
+      format: 'iife',
+      globalName: 'PaneUI',
+      write: false,
+      target: 'es2022',
+    }).outputFiles[0].text,
+  });
+  await page.addScriptTag({ content: 'window.__name = (fn) => fn;' });
+  await page.evaluate((frame) => {
+    const { createPane, store } = (window as any).PaneUI;
+    const worker = { id: 'shell', name: 'Shell', kind: 'shell', color: '#89d9ed', status: 'exited' };
+    store.apply({ ...frame, t: 'screen', workerId: worker.id });
+    const pane = createPane({ live: () => true, busy: () => false, worker: () => worker, mission: () => undefined, read: () => '', floor: () => '' }, 0);
+    pane.update({ worker, view: 'terminal', focused: true, candidates: [] });
+    document.body.append(pane.el.querySelector('.dash-preview'));
+  }, frame);
+  const rows = page.locator('.dash-preview-row');
+  async function pixels(index: number, hide = false) {
+    const row = rows.nth(index);
+    if (hide) await row.locator('span').evaluate((el) => ((el as HTMLElement).style.visibility = 'hidden'));
+    const png = await row.screenshot();
+    return page.evaluate(async (base64) => {
+      const img = new Image();
+      img.src = `data:image/png;base64,${base64}`;
+      await img.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = 100;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      return Array.from(ctx.getImageData(0, 0, 100, img.height).data);
+    }, png.toString('base64'));
+  }
+  return { rows, pixels };
+}
+
+test('compact preview clips one-column ink at the baseline and decorates whole cell boxes', { skip: !status.installed }, async (t) => {
+  const { rows, pixels } = await previewFixture(t, 'Screen\r\n\r\n\r\nA🖥️Z\r\nA Z\r\n\x1b[38;2;0;255;0;4m   \r\n👩‍💻\x1b[0m\r\n\x1b[38;2;0;255;0;9;53m   \x1b[0m\r\nxx\x1b[3;4mf\x1b[0mZ');
+  const box = await rows.nth(3).evaluate((el) => {
+    const bounds = el.getBoundingClientRect(),
+      cell = el.querySelector('span')!.getBoundingClientRect();
+    return { left: cell.left - bounds.left, right: cell.right - bounds.left, width: cell.width };
+  });
+  const ink = await pixels(3),
+    off = await pixels(3, true),
+    plain = await pixels(4);
+  const changed = Array.from({ length: ink.length / 4 }, (_, i) => i).filter((i) => ink.slice(4 * i, 4 * i + 3).some((v, k) => Math.abs(v - off[4 * i + k]) > 10));
+  const right = Math.max(...changed.map((i) => i % 100)) + 1;
+  const baseline = (p: number[]) => {
+    let bottom = -1;
+    for (let i = 0; i < p.length; i += 4) if ((i / 4) % 100 < box.left && p[i] > 100) bottom = Math.floor(i / 400);
+    return bottom;
+  };
+  const strokes = async (i: number) => {
+    const p = await pixels(i);
+    const widths: number[] = [];
+    for (let row = 0; row < p.length; row += 400) {
+      let n = 0;
+      for (let j = row; j < row + 400; j += 4) if (p[j + 1] > 100 && p[j + 1] > p[j] + 50 && p[j + 1] > p[j + 2] + 50) n++;
+      widths.push(n);
+    }
+    return widths.filter((n) => n > 0);
+  };
+  const spaces = await strokes(5),
+    emoji = await strokes(6),
+    both = await strokes(7);
+  t.diagnostic(JSON.stringify({ box, right, baseline: [baseline(off), baseline(plain)], spaces, emoji, both }));
+  assert.ok(changed.length > 0 && right <= Math.ceil(box.right), 'the emoji must not paint into Z');
+  assert.ok(baseline(off) >= 0 && baseline(off) === baseline(plain), 'neighbouring text must not move vertically');
+  assert.ok(
+    spaces.some((n) => Math.abs(n - 3 * box.width) <= 1),
+    'underline spans three spaces',
+  );
+  assert.ok(
+    emoji.some((n) => Math.abs(n - 4 * box.width) <= 1),
+    'underline spans a four-column ZWJ',
+  );
+  assert.ok(both.filter((n) => Math.abs(n - 3 * box.width) <= 1).length >= 2, 'strike and overline span the blank run');
+
+  // Use the shipped font: a fallback monospace font need not have the same italic overhang.
+  const f = rows.nth(8).locator('span');
+  const font = readFileSync(new URL('../src/client/public/fonts/GeistMono-Variable.woff2', import.meta.url)).toString('base64');
+  await f.evaluate(async (el, data) => {
+    const face = await new FontFace('Preview Geist Mono', `url(data:font/woff2;base64,${data})`).load();
+    document.fonts.add(face);
+    el.parentElement!.style.fontFamily = "'Preview Geist Mono'";
+  }, font);
+  const actual = await pixels(8);
+  await f.evaluate((el) => ((el as HTMLElement).style.clipPath = 'inset(0)'));
+  const clipped = await pixels(8);
+  const edge = await f.evaluate((el) => {
+    (el as HTMLElement).style.clipPath = 'none';
+    return Math.floor(el.getBoundingClientRect().right - el.parentElement!.getBoundingClientRect().left);
+  });
+  const natural = await pixels(8);
+  const beyond = natural.filter((v, i) => i % 4 === 0 && (i / 4) % 100 >= edge && v > clipped[i] + 5).length;
+  t.diagnostic(`Geist Mono italic f retains ${beyond} right-edge pixels lost by the clipped control`);
+  assert.ok(beyond > 0, 'clipping removes right-edge ink from the italic f control');
+  assert.deepEqual(actual, natural, 'the decorated ASCII f keeps its natural ink before Z');
+});
+
+test('preview shapes Arabic and Hebrew as unsplit words before the next cell', { skip: !status.installed }, async (t) => {
+  const words = ['سلام', 'שלום'];
+  const { rows, pixels } = await previewFixture(t, words.map((w) => `${w}Z`).join('\r\n'));
+  for (const [i, word] of words.entries()) {
+    const row = rows.nth(i);
+    const actual = await pixels(i);
+    assert.deepEqual(await row.locator('span').allTextContents(), [word]);
+    assert.equal(await row.locator('span').evaluate((el) => el.style.width), '4ch');
+    // Reference: one natural text node in a four-cell box, then the ASCII suffix.
+    await row.evaluate((el, word) => {
+      const ref = document.createElement('span');
+      ref.style.cssText = 'display:inline-block;width:4ch;clip-path:inset(0)';
+      ref.textContent = word;
+      el.replaceChildren(ref, 'Z');
+    }, word);
+    assert.deepEqual(actual, await pixels(i), `visual order and shaping for ${word}`);
+  }
+});
+
+test('one background color covers equal-height ASCII and wide cells in Chromium', { skip: !status.installed }, async (t) => {
+  const { rows, pixels } = await previewFixture(t, '\r\n\r\n\r\n\x1b[38;2;0;255;0;48;2;0;255;0mA界Z');
+  const x = await rows.nth(3).evaluate((el) => [...el.children].map((span) => Math.floor(span.getBoundingClientRect().left - el.getBoundingClientRect().left + span.getBoundingClientRect().width / 2)));
+  const p = await pixels(3);
+  const bands = x.map((col) => Array.from({ length: p.length / 400 }, (_, y) => y).filter((y) => p[y * 400 + col * 4 + 1] > 150));
+  t.diagnostic(`Background pixel rows for A界Z: ${JSON.stringify(bands.map((b) => [b[0], b.at(-1)]))}`);
+  assert.equal(bands.length, 3);
+  assert.ok(bands[0].length > 0);
+  assert.deepEqual(bands[1], bands[0]);
+  assert.deepEqual(bands[2], bands[0]);
+});
 
 test('empty pane clicks hire in place without swallowing worker picks or allowing offline hires', { skip: status.installed ? false : `Chromium is not installed in ${status.path}` }, async (t) => {
   const browser = await launchBrowser();

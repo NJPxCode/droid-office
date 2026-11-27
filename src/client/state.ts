@@ -622,10 +622,7 @@ export class Store {
               .catch(() => undefined);
           }
         }
-        if (s.cursor[0] !== msg.cursor[0] || s.cursor[1] !== msg.cursor[1]) {
-          s.cursor = msg.cursor;
-          changed = true;
-        }
+        s.cursor = msg.cursor; // Recorded on each delivered frame, but not painted by compact views.
         if (changed) {
           s.version++;
           this.emit('screens', msg.workerId);
@@ -775,7 +772,7 @@ function sameRuns(a: Run[] | undefined, b: Run[] | undefined): boolean {
   for (let i = 0; i < al; i++) {
     const ar = a![i];
     const br = b![i];
-    if (ar[0] !== br[0] || ar[1] !== br[1] || ar[2] !== br[2] || ar[3] !== br[3]) return false;
+    if (ar[0] !== br[0] || ar[1] !== br[1] || ar[2] !== br[2] || ar[3] !== br[3] || ar[4] !== br[4] || ar[5] !== br[5]) return false;
   }
   return true;
 }
