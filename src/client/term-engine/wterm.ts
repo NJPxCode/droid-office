@@ -338,6 +338,12 @@ export class WTermAdapter {
           { capture: true, signal },
         );
 
+      // A focus report is not typing: wterm 0.6.0's normal input callback also scrolls to the tail.
+      const reportFocus = (event: FocusEvent) => {
+        if (core.focusEvents() && !this.options.disableStdin) this.data.fire(event.type === 'focus' ? '\x1b[I' : '\x1b[O');
+      };
+      this.textarea?.addEventListener('focus', reportFocus, { signal });
+      this.textarea?.addEventListener('blur', reportFocus, { signal });
       root.addEventListener(
         'scroll',
         (e) => {
@@ -442,7 +448,6 @@ export class WTermAdapter {
   }
   write(data: string, done?: () => void) {
     if (this.lifetime.signal.aborted) return;
-    const focused = this.core?.focusEvents();
     this.before.fire(data);
     this.displayWrite = true;
     try {
@@ -450,7 +455,6 @@ export class WTermAdapter {
     } finally {
       this.displayWrite = false;
     }
-    if (!focused && this.core?.focusEvents() && this.textarea === document.activeElement && !this.options.disableStdin) this.data.fire('\x1b[I');
     this.parsed.fire();
     if (done)
       queueMicrotask(() => {
@@ -480,8 +484,9 @@ export class WTermAdapter {
   }
   paste(text: string) {
     if (this.options.disableStdin) return;
-    const data = text.replace(/\r?\n/g, '\r');
-    this.input(this.modes.bracketedPasteMode ? `\x1b[200~${data.replaceAll('\x1b', '')}\x1b[201~` : data);
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', text);
+    this.textarea?.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
   }
   input(data: string) {
     if (!this.options.disableStdin && !this.lifetime.signal.aborted) {

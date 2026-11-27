@@ -1,292 +1,454 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
 import { browserStatus, closeBrowser, launchBrowser, newIsolatedContext } from '../src/server/whiteboard-browser.js';
+import { terminalFixture } from './helpers/terminal-fixture.js';
 
 const status = browserStatus();
 
-test('Chromium sends identical keyboard bytes from xterm and wterm', { skip: !status.installed && `No Chromium in ${status.path}` }, async (t) => {
-  const cacheDir = await mkdtemp(join(tmpdir(), 'office-wterm-keys-'));
-  const server = await createServer({
-    root: fileURLToPath(new URL('../src/client', import.meta.url)),
-    cacheDir,
-    configFile: false,
-    resolve: { alias: { '/oracle': fileURLToPath(new URL('./oracle', import.meta.url)) } },
-    logLevel: 'error',
-    appType: 'custom',
-    server: { host: '127.0.0.1', port: 0, hmr: false },
-    optimizeDeps: { noDiscovery: true, include: ['@xterm/xterm', '@wterm/dom', '@wterm/ghostty'] },
-  });
-  t.after(async () => {
-    await server.close();
-    await rm(cacheDir, { recursive: true, force: true });
-  });
-  await server.listen();
-  const address = server.httpServer!.address();
-  assert.ok(address && typeof address === 'object');
+test('wterm owns desktop keyboard negotiation, selection and text input', { skip: !status.installed && `No Chromium in ${status.path}` }, async (t) => {
   const browser = await launchBrowser();
   t.after(closeBrowser);
   const context = await newIsolatedContext(browser);
   t.after(() => context.close());
-  const errors: string[] = [];
-
+  const mount = await terminalFixture(t);
   for (const platform of ['MacIntel', 'Win32']) {
-    const page = await context.newPage();
-    const cdp = await context.newCDPSession(page);
-    page.on('pageerror', (error) => errors.push(error.message));
-    await page.addInitScript((value) => Object.defineProperty(navigator, 'platform', { value }), platform);
-    await page.route('**/fixture', (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><div style="width:640px;height:320px" id="host"></div>' }));
-    await page.goto(`http://127.0.0.1:${address.port}/fixture`);
-
-    const run = async (name: string) => {
-      await page.evaluate(async (name) => {
-        const modules = ['/oracle/terminal.ts', '/term-engine/wterm-keys.ts', '/oracle/kitty.ts', '/term-mirror.ts'];
-        const [{ comparisonTerminal }, { attachWtermKeys }, { attachKittyTerminal }, { suppressMirrorQueries }] = await Promise.all(modules.map((url) => import(url)));
+    await t.test(platform, async (sub) => {
+      const page = await context.newPage();
+      const cdp = await context.newCDPSession(page);
+      await page.addInitScript((value) => Object.defineProperty(navigator, 'platform', { value }), platform);
+      await mount(page, '<div id="host" style="width:400px;height:200px"></div><button id="next">Next</button>');
+      await page.evaluate(async () => {
+        const url = '/term-engine/web-terminal.ts';
+        const { term, features } = (await import(url)).createWebTerminal({ macOptionIsMeta: true });
         const w = window as any;
-        const term = comparisonTerminal({ allowProposedApi: true, macOptionIsMeta: true }, name);
-        const { keyAction } = name !== 'xterm' ? attachWtermKeys(term) : attachKittyTerminal(term);
         w.term = term;
-        w.csiEnter = false;
-        w.bytes = '';
-        term.onData((data: string) => {
-          w.bytes += data;
-        });
-        suppressMirrorQueries(term);
-        term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-          if ((e.ctrlKey && e.key === ']') || (e.shiftKey && e.key === 'Escape')) return false;
-          const action = keyAction(e, w.csiEnter);
-          if (action.do === 'send') {
-            e.preventDefault();
-            term.input(action.data);
-          }
-          return action.do === 'default';
-        });
+        w.bytes = [];
+        w.agent = true;
+        term.onData((data: string) => w.bytes.push(data));
+        w.deskKeys = (e: KeyboardEvent) => !features.keyException(e, w.agent) && !features.handleKey(e);
+        term.attachCustomKeyEventHandler(w.deskKeys);
         await term.open(document.querySelector('#host'));
+        term.resize(40, 8);
         term.focus();
-      }, name);
-      const results: Record<string, string> = {};
-      let state = '';
-      const record = async (label: string, fn: () => Promise<unknown>) => {
-        await fn();
-        results[`${state}/${label}`] = await page.evaluate(() => {
-          const w = window as any;
-          const bytes = w.bytes;
-          w.bytes = '';
-          return bytes;
-        });
+      });
+      const sent = () => page.evaluate(() => (window as any).bytes.splice(0).join(''));
+      const write = (data: string) => page.evaluate((data) => (window as any).term.write(data), data);
+      const key = async (k: string) => {
+        await page.keyboard.press(k);
+        return sent();
       };
-      const key = (k: string) => record(k, () => page.keyboard.press(k));
-      const layout = async (key: string, code: string, windowsVirtualKeyCode: number, modifiers: number, text?: string) => {
-        const event = { key, code, windowsVirtualKeyCode, modifiers };
+      const layout = async (key: string, code: string, vk: number, modifiers: number, text?: string) => {
+        const event = { key, code, windowsVirtualKeyCode: vk, modifiers };
         await cdp.send('Input.dispatchKeyEvent', { ...event, type: text ? 'keyDown' : 'rawKeyDown', text });
         await cdp.send('Input.dispatchKeyEvent', { ...event, type: 'keyUp' });
       };
-      const write = (vt: string) => page.evaluate((vt) => new Promise<void>((done) => (window as any).term.write(vt, done)), vt);
-      for (const [label, vt] of [
-        ['legacy', ''],
-        ['disambiguate', '\x1b[>1u'],
-        ['events', '\x1b[=2;2u'],
-      ]) {
-        state = label;
-        if (vt) {
-          await write(vt.slice(0, 3));
-          await write(vt.slice(3));
-        }
-        await record('query', () => write('\x1b[?u'));
-        if (platform === 'Win32') {
-          // Chromium reports AltGr as Ctrl+Alt with a right Alt held on Windows.
-          await record('AltGr+Q', async () => {
-            await page.keyboard.down('ControlLeft');
-            await page.keyboard.down('AltRight');
-            await layout('@', 'KeyQ', 81, 3, '@');
-            await page.keyboard.up('AltRight');
-            await page.keyboard.up('ControlLeft');
-          });
-          continue;
-        }
-        for (const k of [
-          'Enter',
-          'Control+Enter',
-          'Shift+Enter',
-          'Alt+ArrowLeft',
-          'Alt+ArrowRight',
-          'Alt+Backspace',
-          'Alt+Delete',
-          'Control+v',
-          'Control+a',
-          'Control+c',
-          'Control+Space',
-          'Space',
-          'Shift+T',
-          'Shift+Tab',
-          'Escape',
-          'Tab',
-          'Backspace',
-          'ArrowUp',
-          'ArrowDown',
-          'F1',
-          'F5',
-          'Shift+F12',
-          'Control+]',
-          'Shift+Escape',
-          'Alt+Tab',
-          'Control+Alt+Backspace',
-          'Meta+Backspace',
-          'Control+Shift+A',
-          'Control+Shift+V',
-          'Control+2',
-          'Control+3',
-          'Control+8',
-          'Control+[',
-          'Control+\\',
-          'Control+Insert',
-          'Alt+PageUp',
-          'Alt+Insert',
-        ])
-          await key(k);
-        // Avoid dispatching the OS paste command to the test machine's clipboard.
-        await record('Shift+Insert', () => page.evaluate(() => (window as any).term.textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Insert', keyCode: 45, shiftKey: true, bubbles: true, cancelable: true }))));
-        for (const [key, code, vk] of [
-          ['k', 'KeyV', 75],
-          ['v', 'Period', 86],
-          ['м', 'KeyV', 86],
-        ] as const)
-          await record(`${key}@${code}`, () => layout(key, code, vk, 2));
-        await record('Cmd+V and paste', async () => {
-          await write('\x1b[?2004h');
-          await layout('v', 'KeyV', 86, 4);
-          await page.evaluate(() => {
-            const data = new DataTransfer();
-            data.setData('text/plain', 'paste\nsecond line');
-            (window as any).term.textarea.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
-          });
-        });
-        for (const meta of [true, false]) {
-          await page.evaluate((v) => {
-            (window as any).term.options.macOptionIsMeta = v;
-          }, meta);
-          await record(`Option-F meta=${meta}`, () => layout('ƒ', 'KeyF', 70, 1, 'ƒ'));
-          await record(`Option-; meta=${meta}`, () => layout('…', 'Semicolon', 186, 1, '…'));
-          await record(`word navigation meta=${meta}`, async () => {
-            for (const key of ['Alt+ArrowLeft', 'Alt+ArrowRight', 'Alt+Backspace', 'Alt+Delete']) await page.keyboard.press(key);
-          });
-          // The layout reports Option+` and Option+E as dead before compositionstart.
-          for (const [code, vk] of [
-            ['KeyE', 69],
-            ['Backquote', 192],
-          ] as const) {
-            await record(`Option-${code} meta=${meta}`, async () => {
-              await layout('Dead', code, vk, 1);
-              if (!meta) {
-                const accented = code === 'KeyE' ? 'á' : 'à';
-                await layout(accented, 'KeyA', 65, 0, accented);
-              }
-            });
-          }
-        }
-        await record('IME commit', async () => {
-          await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
-          await page.evaluate(() => (window as any).term.textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 229, ctrlKey: true, isComposing: true, bubbles: true, cancelable: true })));
-          await cdp.send('Input.insertText', { text: '日' });
-          await page.waitForFunction(() => (window as any).bytes !== '');
-        });
-        await page.evaluate(() => {
-          (window as any).term.options.macOptionIsMeta = true;
-        });
-        await record('Ctrl+C with a selection', async () => {
-          await write('\rselect me');
-          await page.evaluate(async () => {
-            const { term } = window as any;
-            await (term.native ?? term).selectAll();
-            if (!(term.native ? term.native.getSelectionText() : term.getSelection())) throw Error('expected selected text');
-          });
-          await page.keyboard.press('Control+c');
-        });
-        await record('CSI Enter enabled', async () => {
-          await page.evaluate(() => {
-            (window as any).csiEnter = true;
-          });
-          await page.keyboard.press('Control+Enter');
-          await page.keyboard.press('Shift+Enter');
-          await page.evaluate(() => {
-            (window as any).csiEnter = false;
-          });
-        });
-        await write('\x1b[?1h');
-        for (const k of ['Home', 'End', 'ArrowLeft']) await key(k);
-        await record('repeat/release', async () => {
-          await page.keyboard.down('ArrowLeft');
-          await page.keyboard.down('ArrowLeft');
-          await page.keyboard.up('ArrowLeft');
-        });
-        await write('\x1b[?1l');
-        await record('disabled', async () => {
-          await page.evaluate(() => {
-            (window as any).term.options.disableStdin = true;
-          });
-          await page.keyboard.press('a');
-          await page.keyboard.press('Control+v');
-          await page.keyboard.press('Shift+Enter');
-          await page.evaluate(() => {
-            (window as any).term.options.disableStdin = false;
-          });
-        });
-      }
       if (platform === 'MacIntel') {
-        state = 'transitions';
-        await write('\x1b[?1049h\x1b[>31u');
-        await key('Shift+T');
-        await write('\x1b[?1049l\x1b[<u\x1b[>4;2m');
-        await key('Control+a');
-        await write('\x1b[>9u\x1bc');
-        await key('a');
-        await write('\x1b[>31u');
-        await page.evaluate(() => (window as any).term.reset());
-        await key('Control+x');
-        // Deliberate safety difference: wterm strips embedded ESC in bracketed paste.
-        await write('\x1b[?2004h');
-        const paste = await page.evaluate(() => {
-          const w = window as any;
-          const data = new DataTransfer();
-          data.setData('text/plain', 'a\x1bb');
-          w.term.textarea.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
-          return w.bytes;
-        });
-        assert.equal(paste, name === 'xterm' ? '\x1b[200~a\x1bb\x1b[201~' : '\x1b[200~ab\x1b[201~');
-        if (name === 'ghostty') {
-          await write('\x1b[=1u\x1b[>3u\x1b[>4;2m');
-          const modes = await page.evaluate(() => {
-            const { core } = (window as any).term;
-            return [core.kittyKeyboardFlags(), core.modifyOtherKeys()];
+        const reset = async (flags: number, agent = true) => {
+          await page.evaluate(
+            ({ flags, agent }) => {
+              const w = window as any;
+              w.agent = agent;
+              w.term.reset();
+              w.term.write(`\x1b[=${flags}ux`);
+              w.term.focus();
+              w.bytes.length = 0;
+            },
+            { flags, agent },
+          );
+        };
+        const event = (type: string, props: KeyboardEventInit & { keyCode?: number }) =>
+          page.evaluate(
+            ({ type, props }) => {
+              (window as any).term.textarea.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true, ...props }));
+            },
+            { type, props },
+          );
+        await sub.test('Escape cancels a pending history selection without interrupting the program', async () => {
+          await reset(1);
+          await page.evaluate(() => {
+            const { native } = (window as any).term;
+            native.setScrollbackLines(5000);
+            native.write(
+              Array.from({ length: 5000 }, (_, i) => `history ${i}`)
+                .concat('last row')
+                .join('\r\n'),
+            );
           });
-          assert.deepEqual(modes, [0, 0], 'only the office encoder negotiated modes');
-        }
+          const copy = () =>
+            page.evaluate(() => {
+              const t = (window as any).term;
+              const clipboardData = new DataTransfer();
+              const e = new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData });
+              t.textarea.dispatchEvent(e);
+              return { handled: e.defaultPrevented, text: clipboardData.getData('text/plain') };
+            });
+          // WTerm starts the scan after paint. Pause only painting so trusted key events
+          // hit the real pending state independently of machine speed.
+          await page.evaluate(() => (window as any).term.native.setRenderingPaused(true));
+          // Count actual public calls, including native's own shortcut, without replacing the method.
+          await cdp.send('Debugger.enable');
+          const { result } = await cdp.send('Runtime.evaluate', { expression: 'window.scanCalls = 0; window.term.native.selectAll' });
+          await cdp.send('Debugger.setBreakpointOnFunctionCall', { objectId: result.objectId!, condition: '(++window.scanCalls, false)' });
+          try {
+            assert.equal(await key('Meta+a'), '');
+            assert.equal(await key('Meta+a'), '');
+            assert.equal(await page.evaluate(() => (window as any).scanCalls), 1);
+            assert.deepEqual(await copy(), { handled: true, text: '' });
+            assert.equal(await key('Escape'), '');
+            assert.deepEqual(await copy(), { handled: false, text: '' });
+            assert.equal(await key('Tab'), '');
+            assert.equal(await page.evaluate(() => document.activeElement?.id), 'next');
+          } finally {
+            await cdp.send('Debugger.disable');
+            await page.evaluate(() => (window as any).term.native.setRenderingPaused(false));
+          }
+          await page.locator('#host textarea').focus();
+          assert.equal(await key('Tab'), '\t');
+          const selected = [];
+          for (const desk of [false, true]) {
+            await page.evaluate((desk) => {
+              const w = window as any;
+              w.term.attachCustomKeyEventHandler(desk ? w.deskKeys : () => true);
+            }, desk);
+            assert.equal(await key('Meta+a'), '');
+            await page.waitForFunction(() => (window as any).term.native.getSelectionText() !== null);
+            const text = await page.evaluate(() => (window as any).term.native.getSelectionText());
+            assert.match(text, /history 0\n/);
+            assert.match(text, /history 4999\nlast row/);
+            assert.deepEqual(await copy(), { handled: true, text });
+            selected.push(text);
+            await page.evaluate(() => (window as any).term.native.clearSelection());
+          }
+          assert.equal(selected[1], selected[0]);
+          assert.equal(await key('Escape'), '\x1b[27u');
+          assert.equal(await key('Tab'), '\t');
+        });
+        await sub.test('Escape clears empty and unserializable terminal selections before interrupting', async () => {
+          await reset(1);
+          const seen = [];
+          for (const kind of ['blank row', 'non-grid text']) {
+            const selection = await page.evaluate(async (kind) => {
+              const { native } = (window as any).term;
+              await new Promise(requestAnimationFrame);
+              const node = kind === 'blank row' ? native.element.querySelectorAll('.term-grid .term-row')[1] : native.element.appendChild(document.createElement('span'));
+              if (kind === 'non-grid text') node.textContent = 'label';
+              const range = document.createRange(),
+                sel = document.getSelection()!;
+              range.selectNodeContents(node);
+              sel.removeAllRanges();
+              sel.addRange(range);
+              return [sel.isCollapsed, native.getSelectionText()];
+            }, kind);
+            assert.deepEqual(selection, [false, kind === 'blank row' ? '' : null]);
+            seen.push([await key('Escape'), await page.evaluate(() => document.getSelection()!.isCollapsed)]);
+          }
+          assert.deepEqual(seen, [
+            ['', true],
+            ['', true],
+          ]);
+        });
+        await sub.test('holding Escape after clearing a selection keeps repeats, release and the next Tab out of the PTY', async () => {
+          for (const [flags, plainEscape] of [
+            [0, '\x1b'],
+            [1, '\x1b[27u'],
+            [3, '\x1b[27u\x1b[27;1:3u'],
+          ] as const) {
+            for (const pending of [false, true]) {
+              await reset(flags, flags !== 0);
+              await page.evaluate((paused) => (window as any).term.native.setRenderingPaused(paused), pending);
+              try {
+                if (pending) assert.equal(await key('Meta+a'), '');
+                else assert.ok(await page.evaluate(() => (window as any).term.native.selectAll()));
+                for (let i = 0; i < 3; i++) await page.keyboard.down('Escape');
+                await page.keyboard.up('Escape');
+                assert.equal(await sent(), '', `flags ${flags}, pending ${pending}`);
+                assert.equal(await page.evaluate(() => (window as any).term.native.getSelectionText()), null);
+                assert.equal(await key('Tab'), '');
+                assert.equal(await page.evaluate(() => document.activeElement?.id), 'next');
+                await page.locator('#host textarea').focus();
+                assert.equal(await key('Escape'), plainEscape);
+              } finally {
+                await page.evaluate(() => (window as any).term.native.setRenderingPaused(false));
+              }
+            }
+          }
+          await reset(0, false);
+          assert.ok(await page.evaluate(() => (window as any).term.native.selectAll()));
+          await page.keyboard.down('Escape');
+          await page.locator('#next').focus();
+          await page.locator('#host textarea').focus();
+          await page.keyboard.down('Escape');
+          await page.keyboard.up('Escape');
+          assert.equal(await sent(), '\x1b', 'blur releases ownership of the held key');
+        });
+        await sub.test('an active IME owns unflagged Escape and Ctrl+Enter until composition ends', async () => {
+          await reset(0);
+          await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
+          for (const props of [
+            { key: 'Escape', code: 'Escape' },
+            { key: 'Enter', code: 'Enter', ctrlKey: true },
+          ])
+            for (const type of ['keydown', 'keyup']) await event(type, props);
+          const during = await sent();
+          await cdp.send('Input.insertText', { text: '日' });
+          assert.equal(during, '');
+          assert.equal(await sent(), '日');
+          assert.equal(await key('Escape'), '\x1b');
+          assert.equal(await key('Control+Enter'), '\x1b[13;5u');
+        });
+        await sub.test('Select All leaves Kitty-owned repeats and composing keys alone', async () => {
+          await reset(11);
+          const held = { key: 'a', code: 'KeyA' };
+          await event('keydown', held);
+          await event('keydown', { ...held, repeat: true, metaKey: true });
+          await event('keyup', held);
+          assert.equal(await sent(), '\x1b[97u\x1b[97;9:2u\x1b[97;1:3u');
+          await reset(1);
+          await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
+          await event('keydown', { ...held, metaKey: true });
+          await cdp.send('Input.insertText', { text: '日' });
+          assert.equal(await sent(), '日');
+          assert.equal(await key('Escape'), '\x1b[27u');
+          assert.equal(await key('Control+Shift+a'), '');
+          assert.equal(await key('Escape'), '');
+          assert.equal(await key('Tab'), '');
+          assert.equal(await page.evaluate(() => document.activeElement?.id), 'next');
+          await page.locator('#host textarea').focus();
+        });
+        await sub.test('a composed or missed keyup cannot rename the next plain key', async () => {
+          const seen = [];
+          for (const composing of [true, false]) {
+            await reset(11);
+            const digit = { code: 'Digit2', keyCode: 50 };
+            await event('keydown', { ...digit, key: '@', altKey: true, shiftKey: true });
+            if (composing) {
+              await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
+              await event('keyup', { ...digit, key: '2', isComposing: true });
+              await cdp.send('Input.insertText', { text: '日' });
+            }
+            await sent();
+            await event('keydown', { ...digit, key: '2' });
+            await event('keydown', { ...digit, key: '2', repeat: true });
+            await event('keyup', { ...digit, key: '2' });
+            seen.push(await sent());
+          }
+          assert.deepEqual(seen, Array(2).fill('\x1b[50u\x1b[50;1:2u\x1b[50;1:3u'));
+        });
+        await sub.test('Kitty Escape retains its identity without a recognized physical code', async () => {
+          await reset(3);
+          for (const type of ['keydown', 'keyup']) await event(type, { key: 'Escape', code: 'Unidentified' });
+          assert.equal(await sent(), '\x1b[27u\x1b[27;1:3u');
+          assert.equal(await key('Tab'), '\t');
+        });
+        await sub.test('plain Escape keeps Tab and Shift+Tab in the program', async () => {
+          const seen = [];
+          for (const flags of [0, 1, 3])
+            for (const tab of ['Tab', 'Shift+Tab']) {
+              await reset(flags);
+              seen.push([await key('Escape'), await key(tab)]);
+            }
+          assert.deepEqual(seen, [
+            ['\x1b', '\t'],
+            ['\x1b', '\x1b[Z'],
+            ['\x1b[27u', '\t'],
+            ['\x1b[27u', '\x1b[9;2u'],
+            ['\x1b[27u\x1b[27;1:3u', '\t'],
+            ['\x1b[27u\x1b[27;1:3u', '\x1b[9;2u\x1b[9;2:3u'],
+          ]);
+          await reset(1);
+          assert.equal(await key('Alt+Enter'), '\x1b[13;3u');
+        });
+        await sub.test('Mac Control chords use Latin shortcuts on Cyrillic and Caps Lock layouts', async () => {
+          const seen = [];
+          for (const flags of [0, 1]) {
+            await reset(flags);
+            for (const [ch, code, vk] of [
+              ['C', 'KeyC', 67],
+              ['с', 'KeyC', 67],
+              ['м', 'KeyV', 86],
+              ['ф', 'KeyA', 65],
+            ] as const) {
+              if (code === 'KeyC') await page.evaluate(() => (window as any).term.native.selectAll());
+              await layout(ch, code, vk, 2);
+              seen.push(await sent());
+            }
+          }
+          assert.deepEqual(seen, ['\x03', '\x03', '\x16', '\x01', '\x1b[99;5u', '\x1b[99;5u', '\x1b[118;5u', '\x1b[97;5u']);
+          await page.evaluate(() => (window as any).term.native.selectAll());
+          for (const key of ['C', 'V']) {
+            const ev = { key, code: 'Key' + key, ctrlKey: true, modifierCapsLock: true };
+            await event('keydown', ev);
+            await event('keyup', ev);
+          }
+          assert.equal(await sent(), '\x1b[99;69u\x1b[118;69u');
+        });
+        await sub.test('text commits, paste and pointer presses cancel selection traversal', async () => {
+          const seen = [];
+          for (const activity of ['compositionstart', 'input', 'paste', 'pointerdown']) {
+            await reset(1);
+            await page.evaluate(() => {
+              const sel = document.getSelection()!,
+                r = document.createRange();
+              r.selectNodeContents(document.querySelector('.term-row')!);
+              sel.removeAllRanges();
+              sel.addRange(r);
+            });
+            await key('Escape');
+            await page.evaluate((activity) => {
+              const { textarea } = (window as any).term;
+              textarea.dispatchEvent(new Event(activity, { bubbles: true }));
+              if (activity === 'compositionstart') textarea.dispatchEvent(new CompositionEvent('compositionend', { data: '日' }));
+            }, activity);
+            await sent();
+            seen.push(await key('Tab'));
+          }
+          assert.deepEqual(seen, ['\t', '\t', '\t', '\t']);
+        });
+        await sub.test('only unnegotiated shell Shift+Enter submits a CR', async () => {
+          const seen = [];
+          for (const [flags, agent] of [
+            [0, false],
+            [0, true],
+            [1, false],
+            [1, true],
+          ] as const) {
+            await reset(flags, agent);
+            seen.push(await key('Shift+Enter'));
+          }
+          assert.deepEqual(seen, ['\r', '\x1b[13;2u', '\x1b[13;2u', '\x1b[13;2u']);
+        });
+        await sub.test('clipboard and programmatic paste normalize only outside bracketed mode', async () => {
+          await reset(0, false);
+          const seen = [];
+          for (const mode of ['l', 'h']) {
+            await write('\x1b[?2004' + mode);
+            await page.evaluate(() => {
+              const t = (window as any).term,
+                text = 'a\nb\r\nc',
+                clipboardData = new DataTransfer();
+              clipboardData.setData('text/plain', text);
+              t.textarea.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+              t.paste(text);
+            });
+            seen.push(await sent());
+          }
+          assert.deepEqual(seen, ['a\rb\rc'.repeat(2), '\x1b[200~a\nb\r\nc\x1b[201~'.repeat(2)]);
+        });
+        await sub.test('Option Meta uses base Space and dead key without a virtual key', async () => {
+          await reset(1);
+          await layout('\u00a0', 'Space', 32, 1, '\u00a0');
+          await event('keydown', { key: 'Dead', code: 'KeyE', keyCode: 0, altKey: true });
+          await event('keyup', { key: 'Dead', code: 'KeyE', keyCode: 0, altKey: true });
+          assert.equal(await sent(), '\x1b[32;3u\x1b[101;3u');
+        });
+        await sub.test('remapped Option repeats and releases retain the pressed key', async () => {
+          await reset(3);
+          await event('keydown', { key: '@', code: 'Digit2', keyCode: 50, altKey: true, shiftKey: true });
+          await event('keydown', { key: '™', code: 'Digit2', keyCode: 50, altKey: true, repeat: true });
+          await event('keyup', { key: '2', code: 'Digit2', keyCode: 50, altKey: true });
+          assert.equal(await sent(), '\x1b[64;4u\x1b[64;3:2u\x1b[64;3:3u');
+        });
+        await reset(0);
       }
-      await page.evaluate(() => (window as any).term.dispose());
-      return results;
-    };
-    const xterm = await run('xterm');
-    const wterm = await run('ghostty');
-    for (const [key, expected] of Object.entries(xterm)) assert.equal(wterm[key], expected, `${platform} ${key}`);
-    if (platform === 'Win32') {
-      assert.equal(xterm['legacy/AltGr+Q'], '@');
-      assert.equal(xterm['disambiguate/AltGr+Q'], '\x1b[113;7u', 'the office encoder reports Ctrl+Alt after negotiation');
-    } else {
-      assert.equal(wterm['legacy/Control+v'], '\x16');
-      assert.equal(wterm['legacy/k@KeyV'], '\x0b');
-      assert.equal(wterm['legacy/v@Period'], '\x16');
-      assert.equal(wterm['legacy/м@KeyV'], '\x16');
-      for (const state of ['legacy', 'disambiguate', 'events']) {
-        for (const shortcut of ['query', 'Control+]', 'Shift+Escape', 'disabled']) assert.equal(wterm[`${state}/${shortcut}`], '', shortcut);
-        assert.equal(wterm[`${state}/IME commit`], '日');
-        assert.equal(wterm[`${state}/Cmd+V and paste`], '\x1b[200~paste\rsecond line\x1b[201~');
+      assert.equal(await key('Control+Enter'), '\x1b[13;5u');
+      await page.evaluate(() => ((window as any).agent = false));
+      assert.equal(await key('Control+Enter'), '\r');
+      assert.equal(await key('Shift+Enter'), '\r');
+      if (platform === 'MacIntel') assert.equal(await key('Control+v'), '\x16');
+      await write('\x1b[>');
+      await write('3u\x1b[>4;2m');
+      assert.deepEqual(await page.evaluate(() => [(window as any).term.core.kittyKeyboardFlags(), (window as any).term.core.modifyOtherKeys()]), [3, 2]);
+      await page.keyboard.down('ArrowLeft');
+      await page.keyboard.down('ArrowLeft');
+      await page.keyboard.up('ArrowLeft');
+      assert.equal(await sent(), '\x1b[D\x1b[1;1:2D\x1b[1;1:3D');
+      await page.evaluate(() => (window as any).term.textarea.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true })));
+      assert.equal(await sent(), '', 'no release without a delivered press');
+      if (platform === 'MacIntel') {
+        assert.equal(await key('Control+v'), '\x1b[118;5u\x1b[118;5:3u');
+        await layout('ƒ', 'KeyF', 70, 1, 'ƒ');
+        assert.equal(await sent(), '\x1b[102;3u\x1b[102;3:3u');
+        await page.evaluate(() => ((window as any).term.options.macOptionIsMeta = false));
+        await layout('@', 'KeyL', 76, 1, '@');
+        await layout('€', 'KeyE', 69, 1, '€');
+        await layout('Dead', 'KeyE', 69, 1);
+        await layout('é', 'KeyE', 69, 0, 'é');
+        assert.equal(await sent(), '@€é');
+      } else {
+        await page.keyboard.down('ControlLeft');
+        await page.keyboard.down('AltRight');
+        await layout('@', 'KeyQ', 81, 3, '@');
+        await page.keyboard.up('AltRight');
+        await page.keyboard.up('ControlLeft');
+        assert.equal(await sent(), '@');
       }
-    }
-    await page.close();
+      await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 });
+      await cdp.send('Input.insertText', { text: '日' });
+      assert.equal(await sent(), '日');
+      await write('\x1b[<u\x1b[>1u\x1b[?2004hselected');
+      const select = () =>
+        page.evaluate(async () => {
+          const { native } = (window as any).term;
+          await native.selectAll();
+          if (!native.getSelectionText()) throw Error('missing selection');
+        });
+      await select();
+      assert.equal(await key('Escape'), '');
+      assert.equal(await page.evaluate(() => (window as any).term.native.getSelectionText()), null);
+      assert.equal(await key('Tab'), '');
+      assert.equal(await page.evaluate(() => document.activeElement?.id), 'next');
+      await page.locator('#host textarea').focus();
+      await page.evaluate(() => {
+        const selection = document.getSelection()!;
+        const range = document.createRange();
+        range.selectNodeContents(document.querySelector('#host .term-grid .term-row')!);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        if (selection.isCollapsed) throw Error('missing DOM range');
+      });
+      assert.equal(await key('Escape'), '', 'a mounted-row drag is not an interrupt');
+      assert.equal(await page.evaluate(() => document.getSelection()!.isCollapsed), true);
+      assert.equal(await key('Tab'), '');
+      assert.equal(await page.evaluate(() => document.activeElement?.id), 'next');
+      await page.locator('#host textarea').focus();
+      await select();
+      assert.equal(await key('Control+c'), platform === 'MacIntel' ? '\x1b[99;5u' : '');
+      const paste = (data: string) =>
+        page.evaluate((data) => {
+          const clipboardData = new DataTransfer();
+          clipboardData.setData('text/plain', data);
+          (window as any).term.textarea.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
+        }, data);
+      await paste('a\nb\x1bc');
+      assert.equal(await sent(), '\x1b[200~a\nbc\x1b[201~');
+      await page.evaluate(() => (window as any).term.paste("'file name'"));
+      assert.equal(await sent(), "\x1b[200~'file name'\x1b[201~");
+      await write('\x1b[?2004l');
+      await paste('a\nb');
+      assert.equal(await sent(), 'a\rb');
+      await write('\r\n' + 'reader text\r\n'.repeat(80));
+      await page.waitForFunction(() => document.querySelector('#host .wterm')!.scrollHeight > 500);
+      await write('\x1b[?1004h');
+      assert.equal(await sent(), '', 'enabling focus mode does not report a synthetic focus');
+      const reader = await page.evaluate(async () => {
+        const w = window as any;
+        const el = w.term.native.element;
+        el.scrollTop = 63;
+        await new Promise(requestAnimationFrame);
+        const before = el.scrollTop;
+        document.getElementById('next')!.focus();
+        const blurred = el.scrollTop;
+        w.term.focus();
+        await new Promise(requestAnimationFrame);
+        return [before, blurred, el.scrollTop];
+      });
+      assert.deepEqual(reader, [63, 63, 63]);
+      assert.equal(await sent(), '\x1b[O\x1b[I');
+      await page.evaluate(() => ((window as any).term.options.disableStdin = true));
+      await key('a');
+      await paste('disabled');
+      assert.equal(await sent(), '');
+      await page.close();
+    });
   }
-  assert.deepEqual(errors, []);
 });
