@@ -30,7 +30,7 @@ export const TERM_THEME = {
 export interface TermThemeColors {
   foreground: string;
   cursor: string;
-  cursorAccent: string;
+  background: string;
   selectionBackground: string;
 }
 
@@ -38,11 +38,12 @@ let colors: TermThemeColors | null = null;
 const listeners = new Set<() => void>();
 
 /**
- * The theme terminals open with and follow. TERM_THEME until a companion theme retints it; then the
- * cells' ground is transparent, so the pane's themed glass shows behind the text.
+ * Terminals open with TERM_THEME and follow the companion theme. In #rrggbb00 the RGB is
+ * the opaque ground used as ink for reverse video and block cursors. Zero alpha makes
+ * only the renderer surface transparent so the pane supplies the glass.
  */
 export function termTheme() {
-  return colors ? { ...TERM_THEME, ...colors, background: 'rgba(0, 0, 0, 0)' } : TERM_THEME;
+  return colors ? { ...TERM_THEME, ...colors, background: `${colors.background}00` } : TERM_THEME;
 }
 
 /** Retints every terminal on this page (null: back to TERM_THEME) and lets later ones open transparent. */

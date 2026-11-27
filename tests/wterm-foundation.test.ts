@@ -73,6 +73,32 @@ test('wterm real WASM: open, ordered write/drain, reset, fixed-size resize and c
     widths: [4, 4, 4, 4, 4],
     children: 0,
   });
+  await t.test('OSC 8 output cannot create a tab stop or navigation target in any web terminal', async () => {
+    const counts = await page.evaluate(async () => {
+      const web = '/term-engine/web-terminal.ts',
+        paths = '/ui/terminal-path-links.ts';
+      const { createWebTerminal } = await import(web),
+        { TerminalPaths } = await import(paths);
+      const counts: number[] = [];
+      for (const surface of ['interactive', 'read-only', 'changes']) {
+        const host = document.getElementById('host')!;
+        const links = surface === 'changes' ? undefined : new TerminalPaths({ floor: 'floor', workerId: 'worker', inert: surface === 'read-only' });
+        const { term } = createWebTerminal({ disableStdin: surface !== 'interactive' }, undefined, links);
+        try {
+          await term.open(host);
+          term.write('\x1b]8;;https://example.org\x07manual\x1b]8;;\x07');
+          await new Promise(requestAnimationFrame);
+          const grid = host.querySelector('.term-grid')!;
+          if (!grid.textContent?.includes('manual')) throw Error(`OSC label not painted in ${surface}`);
+          counts.push(grid.querySelectorAll('a').length);
+        } finally {
+          term.dispose();
+        }
+      }
+      return counts;
+    });
+    assert.deepEqual(counts, [0, 0, 0]);
+  });
   await t.test('a hidden reader retains its viewport while output arrives and after reveal', async () => {
     const positions = await page.evaluate(async () => {
       const mod = '/term-engine/wterm.ts',
@@ -447,14 +473,14 @@ test('wterm real WASM: open, ordered write/drain, reset, fixed-size resize and c
         a.core.writeString('\x1b[31mR\x1b]10;?\x07\x1b]11;?\x07');
         let replies = '';
         for (let reply = a.core.getResponse(); reply !== null; reply = a.core.getResponse()) replies += reply;
-        return { attached, replies, red: a.core.getCell(0, 0).fgRgb, background: a.native.element.style.getPropertyValue('--term-bg'), cursor: a.native.element.style.getPropertyValue('--term-cursor') };
+        return { attached, replies, red: a.core.getCell(0, 0).fgRgb, background: getComputedStyle(a.native.element).backgroundColor, cursor: a.native.element.style.getPropertyValue('--term-cursor') };
       } finally {
         a.dispose();
       }
     });
     assert.deepEqual(result.attached, ['first', 'second']);
     assert.equal(result.red, 0x334455);
-    assert.equal(result.background, '#12345680');
+    assert.equal(result.background, 'rgba(18, 52, 86, 0.5)');
     assert.equal(result.cursor, '#fedcba');
     for (const rgb of ['a1a1/b2b2/c3c3', '1212/3434/5656']) assert.match(result.replies, new RegExp(`rgb:${rgb}`, 'i'));
   });
