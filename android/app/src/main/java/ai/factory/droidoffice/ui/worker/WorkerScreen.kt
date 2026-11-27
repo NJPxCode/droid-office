@@ -293,7 +293,6 @@ fun WorkerScreen(
         var orchestratorMenu by remember { mutableStateOf(false) }
         var factoryLimits by remember(workerId) { mutableStateOf(false) }
         val blocked = if (mission) MissionControl.orchestratorBlocked(orchestrator) else null
-        Header(worker, embedded, link.phase == Phase.Connected, onBack, onSendHome = { if (mission) orchestratorMenu = true else sendingHome = true }, mission = mission, blocked = blocked != null)
         val live = !worker.state.asleep
         // Its next prompt starts or wakes the Orchestrator's session, so it always takes one.
         val composing = live || mission
@@ -405,12 +404,13 @@ fun WorkerScreen(
             directInput = false
             if (store.settings.threadView == it) scope.launch { graph.store.settings { s -> s.copy(threadView = !it) } }
         }
-        // The view switch shares the PR and branch row. Send home stays in the header.
-        if (threadable && !cloud) Column(Modifier.fillMaxWidth().background(if (themedPhoneWorker) Color.Transparent else Palette.Bg)) {
-            Actions(worker, lead = {
+        // The view switch shares the PR and branch row; on a compact phone it moves up beside the name
+        // instead, so it costs the terminal no row of its own. Send home stays in the header.
+        val viewSwitch: (@Composable () -> Unit)? = when {
+            threadable && !cloud -> { ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (!tty) Box(
-                        Modifier.size(width = if (themedPhoneWorker) 48.dp else 36.dp, height = if (compactWorkerWindow) PhoneStripHeight else 36.dp).clip(RoundedCornerShape(4.dp))
+                        Modifier.size(width = if (compactWorkerWindow) 36.dp else if (themedPhoneWorker) 48.dp else 36.dp, height = if (compactWorkerWindow) PhoneStripHeight else 36.dp).clip(RoundedCornerShape(4.dp))
                             .clickable(role = Role.Button, onClickLabel = "Search session") { threadSearch = !threadSearch }
                             .semantics { selected = threadSearch }.tagged(Tags.Worker.THREAD_SEARCH),
                         contentAlignment = Alignment.Center,
@@ -420,15 +420,21 @@ fun WorkerScreen(
                     if (tty) TerminalNavActions(terminalNav)
                     InlineViewToggle(tty, pickView)
                 }
-            }, resumable = !mission)
+            }
+            tty -> { -> TerminalNavActions(terminalNav) }
+            else -> null
+        }
+        val inHeader = compactWorkerWindow && viewSwitch != null
+        Header(worker, embedded, link.phase == Phase.Connected, onBack, onSendHome = { if (mission) orchestratorMenu = true else sendingHome = true }, mission = mission, blocked = blocked != null, views = if (inHeader) viewSwitch else null)
+        if (threadable && !cloud) Column(Modifier.fillMaxWidth().background(if (themedPhoneWorker) Color.Transparent else Palette.Bg)) {
+            Actions(worker, lead = if (inHeader) null else viewSwitch, resumable = !mission, square = true)
             if (mission) TeamStrip(MissionControl.team(orchestrator), onOpen = { followTeamMember?.invoke(it) })
             if (!themedPhoneWorker) {
                 if (!compactWorkerWindow) Box(Modifier.fillMaxWidth().height(4.dp))
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
             }
         }
-        else if (tty) Actions(worker, lead = { TerminalNavActions(terminalNav) })
-        else Actions(worker)
+        else Actions(worker, lead = if (inHeader) null else viewSwitch, square = viewSwitch != null)
         if (tty && terminalNav.finding) TerminalFindBar(terminalNav)
         Offline(link.phase, thread = !tty, composing = composing && !(!tty && worker.state == WorkerStatus.NeedsInput))
         if (tty) NeedsYou(worker, screen, live && link.phase == Phase.Connected)
@@ -659,7 +665,7 @@ fun WorkerScreen(
 }
 
 @Composable
-private fun Header(w: WorkerInfo, embedded: Boolean, connected: Boolean, onBack: () -> Unit, onSendHome: () -> Unit, mission: Boolean = false, blocked: Boolean = false) {
+private fun Header(w: WorkerInfo, embedded: Boolean, connected: Boolean, onBack: () -> Unit, onSendHome: () -> Unit, mission: Boolean = false, blocked: Boolean = false, views: (@Composable () -> Unit)? = null) {
     val now = rememberNow()
     val graph = LocalGraph.current
     val data by graph.connection.data.collectAsStateWithLifecycle()
@@ -670,7 +676,10 @@ private fun Header(w: WorkerInfo, embedded: Boolean, connected: Boolean, onBack:
         if (mission) Box(Modifier.padding(end = 8.dp)) { OrchestratorTile(if (w.state == WorkerStatus.NeedsInput) Palette.Danger else OrchestratorTint, small = true, animated = !blocked) }
         else WorkerDot(parseColor(w.color), w.state, 10.dp)
         Column(Modifier.weight(1f).padding(start = 2.dp)) {
-            Text(w.name.ifBlank { w.id }, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.tagged(Tags.Worker.NAME))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(w.name.ifBlank { w.id }, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).tagged(Tags.Worker.NAME))
+                if (views != null) Box(Modifier.tagged(Tags.Worker.THREAD_BAR)) { views() }
+            }
             var modelAt = -1
             val parts = buildList {
                 if (mission) add("Mission Control")
@@ -705,13 +714,14 @@ private fun Header(w: WorkerInfo, embedded: Boolean, connected: Boolean, onBack:
 }
 
 @Composable
-private fun Actions(w: WorkerInfo, lead: (@Composable () -> Unit)? = null, resumable: Boolean = true) {
+private fun Actions(w: WorkerInfo, lead: (@Composable () -> Unit)? = null, resumable: Boolean = true, square: Boolean = lead != null) {
     val graph = LocalGraph.current
     val data by graph.connection.data.collectAsStateWithLifecycle()
     val uri = LocalUriHandler.current
     val pr = Workers.pr(w, data.pullsForWorker(w.id))
     val branch = w.worktree?.branch?.takeIf { it.isNotBlank() }
-    val square = lead != null
+    // With nothing to show, no empty strip takes the terminal's height.
+    if (lead == null && pr == null && branch == null && !(w.state.asleep && resumable)) return
     Row(
         Modifier.fillMaxWidth().then(if (lead != null) Modifier.tagged(Tags.Worker.THREAD_BAR) else Modifier)
             .horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = if (compactWorkerWindow && lead != null) 0.dp else 4.dp),

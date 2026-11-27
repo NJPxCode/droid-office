@@ -78,7 +78,7 @@ internal class TerminalNavigation {
 
 @Composable
 internal fun TerminalNavActions(nav: TerminalNavigation) {
-    val button = if (compactWorkerWindow) Modifier.height(PhoneStripHeight) else Modifier
+    val button = if (compactWorkerWindow) Modifier.size(width = 36.dp, height = PhoneStripHeight) else Modifier
     Row {
         IconButton(onClick = { if (nav.finding) nav.close() else nav.open() }, enabled = nav.page != null, modifier = button.tagged(Tags.Worker.TERM_FIND)) {
             Icon(OfficeIcons.Search, "Find in terminal", Modifier.size(18.dp), tint = if (nav.finding) Palette.Accent else Palette.TextSecondary)
