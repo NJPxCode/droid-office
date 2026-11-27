@@ -4,9 +4,9 @@
 
 # Droid Office
 
-### Your AI agents deserve a desk.
+### Your AI agents deserve a desk. You deserve a workspace.
 
-**Hire Factory Droid workers. Walk over to their desks. Step into their live terminals.**
+**Run a team of Factory Droid agents in a walkable 3D office or a focused Mac companion. Same workers, two ways to work.**
 
 [![Release](https://img.shields.io/github/v/release/nikships/droid-office?style=for-the-badge&color=f06000)](https://github.com/nikships/droid-office/releases/latest)
 [![Stars](https://img.shields.io/github/stars/nikships/droid-office?style=for-the-badge&color=f06000)](https://github.com/nikships/droid-office/stargazers)
@@ -15,200 +15,87 @@
 
 ### [Download for macOS](https://github.com/nikships/droid-office/releases/latest)
 
-macOS 14 Sonoma+ · Any Apple M-series Mac (M1 or later) · Built for 120 Hz ProMotion
+macOS 14 Sonoma+ · Apple M-series Macs · No separate Node.js install
 
-[Watch the walkthrough](https://droid-office.web.app/) · [Read the guide](docs/guide/) · [Android companion](#your-office-in-your-pocket)
-
-<picture>
-  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/readme/hero-workers.poster.jpg">
-  <source type="image/webp" srcset="docs/assets/readme/hero-workers.webp">
-  <img src="docs/assets/readme/hero-workers.gif" alt="Walking between occupied desks, with Droid workers and their large live terminal screens visible throughout the 3D office" width="960">
-</picture>
+[See the demos](https://droid-office.web.app/) · [Read the guide](docs/guide/) · [Android companion](#your-office-on-other-devices)
 
 </div>
 
-## Stop babysitting terminal tabs
+## One office, two ways to work
 
-Five agents in five terminals is a mess. **Droid Office turns your agents into a place you can read at a glance:** who is working, who needs you and who just shipped.
+Droid Office runs your agents locally or on Factory computers, with real sessions and project checkouts. Walk between their desks in the **3D office**, or use the **Mac companion** to keep several conversations and terminals side by side. Switch modes from the Mac app without starting a different office.
 
-Workers sit at desks with **large, live terminal screens right in the 3D world**. Walk between them to see the code flowing, then open any terminal to read, type and steer the work. These are real Droid sessions and git checkouts, not decorative dashboards.
+### The 3D office
 
-The Mac app runs the office locally with a native Metal presenter; your browser can join the same office.
+See who is working, who needs input and what is happening at each desk. Walk up to a worker to open its session, pick up an issue from a board, or visit the Whiteboard to review what your agents made.
 
-## See the office at work
-
-<table>
-<tr>
-<td width="50%" valign="middle">
-
-### Big terminals. Right in the room.
-
-Code scrolls on the screens in front of your workers as they work. See several live sessions together, with each agent, task and terminal attached to a desk you can walk up to.
-
-[Workers and live screens →](docs/guide/features.md)
-
-</td>
-<td width="50%">
+<div align="center">
 <picture>
-  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/readme/spatial-terminals.poster.jpg">
-  <source type="image/webp" srcset="docs/assets/readme/spatial-terminals.webp">
-  <img src="docs/assets/readme/spatial-terminals.gif" alt="Two seated workers with large in-world terminal screens streaming their live sessions side by side" width="480">
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/readme/hero-workers.poster.jpg">
+  <source type="image/webp" srcset="docs/assets/readme/hero-workers.webp">
+  <img src="docs/assets/readme/hero-workers.gif" alt="Walking between workers and their live terminal screens in the 3D office" width="960">
 </picture>
-</td>
-</tr>
-<tr>
-<td width="50%">
-<picture>
-  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/readme/live-terminal.poster.jpg">
-  <source type="image/webp" srcset="docs/assets/readme/live-terminal.webp">
-  <img src="docs/assets/readme/live-terminal.gif" alt="Opening a seated worker's terminal into a large interactive window while the surrounding office stays visible" width="480">
-</picture>
-</td>
-<td width="50%" valign="middle">
+</div>
 
-### Step into any session
+- **Live desks and terminals.** Workers act out their status while their terminal screens show work in progress. Open a session to read, type and steer.
+- **Teams you can see.** Workers hire subagents at nearby desks, connected by team markings and floor links. They can visit other workers to ask questions and coordinate.
+- **A floor for each project.** Ride between your existing repositories, each with its own workers, issues, pull requests and pipelines.
+- **An interactive Whiteboard.** Review live pages, images and other artifacts; add comments and sticky notes for workers to read.
 
-Walk up to a worker and open its terminal in a large interactive window. Read the output, search the scrollback or type your next prompt; the worker keeps going when you close it.
+[Explore the 3D office →](docs/guide/features.md)
 
-[Working in a terminal →](docs/guide/features.md)
+### The Mac companion
 
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
+Prefer a workspace without the walk? Switch to **Office Companion** from the Mac app's Office menu. See workers across floors, follow their teams and keep up to eight panes open at once. Each local Droid worker has a readable **Thread** and a live **TTY**, so you can choose the view that fits the work.
 
-### Give the lead a team
+<div align="center">
+<img src="docs/assets/readme/mac-companion-workspace.jpg" alt="Mac companion showing two worker terminals side by side, with project floors, Mission Control and workers in the sidebar" width="960">
+</div>
 
-Hand a larger task to any worker and let it hire subagents at nearby desks. Glowing floor links show who belongs together, and every worker has a live terminal you can open.
+- **Work across sessions.** Hire, prompt and steer workers, switch floors, search all workers and resize or rearrange panes.
+- **Keep the building in view.** Mission Control and its teams stay in the sidebar. The Orchestrator can plan and delegate work across floors.
+- **Make it yours.** Choose an artwork theme or your own wallpaper, adjust the glass and background, and use keyboard shortcuts to move around.
+- **Stay informed.** Close the window to the menu bar while workers keep running. The Mac app shows status counts and can notify you when a worker needs you.
 
-[Worker teams and subagents →](docs/guide/features.md)
+<div align="center">
+<img src="docs/assets/readme/mac-companion-theme.jpg" alt="Mac companion with the Orbital Foundry artwork theme on an empty project floor" width="960">
+</div>
 
-</td>
-<td width="50%">
-<picture>
-  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/readme/team-subagents.poster.jpg">
-  <source type="image/webp" srcset="docs/assets/readme/team-subagents.webp">
-  <img src="docs/assets/readme/team-subagents.gif" alt="A Team lead's workers at nearby desks, joined by glowing team links on the floor" width="480">
-</picture>
-</td>
-</tr>
-<tr>
-<td width="50%">
-<picture>
-  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/readme/worker-status.poster.jpg">
-  <source type="image/webp" srcset="docs/assets/readme/worker-status.webp">
-  <img src="docs/assets/readme/worker-status.gif" alt="A worker finishing its task with a jump, a spin and a burst of confetti" width="480">
-</picture>
-</td>
-<td width="50%" valign="middle">
+[More about the companion →](docs/guide/features.md)
 
-### Know who needs you
+## More than a desk
 
-Workers flip through papers when reading, type when editing and lean back while tests run. When one needs you, it jumps and dings; when it's done, confetti goes up.
-
-[How live status works →](docs/guide/features.md)
-
-</td>
-</tr>
-<tr>
-<td width="50%" valign="middle">
-
-### Hand over an issue
-
-Take a GitHub issue or GitLab ticket off the wall, carry it across the room and deliver it to a desk. A worker sits down with the task already in hand.
-
-[Explore the boards →](docs/guide/features.md)
-
-</td>
-<td width="50%">
-<picture>
-  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/readme/card-grab.poster.jpg">
-  <source type="image/webp" srcset="docs/assets/readme/card-grab.webp">
-  <img src="docs/assets/readme/card-grab.gif" alt="Picking an issue card off the wall and holding it ready to deliver to a worker" width="480">
-</picture>
-</td>
-</tr>
-<tr>
-<td width="50%">
-<picture>
-  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/readme/whiteboard-collab.poster.jpg">
-  <source type="image/webp" srcset="docs/assets/readme/whiteboard-collab.webp">
-  <img src="docs/assets/readme/whiteboard-collab.gif" alt="Adding a sticky note to a worker's live page on the shared Whiteboard" width="480">
-</picture>
-</td>
-<td width="50%" valign="middle">
-
-### Point at what you mean
-
-Workers pin live HTML pages, screenshots and forms to the Whiteboard. Open one, try it, leave a comment or sticky note, and tell the worker to read your feedback.
-
-[The shared Whiteboard →](docs/guide/features.md)
-
-</td>
-</tr>
-</table>
-
-<sub>Short loops from real office captures. Prefer stills? <a href="docs/assets/readme/posters.md">Browse the static gallery</a>. <a href="https://droid-office.web.app/">Watch the full demos</a>.</sub>
-
-### Also in the box
-
-- **CI that can heal itself.** GitHub Actions and GitLab pipelines on the wall, with an opt-in Pipeline agent that diagnoses failures and hires a fixer.
-- **Separate checkouts for parallel work.** Give each worker its own git worktree and branch, with automatic project setup and the untracked files it needs copied in.
-- **A floor per project.** Ride the elevator between existing repositories, each with its own workers and boards. No re-cloning.
-- **Peer visits.** Independent workers walk over, read each other's screens, ask questions and hand over tasks.
-- **Linear.** Connect a workspace, hand tickets to workers or let autopilot pick them up, and follow their progress through merge.
-- **Jira Cloud.** Connect a read-only token, choose an epic and hand its tickets to workers. The office never writes to Jira.
-- **Cross-repository tasks.** One worker, several project worktrees, and a pull request for each.
-- **Celebrate a merge.** The brass gong rings, confetti falls and workers dance on their desks.
-- **A place worth staying.** City weather, a shared jukebox and spatial sound.
-- **The practical bits.** Plain shells, safe worktree pruning, editable prompts, a project bookshelf and Factory computer secrets.
+- **Parallel work.** Workers can use separate git worktrees and branches, or work across several repositories. A worker can hire its own subagents through the [Office MCP](docs/office-mcp.md).
+- **Mission Control.** Ask the Orchestrator to plan, hire and direct workers across projects. External agents can join Mission Control through [Tailscale MCP](docs/mission-control.md).
+- **Your tools and models.** Workers run [Factory Droid](https://factory.ai) with models available to your account, including configured custom models. Connect Claude or ChatGPT subscriptions on a Mac through DroidProxy, or use Factory computers for cloud workers.
+- **Issues, pull requests and CI.** Connect GitHub, GitLab or Linear; use Jira Cloud's read-only boards; and opt in to a Pipeline agent that investigates failing CI.
+- **Shared work.** Give someone a scoped, expiring or revocable share link to view a worker, a floor or the whole office, or to work on a floor or across the office. Guests use the web companion's Threads, not raw terminals. This is a single-owner office, not multiplayer: there are no human avatars, presence, chat or voice. [Guest sharing →](docs/guest-sharing.md)
+- **Private remote access.** Pair your own browser or Android device over Tailscale HTTPS. External share links use a separate Tailscale Funnel address only while sharing is enabled. [Access and sharing →](docs/guide/getting-started.md#access)
+- **Room to unwind.** City weather, a jukebox, spatial sound and a gong for celebrating merges.
 
 [Everything the office can do →](docs/guide/features.md)
 
-## Your models. Your tools.
-
-<p align="center">
-  <a href="https://factory.ai"><kbd>Factory Droid</kbd></a>
-  &nbsp; <kbd>Claude</kbd>
-  &nbsp; <kbd>OpenAI / Codex models</kbd>
-  &nbsp; <kbd>Gemini</kbd>
-  &nbsp; <kbd>Grok</kbd>
-  &nbsp; <a href="https://docs.factory.com/model-independence/byok"><kbd>Custom models / BYOK</kbd></a>
-</p>
-<p align="center">
-  <kbd>GitHub</kbd> &nbsp; <kbd>GitLab + self-managed</kbd> &nbsp; <kbd>Jira Cloud</kbd> &nbsp; <kbd>Linear</kbd>
-</p>
-
-Every hired worker runs **Factory Droid**, not a separate agent harness. Pick from [Droid's current model catalog](https://docs.factory.com/models) or your configured custom models, with the reasoning effort each supports. Availability follows your Droid configuration and account, not a hard-coded model list.
-
 ## Get your office
 
-| Mac app · production | Android · companion |
-| --- | --- |
-| **[Download the Mac app](https://github.com/nikships/droid-office/releases/latest)** | **[Download the APK](https://github.com/nikships/droid-office/releases/latest)** |
-| macOS 14+ on any Apple M-series Mac (M1 or later) | Pairs with an office running on your computer |
-| Signed, notarized and auto-updating. No Node.js install. | Private Tailscale HTTPS. [Pairing guide →](android/README.md) |
+1. **[Download the Mac app](https://github.com/nikships/droid-office/releases/latest)**, open `Droid-Office-<version>-arm64.dmg` and drag **Droid Office** into Applications.
+2. Launch it and follow the welcome. It can install and sign in to the [Droid CLI](https://docs.factory.ai/cli/getting-started/quickstart), and optionally connect an existing Claude or ChatGPT subscription.
+3. Choose a project. Install `git`, and sign in to `gh` for GitHub boards or `glab` for GitLab boards.
 
-1. Open `Droid-Office-<version>-arm64.dmg`, drag **Droid Office** into **Applications**, then launch it.
-2. Follow the welcome. It installs the [Droid CLI](https://docs.factory.com/droid-cli/quickstart) if you don't have it, signs it in to your Factory account, and connects the Claude or ChatGPT plan you already pay for. You need `git` installed.
-3. Sign in to `gh` for GitHub boards or `glab` for GitLab boards, then choose a project.
+The signed, notarized and auto-updating Mac app is the **only supported production install**. It requires macOS 14 or later and an Apple M-series Mac; a 120 Hz ProMotion display is recommended. [Full requirements →](docs/guide/getting-started.md#requirements)
 
-> [!IMPORTANT]
-> The Mac app is the **only supported production install**. Intel Macs and base M-series chips are not supported. A 120 Hz ProMotion display is recommended. [Full requirements →](docs/guide/getting-started.md#requirements)
+## Your office on other devices
 
-## Your office in your pocket
+The **web companion** opens the same pane-based workspace in a browser, locally or on a paired device over Tailscale. The host computer must stay awake.
 
-**Droid Office for Android** shows every floor and worker, streams live terminals and lets you send the next prompt. A worker that finishes or needs input buzzes your phone; reply right from the notification.
+**Droid Office for Android** shows your floors and workers, streams their live terminals and lets you send prompts. Notifications tell you when a worker finishes or needs input, and you can reply from the notification.
 
 <p align="center">
-  <img src="android/docs/home.jpg" alt="Android companion: workers grouped by project floor" width="31%">
-  <img src="android/docs/worker.jpg" alt="Android companion: a worker's live terminal and prompt composer" width="31%">
-  <img src="android/docs/notification.jpg" alt="Android companion: worker notifications with an inline reply box" width="31%">
+  <img src="android/docs/home.jpg" alt="Android companion with workers grouped by project floor" width="31%">
+  <img src="android/docs/worker.jpg" alt="Android companion showing a worker's terminal and prompt composer" width="31%">
+  <img src="android/docs/notification.jpg" alt="Android worker notifications with an inline reply box" width="31%">
 </p>
 
-Install `Droid-Office-<version>.apk`, then scan the QR code in **Settings → Phone & web**. The computer hosting your office must stay awake; the phone app is a companion, not a standalone office installation.
-
-[Download Android](https://github.com/nikships/droid-office/releases/latest) · [Tailscale HTTPS pairing](android/README.md)
+[Download the Android APK](https://github.com/nikships/droid-office/releases/latest) · [Pair over Tailscale](android/README.md)
 
 ## For developers
 
@@ -225,10 +112,11 @@ Open `http://localhost:5173`. A developer checkout is not a supported production
 
 | Go deeper | What's inside |
 | --- | --- |
-| [Getting started](docs/guide/getting-started.md) | Requirements, first launch and connections |
-| [Features](docs/guide/features.md) · [Controls](docs/guide/controls.md) | Everything in the office and how to use it |
+| [Getting started](docs/guide/getting-started.md) | Requirements, first launch, pairing and sharing |
+| [Features](docs/guide/features.md) · [Controls](docs/guide/controls.md) | The office, companions and how to use them |
 | [Development](docs/guide/development.md) | Architecture, builds, tests and contributing |
 | [Android](android/README.md) | Pairing, notifications and building the companion |
+| [Mission Control](docs/mission-control.md) · [Office MCP](docs/office-mcp.md) | Orchestration, teams and external agents |
 
 ## Credits and license
 
