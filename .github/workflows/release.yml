@@ -410,11 +410,9 @@ jobs:
           app="release/mac-arm64/Droid Office.app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = 14.0
 
-      # The app's own main process, with no window: the macOS 14 and chip gates, the presenter module loading from the
-      # bundle, then exit 0. The run then checks the chip gate both ways: a base-chip Mac (the runner is one) must
-      # refuse without the CI-only DROID_OFFICE_ALLOW_ANY_CHIP, and a Pro-or-better one must start without it. A
-      # fresh user-data folder keeps it off any other instance's lock and settings, and the browser folder is the
-      # runner's, so the app never touches the owner's own Chromium.
+      # The app's own main process, with no window: the macOS 14 and Apple silicon gates, the presenter module loading
+      # from the bundle, then exit 0. A fresh user-data folder keeps it off any other instance's lock and settings, and
+      # the browser folder is the runner's, so the app never touches the owner's own Chromium.
       - name: Check the app's startup gates
         if: env.PUBLISHING == 'true'
         env:
@@ -422,23 +420,12 @@ jobs:
         run: |
           app="release/mac-arm64/Droid Office.app"
           bin="$app/Contents/MacOS/Droid Office"
-          chip="$(sysctl -n machdep.cpu.brand_string)"
-          echo "runner chip: $chip"
-          DROID_OFFICE_ALLOW_ANY_CHIP=1 "$bin" --startup-check --user-data-dir="$RUNNER_TEMP/startup-check-1" | tee startup-check.log
+          "$bin" --startup-check --user-data-dir="$RUNNER_TEMP/startup-check" | tee startup-check.log
           grep -q '^startup-check ok' startup-check.log
           grep -q '"presenter":{' startup-check.log
           # startup-check exits 1 unless the presenter's probe made a Metal device, imported an IOSurface and made a layer.
           grep -q '"probe":{' startup-check.log
           test -f "$app/Contents/Resources/app/native/presenter/build/Release/presenter.node"
-          if echo "$chip" | grep -Eq '^Apple M[0-9]+ (Pro|Max|Ultra)$'; then
-            "$bin" --startup-check --user-data-dir="$RUNNER_TEMP/startup-check-2"
-          else
-            if "$bin" --startup-check --user-data-dir="$RUNNER_TEMP/startup-check-2" 2> startup-refusal.log; then
-              echo "the app started on a base chip without DROID_OFFICE_ALLOW_ANY_CHIP"; exit 1
-            fi
-            cat startup-refusal.log
-            grep -q 'startup failure \[chip\]' startup-refusal.log
-          fi
 
       # On the Helper binary, as src/desktop/runtime.ts runs it, so this is the signed binary the app uses.
       - name: Start the office on the app's own Electron

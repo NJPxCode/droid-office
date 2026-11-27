@@ -15,7 +15,7 @@
 
 ### [Download for macOS](https://github.com/nikships/droid-office/releases/latest)
 
-macOS 14 Sonoma+ · Apple M-series **Pro, Max or Ultra** · Built for 120 Hz ProMotion
+macOS 14 Sonoma+ · Any Apple M-series Mac (M1 or later) · Built for 120 Hz ProMotion
 
 [Watch the walkthrough](https://droid-office.web.app/) · [Read the guide](docs/guide/) · [Android companion](#your-office-in-your-pocket)
 
@@ -186,7 +186,7 @@ Every hired worker runs **Factory Droid**, not a separate agent harness. Pick fr
 | Mac app · production | Android · companion |
 | --- | --- |
 | **[Download the Mac app](https://github.com/nikships/droid-office/releases/latest)** | **[Download the APK](https://github.com/nikships/droid-office/releases/latest)** |
-| macOS 14+ on Apple M-series **Pro, Max or Ultra** | Pairs with an office running on your computer |
+| macOS 14+ on any Apple M-series Mac (M1 or later) | Pairs with an office running on your computer |
 | Signed, notarized and auto-updating. No Node.js install. | Private Tailscale HTTPS. [Pairing guide →](android/README.md) |
 
 1. Open `Droid-Office-<version>-arm64.dmg`, drag **Droid Office** into **Applications**, then launch it.

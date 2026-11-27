@@ -67,7 +67,7 @@ export function InstallSection() {
                   Get the Droid CLI
                 </Button>
               </div>
-              <p className="mt-3 font-heading text-[10px] uppercase tracking-[0.1em] text-text-dim">M-series Pro, Max or Ultra · the only supported production install</p>
+              <p className="mt-3 font-heading text-[10px] uppercase tracking-[0.1em] text-text-dim">Any Apple M-series Mac · the only supported production install</p>
             </div>
           </Reveal>
 

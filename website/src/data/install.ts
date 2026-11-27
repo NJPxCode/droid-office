@@ -5,7 +5,7 @@ export const macSteps = [
 ];
 
 export const requirements = [
-  { name: 'macOS 14+', note: 'M-series Pro, Max or Ultra' },
+  { name: 'macOS 14+', note: 'Any Apple M-series chip (M1 or later)' },
   { name: 'git', note: 'on your PATH' },
   { name: 'droid', note: 'installed by the welcome if missing' },
   { name: 'gh / glab', note: 'for the GitHub or GitLab boards' },

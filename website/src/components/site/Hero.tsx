@@ -38,7 +38,7 @@ export function Hero() {
                   <ArrowRight size={14} aria-hidden />
                 </Button>
               </div>
-              <p className="mt-4 font-heading text-[10px] uppercase tracking-[0.1em] text-text-dim">Apple M-series Pro, Max or Ultra · self-updating · no Node required</p>
+              <p className="mt-4 font-heading text-[10px] uppercase tracking-[0.1em] text-text-dim">Any Apple M-series Mac · self-updating · no Node required</p>
             </div>
           </div>
         </motion.div>

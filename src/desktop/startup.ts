@@ -22,8 +22,8 @@ function chipBrand(): string | undefined {
   }
 }
 
-function readMachine(env: NodeJS.ProcessEnv = process.env): Machine {
-  return { platform: process.platform, arch: process.arch, release: os.release(), brand: chipBrand(), allowAnyChip: env.DROID_OFFICE_ALLOW_ANY_CHIP === '1' };
+function readMachine(): Machine {
+  return { platform: process.platform, arch: process.arch, release: os.release() };
 }
 
 /** Thrown by `failStartup` after it has asked the app to exit: the startup code in flight must not carry on. */
@@ -62,7 +62,7 @@ export function failStartup(failure: StartupFailure): never {
   throw new StartupAborted(failure);
 }
 
-/** Refuses to go on unless this is macOS 14+ on Apple silicon with a Pro, Max or Ultra chip. */
+/** Refuses to go on unless this is macOS 14+ on Apple silicon (any M-series chip). */
 export function enforceRequirements(machine: Machine = readMachine()): void {
   const failure = checkRequirements(machine);
   if (failure) failStartup(failure);
@@ -89,7 +89,7 @@ export function runStartupCheck(): void {
     if (typeof exports.probe !== 'function') throw new Error('the presenter module has no probe()');
     return { exports: Object.keys(exports).sort(), probe: (exports.probe as () => unknown)() };
   });
-  const report = { chip: machine.brand ?? null, arch: machine.arch, darwin: machine.release, electron: process.versions.electron, presenter };
+  const report = { chip: chipBrand() ?? null, arch: machine.arch, darwin: machine.release, electron: process.versions.electron, presenter };
   process.stdout.write(`startup-check ok: ${JSON.stringify(report)}\n`);
   app.exit(0);
 }
