@@ -3,7 +3,7 @@ import './scrollbars';
 import type { ClientMsg, WorkerInfo } from '../shared/protocol';
 import { cardsNewestFirst, cardChanged, OWNER } from '../shared/whiteboard';
 import { ROOF } from '../shared/rooftop';
-import { repoChoices } from '../shared/floors';
+import { repoChoices, repoWebUrl } from '../shared/floors';
 import { DESK_BY_ID } from '../shared/layout';
 import { originKind, type OriginKind } from '../shared/devices';
 import { BROWSER_KEY, DASHBOARD_FLOOR_KEY, browserCredential, draftKey, forgetBrowserCredential, isBrowserCredential, saveBrowserCredential, type BrowserCredential } from './browser-session';
@@ -201,7 +201,7 @@ const live$ = h('span.dash-sr', { role: 'status', 'aria-live': 'polite' });
 const title = h('h1.dash-office', {}, officeName);
 const linkDot = h('span.dash-link', { role: 'img', 'aria-label': 'Connecting' });
 const brand = h('div.dash-brand', {}, h('img.dash-brand-mark', { src: '/factory-glyph.svg', alt: '', width: 15, height: 15 }), title, linkDot);
-const gitPill = h('span.dash-git-pill', { hidden: true });
+const gitPill = h('a.dash-git-pill', { hidden: true, target: '_blank', rel: 'noopener noreferrer' });
 const dragSpacer = h('div.dash-drag-spacer', { 'aria-hidden': 'true' });
 const pulseNeedsCount = h('span');
 const pulseNeedsBtn = h('button.dash-pulse-needs', { type: 'button', hidden: true, title: 'Jump to floor needing input', onclick: () => jumpToUrgent() }, h('span.dash-pulse-dot', { 'aria-hidden': 'true' }), pulseNeedsCount);
@@ -1390,6 +1390,10 @@ function paintConsole(up: boolean, buildingRows: readonly BuildingWorkerRow[]) {
   gitPill.hidden = !nextGitKey;
   if (nextGitKey !== gitPillKey) {
     gitPillKey = nextGitKey;
+    const repo = store.floor !== ROOF && activeItem?.floor.repo;
+    if (repo) gitPill.href = repoWebUrl(repo);
+    else gitPill.removeAttribute('href');
+    gitPill.ariaDisabled = repo ? null : 'true';
     if (store.floor === ROOF) {
       gitPill.title = 'Rooftop';
       gitPill.replaceChildren(icon('branch', 11), h('b.dash-git-name', {}, 'Rooftop'));

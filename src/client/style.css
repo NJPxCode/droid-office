@@ -2837,6 +2837,9 @@ body.themed { background: transparent; }
 .dash-link[data-state=down] { background: var(--warning); }
 @keyframes dash-ping { 0% { opacity: .5; } 75%, 100% { opacity: 0; transform: scale(2.6); } }
 .dash-git-pill { flex: 0 1 auto; min-width: 0; max-width: 320px; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-xs); background: #0a0a0a; font: 400 10.5px/1 var(--font-mono); color: var(--text-secondary); white-space: nowrap; overflow: hidden; }
+.dash-git-pill:any-link { text-decoration: none; }
+.dash-git-pill:any-link:is(:hover, :focus-visible) { border-color: var(--text-secondary); }
+.dash-git-pill[aria-disabled=true] { opacity: .65; }
 .dash-git-name { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
 .dash-git-branch { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }
 .dash-git-prs { flex: none; color: var(--accent-hover); }
