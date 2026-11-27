@@ -12,8 +12,9 @@ name: Release
 # PRs compile and test, but never version, package, sign or upload release artifacts.
 # Test/docs-only changes publish nothing. Manual runs check everything, releasing only on main.
 #
-# Pull requests run their simple checks and testing on GitHub-hosted runners (ubuntu-latest for
-# Node, website and Android; macos-26 for the native Mac presenter checks).
+# The Node suite runs on the Mac Mini for same-repository PRs except Dependabot's.
+# Fork and Dependabot PRs use the slower GitHub-hosted macos-26, where timing-sensitive tests may fail.
+# All PRs use hosted macos-26 for presenter checks and ubuntu-latest for changes, website and Android.
 # Actual merges to main, building the Mac app and Android app, signing, notarizing, and publishing
 # remain on the owner's Mac Mini self-hosted runner (`droid-office`).
 #
@@ -154,24 +155,28 @@ jobs:
   release:
     needs: changes
     if: needs.changes.outputs.node == 'true'
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "macOS", "ARM64", "droid-office"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]') && 'macos-26' || fromJSON('["self-hosted", "macOS", "ARM64", "droid-office"]') }}
     timeout-minutes: 20
     env:
       # Electron is only for the Mac app, which the mac job builds.
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-      # On the Mac Mini runner, Chromium lives outside the workspace in the office cache folder.
+      # Main and manual runs reuse the Mac Mini's persistent browser installation.
       DROID_OFFICE_BROWSERS_PATH: ~/Library/Caches/droid-office/ci-browsers
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
-        if: github.event_name == 'pull_request'
+        if: runner.environment == 'github-hosted'
         with:
           node-version: 22
           cache: npm
 
+      - name: Keep the Mac Mini PR browser separate from release builds
+        if: runner.environment == 'self-hosted' && github.event_name == 'pull_request'
+        run: echo "DROID_OFFICE_BROWSERS_PATH=$RUNNER_TEMP/browsers" >> "$GITHUB_ENV"
+
       - name: Check the runner's toolchain
-        if: github.event_name != 'pull_request'
+        if: runner.environment == 'self-hosted'
         run: .github/scripts/runner-toolchain.sh node
 
       - name: Install and build
@@ -181,32 +186,18 @@ jobs:
 
       - run: npm run typecheck
 
-      # GitHub's Ubuntu image already has Chromium's shared libraries. Do not run install-deps:
-      # it refreshes apt and downloads extra fonts, making cached-browser checks depend on apt mirrors.
-      # Keep the sandbox profile and prove the actual browser can render before running the suite.
       - name: Choose the shared Chromium folder
-        if: github.event_name == 'pull_request'
+        if: runner.environment == 'github-hosted'
         run: echo "DROID_OFFICE_BROWSERS_PATH=$RUNNER_TEMP/browsers" >> "$GITHUB_ENV"
 
       - name: Cache Chromium
-        if: github.event_name == 'pull_request'
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/browsers
           key: chromium-${{ runner.os }}-${{ hashFiles('node_modules/playwright-core/package.json') }}
 
-      - name: Install Chromium and its sandbox profile
-        if: github.event_name == 'pull_request'
-        run: |
-          node bin/droid-office.js browser install
-          if [ -e /etc/apparmor.d/abi/4.0 ]; then
-            node bin/droid-office.js browser apparmor-profile | sudo tee /etc/apparmor.d/droid-office-chromium > /dev/null
-            sudo apparmor_parser -r /etc/apparmor.d/droid-office-chromium
-          fi
-
-      # On the Mac Mini runner (main), Chromium is already installed outside the workspace.
       - name: Install Chromium
-        if: github.event_name != 'pull_request'
         run: node bin/droid-office.js browser install
 
       - name: Check sandboxed Chromium rendering
@@ -228,7 +219,12 @@ jobs:
           JS
 
       - name: Test with coverage
-        run: npm run test:coverage # fails below the line and function thresholds in package.json
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            export HOME="$RUNNER_TEMP/test-home"
+            mkdir -p "$HOME"
+          fi
+          npm run test:coverage
 
       - name: Test the Office performance proof contract
         env:
@@ -236,10 +232,12 @@ jobs:
         run: python3 -B -m unittest discover -s .agents/skills/performance-proof/tests -p 'test*.py' -v
 
       - name: Verify prop geometry and embedded textures
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: node tools/props/verify.mjs
 
       - name: Set the release version
-        if: env.PUBLISHING == 'true'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         id: version
         run: |
           version="${{ needs.changes.outputs.version }}"
@@ -254,6 +252,10 @@ jobs:
           DROID_OFFICE_TAILNET_HTTPS: 'off'
         run: |
           cd "$RUNNER_TEMP"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            export HOME="$RUNNER_TEMP/smoke-home"
+            mkdir -p "$HOME"
+          fi
           # A free port: more than one job can be running on this Mac at once.
           port="$(node "$GITHUB_WORKSPACE/.github/scripts/free-port.mjs")"
           node "$GITHUB_WORKSPACE/bin/droid-office.js" --host 127.0.0.1 --port "$port" > office.log 2>&1 &
@@ -616,9 +618,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      # `gh` is what the release is published with, so this job checks for it specifically.
-      - name: Check the runner's toolchain
-        run: .github/scripts/runner-toolchain.sh gh
+      # Publish from the handover folder without checking out or running workspace code.
+      - name: Check the GitHub CLI
+        working-directory: ${{ runner.temp }}
+        run: |
+          gh --version || {
+            echo 'The Mac Mini runner needs the GitHub CLI (gh). See docs/guide/development.md, "CI on the Mac Mini".' >&2
+            exit 1
+          }
 
       # Staged in the runner's temp folder, which is emptied between jobs. A workspace `assets/`
       # would survive from an earlier run on this persistent runner, and an old APK next to the new
@@ -697,5 +704,6 @@ jobs:
       # Runs on the early exit too (an older run that found a newer release already published), so
       # nothing is left on the machine's disk waiting for the two-day sweep.
       - name: Clear this run's handover folder
+        working-directory: ${{ runner.temp }}
         if: always()
         run: rm -rf "$HOME/ci-artifacts/run-$GITHUB_RUN_ID"
