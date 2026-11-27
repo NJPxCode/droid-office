@@ -43,6 +43,7 @@ export class WTermAdapter {
   private displayWrite = false;
   private paused = false;
   private inViewport = true;
+  private paintLifetime?: AbortController;
   private metricsPending = true;
   // History index including discarded rows, or undefined when following the tail.
   private readerRow?: number;
@@ -132,11 +133,11 @@ export class WTermAdapter {
   }
   /** A fresh attach resets core pins. Save a physical row plus its text and verify
    * the row after replay (find the nearest matching row if history was trimmed). */
-  saveReader(): (() => void) | undefined {
+  saveReader({ explicit = false } = {}): (() => void) | undefined {
     const { baseY, viewportY } = this.buffer.active;
     const c = this.core;
     if (!c || viewportY >= baseY) return;
-    const revision = this.readerRevision;
+    const savedRevision = this.readerRevision;
     const fraction = (this.readerRow ?? 0) % 1;
     const rowText = (row: number, base: number, expected?: string) => {
       const offset = base - 1 - row;
@@ -153,6 +154,8 @@ export class WTermAdapter {
     const label = rowText(viewportY, baseY);
     const next = viewportY + 1 < baseY ? rowText(viewportY + 1, baseY) : undefined;
     return () => {
+      // Closing Find explicitly requests the pre-search position, even after stepping through matches.
+      const revision = explicit ? this.readerRevision : savedRevision;
       const el = this.root;
       if (!el || this.core !== c || revision !== this.readerRevision) return;
       const base = c.getScrollbackCount();
@@ -310,16 +313,17 @@ export class WTermAdapter {
         );
 
       root.addEventListener('scroll', () => this.sampleReader(true), { passive: true, signal });
-      native.setRenderingPaused(this.paused);
+      this.syncRendering();
       const observer = new ResizeObserver(() => {
         if (root.clientWidth > 0 && this.metricsPending) this.refreshMetrics();
       });
       observer.observe(root);
       const visibility = new IntersectionObserver(([entry]) => {
         this.inViewport = entry.isIntersecting;
-        native.setRenderingPaused(this.paused || !this.inViewport);
+        this.syncRendering();
       });
       visibility.observe(root);
+      root.ownerDocument.addEventListener('visibilitychange', () => this.syncRendering(), { signal });
       signal.addEventListener(
         'abort',
         () => {
@@ -364,8 +368,10 @@ export class WTermAdapter {
   /** A display-only log leaves the focused window and browser in charge of keys.
    * Unlike a handled terminal shortcut, these events keep their default action. */
   useWindowKeyboard() {
-    this.onOpen(() => {
+    this.onOpen((native) => {
       if (this.textarea) this.textarea.disabled = true;
+      // A scrollable div is otherwise an implicit tab stop in Chromium.
+      native.element.tabIndex = -1;
     });
   }
   onOpen(fn: (native: WTerm, signal: AbortSignal) => void) {
@@ -449,7 +455,23 @@ export class WTermAdapter {
   }
   setRenderingPaused(paused: boolean) {
     this.paused = paused;
-    this.native?.setRenderingPaused(paused || !this.inViewport);
+    this.syncRendering();
+  }
+  private get renderingPaused() {
+    return this.paused || !this.inViewport || !!this.root?.ownerDocument.hidden;
+  }
+  /** Read operations waiting for a paint must stop if this pane can no longer paint. */
+  get paintSignal() {
+    if (this.renderingPaused || this.lifetime.signal.aborted) return undefined;
+    return (this.paintLifetime ??= new AbortController()).signal;
+  }
+  private syncRendering() {
+    const paused = this.renderingPaused;
+    this.native?.setRenderingPaused(paused);
+    if (paused) {
+      this.paintLifetime?.abort();
+      this.paintLifetime = undefined;
+    }
   }
   scrollToBottom() {
     this.readerRevision++;
@@ -466,6 +488,7 @@ export class WTermAdapter {
   dispose() {
     if (this.lifetime.signal.aborted) return;
     this.lifetime.abort();
+    this.paintLifetime?.abort();
     this.pendingRestore = undefined;
     this.native?.destroy();
     this.core?.dispose();

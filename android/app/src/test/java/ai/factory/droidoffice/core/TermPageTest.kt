@@ -60,10 +60,12 @@ class TermPageTest {
     @Test
     fun localNavigationNeverTypesIntoThePty() {
         assertEquals(PageMsg.Unavailable, TermPage.decode("""{"t":"unavailable"}"""))
-        assertEquals(PageMsg.Matches(-1, 0, true, false), TermPage.decode("""{"t":"matches","count":0,"active":-1,"searching":true}"""))
-        assertEquals(PageMsg.Matches(2, 10_000, false, true), TermPage.decode("""{"t":"matches","count":10000,"active":2,"limited":true}"""))
+        assertEquals(PageMsg.Matches(-1, 0, true, false, 2), TermPage.decode("""{"t":"matches","count":0,"active":-1,"searching":true,"request":2}"""))
+        assertEquals(PageMsg.Matches(2, 10_000, false, true, 4), TermPage.decode("""{"t":"matches","count":10000,"active":2,"limited":true,"request":4}"""))
+        assertNull(TermPage.decode("""{"t":"matches","count":12,"active":1}"""))
+        assertEquals(PageMsg.SearchClosed(5), TermPage.decode("""{"t":"searchClosed","request":5}"""))
         assertEquals(PageMsg.Prompts(false), TermPage.decode("""{"t":"prompts","available":false}"""))
-        assertEquals(Json.parseToJsonElement("""{"t":"search","query":"a\"b"}"""), message(TermPage.search("a\"b")))
+        assertEquals(Json.parseToJsonElement("""{"t":"search","query":"a\"b","request":8}"""), message(TermPage.search("a\"b", 8)))
         assertEquals(Json.parseToJsonElement("""{"t":"match","direction":1}"""), message(TermPage.navigate(false, true)))
         assertEquals(Json.parseToJsonElement("""{"t":"prompt","direction":-1}"""), message(TermPage.navigate(true, false)))
     }
@@ -80,6 +82,18 @@ class TermPageTest {
         assertEquals(PictureTransform(), reset)
         val pinchedOut = PictureZoom.step(zoomed, 0.1f, 50f, 50f, 200f, 300f, 800, 400, 400f, 600f)
         assertEquals(PictureTransform(), pinchedOut)
+    }
+
+    @Test
+    fun clipboardAuthorityIsOnlyCarriedByLiveWritableData() {
+        val data = TermEvent.Data("\u001b]52;c;eA==\u0007")
+        assertNull(message(TermPage.event(data))["writable"])
+        assertNull(message(TermPage.event(data.copy(replayed = true), writable = true))["writable"])
+        assertNull(message(TermPage.event(TermEvent.Snapshot(data.data, 80, 24), writable = true))["writable"])
+        assertEquals("true", message(TermPage.event(data, writable = true))["writable"].toString())
+        assertEquals(PageMsg.ClipboardWrite("x"), TermPage.decode("""{"t":"clipboardWrite","text":"x"}"""))
+        assertNull(TermPage.decode("""{"t":"clipboardRead"}"""))
+        assertNull(TermPage.decode("""{"t":"clipboardWrite","text":"${"é".repeat(32_769)}"}"""))
     }
 
     /** The message inside `window.office&&office.receive(...)`. */

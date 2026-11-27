@@ -8,10 +8,16 @@ import ai.factory.droidoffice.core.Tags
 import ai.factory.droidoffice.core.TermPage
 import ai.factory.droidoffice.core.TermPalette
 import ai.factory.droidoffice.core.TermView
+import ai.factory.droidoffice.session.Phase
 import ai.factory.droidoffice.ui.LocalGraph
 import ai.factory.droidoffice.ui.components.Spinner
 import ai.factory.droidoffice.ui.components.tagged
 import ai.factory.droidoffice.ui.theme.Palette
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import android.os.Build
+import android.os.PersistableBundle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -124,17 +130,34 @@ internal fun Terminal(
             onMessage = { msg ->
                 when (msg) {
                     PageMsg.Ready -> {
-                        navigation.page = p
+                        navigation.setRenderer(p)
                         p.send(latestColors)
                         p.send(TermPage.config(latestScale, latestView))
                         val feed = connection.feed(workerId)
+                        // Only this attached owner stream can write. A queued WebView callback
+                        // may outlive the socket, the worker, or even the office it came from.
+                        p.clipboardWritable = {
+                            latestLive && feed != null && connection.feed(workerId) === feed &&
+                                connection.link.value.phase == Phase.Connected && connection.data.value.synced
+                        }
                         if (feed == null || !feed.listen(p.listener)) connection.resnapshot(workerId)
                     }
                     PageMsg.Drawn -> {
                         drawn = true
-                        if (navigation.finding && navigation.query.isNotEmpty()) navigation.find(navigation.query)
+                        navigation.onDrawn()
                     }
-                    is PageMsg.Matches -> navigation.matches = msg
+                    is PageMsg.Matches -> if (navigation.page === p) navigation.accept(msg)
+                    is PageMsg.SearchClosed -> if (navigation.page === p) navigation.closed(msg.request)
+                    is PageMsg.ClipboardWrite -> if (p.ready && p.view.isAttachedToWindow && p.clipboardWritable()) {
+                        runCatching {
+                            val clip = ClipData.newPlainText("Terminal", msg.text)
+                            // Android owns the clipboard overlay. Don't preview potentially sensitive shell output.
+                            if (Build.VERSION.SDK_INT >= 33) {
+                                clip.description.extras = PersistableBundle().apply { putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true) }
+                            }
+                            context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
+                        }
+                    }
                     is PageMsg.Prompts -> navigation.prompts = msg.available
                     PageMsg.Unavailable -> unavailable = true
                     is PageMsg.Bottom -> atBottom = msg.at
@@ -144,16 +167,13 @@ internal fun Terminal(
                     is PageMsg.Input -> if (TermPage.acceptsInput(latestLive, drawn, unavailable)) connection.send(ClientMsg.termInput(workerId, msg.data))
                 }
             },
-            onGone = { generation++ },
+            onGone = { navigation.detach(p); generation++ },
         )
         p
     }
     DisposableEffect(page) {
         onDispose {
-            if (navigation.page === page) {
-                navigation.page = null
-                navigation.prompts = false
-            }
+            navigation.detach(page)
             connection.feed(workerId)?.unlisten(page.listener)
             page.destroy()
         }

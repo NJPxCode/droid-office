@@ -6,7 +6,7 @@ Both web entry points warm the runtime when idle. Concurrent loads of the same h
 
 Android Raw TTY packages the JavaScript, CSS and WASM inside the APK. The native input connection owns Direct input. On the stock Android 9 (API 28) emulator, Chrome WebView 66 fetched all 599,627 WASM bytes with the correct MIME type, but the embedder disallowed WebAssembly compilation. Raw TTY shows **Unavailable** on that provider; there is no alternate renderer. See [the Android app guide](../android/README.md) for Phone and Desktop sizing, input and navigation.
 
-If Android Find is open when the phone receives a replacement snapshot, it reruns the search and scrolls to the first match, even if the text is unchanged. The public wterm search API cannot restore the previous active match without moving the viewport.
+A replacement snapshot closes Find on web and Mac. On Android, a replacement snapshot on an existing renderer closes Find, clears the query and keeps the reading position when the line is still in history. A fresh Android renderer can rerun a preserved query.
 
 ## Adapter contract
 
@@ -16,6 +16,14 @@ If Android Find is open when the phone receives a replacement snapshot, it rerun
 - `src/shared/vt-scanner.ts` demultiplexes streaming CSI/DCS/OSC/ESC/APC, including split sequences. Handlers run after preceding native text and newest handler first; `true` consumes, `false` observes. Reset drops unfinished input, not handlers. The shared mirror keeps its query handlers. Mode 2027 stays off across snapshot and streamed resets to approximate server widths.
 - `adapter.native` is the public `WTerm` and `adapter.core` the unmodified pane-owned `GhosttyCore` after open. Features subscribe to `onOpen((native, signal) => …)`, `onBeforeWrite(data)`, `onNativeParsed(chunk)`, `onWriteParsed()`, `onReset()`, `onResize({cols,rows})` and `onOptionChange(key)`. The lifetime signal aborts before native teardown. `onResize` fires synchronously **after** an actual size change, not on a repeated request for the same grid.
 - The runtime installs `wterm-keys.ts` (Office key policy), `wterm-scroll.ts` (navigation and scroll preferences), `wterm-graphics.ts` (shared Kitty overlay), and `wterm-links.ts` (Office link policy and `TerminalFind`). The runtime composes the `wterm-appearance.ts` display view with its response gate. Display-only changes do not modify cells read through `adapter.core`. No package internals are patched.
+
+## Find, prompts and clipboard
+
+In a web or Mac terminal, use **Find**, Cmd+F on Apple devices, or Ctrl+Shift+F elsewhere. Enter and Shift+Enter step through native scrollback matches; Escape closes Find and restores the reader position. `window.office.readTerminal()` reads only visible, already-open web terminals, without attaching to the PTY.
+
+When a shell emits OSC 133 marks, the prompt chip shows its current phase or exit status. Its arrows and Ctrl+Shift+[ / Ctrl+Shift+] move between retained prompts. Reattaching restores text, not old marks. **Settings → Terminal → Shell prompt integration** controls the default zsh hooks for newly started Boss Shell and shell workers across all floors. Alt-drag selects a rectangle; use Shift+Alt-drag when the application tracks the mouse.
+
+A live, writable owner's terminal forwards supported OSC 52 clipboard writes to the platform. The browser decides permission, including whether to ask on the first write. The office never reads the clipboard for an OSC query, retries a denied write, or applies writes while parsing a snapshot or its queued output. A write request that starts in replay stays ineligible even when its terminator arrives live. A guest, read-only or disconnected terminal cannot write. A local OSC 7 directory report can help resolve relative file links, but cannot add a workspace root or grant access.
 
 ## Web and Mac parity matrix
 
