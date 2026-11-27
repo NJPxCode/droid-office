@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+
+if ! command -v rsync >/dev/null; then
+  echo 'Orb setup: installing rsync for office cloning'
+  time sudo -n apt-get update
+  time sudo -n apt-get install -y --no-install-recommends rsync
+fi
+
+# The orb already provides Node.js, npm and agent-browser. Match Linux CI by
+# installing the Electron package but not downloading its Mac-only app runtime.
+export ELECTRON_SKIP_BINARY_DOWNLOAD=1
+node_version=$(node --version)
+npm_version=$(npm --version)
+echo "Orb setup: Node.js $node_version, npm $npm_version"
+
+# npm ci always replaces node_modules, even on a restored snapshot. Keep the
+# stamp inside node_modules so a manual clean install also invalidates it.
+stamp=node_modules/.droid-office-orb-install
+fingerprint=$(
+  { sha256sum package-lock.json package.json website/package.json; printf '%s\n' "$node_version" "$npm_version"; } | sha256sum
+)
+if [[ -f "$stamp" && $(<"$stamp") == "$fingerprint" && -x node_modules/.bin/bun ]]; then
+  echo 'Orb setup: reusing npm dependencies; building the current checkout'
+  time npm run build
+else
+  echo 'Orb setup: installing locked npm dependencies and building'
+  time npm ci --include=dev --prefer-offline --no-audit --no-fund
+  printf '%s\n' "$fingerprint" > "$stamp"
+fi
+
+# The Whiteboard renderer uses its own pinned headless shell, not agent-browser.
+# The CLI skips the download if that revision is already installed.
+echo 'Orb setup: checking pinned Whiteboard Chromium'
+time node bin/droid-office.js browser install

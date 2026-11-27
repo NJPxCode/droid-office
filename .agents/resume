@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# No services or credentials need restoring; all installs belong in setup.
