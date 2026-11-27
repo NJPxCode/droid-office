@@ -161,9 +161,14 @@ private class QueueReceipts(val queue: ThreadQueue, var onDisk: String?)
 
 private val localThreadQueues = mutableMapOf<String, QueueReceipts>()
 
+internal val compactWorkerWindow: Boolean
+    @Composable get() = LocalWindowInfo.current.containerDpSize.width < 600.dp
+
+internal val PhoneStripHeight = 28.dp
+
 /** Only a compact, themed worker uses the artwork pane as its single reading surface. */
 internal val themedPhoneWorker: Boolean
-    @Composable get() = Palette.artwork != null && LocalWindowInfo.current.containerDpSize.width < 600.dp
+    @Composable get() = Palette.artwork != null && compactWorkerWindow
 
 @Composable
 fun WorkerScreen(
@@ -405,7 +410,7 @@ fun WorkerScreen(
             Actions(worker, lead = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (!tty) Box(
-                        Modifier.size(if (themedPhoneWorker) 48.dp else 36.dp).clip(RoundedCornerShape(4.dp))
+                        Modifier.size(width = if (themedPhoneWorker) 48.dp else 36.dp, height = if (compactWorkerWindow) PhoneStripHeight else 36.dp).clip(RoundedCornerShape(4.dp))
                             .clickable(role = Role.Button, onClickLabel = "Search session") { threadSearch = !threadSearch }
                             .semantics { selected = threadSearch }.tagged(Tags.Worker.THREAD_SEARCH),
                         contentAlignment = Alignment.Center,
@@ -418,7 +423,7 @@ fun WorkerScreen(
             }, resumable = !mission)
             if (mission) TeamStrip(MissionControl.team(orchestrator), onOpen = { followTeamMember?.invoke(it) })
             if (!themedPhoneWorker) {
-                Box(Modifier.fillMaxWidth().height(4.dp))
+                if (!compactWorkerWindow) Box(Modifier.fillMaxWidth().height(4.dp))
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.Border))
             }
         }
@@ -660,7 +665,7 @@ private fun Header(w: WorkerInfo, embedded: Boolean, connected: Boolean, onBack:
     val data by graph.connection.data.collectAsStateWithLifecycle()
     val catalogue by graph.connection.catalogue.collectAsStateWithLifecycle()
     val floorName = if (mission || data.floors.size <= 1) null else data.floorOfWorker(w.id)?.name?.ifBlank { null }
-    Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = if (compactWorkerWindow) 2.dp else 6.dp, bottom = if (compactWorkerWindow) 0.dp else 4.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack, modifier = Modifier.tagged(Tags.Worker.BACK)) { Icon(if (embedded) Icons.Default.Close else Icons.AutoMirrored.Filled.ArrowBack, "Back") }
         if (mission) Box(Modifier.padding(end = 8.dp)) { OrchestratorTile(if (w.state == WorkerStatus.NeedsInput) Palette.Danger else OrchestratorTint, small = true, animated = !blocked) }
         else WorkerDot(parseColor(w.color), w.state, 10.dp)
@@ -709,7 +714,7 @@ private fun Actions(w: WorkerInfo, lead: (@Composable () -> Unit)? = null, resum
     val square = lead != null
     Row(
         Modifier.fillMaxWidth().then(if (lead != null) Modifier.tagged(Tags.Worker.THREAD_BAR) else Modifier)
-            .horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
+            .horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = if (compactWorkerWindow && lead != null) 0.dp else 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -729,12 +734,17 @@ private fun Actions(w: WorkerInfo, lead: (@Composable () -> Unit)? = null, resum
 private fun ActionChip(icon: ImageVector, text: String, color: Color, tag: String, loading: Boolean = false, square: Boolean = false, onClick: (() -> Unit)?) {
     val haptics = LocalHapticFeedback.current
     val shape = RoundedCornerShape(if (square) 4.dp else 8.dp)
+    val inPhoneStrip = compactWorkerWindow && square
     Row(
         (if (themedPhoneWorker) Modifier else Modifier.clip(shape).background(Palette.Surface).border(1.dp, if (onClick != null) color.copy(alpha = 0.35f) else Palette.Border, shape))
             .then(if (onClick != null) Modifier.clickable { haptics.performHapticFeedback(HapticFeedbackType.ContextClick); onClick() } else Modifier)
             .tagged(tag)
-            .then(if (themedPhoneWorker && onClick != null) Modifier.heightIn(min = 48.dp) else Modifier)
-            .padding(horizontal = if (themedPhoneWorker) 4.dp else 10.dp, vertical = 7.dp)
+            .heightIn(min = when {
+                inPhoneStrip -> PhoneStripHeight
+                themedPhoneWorker && onClick != null -> 48.dp
+                else -> 0.dp
+            })
+            .padding(horizontal = if (themedPhoneWorker) 4.dp else 10.dp, vertical = if (inPhoneStrip) 2.dp else 7.dp)
             .widthIn(max = 240.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -869,8 +879,9 @@ private fun QuickKeyRow(workerId: String, shell: Boolean, phone: Boolean, direct
     val keys = if (shell) QuickKeys.shell else QuickKeys.arrange(store.settings.quickKeys)
     var arranging by rememberSaveable { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().tagged(Tags.Worker.KEYS).horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().tagged(Tags.Worker.KEYS).horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = if (compactWorkerWindow) 2.dp else 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         QuickKey("Phone", "Resize the terminal for this phone", Tags.Worker.PHONE, selected = phone, checked = phone) {
             haptics.performHapticFeedback(HapticFeedbackType.KeyboardTap)
@@ -901,10 +912,11 @@ private fun QuickKey(label: String, spoken: String, tag: String, accent: Boolean
     val shape = RoundedCornerShape(7.dp)
     val interaction = if (checked == null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier.toggleable(checked, enabled = enabled, role = Role.Switch) { onClick() }
     Box(
-        (if (themedPhoneWorker) Modifier.height(48.dp).widthIn(min = 48.dp).clip(shape).background(if (selected) Palette.AccentMuted else Color.Transparent)
-        else Modifier.height(34.dp).widthIn(min = 40.dp).clip(shape)
+        (if (themedPhoneWorker) Modifier.widthIn(min = 48.dp).clip(shape).background(if (selected) Palette.AccentMuted else Color.Transparent)
+        else Modifier.widthIn(min = 40.dp).clip(shape)
             .background(if (accent) Palette.AccentMuted else if (selected) Palette.SurfaceHigh else Palette.SurfaceRaised)
             .border(1.dp, if (accent) Palette.Accent.copy(alpha = 0.5f) else Palette.BorderStrong, shape))
+            .then(if (compactWorkerWindow) Modifier.heightIn(min = PhoneStripHeight) else Modifier.height(34.dp))
             .then(interaction)
             .clearAndSetSemantics {
                 contentDescription = spoken

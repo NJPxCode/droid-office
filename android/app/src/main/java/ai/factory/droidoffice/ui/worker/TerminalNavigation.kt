@@ -8,6 +8,7 @@ import ai.factory.droidoffice.ui.theme.OfficeIcons
 import ai.factory.droidoffice.ui.theme.Palette
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -77,15 +78,16 @@ internal class TerminalNavigation {
 
 @Composable
 internal fun TerminalNavActions(nav: TerminalNavigation) {
+    val button = if (compactWorkerWindow) Modifier.height(PhoneStripHeight) else Modifier
     Row {
-        IconButton(onClick = { if (nav.finding) nav.close() else nav.open() }, enabled = nav.page != null, modifier = Modifier.tagged(Tags.Worker.TERM_FIND)) {
+        IconButton(onClick = { if (nav.finding) nav.close() else nav.open() }, enabled = nav.page != null, modifier = button.tagged(Tags.Worker.TERM_FIND)) {
             Icon(OfficeIcons.Search, "Find in terminal", Modifier.size(18.dp), tint = if (nav.finding) Palette.Accent else Palette.TextSecondary)
         }
         if (nav.prompts) {
-            IconButton(onClick = { nav.page?.send(TermPage.navigate(true, false)) }, modifier = Modifier.tagged(Tags.Worker.TERM_PROMPT_PREV)) {
+            IconButton(onClick = { nav.page?.send(TermPage.navigate(true, false)) }, modifier = button.tagged(Tags.Worker.TERM_PROMPT_PREV)) {
                 Icon(OfficeIcons.ArrowUp, "Previous prompt", Modifier.size(18.dp))
             }
-            IconButton(onClick = { nav.page?.send(TermPage.navigate(true, true)) }, modifier = Modifier.tagged(Tags.Worker.TERM_PROMPT_NEXT)) {
+            IconButton(onClick = { nav.page?.send(TermPage.navigate(true, true)) }, modifier = button.tagged(Tags.Worker.TERM_PROMPT_NEXT)) {
                 Icon(OfficeIcons.ArrowDown, "Next prompt", Modifier.size(18.dp))
             }
         }

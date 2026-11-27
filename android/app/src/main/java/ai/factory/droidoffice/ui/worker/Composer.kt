@@ -321,7 +321,7 @@ fun Composer(
     val thumb = RoundedCornerShape(if (thread) 3.dp else 9.dp)
     // On a wide screen the Thread's composer keeps to the conversation's reading width.
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
-    Column(Modifier.then(if (thread) Modifier.widthIn(max = READING_WIDTH + 20.dp) else Modifier).fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 10.dp)) {
+    Column(Modifier.then(if (thread) Modifier.widthIn(max = READING_WIDTH + 20.dp) else Modifier).fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = if (compactWorkerWindow) 2.dp else 10.dp)) {
         val mentions = if (mention != null) mentionItems else emptyList()
         AnimatedVisibility(mention != null) {
             MentionMenu(mentions, searching = connected && files.base == null) { item ->
@@ -499,7 +499,7 @@ fun Composer(
                 else Row(row, verticalAlignment = Alignment.Bottom, content = controls)
             }
         } else Row(
-            Modifier.fillMaxWidth().then(fieldFace).padding(if (onArtwork) 2.dp else 6.dp),
+            Modifier.fillMaxWidth().then(fieldFace).padding(horizontal = if (onArtwork) 2.dp else 6.dp, vertical = if (onArtwork) 0.dp else 6.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
             if (!w.isShell) {

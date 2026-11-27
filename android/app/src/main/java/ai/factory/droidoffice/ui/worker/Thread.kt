@@ -140,7 +140,7 @@ private fun InlineSegment(text: String, on: Boolean, tag: String, onClick: () ->
     Box(
         Modifier.clip(RoundedCornerShape(3.dp)).background(if (!on) Color.Transparent else if (themedPhoneWorker) Palette.AccentMuted else Palette.SurfaceHigh)
             .clickable(role = Role.Tab, onClick = onClick).semantics { selected = on }.tagged(tag)
-            .heightIn(min = if (themedPhoneWorker) 48.dp else 30.dp).padding(horizontal = 10.dp),
+            .heightIn(min = if (compactWorkerWindow) PhoneStripHeight else 30.dp).padding(horizontal = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(text.uppercase(), style = LocalOfficeType.current.eyebrow.copy(color = if (on) Palette.Text else Palette.TextSecondary))
