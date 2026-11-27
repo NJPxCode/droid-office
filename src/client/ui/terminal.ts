@@ -1,12 +1,12 @@
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { WebLinksAddon } from '@xterm/addon-web-links';
+import type { TerminalFind } from '../term-engine/types';
+import { openTerminalRenderer } from './terminal-renderer';
+import { createTerminalEngine } from '../term-engine';
+import { attachEngineFeatures } from '../term-engine/features';
 import { TerminalPathLinksAddon } from './terminal-path-links';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
 import type { Net } from '../net';
 import { store } from '../state';
 import { withToken } from '../token';
-import { TERM_THEME, onTermTheme, termTheme, termThemeTransparent } from '../term-theme';
+import { onTermTheme, termTheme, termThemeTransparent } from '../term-theme';
 import { focusReports, suppressMirrorQueries, TerminalMirror } from '../term-mirror';
 import { h, hintToast, openModal, STATUS_LABEL, toast, type Modal } from './dom';
 import { orchestratorIcon } from './icons';
@@ -20,16 +20,13 @@ import { missionTeamLine } from '../mission-office';
 import { forkRefusal } from '../../shared/worker-fork';
 import { openForkWorker } from './fork-worker';
 import { creditsNote } from '../../shared/factory-sessions';
-import { findLine } from '../../shared/search';
 import { DROP_MAX_BYTES, droppedPaths } from '../../shared/drops';
 import { loadFonts, TERM_FONT } from '../fonts';
-import { attachKittyTerminal, type ExpandedKittyImage } from '../term-kitty';
-import { attachPixelScroll } from '../term-pixel-scroll';
-import { attachTerminalScrollbar } from '../term-scrollbar';
+import type { ExpandedKittyImage } from '../term-kitty';
 import { wantsCsiEnter } from '../term-keys';
 import { viewPicture } from './picture-viewer';
 import { onTermFontSize, setTermFontSize, stepTermFont, termFontSize, TERM_FONT_MAX, TERM_FONT_MIN } from './term-font';
-import { followTerminalPrefs, scrollAtOnce, terminalOptions } from './terminal-prefs';
+import { followTerminalPrefs, terminalOptions, terminalPrefs } from './terminal-prefs';
 import { mountWorkerThread, type WorkerThread } from './worker-thread';
 
 function openKittyPicture(img: ExpandedKittyImage, about: string, isAlive: () => boolean, focusTerm: () => void, state: { modal: Modal | null }) {
@@ -47,13 +44,7 @@ function openKittyPicture(img: ExpandedKittyImage, about: string, isAlive: () =>
   });
 }
 
-/** A line to scroll to once the terminal has loaded: a search hit (see search.ts). */
-export interface TerminalFind {
-  /** What was searched for, as a searchKey. */
-  needle: string;
-  /** How many rows from the bottom of the worker's terminal the line was. */
-  fromEnd: number;
-}
+export type { TerminalFind } from '../term-engine/types';
 
 /** Sends a file dropped or pasted into a worker's terminal to the office; where the office keeps it. */
 async function uploadDrop(workerId: string, f: File): Promise<string> {
@@ -279,51 +270,25 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   };
 
   const pathLinks = new TerminalPathLinksAddon({ floor: () => store.floor ?? '', workerId, workerName: info.name, inert: readOnly });
-  const term = new Terminal({
-    ...terminalOptions(),
-    fontFamily: TERM_FONT,
-    fontSize: termFontSize(),
-    theme: termTheme(),
-    allowTransparency: termThemeTransparent(),
-    minimumContrastRatio: 4.5,
-    disableStdin: true,
-    scrollback: 5000,
-    allowProposedApi: true,
-    linkHandler: pathLinks.linkHandler,
-  });
-  const fit = new FitAddon();
-  term.loadAddon(fit);
-  term.loadAddon(pathLinks);
-  // The addon's default opens a blank window and then assigns its location. Electron's window
-  // open handler only sees the blank URL and denies it, so pass the real URL up front.
-  term.loadAddon(
-    new WebLinksAddon((event, uri) => {
-      if (!(event.metaKey || event.ctrlKey)) return;
-      window.open(uri, '_blank', 'noopener,noreferrer');
-    }),
+  let engine = createTerminalEngine(
+    {
+      ...terminalOptions(),
+      fontFamily: TERM_FONT,
+      fontSize: termFontSize(),
+      theme: termTheme(),
+      allowTransparency: termThemeTransparent(),
+      minimumContrastRatio: 4.5,
+      disableStdin: true,
+      scrollback: 5000,
+      allowProposedApi: true,
+      linkHandler: pathLinks.linkHandler,
+    },
+    terminalPrefs().engine,
   );
-  // Unicode 11 widths, so powerline glyphs, emoji, CJK and combining marks take the cells
-  // they should instead of overlapping or leaving gaps (oh-my-zsh, agnoster…).
-  const unicode = new Unicode11Addon();
-  term.loadAddon(unicode);
-  term.unicode.activeVersion = '11';
+  let { term } = engine;
   let opened = false;
   let alive = true;
   const expanded = { modal: null as Modal | null };
-  const kitty = attachKittyTerminal(term, {
-    onExpandImage: (img) =>
-      openKittyPicture(
-        img,
-        store.worker(workerId)?.name ?? info.name,
-        () => alive,
-        () => term.focus(),
-        expanded,
-      ),
-  });
-  const pixel = attachPixelScroll(term);
-  attachTerminalScrollbar(term);
-
-  const offQueries = suppressMirrorQueries(term);
   const focus = focusReports();
   let lastSentSize = '';
   let lastPtySize = '';
@@ -353,7 +318,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
       return;
     }
     try {
-      const size = fit.proposeDimensions();
+      const size = engine.proposeDimensions();
       if (!size || !Number.isFinite(size.cols) || !Number.isFinite(size.rows)) return;
       // Match WorkerManager.resize's limits so the server can acknowledge the exact request.
       term.resize(Math.max(20, Math.min(400, size.cols)), Math.max(5, Math.min(200, size.rows)));
@@ -412,54 +377,88 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     }
   };
 
-  /** Scrolls a search hit into view and lights it up for a few seconds. */
-  const jumpTo = (f: TerminalFind) => {
-    const buf = term.buffer.active;
-    const row = findLine(buf, f.needle, f.fromEnd);
-    if (row === undefined) return toast('That line has scrolled out of the terminal since', 'warn');
-    let end = row;
-    while (buf.getLine(end + 1)?.isWrapped) end++;
-    // A marker follows the line when the terminal reflows, which it does as the window settles.
-    const marker = term.registerMarker(row - (buf.baseY + buf.cursorY));
-    if (!marker) return;
-    const mark = term.registerDecoration({ marker, width: term.cols, height: end - row + 1, backgroundColor: TERM_THEME.yellow, foregroundColor: TERM_THEME.background });
-    const scroll = () => {
-      if (marker.line < 0) return;
-      // xterm scrolls from where its scrollbar is, which lags behind a resize; from the top is exact.
-      scrollAtOnce(term, () => {
-        term.scrollLines(-term.buffer.active.length);
-        term.scrollLines(Math.max(0, marker.line - Math.floor(term.rows / 3)));
-      });
-    };
-    scroll();
-    // The window settles its size just after it opens; stay on the line through that.
-    const follow = term.onResize(() => setTimeout(scroll, 50));
-    setTimeout(() => follow.dispose(), 1500);
-    setTimeout(() => {
-      mark?.dispose();
-      marker.dispose();
-    }, 8000);
+  const jumpTo = (hit: TerminalFind) => {
+    const warning = features.find(hit);
+    if (warning) toast(warning, 'warn');
   };
   let pendingFind = find;
 
-  const mirror = new TerminalMirror(
-    term,
-    (snapshot) => {
-      adoptSharedSize = snapshot.shared ?? adoptSharedSize;
-      const focusIn = focus.reset(document.hasFocus() && document.activeElement === term.textarea, term.modes.sendFocusMode);
-      if (focusIn && !readOnly) net.send({ t: 'term.input', workerId, data: focusIn });
-      lastSentSize = '';
-      pendingSizes.length = 0;
-      term.options.disableStdin = readOnly || !net.up;
-      disconnected.classList.add('hidden');
-      sendSize();
-      scrollAtOnce(term, () => term.scrollToBottom());
-      refresh();
-      if (pendingFind) jumpTo(pendingFind);
-      pendingFind = undefined;
-    },
-    () => net.send({ t: 'worker.attach', workerId }),
-  );
+  const bindRenderer = () => {
+    const features = attachEngineFeatures(
+      engine,
+      {
+        onExpandImage: (img) =>
+          openKittyPicture(
+            img,
+            store.worker(workerId)?.name ?? info.name,
+            () => alive,
+            () => term.focus(),
+            expanded,
+          ),
+      },
+      pathLinks,
+    );
+    const offQueries = suppressMirrorQueries(term);
+    const mirror = new TerminalMirror(
+      term,
+      (snapshot) => {
+        adoptSharedSize = snapshot.shared ?? adoptSharedSize;
+        const focusIn = focus.reset(document.hasFocus() && document.activeElement === term.textarea, term.modes.sendFocusMode);
+        if (focusIn && !readOnly) net.send({ t: 'term.input', workerId, data: focusIn });
+        lastSentSize = '';
+        pendingSizes.length = 0;
+        term.options.disableStdin = readOnly || !net.up;
+        disconnected.classList.add('hidden');
+        sendSize();
+        features.scrollAtOnce(() => term.scrollToBottom());
+        refresh();
+        if (pendingFind) jumpTo(pendingFind);
+        pendingFind = undefined;
+      },
+      () => net.send({ t: 'worker.attach', workerId }),
+    );
+    const offPrefs = followTerminalPrefs(term, {
+      resized: () => {
+        paneSizeChanged = true;
+        sendSize();
+      },
+    });
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.ctrlKey && e.key === ']' && (!inline || inline.onLeave)) {
+        if (e.type === 'keydown') {
+          if (inline) inline.onLeave?.();
+          else modal.close();
+        }
+        return false;
+      }
+      if (!inline && e.key === 'Escape' && e.shiftKey) return false;
+      const action = features.keyAction(e, csiEnter());
+      if (action.do === 'default') return !features.handleKey(e);
+      if (action.do === 'send') {
+        e.preventDefault();
+        term.input(action.data);
+      }
+      return false;
+    });
+    term.onData((data) => {
+      if (readOnly || !mirror.ready || !net.up) return;
+      const kind = focus.classify(data);
+      if (kind === 'repeat') return;
+      // Focus moving is not typing, so it leaves the shared PTY at its size.
+      if (kind === 'input') sendSize(true);
+      net.send({ t: 'term.input', workerId, data });
+    });
+    return {
+      features,
+      mirror,
+      unbind() {
+        offQueries();
+        offPrefs();
+        mirror.disconnect();
+      },
+    };
+  };
+  let { features, mirror, unbind } = bindRenderer();
   // Keep a scrolled-up reader's exact history. Only a following companion terminal can discard
   // invisible output and return to the latest snapshot, without retaining an unbounded backlog.
   const visibility = () => {
@@ -474,6 +473,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   if (inline) document.addEventListener('visibilitychange', visibility);
   if (document.hidden) visibility();
   const onMsg = (msg: ServerMsg) => {
+    if (engine.ghostty && !opened) return;
     if (msg.t === 'term.data' && msg.workerId === workerId) mirror.data(msg.data);
     else if (msg.t === 'term.snapshot' && msg.workerId === workerId) {
       term.options.disableStdin = true;
@@ -516,10 +516,8 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     unsub();
     unsubCredits();
     offStatus();
-    offQueries();
-    mirror.disconnect();
+    unbind();
     offFont();
-    offPrefs();
     offTheme();
     ro.disconnect();
     net.send({ t: 'worker.detach', workerId });
@@ -636,39 +634,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     paneSizeChanged = true;
     sendSize();
   });
-  const offPrefs = followTerminalPrefs(term, {
-    resized: () => {
-      paneSizeChanged = true;
-      sendSize();
-    },
-  });
   const offTheme = onTermTheme(() => (term.options.theme = termTheme()));
-
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.ctrlKey && e.key === ']' && (!inline || inline.onLeave)) {
-      if (e.type === 'keydown') {
-        if (inline) inline.onLeave?.();
-        else modal.close();
-      }
-      return false;
-    }
-    if (!inline && e.key === 'Escape' && e.shiftKey) return false;
-    const action = kitty.keyAction(e, csiEnter());
-    if (action.do === 'default') return !pixel.handleKey(e);
-    if (action.do === 'send') {
-      e.preventDefault();
-      term.input(action.data);
-    }
-    return false;
-  });
-  term.onData((data) => {
-    if (readOnly || !mirror.ready || !net.up) return;
-    const kind = focus.classify(data);
-    if (kind === 'repeat') return;
-    // Focus moving is not typing, so it leaves the shared PTY at its size.
-    if (kind === 'input') sendSize(true);
-    net.send({ t: 'term.input', workerId, data });
-  });
 
   // Files dropped in, or a screenshot pasted, go up to the office's machine and the terminal types
   // where they are, as a terminal does with a file dragged into it: Droid attaches a picture.
@@ -734,17 +700,35 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   refresh();
   // xterm caches glyph widths when it opens. Opening after the shared font load prevents a
   // slow first visit from retaining fallback measurements even after the icons arrive.
-  void loadFonts().then(() => {
-    if (!alive) return;
-    term.open(host);
-    opened = true;
-    ro.observe(host);
-    adoptSharedSize = store.worker(workerId)?.open === true;
-    if (!threadView && (!inline || !document.hidden)) net.send({ t: 'worker.attach', workerId });
-    setTimeout(() => {
-      if (alive && inline?.focus !== false && !threadView) term.focus();
-    }, 50);
-  });
+  void loadFonts()
+    .then(async () => {
+      if (!alive) return;
+      await openTerminalRenderer(
+        engine,
+        host,
+        () => alive,
+        (replacement) => {
+          unbind();
+          engine = replacement;
+          term = engine.term;
+          ({ features, mirror, unbind } = bindRenderer());
+        },
+      );
+      if (!alive) return;
+      opened = true;
+      ro.observe(host);
+      adoptSharedSize = store.worker(workerId)?.open === true;
+      if (!threadView && (!inline || !document.hidden)) net.send({ t: 'worker.attach', workerId });
+      setTimeout(() => {
+        if (alive && inline?.focus !== false && !threadView) term.focus();
+      }, 50);
+    })
+    .catch((error: unknown) => {
+      if (alive) {
+        toast(`Could not open terminal: ${error}`, 'error');
+        modal.close();
+      }
+    });
   if (!inline) return;
   return {
     workerId,
@@ -776,44 +760,23 @@ export function openOfficeShell(net: Net) {
   const el = h('div.modal.full.term', { role: 'dialog', 'aria-label': 'Shell' }, h('header', {}, colorDot('#8d99ae'), h('div.titles', {}, h('div.term-title', {}, title, pill), sub), h('div.actions', {}, zoom), closeBtn), host);
 
   const pathLinks = new TerminalPathLinksAddon({ floor: () => store.floor ?? '', workerId: OFFICE_SHELL_ID });
-  const term = new Terminal({
-    ...terminalOptions(),
-    fontFamily: TERM_FONT,
-    fontSize: termFontSize(),
-    theme: termTheme(),
-    allowTransparency: termThemeTransparent(),
-    minimumContrastRatio: 4.5,
-    scrollback: 5000,
-    allowProposedApi: true,
-    linkHandler: pathLinks.linkHandler,
-  });
-  const fit = new FitAddon();
-  term.loadAddon(fit);
-  term.loadAddon(pathLinks);
-  term.loadAddon(
-    new WebLinksAddon((event, uri) => {
-      if (!(event.metaKey || event.ctrlKey)) return;
-      window.open(uri, '_blank', 'noopener,noreferrer');
-    }),
+  let engine = createTerminalEngine(
+    {
+      ...terminalOptions(),
+      fontFamily: TERM_FONT,
+      fontSize: termFontSize(),
+      theme: termTheme(),
+      allowTransparency: termThemeTransparent(),
+      minimumContrastRatio: 4.5,
+      scrollback: 5000,
+      allowProposedApi: true,
+      linkHandler: pathLinks.linkHandler,
+    },
+    terminalPrefs().engine,
   );
-  const unicode = new Unicode11Addon();
-  term.loadAddon(unicode);
-  term.unicode.activeVersion = '11';
+  let { term } = engine;
   let shellAlive = true;
   const expanded = { modal: null as Modal | null };
-  const kitty = attachKittyTerminal(term, {
-    onExpandImage: (img) =>
-      openKittyPicture(
-        img,
-        'Shell',
-        () => shellAlive,
-        () => term.focus(),
-        expanded,
-      ),
-  });
-  const pixel = attachPixelScroll(term);
-  attachTerminalScrollbar(term);
-
   let opened = false;
   let shared = false;
   let lastSentSize = '';
@@ -822,9 +785,7 @@ export function openOfficeShell(net: Net) {
   const pendingSizes: string[] = [];
   let box: { width: number; height: number } | undefined;
   let boxChanged = false;
-  const offQueries = suppressMirrorQueries(term);
   const focus = focusReports();
-  let mirror: TerminalMirror | undefined;
 
   const sendSize = (typing = false) => {
     if (!mirror?.ready || !opened || !net.up || !host.clientWidth || !host.clientHeight) return;
@@ -835,7 +796,7 @@ export function openOfficeShell(net: Net) {
       return;
     }
     try {
-      const size = fit.proposeDimensions();
+      const size = engine.proposeDimensions();
       if (!size || !Number.isFinite(size.cols) || !Number.isFinite(size.rows)) return;
       term.resize(Math.max(20, Math.min(400, size.cols)), Math.max(5, Math.min(200, size.rows)));
     } catch {
@@ -850,22 +811,76 @@ export function openOfficeShell(net: Net) {
     }
   };
 
-  mirror = new TerminalMirror(
-    term,
-    (snapshot) => {
-      shared = snapshot.shared === true;
-      const focusIn = focus.reset(document.hasFocus() && document.activeElement === term.textarea, term.modes.sendFocusMode);
-      if (focusIn) net.send({ t: 'shell.input', data: focusIn });
-      ptyCols = snapshot.cols;
-      ptyRows = snapshot.rows;
-      lastSentSize = '';
-      pendingSizes.length = 0;
-      sendSize();
-      scrollAtOnce(term, () => term.scrollToBottom());
-    },
-    () => net.send({ t: 'shell.attach' }),
-  );
+  function bindRenderer() {
+    const features = attachEngineFeatures(
+      engine,
+      {
+        onExpandImage: (img) =>
+          openKittyPicture(
+            img,
+            'Shell',
+            () => shellAlive,
+            () => term.focus(),
+            expanded,
+          ),
+      },
+      pathLinks,
+    );
+    const offQueries = suppressMirrorQueries(term);
+    const mirror = new TerminalMirror(
+      term,
+      (snapshot) => {
+        shared = snapshot.shared === true;
+        const focusIn = focus.reset(document.hasFocus() && document.activeElement === term.textarea, term.modes.sendFocusMode);
+        if (focusIn) net.send({ t: 'shell.input', data: focusIn });
+        ptyCols = snapshot.cols;
+        ptyRows = snapshot.rows;
+        lastSentSize = '';
+        pendingSizes.length = 0;
+        sendSize();
+        features.scrollAtOnce(() => term.scrollToBottom());
+      },
+      () => net.send({ t: 'shell.attach' }),
+    );
+    const offPrefs = followTerminalPrefs(term, {
+      resized: () => {
+        boxChanged = true;
+        sendSize();
+      },
+    });
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.ctrlKey && e.key === ']') {
+        if (e.type === 'keydown') modal.close();
+        return false;
+      }
+      if (e.key === 'Escape' && e.shiftKey) return false;
+      const action = features.keyAction(e, false);
+      if (action.do === 'default') return !features.handleKey(e);
+      if (action.do === 'send') {
+        e.preventDefault();
+        term.input(action.data);
+      }
+      return false;
+    });
+    term.onData((data) => {
+      if (!mirror?.ready || !net.up) return;
+      const kind = focus.classify(data);
+      if (kind === 'repeat') return;
+      if (kind === 'input') sendSize(true);
+      net.send({ t: 'shell.input', data });
+    });
+    return {
+      mirror,
+      unbind() {
+        offQueries();
+        offPrefs();
+        mirror.disconnect();
+      },
+    };
+  }
+  let { mirror, unbind } = bindRenderer();
   const onMsg = (msg: ServerMsg) => {
+    if (engine.ghostty && !opened) return;
     if (msg.t === 'term.data' && msg.workerId === OFFICE_SHELL_ID) mirror?.data(msg.data);
     else if (msg.t === 'term.snapshot' && msg.workerId === OFFICE_SHELL_ID) {
       shared = msg.shared === true;
@@ -918,10 +933,8 @@ export function openOfficeShell(net: Net) {
       shellAlive = false;
       listeners.delete(onMsg);
       unsub();
-      offQueries();
-      mirror?.disconnect();
+      unbind();
       offFont();
-      offPrefs();
       offTheme();
       ro.disconnect();
       net.send({ t: 'shell.detach' });
@@ -942,12 +955,6 @@ export function openOfficeShell(net: Net) {
     boxChanged = true;
     sendSize();
   });
-  const offPrefs = followTerminalPrefs(term, {
-    resized: () => {
-      boxChanged = true;
-      sendSize();
-    },
-  });
   const offTheme = onTermTheme(() => (term.options.theme = termTheme()));
   const zoomBy = (dir: 1 | -1) => {
     setTermFontSize(stepTermFont(term.options.fontSize ?? termFontSize(), dir));
@@ -956,28 +963,6 @@ export function openOfficeShell(net: Net) {
   smaller.addEventListener('click', () => zoomBy(-1));
   bigger.addEventListener('click', () => zoomBy(1));
   closeBtn.addEventListener('click', () => modal.close());
-
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.ctrlKey && e.key === ']') {
-      if (e.type === 'keydown') modal.close();
-      return false;
-    }
-    if (e.key === 'Escape' && e.shiftKey) return false;
-    const action = kitty.keyAction(e, false);
-    if (action.do === 'default') return !pixel.handleKey(e);
-    if (action.do === 'send') {
-      e.preventDefault();
-      term.input(action.data);
-    }
-    return false;
-  });
-  term.onData((data) => {
-    if (!mirror?.ready || !net.up) return;
-    const kind = focus.classify(data);
-    if (kind === 'repeat') return;
-    if (kind === 'input') sendSize(true);
-    net.send({ t: 'shell.input', data });
-  });
 
   let uploading = 0;
   const insertFiles = async (files: File[]) => {
@@ -1033,14 +1018,32 @@ export function openOfficeShell(net: Net) {
     true,
   );
 
-  void loadFonts().then(() => {
-    if (current?.modal !== modal) return;
-    term.open(host);
-    opened = true;
-    ro.observe(host);
-    net.send({ t: 'shell.attach' });
-    setTimeout(() => {
-      if (current?.modal === modal) term.focus();
-    }, 50);
-  });
+  void loadFonts()
+    .then(async () => {
+      if (current?.modal !== modal) return;
+      await openTerminalRenderer(
+        engine,
+        host,
+        () => shellAlive,
+        (replacement) => {
+          unbind();
+          engine = replacement;
+          term = engine.term;
+          ({ mirror, unbind } = bindRenderer());
+        },
+      );
+      if (!shellAlive) return;
+      opened = true;
+      ro.observe(host);
+      net.send({ t: 'shell.attach' });
+      setTimeout(() => {
+        if (current?.modal === modal) term.focus();
+      }, 50);
+    })
+    .catch((error: unknown) => {
+      if (shellAlive) {
+        toast(`Could not open shell: ${error}`, 'error');
+        modal.close();
+      }
+    });
 }
