@@ -1,171 +1,105 @@
 import type { WTermAdapter } from './wterm';
 
-const SETTLE_DELAY_MS = 160;
-const SETTLE_MS = 120;
-const SCROLLBAR_HIDE_MS = 700;
-
 export function attachWtermScroll(adapter: WTermAdapter) {
   let handleKey = (_event: KeyboardEvent) => false;
-  let snap = () => {};
   adapter.onOpen(({ element: el }, signal) => {
     const core = adapter.core!;
-    // In short panes the initial 80x24 grid can overflow before the first fit.
-    // Start following it, or wterm mistakes the first resize for a scrolled reader.
+    // A short pane can overflow before the first fit. Start it at the tail.
     adapter.scrollToBottom();
     const height = () => parseFloat(el.style.getPropertyValue('--term-row-height'));
-    const max = () => Math.max(0, el.scrollHeight - el.clientHeight);
-    const clamp = (px: number) => Math.min(max(), Math.max(0, px));
-    const nearest = (px: number) => (px >= max() ? px : Math.round(px / height()) * height());
-    let frame = 0;
-    let target: number | undefined;
-    let held = false;
-    let partialWheel = 0;
-    let settleTimer = 0;
-    let hideTimer = 0;
-    const stop = () => {
-      cancelAnimationFrame(frame);
-      clearTimeout(settleTimer);
-      target = undefined;
-    };
-    const show = () => {
-      el.classList.add('wterm-scrolling');
-      clearTimeout(hideTimer);
-      hideTimer = window.setTimeout(() => el.classList.remove('wterm-scrolling'), SCROLLBAR_HIDE_MS);
-    };
-    const settle = () => {
-      clearTimeout(settleTimer);
-      if (!held && adapter.options.smoothScrollDuration && Math.abs(nearest(el.scrollTop) - el.scrollTop) > 0.5) settleTimer = window.setTimeout(() => glide(nearest(el.scrollTop), SETTLE_MS), SETTLE_DELAY_MS);
-    };
-    const glide = (px: number, duration = adapter.options.smoothScrollDuration ?? 0) => {
-      stop();
-      const from = el.scrollTop;
-      const to = clamp(px);
-      if (from === to) return;
-      show();
-      if (!duration) {
-        el.scrollTop = to;
-        return;
-      }
-      target = to;
-      const start = performance.now();
-      let last = from;
-      const step = (now: number) => {
-        // A search, a native history trim or a thumb drag supersedes this animation.
-        if (el.scrollTop !== last || core.usingAltScreen()) return stop();
-        const k = Math.min(1, Math.max(0, (now - start) / duration));
-        el.scrollTop = from + (to - from) * (1 - (1 - k) ** 3);
-        last = el.scrollTop;
-        if (k < 1) frame = requestAnimationFrame(step);
-        else {
-          target = undefined;
-          settle();
-        }
-      };
-      frame = requestAnimationFrame(step);
-    };
     handleKey = (e) => {
       if (!e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || (e.key !== 'PageUp' && e.key !== 'PageDown') || core.usingAltScreen()) return false;
       e.preventDefault();
-      if (e.type === 'keydown') glide(nearest(target ?? el.scrollTop) + (e.key === 'PageUp' ? -1 : 1) * (adapter.rows - 1) * height());
+      if (e.type === 'keydown') el.scrollTop += (e.key === 'PageUp' ? -1 : 1) * Math.max(height(), el.clientHeight - height());
       return true;
     };
-    snap = () => {
-      stop();
-      el.scrollTop = nearest(el.scrollTop);
+
+    let partialRow = 0;
+    let reportTravel = 0;
+    let reportAlt = false;
+    let reportTracking = 0;
+    let horizontalReport = false;
+    let remainder = 0;
+    let lastTop: number | undefined;
+    const pixels = (e: WheelEvent, delta = e.deltaY) => delta * (e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? el.clientHeight : e.deltaMode === WheelEvent.DOM_DELTA_LINE ? height() : 1);
+    const historyWheel = (e: WheelEvent) => {
+      // At normal speed Chromium owns the gesture, including platform momentum.
+      const speed = (adapter.options.scrollSensitivity ?? 1) * (e.altKey ? 5 : 1);
+      if (speed === 1 || !e.deltaY || Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.ctrlKey || e.shiftKey || e.metaKey) {
+        remainder = 0;
+        return;
+      }
+      e.preventDefault();
+      // Slow scrolling must not round every half-pixel gesture to a whole pixel.
+      const target = el.scrollTop + pixels(e) * speed + (lastTop === el.scrollTop ? remainder : 0);
+      el.scrollTop = target;
+      lastTop = el.scrollTop;
+      remainder = target > 0 && target < el.scrollHeight - el.clientHeight ? target - lastTop : 0;
     };
     el.addEventListener(
       'wheel',
       (e) => {
-        const cancel = () => {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-        };
-        if (!e.deltaY || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return cancel();
-        const speed = adapter.options.scrollSensitivity ?? 1;
-        const pixel = e.deltaMode === WheelEvent.DOM_DELTA_PIXEL;
-        if (core.mouseTracking() || core.usingAltScreen()) {
-          if (e.shiftKey || adapter.options.disableStdin) return cancel();
-          if (pixel) {
-            partialWheel += (e.deltaY / height()) * (Math.abs(e.deltaY) < 50 ? 0.3 : 1) * speed * (e.altKey || e.ctrlKey ? 5 : 1);
-            if (Math.abs(partialWheel) < 1) return cancel();
-            partialWheel %= 1;
-          }
-          if (core.mouseTracking()) {
-            // Native reports defer to history when scrolled up. xterm also uses
-            // zero-based pixels for SGR-pixels, but one-based cells for other modes.
-            const encoding = core.mouseEncoding();
-            const rect = el.querySelector('.term-row:not(.term-scrollback-row)')?.getBoundingClientRect();
-            if (!rect) return cancel();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            const code = (e.deltaY < 0 ? 64 : 65) + (e.altKey ? 8 : 0) + (e.ctrlKey ? 16 : 0);
-            const width = parseFloat(el.style.getPropertyValue('--term-cell-width'));
-            if (x >= 0 && y >= 0 && x < adapter.cols * width && y < adapter.rows * height()) {
-              const col = Math.floor(x / width) + 1;
-              const row = Math.floor(y / height()) + 1;
-              if (encoding === 'sgr-pixels') adapter.input(`\x1b[<${code};${Math.floor(x)};${Math.floor(y)}M`);
-              else if (encoding === 'sgr') adapter.input(`\x1b[<${code};${col};${row}M`);
-              // xterm ignores 1005/1015 and stays in legacy encoding. The PTY
-              // takes UTF-8 strings: forward the complete ASCII report or nothing.
-              else if (col <= 95 && row <= 95) adapter.input(`\x1b[M${String.fromCharCode(code + 32, col + 32, row + 32)}`);
-            }
-          } else adapter.input(`\x1b${core.cursorKeysApp() ? 'O' : '['}${e.deltaY < 0 ? 'A' : 'B'}`);
-          return cancel();
+        const tracking = core.mouseTracking();
+        if (!tracking) {
+          reportTravel = 0;
+          return;
         }
-        cancel();
-        const detent = pixel && !e.deltaX && 'wheelDeltaY' in e && typeof e.wheelDeltaY === 'number' && e.wheelDeltaY % 120 === 0 ? -e.wheelDeltaY / 120 : 0;
-        const pixels = detent ? detent * 50 : pixel ? e.deltaY : e.deltaY * (e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? el.clientHeight : height());
-        const delta = pixels * speed * (e.altKey ? 5 : 1);
-        if (pixel && !detent) {
-          glide(el.scrollTop + delta, 0); // The trackpad already supplies its own momentum.
-          settle();
-        } else glide((target ?? el.scrollTop) + delta);
+        const max = el.scrollHeight - el.clientHeight;
+        if (adapter.options.disableStdin || (!core.usingAltScreen() && !e.shiftKey && !adapter.isAtTail(max))) {
+          // Don't send reports from a read-only mirror or a reader even just
+          // two pixels from the tail. Native scrolling owns history.
+          reportTravel = 0;
+          e.stopImmediatePropagation();
+          if (core.usingAltScreen()) e.preventDefault();
+          else historyWheel(e);
+          return;
+        }
+        if (e.shiftKey && max > 0) return; // wterm's explicit history override
+        const first = el.querySelector('.term-row:not(.term-scrollback-row)')?.getBoundingClientRect();
+        const row = height();
+        const width = parseFloat(el.style.getPropertyValue('--term-cell-width')) * adapter.cols;
+        if (!first || e.clientX < first.left || e.clientX >= first.left + width || e.clientY < first.top || e.clientY >= first.top + row * adapter.rows) return;
+        const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+        if (horizontal !== horizontalReport) reportTravel = 0;
+        horizontalReport = horizontal;
+        reportAlt = core.usingAltScreen();
+        reportTracking = tracking;
+        reportTravel += pixels(e, horizontal ? e.deltaX : e.deltaY);
+        if (Math.abs(reportTravel) >= row) {
+          reportTravel %= row;
+          return; // pass the original event to wterm's negotiated encoder
+        }
+        e.preventDefault();
+        e.stopImmediatePropagation();
       },
       { capture: true, passive: false, signal },
     );
     el.addEventListener(
-      'pointerdown',
-      () => {
-        stop();
-        held = true;
+      'wheel',
+      (e) => {
+        // wterm gets first choice: it consumes negotiated mouse reports over
+        // the live grid but leaves the wheel alone while reading history.
+        if (e.defaultPrevented) return;
+        if (!core.usingAltScreen()) return historyWheel(e);
+        if (e.ctrlKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+        e.preventDefault();
+        if (core.mouseTracking() || adapter.options.disableStdin || e.shiftKey) return;
+        partialRow += pixels(e) / height();
+        const rows = Math.trunc(partialRow);
+        partialRow -= rows;
+        if (rows) adapter.input(`\x1b${core.cursorKeysApp() ? 'O' : '['}${rows < 0 ? 'A' : 'B'}`.repeat(Math.min(Math.abs(rows), adapter.rows)));
       },
-      { signal },
+      { passive: false, signal },
     );
-    el.addEventListener(
-      'scroll',
-      () => {
-        if (held) show();
-      },
-      { signal },
-    );
-    const release = () => {
-      if (!held) return;
-      held = false;
-      settle();
-    };
-    for (const event of ['pointerup', 'pointercancel', 'blur']) window.addEventListener(event, release, { signal });
-    adapter.onOptionChange((key) => {
-      if (key === 'smoothScrollDuration' && !adapter.options.smoothScrollDuration) stop();
-    });
-    adapter.onData((data) => {
-      if (data === '\x1b[I' || data === '\x1b[O') return;
-      stop();
-      el.classList.remove('wterm-scrolling');
+    // The VT scanner flushes mode changes in order, including two programs
+    // switching screens in one PTY write with no intervening wheel event.
+    adapter.onNativeParsed(() => {
+      if (reportTravel && (reportAlt !== core.usingAltScreen() || reportTracking !== core.mouseTracking())) reportTravel = 0;
+      if (partialRow && (!core.usingAltScreen() || core.mouseTracking())) partialRow = 0;
     });
     adapter.onReset(() => {
-      stop();
-      partialWheel = 0;
+      partialRow = remainder = reportTravel = 0;
     });
-    signal.addEventListener(
-      'abort',
-      () => {
-        stop();
-        clearTimeout(hideTimer);
-        handleKey = () => false;
-        snap = () => {};
-      },
-      { once: true },
-    );
   });
-  return { handleKey: (e: KeyboardEvent) => handleKey(e), snap: () => snap() };
+  return { handleKey: (e: KeyboardEvent) => handleKey(e) };
 }
