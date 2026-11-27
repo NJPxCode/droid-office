@@ -150,7 +150,7 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#f1eeff', cursor: '#a97bff', background: '#05031a', selection: '#33245c' },
     immersive: {
       'heading-font': '"Avenir Next", Avenir, system-ui, sans-serif',
-      'chrome-finish': 'url("/themes/nightly-orbit-chart.svg"), radial-gradient(ellipse at 98% 130%, #412c47cc, transparent 54%), linear-gradient(110deg, #0c1129f2, #171333e8 64%, #231c45f0)',
+      'chrome-finish': 'radial-gradient(ellipse at 98% 130%, #412c47cc, transparent 54%), linear-gradient(110deg, #0c1129f2, #171333e8 64%, #231c45f0)',
       'panel-edge': 'linear-gradient(90deg, #50477a, #ac8cf7 42%, #dec1ff 66%, #ffb48b 85%, #865264)',
       'badge-face': 'radial-gradient(ellipse 145% 100% at 61% 144%, #171433 71%, #77538e 73%, #ffc29a 74%, #754e94 77%, #292345 82%, #101329 96%)',
       'badge-ink': '#ffe0c8',
@@ -180,7 +180,7 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#f4f1ff', cursor: '#ff3f8e', background: '#05050c', selection: '#4a1a33' },
     immersive: {
       'heading-font': '"Avenir Next Condensed", "Arial Narrow", "Roboto Condensed", sans-serif',
-      'chrome-finish': 'url("/themes/neo-tokyo-glass.svg"), linear-gradient(108deg, #362038d9, #0f1021cf 35%, #0c1523de 76%, #11364cdb)',
+      'chrome-finish': 'linear-gradient(108deg, #362038d9, #0f1021cf 35%, #0c1523de 76%, #11364cdb)',
       'panel-edge': 'linear-gradient(90deg, #ff599d 0 18%, #743155 18% 22%, transparent 22% 23%, #37223e 23% 62%, #0f4d67 62% 86%, transparent 86% 87%, #61e5ff 87%)',
       'badge-face': 'linear-gradient(155deg, #74e8ff 0 2px, #17465b 2px, #101729 46%, #381b3b 70%, #963255)',
       'badge-ink': '#c1f7ff',
@@ -210,9 +210,8 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#eef6ef', cursor: '#f3c45a', background: '#030d09', selection: '#2c3a1e' },
     immersive: {
       'heading-font': 'Iowan Old Style, Palatino Linotype, Palatino, Georgia, serif',
-      // Backlit shoji at the edges, falling into dark pond lacquer behind the lettering.
-      'chrome-finish':
-        'linear-gradient(96deg, transparent, #061710e8 36%, #0a1c16e0 67%, transparent), repeating-linear-gradient(90deg, #0b1511cc 0 2px, #ceac6145 2px 3px, transparent 3px 29px), repeating-linear-gradient(0deg, #101a14c2 0 2px, #b69f6440 2px 3px, transparent 3px 23px), radial-gradient(ellipse at 0 85%, #785126c9, #253729ce 34%, #152c24ed 73%, #3b4930d9)',
+      // Dark pond lacquer behind the lettering, warming toward backlit shoji on the right.
+      'chrome-finish': 'linear-gradient(96deg, #04120de8, #061710eb 44%, #0d231be0 76%, #2b3523d6), radial-gradient(ellipse at 0 88%, #5e3f1ea8, #1c2e24ba 38%, #0c1f19ed 78%, #2d3c28d9)',
       'panel-edge': 'linear-gradient(90deg, #443724, #bc8d49 9%, #ffe29b 15%, #927044 22%, #36493b 44%, #729a75 82%, #b9e7af 88%, #3f5b47)',
       'badge-face':
         'radial-gradient(circle at 78% 20%, #fff3b7 0 1px, #b4d98166 2px, transparent 7px), repeating-radial-gradient(ellipse at 0 110%, transparent 0 7px, #d0b07655 8px, transparent 9px 14px), linear-gradient(145deg, #48533a, #102c23 60%, #071a15)',
@@ -243,7 +242,7 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#fbefea', cursor: '#ff5a36', background: '#080303', selection: '#4a1d14' },
     immersive: {
       'chrome-finish':
-        'url("/themes/orbital-foundry-plate.svg"), linear-gradient(100deg, transparent 0 50%, #d9b26a12 58%, #b9773f1c 66%, #6a3f8a24 76%, #2f5a9e2e 88%, #4f86c038 100%), radial-gradient(ellipse at 100% 110%, #804326a8 0, #422e2d88 10%, #22283466 35%, transparent 55%), linear-gradient(165deg, #39414cc2, #202730ba 26%, #131821c2 67%, #2d3035ba)',
+        'linear-gradient(100deg, transparent 0 50%, #d9b26a12 58%, #b9773f1c 66%, #6a3f8a24 76%, #2f5a9e2e 88%, #4f86c038 100%), radial-gradient(ellipse at 100% 110%, #804326a8 0, #422e2d88 10%, #22283466 35%, transparent 55%), linear-gradient(165deg, #39414cd9, #202730d6 26%, #131821dc 67%, #2d3035d4)',
       'panel-edge': 'linear-gradient(90deg, #6b5a3a, #d9b26a 10%, #b9773f 24%, #8b4a52 38%, #6a3f8a 52%, #2f5a9e 68%, #4f86c0 84%, #7d8c99)',
       imprint: '"ORBITAL FOUNDRY" / ""',
     },
@@ -271,7 +270,7 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#eaf8fb', cursor: '#2ee6d6', background: '#010910', selection: '#0f3a44' },
     immersive: {
       'heading-font': '"Avenir Next", Avenir, "Trebuchet MS", sans-serif',
-      'chrome-finish': 'url("/themes/abyssal-biolume-soundings.svg"), radial-gradient(ellipse at 85% -35%, #604c9c70, transparent 54%), linear-gradient(165deg, #0e3f4de8, #031423ed 56%, #101932e0)',
+      'chrome-finish': 'radial-gradient(ellipse at 85% -35%, #604c9c70, transparent 54%), linear-gradient(165deg, #0e3f4de8, #031423ed 56%, #101932e0)',
       'panel-edge': 'linear-gradient(90deg, transparent, #27b5c2 16%, #a6fff0 26%, #277e9d 40%, #47468b 70%, #9b86ff 88%, transparent)',
       'badge-face': 'repeating-radial-gradient(circle at center, transparent 0 6px, #74ebe44a 6.5px 7px, transparent 7.5px 12px), conic-gradient(from 32deg, #133b4b, #073044 58%, #13727a 87%, #4fa9ab 99%, #133b4b)',
       'badge-ink': '#c6fff7',
@@ -301,7 +300,7 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#f5f0ff', cursor: '#f0cb91', background: '#0a0712', selection: '#49355f' },
     immersive: {
       'heading-font': 'Palatino, "Palatino Linotype", Georgia, serif',
-      'chrome-finish': 'linear-gradient(100deg, #21122c70, #21122cd6 48%, #21122c70), url("/themes/astral-cathedral-arcade.svg"), linear-gradient(160deg, #483054ed, #26162ff2 58%, #39223ee6)',
+      'chrome-finish': 'linear-gradient(100deg, #21122c78, #21122ce0 48%, #21122c72), linear-gradient(160deg, #483054ed, #26162ff2 58%, #39223ee6)',
       'panel-edge': 'linear-gradient(90deg, #8561a2, #c584b7 28%, #edc88d 46%, #57385e 49%, #fff0cd 50%, #57385e 51%, #edc88d 54%, #c584b7 72%, #8561a2)',
       'badge-face': 'conic-gradient(from 45deg, #392944, #5b406f 25%, #32203d 25%, #543857 50%, #714e7d 50%, #4b345b 75%, #33233f 75%, #392944)',
       'badge-ink': '#ffe3ad',
@@ -331,7 +330,7 @@ export const COMPANION_THEMES = [
     terminal: { foreground: '#fff4f8', cursor: '#efacc0', background: '#160e13', selection: '#63374d' },
     immersive: {
       'heading-font': 'Iowan Old Style, Palatino Linotype, Palatino, Georgia, serif',
-      'chrome-finish': 'url("/themes/sakura-mist-sprig.svg"), repeating-linear-gradient(168deg, transparent 0 4px, #f1cbcf08 4px 5px, transparent 5px 9px), linear-gradient(112deg, #372231e8, #503042da 32%, #372335db 62%, #583c4edd)',
+      'chrome-finish': 'repeating-linear-gradient(168deg, transparent 0 4px, #f1cbcf08 4px 5px, transparent 5px 9px), linear-gradient(112deg, #372231eb, #503042dc 32%, #372335de 62%, #583c4ee0)',
       'panel-edge': 'linear-gradient(90deg, transparent 2%, #be8e9f77 14%, #edb5c7 27%, #fff0de 29%, #b3869e 33%, #966b8866 58%, transparent 94%)',
       'badge-face': 'conic-gradient(from 26deg at 35% 28%, #854f67, #533448 15%, #694459 35%, #462e43 55%, #75465f 79%, #a16b80)',
       'badge-ink': '#ffebdc',

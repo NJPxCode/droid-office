@@ -20,6 +20,7 @@ import {
 } from '../../shared/companion-themes';
 import { setTermThemeColors } from '../term-theme';
 import { savedPrefs, type PrefOptions } from './saved-prefs';
+import { renderSideCardFx } from './side-card';
 import { createThemeStage, type ThemeStage } from './theme-stage';
 import { loadWallpaper, onWallpaper } from './wallpaper-store';
 
@@ -85,6 +86,7 @@ interface Backdrop {
 
 let started = false;
 let backdrop: Backdrop | undefined;
+let sideCardHost: HTMLElement | null = null;
 let applied: string[] = [];
 let wallSrc: string | null = null;
 let reduceMotion: MediaQueryList | undefined;
@@ -162,11 +164,18 @@ function paint(p: AppearancePrefs) {
   const body = document.body;
   const theme = companionTheme(p.theme);
   const og = theme.id === OG_THEME_ID;
+  const liveMotion = animating(p);
   body.dataset.theme = theme.id;
-  if (og) delete body.dataset.glass;
-  else body.dataset.glass = p.glass;
+  if (og) {
+    delete body.dataset.glass;
+    delete body.dataset.motion;
+  } else {
+    body.dataset.glass = p.glass;
+    body.dataset.motion = liveMotion ? 'live' : 'still';
+  }
   body.classList.toggle('themed', !og);
   paintTreatments(theme);
+  if (sideCardHost) renderSideCardFx(sideCardHost, theme);
   for (const key of applied) body.style.removeProperty(key);
   applied = [];
   if (!og) {
@@ -201,7 +210,7 @@ function paint(p: AppearancePrefs) {
     b.canvas.style.opacity = String(spec.opacity);
     b.canvas.style.mixBlendMode = spec.blend;
   }
-  b.stage?.show(spec, animating(p));
+  b.stage?.show(spec, liveMotion);
 }
 
 const crossSite = (src: string) => /^https?:/i.test(src) && new URL(src, location.href).origin !== location.origin;
@@ -316,6 +325,16 @@ async function reloadWallpaper() {
     if (old.startsWith('blob:')) URL.revokeObjectURL(old);
   }
   for (const fn of wallListeners) fn(wallSrc);
+}
+
+/** Attaches the companion's animated per-theme artwork layer to the sidebar floor nameplate. */
+export function mountCompanionSideCard(host: HTMLElement): () => void {
+  sideCardHost = host;
+  renderSideCardFx(host, companionTheme(appearancePrefs().theme));
+  return () => {
+    if (sideCardHost === host) sideCardHost = null;
+    host.querySelector(':scope > .dash-side-fx')?.remove();
+  };
 }
 
 /** Themes this page from now on: paints the saved look and follows every change, here or in another tab. */

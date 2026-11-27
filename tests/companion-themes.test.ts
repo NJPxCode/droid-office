@@ -27,6 +27,7 @@ import {
   themePreview,
 } from '../src/shared/companion-themes.js';
 import { APPEARANCE_DEFAULTS, backdropPicture, normalizeAppearancePrefs } from '../src/client/ui/companion-theme.js';
+import { SIDE_CARD_BUILDERS, SIDE_CARD_THEME_IDS, renderSideCardFx } from '../src/client/ui/side-card.js';
 import { TERM_THEME, onTermTheme, setTermThemeColors, termTheme } from '../src/client/term-theme.js';
 
 const PUBLIC = new URL('../src/client/public/', import.meta.url);
@@ -333,4 +334,120 @@ test('Orbital Foundry uses the standard headings and badges and names its temper
   for (const key of ['heading-font', 'badge-face', 'badge-ink']) {
     assert.equal(companionThemeVars(theme)[`--th-${key}`], undefined, key);
   }
+});
+
+test('every animated theme ships a bespoke side-nav card animation and OG has none', (t) => {
+  const animatedIds = COMPANION_THEMES.filter((theme) => 'stage' in theme.backdrop && theme.backdrop.stage).map((theme) => theme.id);
+  assert.deepEqual([...SIDE_CARD_THEME_IDS].sort(), [...animatedIds].sort());
+  assert.equal(SIDE_CARD_BUILDERS[OG_THEME_ID], undefined);
+
+  const css = readFileSync(new URL('../src/client/style.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const id of animatedIds) {
+    assert.ok(css.includes(`.themed[data-theme="${id}"] .dash-side-head`), `${id} styles its side-nav card`);
+    assert.ok(css.includes(`.themed[data-theme="${id}"] .dash-side-fx-edge::before`), `${id} animates its bottom edge`);
+  }
+  assert.match(css, /\.themed\[data-motion="still"\][^{]*\.dash-side-fx \*[^{]*\{[^}]*animation-play-state:\s*paused\s*!important/);
+  assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.themed\s+\.dash-side-fx \*[^{]*\{[^}]*animation-play-state:\s*paused\s*!important/);
+
+  // Exercise every SVG builder and renderSideCardFx lifecycle against a minimal DOM stand-in.
+  const savedDoc = (globalThis as Record<string, unknown>).document;
+  t.after(() => {
+    if (savedDoc === undefined) delete (globalThis as Record<string, unknown>).document;
+    else (globalThis as Record<string, unknown>).document = savedDoc;
+  });
+
+  interface StubNode {
+    tag: string;
+    className: string;
+    dataset: Record<string, string>;
+    attrs: Record<string, string>;
+    children: StubNode[];
+    parent: StubNode | null;
+    setAttribute(k: string, v: string): void;
+    append(...nodes: StubNode[]): void;
+    prepend(...nodes: StubNode[]): void;
+    remove(): void;
+    replaceWith(next: StubNode): void;
+    querySelector(selector: string): StubNode | null;
+  }
+
+  const makeNode = (tag: string): StubNode => {
+    const node: StubNode = {
+      tag,
+      className: '',
+      dataset: {},
+      attrs: {},
+      children: [],
+      parent: null,
+      setAttribute(k, v) {
+        node.attrs[k] = v;
+      },
+      append(...nodes) {
+        for (const child of nodes) {
+          child.parent = node;
+          node.children.push(child);
+        }
+      },
+      prepend(...nodes) {
+        node.children.unshift(...nodes);
+        for (const child of nodes) child.parent = node;
+      },
+      remove() {
+        const idx = node.parent?.children.indexOf(node) ?? -1;
+        if (idx >= 0) node.parent?.children.splice(idx, 1);
+        node.parent = null;
+      },
+      replaceWith(next) {
+        const parent = node.parent;
+        if (!parent) return;
+        const idx = parent.children.indexOf(node);
+        if (idx >= 0) {
+          parent.children[idx] = next;
+          next.parent = parent;
+          node.parent = null;
+        }
+      },
+      querySelector(selector) {
+        if (selector !== ':scope > .dash-side-fx') return null;
+        return node.children.find((child) => child.className === 'dash-side-fx') ?? null;
+      },
+    };
+    return node;
+  };
+
+  (globalThis as Record<string, unknown>).document = {
+    createElement: (tag: string) => makeNode(tag),
+    createElementNS: (_ns: string, tag: string) => makeNode(tag),
+  };
+
+  const host = makeNode('div');
+  host.append(makeNode('h2'), makeNode('p'));
+  const seenDefIds = new Set<string>();
+  const collectIds = (node: StubNode) => {
+    if (node.attrs.id) {
+      assert.ok(!seenDefIds.has(node.attrs.id), `duplicate SVG def id: ${node.attrs.id}`);
+      seenDefIds.add(node.attrs.id);
+    }
+    for (const c of node.children) collectIds(c);
+  };
+
+  for (const theme of themed) {
+    renderSideCardFx(host as unknown as HTMLElement, theme);
+    const fx = host.children[0];
+    assert.equal(fx.className, 'dash-side-fx');
+    assert.equal(fx.dataset.card, theme.id);
+    assert.equal(fx.attrs['aria-hidden'], 'true');
+    assert.equal(fx.children[0].tag, 'svg');
+    assert.equal(fx.children[1].className, 'dash-side-fx-edge');
+    collectIds(fx.children[0]);
+
+    // Rendering the same theme again keeps the existing DOM node so live animations never reset.
+    renderSideCardFx(host as unknown as HTMLElement, theme);
+    assert.equal(host.children[0], fx, `${theme.id} preserves live fx node across non-theme paints`);
+  }
+
+  // Switching to OG removes the animated layer cleanly.
+  renderSideCardFx(host as unknown as HTMLElement, companionTheme(OG_THEME_ID));
+  assert.equal(host.querySelector(':scope > .dash-side-fx'), null);
+  assert.equal(host.children.length, 2);
 });

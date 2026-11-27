@@ -89,7 +89,7 @@ import { INCLUDE_FILE, SETUP_FILE, describeSetup } from '../shared/worktree-setu
 import { ORCHESTRATOR_ID } from '../shared/mission-control';
 import { createMissionRoster } from './dashboard-mission';
 import { missionWorker } from './mission';
-import { startCompanionTheme } from './ui/companion-theme';
+import { mountCompanionSideCard, startCompanionTheme } from './ui/companion-theme';
 store.decodeBitmaps = false;
 startCompanionTheme();
 const read = (key: string) => {
@@ -374,7 +374,9 @@ onModalChange((open) => {
     showQuiet(false);
   }
 });
-const side = h('aside.dash-side', { 'aria-label': 'Floor' }, missionList, h('div.dash-side-head', {}, sideTitle, sideSub), workerList, h('footer.dash-side-foot', {}, h('div.dash-side-hire', {}, agentBtn, shellBtn), keyLegend()));
+const sideHead = h('div.dash-side-head', {}, sideTitle, sideSub);
+mountCompanionSideCard(sideHead);
+const side = h('aside.dash-side', { 'aria-label': 'Floor' }, missionList, sideHead, workerList, h('footer.dash-side-foot', {}, h('div.dash-side-hire', {}, agentBtn, shellBtn), keyLegend()));
 
 /** The workspace's shortcuts, folded under one line until the owner opens them (remembered in this browser). */
 function keyLegend() {
