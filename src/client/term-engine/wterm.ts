@@ -24,6 +24,7 @@ function event<T>() {
 }
 
 export type WTermFeature = (adapter: WTermAdapter) => void;
+type SavedReader = (() => void) & { revision: number };
 
 export class WTermAdapter {
   readonly options: ClientTerminalOptions;
@@ -36,12 +37,18 @@ export class WTermAdapter {
   private readonly nativeParsed = event<string>();
   private readonly resetting = event<void>();
   private readonly resized = event<{ cols: number; rows: number }>();
+  private readonly fit = event<boolean>();
+  private proposal?: { cols: number; rows: number };
+  private replay?: 'waiting' | 'parsing' | 'parsed' | 'painted';
+  private revealFrame = 0;
+  private afterSnapshotPaint?: () => void;
   private readonly changed = event<keyof ClientTerminalOptions>();
   private readonly data = event<string>();
   private readonly lifetime = new AbortController();
   private root?: HTMLDivElement;
   private displayWrite = false;
   private paused = false;
+  private fitting = false;
   private inViewport = true;
   private paintLifetime?: AbortController;
   private metricsPending = true;
@@ -127,6 +134,7 @@ export class WTermAdapter {
     const range = el.scrollHeight - el.clientHeight;
     const remaining = range - el.scrollTop;
     this.readerRow = this.isAtTail(range) ? undefined : this.paintedDiscarded + el.scrollTop / this.rowHeight;
+    if (this.readerRow !== undefined) el.classList.remove('pinning-tail');
     // wterm 0.6 follows within 5px of the end, and resets to zero when a
     // clipped shared grid has no history. Don't let either paint move a reader.
     if (scrolled) {
@@ -136,6 +144,7 @@ export class WTermAdapter {
   }
   /** An explicit navigation supersedes both a metric restore and an older saved reader. */
   cancelReaderRestore(revealed = true) {
+    this.root?.classList.remove('pinning-tail');
     if (revealed) this.holdReaderAfterPaint = false;
     this.readerRevision++;
     this.pendingRestore = undefined;
@@ -149,12 +158,16 @@ export class WTermAdapter {
   }
   /** A fresh attach resets core pins. Save a physical row plus its text and verify
    * the row after replay (find the nearest matching row if history was trimmed). */
-  saveReader({ explicit = false } = {}): (() => void) | undefined {
+  saveReader({ explicit = false, pending }: { explicit?: boolean; pending?: SavedReader } = {}): SavedReader | undefined {
     const { baseY, viewportY } = this.buffer.active;
+    if (pending?.revision === this.readerRevision) return pending;
     const c = this.core;
-    if (!c || viewportY >= baseY) return;
+    const el = this.root;
+    if (!c || !el || (!this.paintPending && viewportY >= baseY)) return;
     const savedRevision = this.readerRevision;
-    const fraction = (this.readerRow ?? 0) % 1;
+    const position = this.paintPending ? el.scrollTop / this.rowHeight : viewportY + ((this.readerRow ?? 0) % 1);
+    const startRow = Math.floor(position);
+    const fraction = position % 1;
     const rowText = (row: number, base: number, expected?: string) => {
       const offset = base - 1 - row;
       let text = '';
@@ -167,15 +180,28 @@ export class WTermAdapter {
       }
       return text.trimEnd();
     };
-    const label = rowText(viewportY, baseY);
-    const next = viewportY + 1 < baseY ? rowText(viewportY + 1, baseY) : undefined;
-    return () => {
+    let label: string | undefined;
+    let next: string | undefined;
+    if (this.paintPending) {
+      // The parsed core may be a different grid. Only its retained DOM rows were visible.
+      const origin = el.querySelector<HTMLElement>('.term-scrollback-spacer')?.offsetTop;
+      if (origin === undefined || !el.clientHeight || this.isAtTail()) return;
+      const painted = Array.from(el.querySelectorAll<HTMLElement>('.term-scrollback-row')).find((row) => Math.round((row.offsetTop - origin) / this.rowHeight) === startRow);
+      if (!painted) return;
+      label = painted.textContent.trimEnd();
+      const sibling = painted.nextElementSibling;
+      if (sibling?.classList.contains('term-scrollback-row')) next = sibling.textContent.trimEnd();
+    } else {
+      label = rowText(startRow, baseY);
+      if (startRow + 1 < baseY) next = rowText(startRow + 1, baseY);
+    }
+    const restore = () => {
       // Closing Find explicitly requests the pre-search position, even after stepping through matches.
       const revision = explicit ? this.readerRevision : savedRevision;
       const el = this.root;
       if (!el || this.core !== c || revision !== this.readerRevision) return;
       const base = c.getScrollbackCount();
-      const start = Math.min(viewportY, base - 1);
+      const start = Math.min(startRow, base - 1);
       let row: number | undefined;
       search: for (let d = 0; d < base; d++) {
         for (const candidate of d ? [start - d, start + d] : [start]) {
@@ -188,14 +214,17 @@ export class WTermAdapter {
         }
       }
       const target = row ?? start;
-      // The DOM spacer and native pin-to-bottom policy update in wterm's render frame.
-      requestAnimationFrame(() => {
+      const apply = () => {
         if (this.root === el && revision === this.readerRevision && el.clientHeight && target >= 0) el.scrollTop = (target + fraction) * this.rowHeight;
-      });
+      };
+      // Find may close before the next native paint. Reattach calls us after
+      // paint, so apply now rather than racing a superseding snapshot next frame.
+      if (explicit) requestAnimationFrame(apply);
+      else apply();
     };
+    return Object.assign(restore, { revision: savedRevision });
   }
   private rowHeight = 1;
-  private fontAdvance = 0;
   private lastClientHeight = 0;
   private metricsContext?: CanvasRenderingContext2D | null;
   private keepTailOnShrink() {
@@ -251,7 +280,6 @@ export class WTermAdapter {
     if (this.metricsContext) {
       this.metricsContext.font = font;
       const metrics = this.metricsContext.measureText('W');
-      this.fontAdvance = metrics.width;
       fontHeight = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
     }
     if (!(fontHeight > 0)) {
@@ -273,6 +301,8 @@ export class WTermAdapter {
       // lets it refresh mouse/cell metrics without reflowing the authoritative PTY grid.
       this.withoutScale(el, () => {
         const { width, paddingLeft, paddingRight } = el.style;
+        const waiting = el.classList.contains('awaiting-grid');
+        if (waiting) el.classList.remove('awaiting-grid');
         el.style.width = '0px';
         el.style.paddingLeft = '0px';
         el.style.paddingRight = '0px';
@@ -283,6 +313,7 @@ export class WTermAdapter {
           el.style.width = width;
           el.style.paddingLeft = paddingLeft;
           el.style.paddingRight = paddingRight;
+          if (waiting) el.classList.add('awaiting-grid');
         }
       });
       if (previousHeight !== this.rowHeight) {
@@ -315,6 +346,7 @@ export class WTermAdapter {
     if (signal.aborted) return;
     const root = document.createElement('div');
     root.className = 'office-wterm wterm';
+    root.classList.toggle('replaying', !!this.replay);
     root.inert = true;
     this.root = root;
     host.append(root);
@@ -338,19 +370,34 @@ export class WTermAdapter {
         (discarded) => {
           this.paintPending = false;
           this.paintedDiscarded = discarded;
+          // The native renderer has populated the first snapshot's rows. Give
+          // them a scroll range before its scroll phase, not at window reveal.
+          if (this.replay === 'parsed') root.classList.remove('awaiting-grid');
           if (!this.pendingRestore && this.holdReaderAfterPaint && this.heldAlternate === this.core?.usingAltScreen()) this.pendingRestore = { appliedTop: root.scrollTop };
           const restore = this.pendingRestore;
-          if (restore)
+          const reader = this.afterSnapshotPaint;
+          if (restore || this.replay === 'parsed' || reader)
             queueMicrotask(() => {
-              // Native paint commits both the virtual spacer and its own scroll
-              // adjustment. Only then is a logical row a usable pixel offset.
-              if (restore !== this.pendingRestore || this.metricsPending || !root.clientHeight) return;
-              root.scrollTop = this.readerRow === undefined ? root.scrollHeight : Math.max(0, this.readerRow - this.paintedDiscarded) * this.rowHeight;
-              // Chromium queues scroll even when two writes in one paint cancel
-              // out. Feeding that duplicate back to wterm would repaint forever
-              // on a clipped grid without history. Never hide a new coordinate.
-              restoredSameTop = this.holdReaderAfterPaint && this.core?.getScrollbackCount() === 0 && root.scrollTop === lastScrollTop;
-              this.pendingRestore = undefined;
+              if (this.metricsPending || !root.clientHeight) return;
+              if (restore && restore === this.pendingRestore) {
+                // Native paint follows output. Only navigate again if the last
+                // painted row is still below the viewport (e.g. a paused write).
+                if (this.readerRow !== undefined) root.scrollTop = Math.max(0, this.readerRow - this.paintedDiscarded) * this.rowHeight;
+                else if (!this.replay || (root.querySelector('.term-grid')?.getBoundingClientRect().bottom ?? 0) > root.getBoundingClientRect().bottom) root.scrollTop = root.scrollHeight;
+                // Chromium queues scroll even when two writes in one paint cancel
+                // out. Feeding that duplicate back to wterm would repaint forever
+                // on a clipped grid without history. Never hide a new coordinate.
+                restoredSameTop = this.holdReaderAfterPaint && this.core?.getScrollbackCount() === 0 && root.scrollTop === lastScrollTop;
+                this.pendingRestore = undefined;
+              }
+              if (this.replay === 'parsed') {
+                this.replay = 'painted';
+                this.revealPaintedGrid();
+              }
+              if (!this.fitting && reader && reader === this.afterSnapshotPaint) {
+                this.afterSnapshotPaint = undefined;
+                reader();
+              }
             });
         },
       );
@@ -363,8 +410,8 @@ export class WTermAdapter {
       this.core = core;
       await native.init();
       if (signal.aborted) return;
-      // Preferences can change while the core download is outstanding.
       this.refreshMetrics();
+      root.classList.toggle('awaiting-grid', !!this.replay);
       this.applyOption('theme');
       this.applyOption('cursorBlink');
       this.applyOption('cursorStyle');
@@ -399,18 +446,36 @@ export class WTermAdapter {
         { capture: true, passive: true, signal },
       );
       this.syncRendering();
+      // The content box excludes padding, borders and the actual scrollbar. The
+      // native font probe survives grid rebuilds and also observes web-font loads.
+      const probe = root.querySelector('.term-size-probe')!;
+      let box: DOMRectReadOnly | undefined;
+      let cell: DOMRectReadOnly | undefined;
+      let lastGeometry: string | undefined;
       this.lastClientHeight = root.clientHeight;
-      const probe = root.querySelector('.term-size-probe');
       const observer = new ResizeObserver((entries) => {
         this.keepTailOnShrink();
-        // WTerm's own ResizeObserver on .term-size-probe runs before ours and
-        // measures scaled rects when an ancestor animates transform. Remeasure
-        // unscaled before the next render frame commits spacers or scrollTop.
-        const probeResized = probe !== null && entries.some((e) => e.target === probe);
-        if (root.clientWidth > 0 && (this.metricsPending || (probeResized && this.scaleOf(root)))) this.refreshMetrics();
+        for (const entry of entries) {
+          if (entry.target === root) box = entry.contentRect;
+          else cell = entry.contentRect;
+        }
+        if (!box?.width || !box.height || !cell?.width || !cell.height) {
+          this.proposal = undefined;
+          return;
+        }
+        // The native probe observer runs first and may have measured a transformed
+        // rectangle. Its content box (like the scrollport's) is always unscaled.
+        if (this.metricsPending || (entries.some((e) => e.target === probe) && this.scaleOf(root))) this.refreshMetrics();
+        const geometry = `${box.width},${box.height},${cell.width},${cell.height}`;
+        if (this.proposal && geometry === lastGeometry) return;
+        this.proposal = this.proposeDimensions(box.width, cell.width);
+        const changed = lastGeometry !== undefined && lastGeometry !== geometry;
+        lastGeometry = geometry;
+        this.fit.fire(changed);
+        this.revealPaintedGrid();
       });
       observer.observe(root);
-      if (probe) observer.observe(probe);
+      observer.observe(probe);
       const visibility = new IntersectionObserver(([entry]) => {
         this.inViewport = entry.isIntersecting;
         this.syncRendering();
@@ -436,24 +501,58 @@ export class WTermAdapter {
       throw error;
     }
   }
-  proposeDimensions() {
+  /** Explicit synchronous measurement, including before the first observation.
+   * Publication and input use observedDimensions instead of forcing layout. */
+  proposeDimensions(contentWidth?: number, cellWidth?: number) {
     const el = this.root;
-    if (!el?.clientWidth || !el.clientHeight) return;
+    if (!el?.clientHeight) return;
     const style = getComputedStyle(el);
-    // The previous DOM renderer sized its screen to a whole CSS pixel, then
-    // divided by the current column count. A rounded single span can lose a
-    // column at the boundary, especially after changing the font or shared grid.
-    const width = this.fontAdvance > 0 ? Math.round(this.fontAdvance * this.cols) / this.cols : parseFloat(style.getPropertyValue('--term-cell-width'));
-    if (!(width > 0)) return;
-    // The modal reserves space beside the grid, including any real scrollbar.
-    // Keep that reserve out of CSS padding so it cannot clip the painted row.
-    const inner = el.offsetWidth - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth);
-    const gutter = parseFloat(style.getPropertyValue('--office-fit-gutter')) || 0;
-    const available = Math.min(el.clientWidth, inner - gutter) - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const width = contentWidth ?? el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const cell = cellWidth ?? parseFloat(style.getPropertyValue('--term-cell-width'));
+    if (!(width > 0 && cell > 0)) return;
     return {
-      cols: Math.floor(available / width),
+      cols: Math.floor(width / cell),
       rows: Math.floor((el.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.getPropertyValue('--office-fit-bottom') || style.paddingBottom)) / this.rowHeight),
     };
+  }
+  get observedDimensions() {
+    return this.proposal;
+  }
+  onFit(fn: (geometryChanged: boolean) => void) {
+    return this.fit.on(fn);
+  }
+  beginSnapshot() {
+    this.replay = 'waiting';
+    this.root?.classList.add('replaying', 'awaiting-grid');
+  }
+  /** Keep an existing grid painted while an accepted snapshot replaces the core. */
+  holdSnapshot() {
+    this.afterSnapshotPaint = undefined;
+    this.replay = 'parsing';
+    this.syncRendering();
+    return () => {
+      this.replay = this.root?.classList.contains('replaying') ? 'waiting' : undefined;
+      this.syncRendering();
+    };
+  }
+  endSnapshot(afterPaint?: () => void) {
+    this.afterSnapshotPaint = afterPaint;
+    // The retained grid can still scroll before the replacement paints. Use
+    // the same navigation-versus-clamp check as an outstanding metric restore.
+    if (afterPaint && this.root) this.pendingRestore = { appliedTop: this.root.scrollTop };
+    this.replay = this.root?.classList.contains('replaying') ? 'parsed' : undefined;
+    this.syncRendering();
+  }
+  private revealPaintedGrid() {
+    if (!this.proposal || this.replay !== 'painted' || this.fitting || this.revealFrame) return;
+    // The first content-box observation can negotiate a different grid after
+    // native paint. A resize invalidates that paint before it can be revealed.
+    this.revealFrame = requestAnimationFrame(() => {
+      this.revealFrame = 0;
+      if (this.replay !== 'painted' || !this.proposal || this.fitting) return;
+      this.replay = undefined;
+      this.root?.classList.remove('replaying');
+    });
   }
   attachCustomKeyEventHandler(fn: (e: KeyboardEvent) => boolean) {
     this.keyHandler = fn;
@@ -526,6 +625,7 @@ export class WTermAdapter {
     const t = this.native;
     if (!t || (cols === t.cols && rows === t.rows)) return;
     this.keepTailOnShrink();
+    if (this.replay === 'painted') this.replay = 'parsed';
     const oldCols = t.cols,
       oldRows = t.rows;
     t.resize(cols, rows);
@@ -550,8 +650,23 @@ export class WTermAdapter {
     this.paused = paused;
     this.syncRendering();
   }
+  /** Let layout keep the bottom edge attached while the scrollport shrinks.
+   * A JS scroll correction in ResizeObserver is too late for the first rAF. */
+  pinTailForFit() {
+    const el = this.root;
+    if (el && this.readerRow === undefined && this.isAtTail(el.scrollHeight - this.lastClientHeight)) el.classList.add('pinning-tail');
+  }
+  /** Keep the last drawn rows while a changing box has no settled PTY size.
+   * Live data still parses, and the final grid and its accumulated output paint together. */
+  setFitPending(fitting: boolean) {
+    if (!fitting) this.root?.classList.remove('pinning-tail');
+    if (this.fitting === fitting) return;
+    this.fitting = fitting;
+    this.syncRendering();
+    if (!fitting) this.revealPaintedGrid();
+  }
   private get renderingPaused() {
-    return this.paused || !this.inViewport || !!this.root?.ownerDocument.hidden;
+    return this.paused || this.fitting || this.replay === 'parsing' || !this.inViewport || !!this.root?.ownerDocument.hidden;
   }
   /** Read operations waiting for a paint must stop if this pane can no longer paint. */
   get paintSignal() {
@@ -582,6 +697,7 @@ export class WTermAdapter {
   dispose() {
     if (this.lifetime.signal.aborted) return;
     this.lifetime.abort();
+    if (this.revealFrame) cancelAnimationFrame(this.revealFrame);
     this.paintLifetime?.abort();
     this.pendingRestore = undefined;
     this.native?.destroy();
@@ -590,6 +706,6 @@ export class WTermAdapter {
     this.root = this.native = this.core = undefined;
     this.parser.reset();
     this.keyHandler = undefined;
-    for (const e of [this.before, this.changed, this.opened, this.parsed, this.nativeParsed, this.resetting, this.resized, this.data]) e.clear();
+    for (const e of [this.before, this.changed, this.opened, this.parsed, this.nativeParsed, this.resetting, this.resized, this.fit, this.data]) e.clear();
   }
 }

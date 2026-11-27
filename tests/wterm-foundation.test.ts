@@ -99,6 +99,30 @@ test('wterm real WASM: open, ordered write/drain, reset, fixed-size resize and c
     });
     assert.deepEqual(counts, [0, 0, 0]);
   });
+  await t.test('one pixel of scroll-end allowance does not cost a row at a fit boundary', async () => {
+    const rows = await page.evaluate(async () => {
+      const url = '/term-engine/wterm.ts';
+      const { WTermAdapter } = await import(url);
+      const host = document.createElement('div');
+      host.style.cssText = 'width:500px;height:200px;--office-fit-bottom:0px;--office-tail-allowance:1px';
+      document.body.append(host);
+      const term = new WTermAdapter({ fontSize: 14 });
+      try {
+        await term.open(host);
+        const el = term.native.element;
+        const pitch = parseFloat(el.style.getPropertyValue('--term-row-height'));
+        el.style.paddingBottom = '1px';
+        host.style.height = `${9 * pitch}px`;
+        await new Promise(requestAnimationFrame);
+        await new Promise(requestAnimationFrame);
+        return term.proposeDimensions().rows;
+      } finally {
+        term.dispose();
+        host.remove();
+      }
+    });
+    assert.equal(rows, 9);
+  });
   await t.test('a hidden reader retains its viewport while output arrives and after reveal', async () => {
     const positions = await page.evaluate(async () => {
       const mod = '/term-engine/wterm.ts',
@@ -220,6 +244,18 @@ test('wterm real WASM: open, ordered write/drain, reset, fixed-size resize and c
       await pane.waitForFunction(() => (window as any).attached);
       await pane.evaluate(() => (window as any).replay());
       await pane.waitForFunction(() => (window as any).tailVisible());
+      await pane.waitForSelector('.changes-log .office-wterm:not(.replaying)');
+      const resync = await pane.evaluate(async () => {
+        const w = window as any,
+          grid = document.querySelector('.changes-log .office-wterm')!;
+        w.replay();
+        for (let i = 0; i < 5; i++) {
+          if (getComputedStyle(grid).opacity !== '1' || !grid.querySelector('.term-grid')?.textContent?.includes('END-OF-LOG')) return false;
+          await new Promise(requestAnimationFrame);
+        }
+        return true;
+      });
+      assert.equal(resync, true, 'Changes Log keeps its painted grid throughout a same-size resync');
       await pane.locator('.changes-log .office-wterm,.changes-log .xterm-screen').hover();
       await pane.mouse.wheel(0, -1000);
       await pane.waitForFunction(() => !(window as any).tailVisible());
@@ -241,10 +277,18 @@ test('wterm real WASM: open, ordered write/drain, reset, fixed-size resize and c
       await pane.evaluate(async () => {
         const ui = '/ui/changes.ts',
           state = '/state.ts';
-        const { openChanges } = await import(ui),
+        const { openChanges, routeChangesMessage } = await import(ui),
           { store } = await import(state);
         store.workers.set('pixel', { id: 'pixel', name: 'Pixel', kind: 'shell', deskId: 'desk', status: 'idle', color: '#89d9ed', cols: 80, rows: 24 });
-        openChanges({ send: () => true }, 'pixel');
+        openChanges(
+          {
+            send: (m: { t: string }) => {
+              if (m.t === 'worker.attach') queueMicrotask(() => routeChangesMessage({ t: 'term.snapshot', workerId: 'pixel', cols: 80, rows: 24, data: 'initial log' }));
+              return true;
+            },
+          },
+          'pixel',
+        );
       });
       const log = pane.getByRole('button', { name: /^Log/ }),
         logHost = pane.locator('.changes-log'),
@@ -513,6 +557,8 @@ test('wterm real WASM: open, ordered write/drain, reset, fixed-size resize and c
         initial = a.proposeDimensions();
       a.options.fontSize = 20;
       a.options.lineHeight = 1.25;
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
       const after = metrics(),
         next = a.proposeDimensions();
       const probe = document.createElement('span');

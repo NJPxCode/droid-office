@@ -1,5 +1,5 @@
 import type { TerminalFind } from '../term-engine/types';
-import { openTerminalRenderer } from './terminal-renderer';
+import { followTerminalFit, openTerminalRenderer } from './terminal-renderer';
 import { createWebTerminal } from '../term-engine/web-terminal';
 import { TerminalPaths } from './terminal-path-links';
 import type { Net } from '../net';
@@ -162,7 +162,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   const canThread = !inline && info.kind === 'agent' && !info.cloud;
   const readOnly = !!inline?.readOnly;
   let thread: WorkerThread | undefined;
-  let threadView = false;
+  let threadView: boolean | undefined;
   let setThreadView = (_next: 'thread' | 'raw', _focus = true) => {};
   const threadButton = canThread ? h('button.btn.sm', { type: 'button', onclick: () => setThreadView('thread') }, 'Thread') : null;
   const rawButton = canThread ? h('button.btn.sm', { type: 'button', onclick: () => setThreadView('raw') }, 'Raw TTY') : null;
@@ -305,6 +305,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
       },
     },
   );
+  term.beginSnapshot();
   let opened = false;
   let alive = true;
   const expanded = { modal: null as Modal | null };
@@ -312,6 +313,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   let lastPtySize = '';
   const pendingSizes: string[] = [];
   let paneSizeChanged = false;
+  const workspace = inline?.mount.closest('.dash-workspace');
   /**
    * Whether another window already had this terminal open when this one attached. Merely
    * opening or resizing then adopts the shared size instead of reflowing the terminal under
@@ -327,22 +329,17 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
       return;
     }
     if (!mirror.ready || !opened || !net.up) return;
-    if (!host.clientWidth || !host.clientHeight) return;
     if (typing || paneSizeChanged) adoptSharedSize = false;
     paneSizeChanged = false;
-    if (!typing && adoptSharedSize) {
+    if (adoptSharedSize) {
       const w = store.worker(workerId);
       if (w && (w.cols !== term.cols || w.rows !== term.rows)) term.resize(w.cols, w.rows);
       return;
     }
-    try {
-      const size = term.proposeDimensions();
-      if (!size || !Number.isFinite(size.cols) || !Number.isFinite(size.rows)) return;
-      // Match WorkerManager.resize's limits so the server can acknowledge the exact request.
-      term.resize(Math.max(20, Math.min(400, size.cols)), Math.max(5, Math.min(200, size.rows)));
-    } catch {
-      return;
-    }
+    const size = term.observedDimensions;
+    if (!size) return;
+    // Match WorkerManager.resize's limits so the server can acknowledge the exact request.
+    term.resize(Math.max(20, Math.min(400, size.cols)), Math.max(5, Math.min(200, size.rows)));
     const key = `${term.cols}x${term.rows}`;
     const w = store.worker(workerId);
     if (w && (pendingSizes.length || w.cols !== term.cols || w.rows !== term.rows) && key !== lastSentSize) {
@@ -400,7 +397,8 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     if (warning) toast(warning, 'warn');
   };
   let pendingFind = find;
-  let restoreReader: (() => void) | undefined;
+  let restoreReader: ReturnType<typeof term.saveReader>;
+  let captureRawReader = false;
 
   const offQueries = suppressMirrorQueries(term);
   const mirror = new TerminalMirror(
@@ -412,10 +410,18 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
       lastSentSize = '';
       pendingSizes.length = 0;
       disconnected.classList.add('hidden');
-      sendSize();
-      if (restoreReader && !pendingFind) restoreReader();
-      else term.scrollToBottom();
-      restoreReader = undefined;
+      requestFit();
+      if (pendingFind) restoreReader = undefined;
+      const restore = restoreReader;
+      if (!restore) term.scrollToBottom();
+      term.endSnapshot(
+        restore &&
+          (() => {
+            if (restore !== restoreReader) return;
+            restoreReader = undefined;
+            restore();
+          }),
+      );
       refresh();
       if (pendingFind) jumpTo(pendingFind);
       pendingFind = undefined;
@@ -423,12 +429,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     () => net.send({ t: 'worker.attach', workerId }),
     (ready) => (term.options.disableStdin = !ready || readOnly || !net.up),
   );
-  const offPrefs = followTerminalPrefs(term, {
-    resized: () => {
-      paneSizeChanged = true;
-      sendSize();
-    },
-  });
+  const offPrefs = followTerminalPrefs(term);
   term.attachCustomKeyEventHandler((e) => {
     if (e.ctrlKey && e.key === ']' && (!inline || inline.onLeave)) {
       if (e.type === 'keydown') {
@@ -443,7 +444,10 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   term.onData((data) => {
     if (readOnly || !mirror.ready || !net.up) return;
     // Focus moving is not typing, so it leaves the shared PTY at its size.
-    if (!isFocusReport(data)) sendSize(true);
+    if (!isFocusReport(data)) {
+      restoreReader = undefined;
+      if (adoptSharedSize || paneSizeChanged) requestFit(true);
+    }
     net.send({ t: 'term.input', workerId, data });
   });
   const unbind = () => {
@@ -467,6 +471,11 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     if (!opened || threadView) return;
     if (msg.t === 'term.data' && msg.workerId === workerId) mirror.data(msg.data);
     else if (msg.t === 'term.snapshot' && msg.workerId === workerId) {
+      if (captureRawReader) {
+        // The retained grid stays navigable until this first snapshot replaces it.
+        restoreReader = term.saveReader({ pending: restoreReader });
+        captureRawReader = false;
+      }
       mirror.snapshot(msg);
     }
   };
@@ -479,17 +488,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     offMission();
   };
   const unsubCredits = store.on('factory', refresh);
-  let box: { width: number; height: number } | undefined;
-  const ro = new ResizeObserver(([entry]) => {
-    if (!entry) return;
-    const { width, height } = entry.contentRect;
-    if (width <= 0 || height <= 0) return;
-    // The initial observation is not a layout change and must not seize a shared terminal.
-    // Keep a change pending through snapshot loading/disconnection, without fitting hidden boxes.
-    if (box && (width !== box.width || height !== box.height)) paneSizeChanged = true;
-    box = { width, height };
-    sendSize();
-  });
+  const requestFit = followTerminalFit(term, () => (paneSizeChanged = true), sendSize, readOnly ? null : workspace);
   const offStatus = net.onStatus((up) => {
     header?.refresh(store.worker(workerId) ?? info);
     thread?.update(store.worker(workerId) ?? info, up);
@@ -508,7 +507,6 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     unbind();
     offFont();
     offTheme();
-    ro.disconnect();
     net.send({ t: 'worker.detach', workerId });
     term.dispose();
     alive = false;
@@ -590,8 +588,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
       saved = localStorage.getItem(`${THREAD_VIEW_KEY}${workerId}`) ?? 'thread';
     } catch {}
     setThreadView = (next, focus = true) => {
-      if (!thread || !threadHost) return;
-      if (!threadView && next === 'thread') restoreReader = term.saveReader();
+      if (!thread || !threadHost || threadView === (next === 'thread')) return;
       threadView = next === 'thread';
       threadHost.hidden = !threadView;
       host.hidden = threadView;
@@ -609,8 +606,8 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
       } else {
         thread.activate(false);
         mirror.disconnect();
+        captureRawReader = true;
         net.send({ t: 'worker.attach', workerId });
-        sendSize();
         if (focus) setTimeout(() => alive && term.focus(), 0);
       }
       refresh();
@@ -621,8 +618,6 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   const offFont = onTermFontSize((px) => {
     term.options.fontSize = px;
     header?.zoom(px);
-    paneSizeChanged = true;
-    sendSize();
   });
   const offTheme = onTermTheme(() => (term.options.theme = termTheme()));
 
@@ -636,7 +631,6 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     try {
       const paths = await Promise.all(files.map((f) => uploadDrop(workerId, f)));
       if (!alive || !mirror.ready || !net.up) return;
-      sendSize(true);
       term.paste(droppedPaths(paths));
       term.focus();
     } catch (err) {
@@ -693,10 +687,9 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   void loadFonts()
     .then(async () => {
       if (!alive) return;
-      await openTerminalRenderer(term, host, () => alive);
+      await openTerminalRenderer(term, host, () => alive, !readOnly);
       if (!alive) return;
       opened = true;
-      ro.observe(host);
       adoptSharedSize = store.worker(workerId)?.open === true;
       if (!threadView && (!inline || !document.hidden)) net.send({ t: 'worker.attach', workerId });
       setTimeout(() => {
@@ -762,6 +755,7 @@ export function openOfficeShell(net: Net) {
     },
     pathLinks,
   );
+  term.beginSnapshot();
   let shellAlive = true;
   const expanded = { modal: null as Modal | null };
   let opened = false;
@@ -770,24 +764,19 @@ export function openOfficeShell(net: Net) {
   let ptyCols = 0;
   let ptyRows = 0;
   const pendingSizes: string[] = [];
-  let box: { width: number; height: number } | undefined;
   let boxChanged = false;
 
   const sendSize = (typing = false) => {
-    if (term.options.disableStdin || !mirror?.ready || !opened || !net.up || !host.clientWidth || !host.clientHeight) return;
+    if (term.options.disableStdin || !mirror.ready || !opened || !net.up) return;
     if (typing || boxChanged) shared = false;
     boxChanged = false;
-    if (!typing && shared) {
+    if (shared) {
       if (ptyCols !== term.cols || ptyRows !== term.rows) term.resize(ptyCols, ptyRows);
       return;
     }
-    try {
-      const size = term.proposeDimensions();
-      if (!size || !Number.isFinite(size.cols) || !Number.isFinite(size.rows)) return;
-      term.resize(Math.max(20, Math.min(400, size.cols)), Math.max(5, Math.min(200, size.rows)));
-    } catch {
-      return;
-    }
+    const size = term.observedDimensions;
+    if (!size) return;
+    term.resize(Math.max(20, Math.min(400, size.cols)), Math.max(5, Math.min(200, size.rows)));
     const key = `${term.cols}x${term.rows}`;
     if ((pendingSizes.length || ptyCols !== term.cols || ptyRows !== term.rows) && key !== lastSentSize) {
       lastSentSize = key;
@@ -808,18 +797,14 @@ export function openOfficeShell(net: Net) {
       ptyRows = snapshot.rows;
       lastSentSize = '';
       pendingSizes.length = 0;
-      sendSize();
+      requestFit();
       term.scrollToBottom();
+      term.endSnapshot();
     },
     () => net.send({ t: 'shell.attach' }),
     (ready) => (term.options.disableStdin = !ready || !net.up || guestTokenOn()),
   );
-  const offPrefs = followTerminalPrefs(term, {
-    resized: () => {
-      boxChanged = true;
-      sendSize();
-    },
-  });
+  const offPrefs = followTerminalPrefs(term);
   term.attachCustomKeyEventHandler((e) => {
     if (e.ctrlKey && e.key === ']') {
       if (e.type === 'keydown') modal.close();
@@ -829,8 +814,8 @@ export function openOfficeShell(net: Net) {
     return !features.keyException(e, false) && !features.handleKey(e);
   });
   term.onData((data) => {
-    if (term.options.disableStdin || !mirror?.ready || !net.up) return;
-    if (!isFocusReport(data)) sendSize(true);
+    if (term.options.disableStdin || !mirror.ready || !net.up) return;
+    if (!isFocusReport(data) && (shared || boxChanged)) requestFit(true);
     net.send({ t: 'shell.input', data });
   });
   const offStatus = net.onStatus((up) => {
@@ -844,12 +829,12 @@ export function openOfficeShell(net: Net) {
   };
   const onMsg = (msg: ServerMsg) => {
     if (!opened) return;
-    if (msg.t === 'term.data' && msg.workerId === OFFICE_SHELL_ID) mirror?.data(msg.data);
+    if (msg.t === 'term.data' && msg.workerId === OFFICE_SHELL_ID) mirror.data(msg.data);
     else if (msg.t === 'term.snapshot' && msg.workerId === OFFICE_SHELL_ID) {
       shared = msg.shared === true;
       ptyCols = msg.cols;
       ptyRows = msg.rows;
-      mirror?.snapshot(msg);
+      mirror.snapshot(msg);
     }
   };
   listeners.add(onMsg);
@@ -857,7 +842,7 @@ export function openOfficeShell(net: Net) {
   const unsub = store.on('screens', (changedId) => {
     if (changedId && changedId !== OFFICE_SHELL_ID) return;
     const s = store.screens.get(OFFICE_SHELL_ID);
-    if (!s || !mirror?.ready) return;
+    if (!s || !mirror.ready) return;
     if (s.cols === ptyCols && s.rows === ptyRows) return;
     ptyCols = s.cols;
     ptyRows = s.rows;
@@ -872,14 +857,7 @@ export function openOfficeShell(net: Net) {
     lastSentSize = '';
     pendingSizes.length = 0;
   });
-  const ro = new ResizeObserver(([entry]) => {
-    if (!entry) return;
-    const { width, height } = entry.contentRect;
-    if (width <= 0 || height <= 0) return;
-    if (box && (width !== box.width || height !== box.height)) boxChanged = true;
-    box = { width, height };
-    sendSize();
-  });
+  const requestFit = followTerminalFit(term, () => (boxChanged = true), sendSize);
 
   const modal = openModal(el, {
     backdropCloses: true,
@@ -899,7 +877,6 @@ export function openOfficeShell(net: Net) {
       unbind();
       offFont();
       offTheme();
-      ro.disconnect();
       net.send({ t: 'shell.detach' });
       term.dispose();
       if (current?.modal === modal) current = null;
@@ -915,8 +892,6 @@ export function openOfficeShell(net: Net) {
   const offFont = onTermFontSize((px) => {
     term.options.fontSize = px;
     paintZoom(px);
-    boxChanged = true;
-    sendSize();
   });
   const offTheme = onTermTheme(() => (term.options.theme = termTheme()));
   const zoomBy = (dir: 1 | -1) => {
@@ -934,7 +909,6 @@ export function openOfficeShell(net: Net) {
     try {
       const paths = await Promise.all(files.map((f) => uploadDrop(OFFICE_SHELL_ID, f)));
       if (current?.modal !== modal) return;
-      sendSize(true);
       term.paste(droppedPaths(paths));
       term.focus();
     } catch (err) {
@@ -984,10 +958,9 @@ export function openOfficeShell(net: Net) {
   void loadFonts()
     .then(async () => {
       if (current?.modal !== modal) return;
-      await openTerminalRenderer(term, host, () => shellAlive);
+      await openTerminalRenderer(term, host, () => shellAlive, !guestTokenOn());
       if (!shellAlive) return;
       opened = true;
-      ro.observe(host);
       net.send({ t: 'shell.attach' });
       setTimeout(() => {
         if (current?.modal === modal) term.focus();

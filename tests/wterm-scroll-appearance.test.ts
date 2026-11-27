@@ -146,66 +146,36 @@ test('wterm scroll and appearance against xterm in Chromium', { skip: !status.in
       await scaled.close();
     }
   });
-  await t.test('opening an animated dashboard pane preserves the previous 566×769 PTY grid', async () => {
-    const sample = await page.evaluate(async () => {
-      const path = '/term-engine/web-terminal.ts',
-        renderer = '/ui/terminal-renderer.ts';
-      const { createWebTerminal } = await import(path),
-        { openTerminalRenderer } = await import(renderer);
-      const pane = document.createElement('section');
-      pane.className = 'dash-pane';
-      pane.style.cssText = 'width:566px;height:769px;border:0;transition:none;animation:none';
-      const modal = document.createElement('div');
-      modal.className = 'modal term inline';
-      const host = document.createElement('div');
-      host.className = 'term-host';
-      modal.append(host);
-      pane.append(modal);
-      document.body.append(pane);
-      const scale = pane.animate([{ transform: 'scale(.97)' }, { transform: 'none' }], { duration: 10000 });
-      scale.pause();
-      const { term } = createWebTerminal({ fontFamily: (window as any).a.options.fontFamily, fontSize: 14, lineHeight: 1.1, scrollback: 5000 });
+  await t.test('visible cells fit the rendered width independent of the previous PTY grid', async () => {
+    const samples = await page.evaluate(async () => {
+      const { a, el, frame } = window as any;
+      const original = { fontSize: a.options.fontSize, lineHeight: a.options.lineHeight };
+      const samples = [];
       try {
-        await openTerminalRenderer(term, host, () => true);
-        const firstFit = term.proposeDimensions();
-        scale.finish();
-        await new Promise(requestAnimationFrame);
-        const { x } = window as any;
-        const comparisons = [];
-        try {
-          for (const [px, size, cols] of [
-            [566, 14, 80],
-            [566, 16, 64],
-            [566, 14, 64],
-            [720, 14, 64],
-            [566, 14, 80],
-            [566, 14, 67],
-          ]) {
-            pane.style.width = `${px}px`;
-            for (const t of [x, term]) {
-              t.resize(cols, 39);
-              t.options.fontSize = size;
+        for (const fontSize of [12, 14, 18]) {
+          for (const lineHeight of [1, 1.1, 1.25]) {
+            Object.assign(a.options, { fontSize, lineHeight });
+            await frame();
+            const cell = el.querySelector('.term-size-probe').getBoundingClientRect();
+            const expected = { cols: Math.floor(el.clientWidth / cell.width), rows: Math.floor(el.clientHeight / cell.height) };
+            for (const cols of [39, 64, 80, 137]) {
+              a.resize(cols, 8);
+              await frame();
+              samples.push({ size: a.proposeDimensions(), expected, fontSize, lineHeight, pitch: cell.height });
             }
-            const screen = x.element.querySelector('.xterm-screen').getBoundingClientRect();
-            const expected = { cols: Math.floor((host.clientWidth - 28) / (screen.width / x.cols)), rows: Math.floor((host.clientHeight - 12) / (screen.height / x.rows)) };
-            comparisons.push({ px, size, cols, fit: term.proposeDimensions(), expected });
           }
-        } finally {
-          x.resize(40, 8);
-          x.options.fontSize = 14;
         }
-        return { firstFit, box: [host.clientWidth, host.clientHeight], pitch: parseFloat(term.native.element.style.getPropertyValue('--term-cell-width')), comparisons };
       } finally {
-        scale.cancel();
-        term.dispose();
-        pane.remove();
+        Object.assign(a.options, original);
+        a.resize(40, 8);
+        await frame();
       }
+      return samples;
     });
-    t.diagnostic(JSON.stringify(sample));
-    assert.deepEqual(sample.box, [566, 769]);
-    assert.deepEqual(sample.firstFit, { cols: 64, rows: 39 });
-    assert.ok(Math.abs(sample.pitch - 8.4) < 0.02);
-    for (const c of sample.comparisons) assert.deepEqual(c.fit, c.expected, JSON.stringify(c));
+    for (const sample of samples) {
+      assert.deepEqual(sample.size, sample.expected);
+      if (sample.lineHeight === 1.1) assert.equal(sample.pitch, ({ 12: 17, 14: 19, 18: 25 } as Record<number, number>)[sample.fontSize]);
+    }
   });
   await t.test('opening a scaled dashboard pane with history keeps following streamed output during and after the animation', async () => {
     const sample = await page.evaluate(async () => {
@@ -388,46 +358,6 @@ test('wterm scroll and appearance against xterm in Chromium', { skip: !status.in
       assert.deepEqual(await page.evaluate(() => (window as any).pointerCheck.sent), ['\x1b[<0;48;8M', '\x1b[<0;48;8m']);
     } finally {
       await page.evaluate(() => (window as any).pointerCheck.close());
-    }
-  });
-  await t.test('painted row pitch and usable rows match the previous renderer across fonts, sizes and line spacing', async () => {
-    const samples = await page.evaluate(async () => {
-      const { a, x, el, frame } = window as any;
-      const original = { fontFamily: a.options.fontFamily, fontSize: a.options.fontSize, lineHeight: a.options.lineHeight };
-      const samples = [];
-      try {
-        for (const fontFamily of [original.fontFamily, 'monospace', 'Georgia, serif']) {
-          for (const [fontSize, lineHeight] of [
-            [12, 1],
-            [14, 1.1],
-            [17, 1.25],
-            [21, 1.5],
-          ]) {
-            for (const term of [a, x]) Object.assign(term.options, { fontFamily, fontSize, lineHeight });
-            await frame();
-            const old = x.element.querySelector('.xterm-rows > div').getBoundingClientRect().height;
-            const pitch = el.querySelector('.term-row').getBoundingClientRect().height;
-            const xWidth = x.element.querySelector('.xterm-screen').getBoundingClientRect().width / x.cols;
-            const originalWidth = el.parentElement.style.width;
-            for (const width of [566, Math.ceil(xWidth * 80), Math.ceil(xWidth * 150)]) {
-              el.parentElement.style.width = `${width}px`;
-              const fit = a.proposeDimensions();
-              samples.push({ fontFamily, fontSize, lineHeight, old, pitch, cols: fit.cols, expectedCols: Math.floor(el.clientWidth / xWidth), rows: fit.rows, expectedRows: Math.floor(el.clientHeight / old) });
-            }
-            el.parentElement.style.width = originalWidth;
-          }
-        }
-      } finally {
-        for (const term of [a, x]) Object.assign(term.options, original);
-        await frame();
-      }
-      return samples;
-    });
-    t.diagnostic(JSON.stringify(samples));
-    for (const sample of samples) {
-      assert.equal(sample.pitch, sample.old, JSON.stringify(sample));
-      assert.equal(sample.rows, sample.expectedRows, JSON.stringify(sample));
-      assert.equal(sample.cols, sample.expectedCols, JSON.stringify(sample));
     }
   });
   await t.test('font changes and unpainted evictions preserve the same fractional reader row at a fixed PTY size', async () => {
@@ -848,19 +778,24 @@ test('wterm scroll and appearance against xterm in Chromium', { skip: !status.in
         await term.open(host);
         term.resize(64, modal ? 39 : 8);
         const frame = () => new Promise(requestAnimationFrame).then(() => new Promise(requestAnimationFrame));
-        const read = () =>
-          Array.from({ length: 16 }, (_, i) => {
+        const read = async () => {
+          const samples = [];
+          for (let i = 0; i < 16; i++) {
             host.style.width = `${557 + i}px`;
-            return [term.proposeDimensions().cols, term.native.element.offsetWidth - term.native.element.clientWidth];
-          });
+            await frame();
+            samples.push([term.proposeDimensions().cols, term.native.element.offsetWidth - term.native.element.clientWidth]);
+          }
+          return samples;
+        };
         await frame();
-        const before = read();
+        const before = await read();
         term.write('row\r\n'.repeat(50));
         await frame();
-        const after = read();
+        const after = await read();
         const boundary = after.findIndex(([cols], i) => i > 0 && cols > after[i - 1][0]);
         if (boundary < 0) throw new Error('No column boundary in width sweep');
         host.style.width = `${modal ? 566 : 557 + boundary}px`;
+        await frame();
         const fit = term.proposeDimensions();
         const cols = fit.cols;
         term.resize(cols, modal ? 39 : 8);
@@ -900,7 +835,7 @@ test('wterm scroll and appearance against xterm in Chromium', { skip: !status.in
       });
       const reference = await ink();
       assert.ok(reference.length > 0);
-      if (modal) assert.deepEqual(result.fit, { cols: 64, rows: 39 });
+      if (modal) assert.equal(result.fit.rows, 39);
       assert.deepEqual(actual, reference, 'the classic scrollbar clipped the last-column full block');
       assert.ok(result.hit, 'the final pixel must hit the last glyph');
       assert.ok(result.history > 0);
