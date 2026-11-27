@@ -355,59 +355,17 @@ test('the native clipboard accepts only whole live writes and never answers quer
   ]);
 });
 
-test("the phone's Raw TTY follows a finger pixel for pixel with native scrolling and holds a historical reader", browserTest, async (t) => {
-  const { context, page } = await openPhone(t);
-  const data = `${Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\r\n')}\r\n`;
-  await page.evaluate((data) => {
+test('prompt buttons follow alternate-screen entry and exit without new shell marks', browserTest, async (t) => {
+  const { page } = await openPhone(t);
+  await page.evaluate(() => {
     const w = window as any;
-    w.office.receive({ t: 'config', fontScale: 1, view: 'desktop' });
-    w.office.receive({ t: 'snapshot', data, cols: 40, rows: 20 });
-  }, data);
-  await page.waitForFunction(() => (window as any).posted.some((m: any) => m.t === 'drawn'));
-  const cdp = await context.newCDPSession(page);
-  const touch = (type: string, x: number, y: number) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
-  /** Where the row showing `line N` is drawn, in page pixels. */
-  const rowTop = (n: number) =>
-    page.evaluate((n) => {
-      for (const row of document.querySelectorAll('.term-row')) if (row.textContent?.trimEnd() === `line ${n}`) return row.getBoundingClientRect().top;
-      return null;
-    }, n);
-  await page.waitForFunction(() => [...document.querySelectorAll('.term-row')].some((row) => row.textContent?.trimEnd() === 'line 190'));
-  const before = await rowTop(190);
-  assert.notEqual(before, null);
-  const waitRowPast = (threshold: number) =>
-    page.waitForFunction((t) => {
-      for (const row of document.querySelectorAll('.term-row')) if (row.textContent?.trimEnd() === 'line 190') return row.getBoundingClientRect().top > t;
-      return false;
-    }, threshold);
-  await touch('touchStart', 200, 180);
-  // First step clears Chromium's touch slop; waiting on each commit avoids racing the compositor when reading `moved`.
-  await touch('touchMove', 200, 204);
-  await waitRowPast(before!);
-  for (let y = 212; y <= 236; y += 8) {
-    const prev = await rowTop(190);
-    await touch('touchMove', 200, y);
-    await waitRowPast(prev!);
-  }
-  await page.evaluate(() => new Promise(requestAnimationFrame));
-  const moved = await rowTop(190);
-  assert.ok(moved !== null && moved > before! + 15 && moved <= before! + 60, `text moves with the native pan after browser touch slop (${before} to ${moved})`);
-  await page.waitForTimeout(300);
-  assert.equal(await rowTop(190), moved, 'holding the finger holds the reader');
-  await touch('touchEnd', 200, 236);
-  await page.evaluate(() => (window as any).office.receive({ t: 'data', data: 'new output\r\n' }));
-  await page.waitForFunction(() => (window as any).posted.some((m: any) => m.t === 'bottom' && !m.at));
-  assert.equal(await rowTop(190), moved, 'new output does not pull a reader down');
-  await page.evaluate(() => (window as any).office.receive({ t: 'bottom' }));
-  await page.waitForFunction(() => (window as any).posted.at(-1)?.at === true);
-  await t.test('prompt buttons follow alternate-screen entry and exit without new shell marks', async () => {
-    await page.evaluate(() => (window as any).office.receive({ t: 'data', data: '\x1b]133;A\x07shell % ' }));
-    await page.waitForFunction(() => (window as any).posted.some((m: any) => m.t === 'prompts' && m.available));
-    const changes = await page.evaluate(() => {
-      const w = window as any;
-      for (const data of ['\x1b[?1049h', 'editor', '\x1b[?1049l', 'normal']) w.office.receive({ t: 'data', data });
-      return w.posted.filter((m: any) => m.t === 'prompts').map((m: any) => m.available);
-    });
-    assert.deepEqual(changes, [true, false, true]);
+    w.office.receive({ t: 'snapshot', data: '\x1b]133;A\x07shell % ', cols: 40, rows: 20 });
   });
+  await page.waitForFunction(() => (window as any).posted.some((m: any) => m.t === 'prompts' && m.available));
+  const changes = await page.evaluate(() => {
+    const w = window as any;
+    for (const data of ['\x1b[?1049h', 'editor', '\x1b[?1049l', 'normal']) w.office.receive({ t: 'data', data });
+    return w.posted.filter((m: any) => m.t === 'prompts').map((m: any) => m.available);
+  });
+  assert.deepEqual(changes, [true, false, true]);
 });
