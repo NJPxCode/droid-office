@@ -1,6 +1,5 @@
 package ai.factory.droidoffice.ui.worker
 
-import android.content.ClipData
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
@@ -71,7 +70,6 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -313,7 +311,7 @@ internal fun CopyActionChip(
                 val next = copyGen + 1
                 copyGen = next
                 scope.launch {
-                    runCatching { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(clipTitle, textToCopy))) }
+                    runCatching { clipboard.setClipEntry(workerTextClip(clipTitle, textToCopy)) }
                     delay(COPY_FEEDBACK_MS)
                     if (copyGen == next) copyGen = 0
                 }
@@ -821,7 +819,7 @@ private fun Table(t: Markdown.Block.Table, style: TextStyle, mono: FontFamily, s
                         showActions = false
                         scope.launch {
                             try {
-                                if (runCatching { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Markdown table", t.raw))) }.isSuccess) {
+                                if (runCatching { clipboard.setClipEntry(workerTextClip("Markdown table", t.raw)) }.isSuccess) {
                                     copied = true
                                     delay(COPY_FEEDBACK_MS)
                                 }

@@ -51,6 +51,7 @@ on:
       - 'build/**'
       - 'native/**'
       - 'android/**'
+      - 'ios/**'
       - '.github/workflows/release.yml'
       - '.github/scripts/release-*.mjs'
       - '.github/scripts/runner-toolchain.sh'
@@ -92,6 +93,7 @@ on:
       - 'build/**'
       - 'native/**'
       - 'android/**'
+      - 'ios/**'
       - '.github/workflows/release.yml'
       - '.github/scripts/release-*.mjs'
       - '.github/scripts/runner-toolchain.sh'
@@ -640,6 +642,10 @@ jobs:
 
       - name: Build the iPhone core and run its simulator tests
         run: ./gradlew :core:compileKotlinIosArm64 :core:iosSimulatorArm64Test
+
+      - name: Build the iOS companion and UI tests without signing
+        working-directory: ios
+        run: xcodebuild build-for-testing -project DroidOffice.xcodeproj -scheme DroidOffice -destination 'generic/platform=iOS Simulator' ARCHS=arm64 CODE_SIGNING_ALLOWED=NO
 
   publish:
     needs: [changes, release, website, mac, android]

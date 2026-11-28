@@ -1,6 +1,6 @@
 # Android app
 
-Droid Office for Android: Kotlin, Jetpack Compose and Material 3 (`app` module), on a Kotlin Multiplatform `core` module that the iOS companion will share. Update [README.md](README.md) whenever user-visible behavior or adb tags change.
+The Android `app` and iOS `mobile` targets compile the same Compose screens and session code against `core`. Keep platform calls in platform-specific files rather than forking a screen. See [iOS build and simulation](../ios/README.md). Update [README.md](README.md) whenever user-visible behavior or adb tags change.
 
 ## Commands
 

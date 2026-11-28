@@ -52,7 +52,13 @@ internal fun rememberThreadDownload(name: String, type: String, load: suspend ()
 }
 
 /** Share a real SVG attachment with a temporary read grant, never its markup as a text message. */
-internal suspend fun shareThreadSvg(context: Context, svg: String) {
+@Composable
+internal fun rememberSvgShare(): suspend (String) -> Unit {
+    val context = LocalContext.current
+    return { svg -> shareThreadSvg(context, svg) }
+}
+
+private suspend fun shareThreadSvg(context: Context, svg: String) {
     val uri = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "thread-exports").apply { mkdirs() }
         val file = File.createTempFile("diagram-", ".svg", dir)

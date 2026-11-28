@@ -194,9 +194,10 @@ The keystore and its passwords are kept outside the repository by the maintainer
 | Path | Contents |
 | --- | --- |
 | `core/` | Kotlin Multiplatform module shared with the iOS companion (`core/src/commonMain/`, package `ai.factory.droidoffice.core`). Pure Kotlin, no Android or JVM APIs: the pairing link parser, route kinds and the route race, the WebSocket protocol, the terminal screen model and cell layout (character widths, box glyphs, numbered menus), worker grouping, labels and model names, and the Whiteboard (its board model, sync, ops and ping eligibility, and the live card page's routes, byte ranges and messages in `WbPage.kt`). What it needs from the platform (URI parsing, number and date formats, collation) is in `Platform.kt`, answered by `androidMain` and `iosMain` |
-| `core/src/commonTest/` | The same pairing, deep-link, wire protocol, terminal bridge and Appearance tests run on the JVM and iOS simulator. The iOS target is a library, not an installable iPhone app |
+| `core/src/commonTest/` | The same pairing, deep-link, wire protocol, terminal bridge and Appearance tests run on the JVM and iOS simulator |
+| `mobile/` | Compiles the production Compose screens and session into the [iOS companion](../ios/README.md). Native adapters handle iOS storage, networking, camera, notifications and WKWebViews |
 | `core/src/androidHostTest/` | Additional JVM tests, including checks against the Android/JDK behavior, and the golden files the Node suite shares |
-| `app/src/main/java/ai/factory/droidoffice/core/` | The Android-only part of the `core` package: APK update checks (`AppUpdate.kt`, `UpdateController.kt`) and the on-disk queue receipts (`Receipts.kt`) |
+| `app/src/main/java/ai/factory/droidoffice/core/` | APK update checks (`AppUpdate.kt`, `UpdateController.kt`) and shared queue receipts (`Receipts.kt`) with platform-specific file storage |
 | `data/` | Paired offices and settings (DataStore) and the Keystore token vault |
 | `net/` | The HTTP API (OkHttp), the cleartext guard and the network monitor |
 | `session/` | `OfficeConnection`, the one connection to the current office (route race, WebSocket, reconnects, who holds it open), and `Pairer` |

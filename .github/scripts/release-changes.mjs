@@ -23,9 +23,13 @@ export function checksFor(files, { manual = false, androidVersionChanged = false
     // Client changes also rebuild the Mac app that ships them.
     mac: all || touches(packages) || touches(config) || touches(/^(?:src\/|bin\/|skills\/|build\/|native\/|electron-builder\.yml$)/),
     // Root npm dependency/script edits don't rebuild Android; its terminal dependencies are vendored.
-    android: all || androidVersionChanged || touches(/^(?:android\/(?!docs\/|.*\.md$)|tools\/android-model-icons\.mjs$)/),
-    // Only the shared core and the Gradle build around it compile for iOS; app-only edits skip the Mac.
-    ios: all || touches(/^android\/(?:core\/(?!.*\.md$)|gradle\/|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$)/),
+    android: all || androidVersionChanged || touches(/^(?:android\/(?!docs\/|mobile\/|.*\.md$)|tools\/android-model-icons\.mjs$)/),
+    ios:
+      all ||
+      touches(/^ios\/(?!.*\.md$)/) ||
+      touches(
+        /^android\/(?:(?:core|mobile)\/(?!.*\.md$)|gradle\/|gradlew$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|app\/src\/main\/(?:assets\/|res\/(?:drawable-nodpi\/|font\/|values\/glyph\.xml$)|java\/ai\/factory\/droidoffice\/(?:ui\/|session\/|data\/(?:ArtworkPreference|OfficeStore)\.kt$|net\/Office(?:Api|Transport)\.kt$|core\/Receipts\.kt$)))/,
+      ),
   };
 }
 

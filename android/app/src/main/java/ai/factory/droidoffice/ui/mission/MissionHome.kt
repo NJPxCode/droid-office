@@ -57,7 +57,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
+import ai.factory.droidoffice.ui.theme.officePainter
 import ai.factory.droidoffice.R
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -352,7 +352,7 @@ internal fun BotTile(grokBot: Boolean, tint: Color, small: Boolean = false) {
         Modifier.size(if (small) 26.dp else 32.dp).clip(shape).border(1.dp, tint.copy(alpha = 0.4f), shape),
         contentAlignment = Alignment.Center,
     ) {
-        Image(painterResource(R.drawable.grokbot), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        Image(officePainter(R.drawable.grokbot), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
     }
 }
 

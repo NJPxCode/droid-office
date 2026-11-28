@@ -51,7 +51,7 @@ object Pairing {
         val rawQuery = rest.substringAfter('?', "").substringBefore('#')
         val query = queryParams(rawQuery)
         val version = query["v"]?.firstOrNull()?.toIntOrNull() ?: 1
-        if (version > 1) return InviteParse.Invalid("This office is newer than the app: update Droid Office for Android")
+        if (version > 1) return InviteParse.Invalid("This office is newer than the app: update the Droid Office companion")
         val token = query["t"]?.firstOrNull()?.trim().orEmpty()
         if (!TOKEN.matches(token)) return InviteParse.Invalid("The link has no pairing token")
         val bases = query["u"].orEmpty().mapNotNull(::normalizeBase).distinct()

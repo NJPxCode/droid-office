@@ -318,7 +318,7 @@ private fun WorkersRosterPane(
                                     onOpenRawTty = { onOpenRawTty(w.id) },
                                     onAnswered = { label ->
                                         if (menu != null) {
-                                            sent.add(0, AnsweredAsk(w.id, w.name, floor?.name, label, System.currentTimeMillis(), menu))
+                                            sent.add(0, AnsweredAsk(w.id, w.name, floor?.name, label, kotlin.time.Clock.System.now().toEpochMilliseconds(), menu))
                                             while (sent.size > 3) sent.removeAt(sent.lastIndex)
                                         }
                                     },

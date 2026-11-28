@@ -31,4 +31,4 @@ plugins {
 }
 
 rootProject.name = "droid-office-android"
-include(":app", ":core")
+include(":app", ":core", ":mobile")
