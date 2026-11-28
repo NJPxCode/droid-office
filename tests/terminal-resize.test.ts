@@ -11,14 +11,14 @@ test('inline terminals follow pane geometry without focus or stale size rollback
   const context = await newIsolatedContext(browser);
   t.after(() => context.close());
   const mountFixture = await terminalFixture(t);
+  const errors: string[] = [];
+  t.afterEach(async () => {
+    await Promise.all(context.pages().map((page) => page.close()));
+    assert.deepEqual(errors.splice(0), []);
+  });
   const rig = async (shared = true, delaySnapshot = false, hidden = false, mode = 'inline', pageHidden = false) => {
     const page = await context.newPage();
-    const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
-    t.after(async () => {
-      await page.close();
-      assert.deepEqual(errors, []);
-    });
     await mountFixture(page, '<button id="focus">Keep focus here</button><div id="mount"></div><div id="modal-root"></div>');
     await page.evaluate(
       ({ shared, delaySnapshot, hidden, mode, pageHidden }) => {
@@ -1369,7 +1369,8 @@ test('inline terminals follow pane geometry without focus or stale size rollback
         return sizes;
       });
     await settle();
-    for (const width of [1080, 1230]) {
+    // The sidebar itself shrinks by 32px. Change the half-pane by more than a terminal cell.
+    for (const width of [1020, 1230]) {
       await page.setViewportSize({ width, height: 720 });
       assert.equal((await settle()).length, 1, 'one resize across the responsive sidebar breakpoint');
     }
