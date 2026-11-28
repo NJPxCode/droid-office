@@ -3,6 +3,7 @@
 // own origin that frames the card with the window's own attributes (CARD_FRAME), against the
 // office's card route. Without full screen in the frame's allow list, Chromium ignores a click on the
 // picture and greys out the full-screen button, which is what this guards.
+import './helpers/neutral-shell.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';

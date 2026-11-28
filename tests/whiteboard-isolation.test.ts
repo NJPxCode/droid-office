@@ -2,6 +2,7 @@
 // page on the office's own origin (the same iframe sandbox and the bridge's source and nonce checks),
 // through the office's renderer, and opened directly in a tab. Each card reports what it could reach
 // to a collector of the test's own, since it has network access.
+import './helpers/neutral-shell.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

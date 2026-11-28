@@ -1,3 +1,4 @@
+import './helpers/neutral-shell.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -95,7 +96,7 @@ test('shell integration broadcasts to owners, persists across restart, and reads
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }
-      rmSync(config, { recursive: true, force: true });
+      rmSync(config, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
     });
     writeFileSync(path.join(config, '.zshenv'), 'startup_context=$ZSH_EVAL_CONTEXT\n');
     process.env.SHELL = zsh;

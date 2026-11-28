@@ -1,3 +1,4 @@
+import './helpers/neutral-shell.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -71,10 +72,11 @@ test("the office gets the login shell's environment over the app's, with PATH me
 });
 
 test('a login shell answers with its environment, and a missing shell with nothing', async () => {
-  const got = await loginShellEnv('/bin/sh');
+  const shell = process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh';
+  const got = await loginShellEnv(shell);
   assert.ok(got?.PATH?.split(':').includes('/bin'), `got ${got?.PATH}`);
   assert.equal(await loginShellEnv('/no/such/shell'), undefined);
-  const env = await desktopEnv({ SHELL: '/bin/sh', PATH: '/usr/bin:/bin', DROID_OFFICE_TEST_MARK: 'kept' });
+  const env = await desktopEnv({ SHELL: shell, PATH: '/usr/bin:/bin', DROID_OFFICE_TEST_MARK: 'kept' });
   assert.equal(env.DROID_OFFICE_TEST_MARK, 'kept');
   assert.ok(env.PATH?.split(':').includes('/bin'));
 });

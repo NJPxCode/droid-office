@@ -1,6 +1,7 @@
 // Share-link guests on the WebSocket, end to end: a real office pinned to a stubbed Tailscale CLI
 // (--tailscale-bin: no PATH lookup, no fallback to an installed one), and guest sockets through the real guest backend listener with
 // the Host and Origin Funnel would send. Worker visibility is checked against what arrives on the wire.
+import './helpers/neutral-shell.js';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

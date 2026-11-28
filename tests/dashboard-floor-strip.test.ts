@@ -1,3 +1,4 @@
+import './helpers/neutral-shell.js';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
