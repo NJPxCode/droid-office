@@ -1,5 +1,6 @@
 package ai.factory.droidoffice.core
 
+import java.net.InetAddress
 import java.net.URI
 import java.text.Collator
 import java.time.Instant
@@ -16,6 +17,9 @@ internal actual fun parseUri(text: String): UriParts? {
     }
     return UriParts(scheme = uri.scheme, host = uri.host, port = uri.port, rawPath = uri.rawPath, rawQuery = uri.rawQuery)
 }
+
+internal actual fun ipv6Bytes(host: String): ByteArray? =
+    if (':' in host) runCatching { InetAddress.getByName(host).address }.getOrNull() else null
 
 internal actual fun formatDecimals(value: Double, decimals: Int): String = String.format(Locale.ROOT, "%.${decimals}f", value)
 

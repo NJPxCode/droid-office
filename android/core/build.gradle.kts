@@ -23,7 +23,6 @@ kotlin {
         withHostTest {}
     }
 
-    // Kotlin/Native compiles these on a macOS host; Xcode is not needed to compile them.
     iosArm64()
     iosSimulatorArm64()
 
@@ -32,7 +31,9 @@ kotlin {
             api(libs.kotlinx.coroutines.core)
             api(libs.kotlinx.serialization.json)
         }
-        // The JUnit suite runs on the JVM for now; moving it to commonTest runs it on iOS too.
+        commonTest.dependencies {
+            implementation(libs.kotlin.test)
+        }
         getByName("androidHostTest").dependencies {
             implementation(libs.junit)
             implementation(libs.kotlinx.coroutines.test)

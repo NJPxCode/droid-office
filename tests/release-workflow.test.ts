@@ -29,6 +29,7 @@ test('CI checks only the affected platforms and builds every client change into 
   assert.deepEqual(checksFor(['android/app/src/main/java/ai/factory/droidoffice/core/AppUpdate.kt']), { ...none, android: true });
   assert.deepEqual(checksFor(['android/core/src/commonMain/kotlin/ai/factory/droidoffice/core/Protocol.kt']), { ...none, node: true, android: true, ios: true });
   assert.deepEqual(checksFor(['android/core/src/commonMain/kotlin/ai/factory/droidoffice/core/Routes.kt']), { ...none, android: true, ios: true });
+  assert.deepEqual(checksFor(['android/core/src/commonTest/kotlin/ai/factory/droidoffice/core/PairingTest.kt']), { ...none, android: true, ios: true });
   assert.deepEqual(checksFor(['android/gradle/libs.versions.toml']), { ...none, android: true, ios: true });
   assert.deepEqual(checksFor(['android/app/src/main/assets/terminal/input.js']), { ...none, node: true, android: true });
   assert.deepEqual(checksFor(['android/app/src/main/assets/model-icons/gemini.png']), { ...none, node: true, android: true });
@@ -376,7 +377,7 @@ test('release runs on the Mac Mini except for fork and Dependabot pull requests'
 });
 
 test('other PR checks run on GitHub runners while main builds and releases on the Mac Mini', () => {
-  for (const [job, hostedRunner] of Object.entries({ changes: 'ubuntu-latest', website: 'ubuntu-latest', mac: 'macos-26', android: 'ubuntu-latest' })) {
+  for (const [job, hostedRunner] of Object.entries({ changes: 'ubuntu-latest', website: 'ubuntu-latest', mac: 'macos-26', android: 'ubuntu-latest', 'android-core-ios': 'macos-26' })) {
     const expression = runnerExpression(job);
     assert.equal(expression, `github.event_name == 'pull_request' && '${hostedRunner}' || fromJSON('["self-hosted", "macOS", "ARM64", "droid-office"]')`, job);
     for (const event of ['pull_request', 'push', 'workflow_dispatch']) {
@@ -403,6 +404,7 @@ test('other PR checks run on GitHub runners while main builds and releases on th
     website: 'node',
     mac: 'node xcode',
     android: 'node java android',
+    'android-core-ios': 'java xcode android',
   };
   for (const [job, tools] of Object.entries(wanted)) {
     const step = jobSteps(job).find((candidate) => candidate.includes("name: Check the runner's toolchain"));
@@ -414,6 +416,11 @@ test('other PR checks run on GitHub runners while main builds and releases on th
       assert.match(step, /if: github\.event_name != 'pull_request'/);
     }
   }
+});
+
+test('the shared mobile contracts run on both the JVM and the iOS simulator', () => {
+  assert.match(jobSteps('android').join('\n'), /:core:testAndroidHostTest\b/);
+  assert.match(jobSteps('android-core-ios').join('\n'), /:core:compileKotlinIosArm64 :core:iosSimulatorArm64Test\b/);
 });
 
 test('CI caches hosted Chromium, isolates Mac Mini PR installs and checks rendering before coverage', () => {

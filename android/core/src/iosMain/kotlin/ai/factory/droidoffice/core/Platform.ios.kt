@@ -1,7 +1,17 @@
 package ai.factory.droidoffice.core
 
 import kotlinx.cinterop.BetaInteropApi
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.cValue
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.pointed
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.readBytes
+import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.value
 import platform.Foundation.NSDate
 import platform.Foundation.NSDateFormatter
 import platform.Foundation.NSDateFormatterMediumStyle
@@ -20,6 +30,13 @@ import platform.Foundation.create
 import platform.Foundation.autoupdatingCurrentLocale
 import platform.Foundation.dateWithTimeIntervalSince1970
 import platform.Foundation.localTimeZone
+import platform.posix.AF_INET6
+import platform.posix.AI_NUMERICHOST
+import platform.posix.SOCK_STREAM
+import platform.posix.addrinfo
+import platform.posix.freeaddrinfo
+import platform.posix.getaddrinfo
+import platform.posix.sockaddr_in6
 
 internal actual fun parseUri(text: String): UriParts? {
     val components = NSURLComponents.componentsWithString(text) ?: return null
@@ -30,6 +47,26 @@ internal actual fun parseUri(text: String): UriParts? {
         rawPath = components.percentEncodedPath,
         rawQuery = components.percentEncodedQuery,
     )
+}
+
+@OptIn(ExperimentalForeignApi::class)
+internal actual fun ipv6Bytes(host: String): ByteArray? = memScoped {
+    val hints = cValue<addrinfo> {
+        ai_family = AF_INET6
+        ai_socktype = SOCK_STREAM
+        ai_flags = AI_NUMERICHOST
+    }
+    val result = alloc<CPointerVar<addrinfo>>()
+    if (getaddrinfo(host, null, hints, result.ptr) != 0) return@memScoped null
+    val info = result.value ?: return@memScoped null
+    try {
+        val addr = info.pointed.ai_addr!!.reinterpret<sockaddr_in6>().pointed.sin6_addr
+        val bytes = addr.ptr.reinterpret<ByteVar>().readBytes(16)
+        // InetAddress represents ::ffff:a.b.c.d as IPv4 on Android.
+        if ((0 until 10).all { bytes[it].toInt() == 0 } && bytes[10].toInt() == -1 && bytes[11].toInt() == -1) bytes.copyOfRange(12, 16) else bytes
+    } finally {
+        freeaddrinfo(info)
+    }
 }
 
 // Foundation formatters are costly to build and safe to share across threads, so each is made once.

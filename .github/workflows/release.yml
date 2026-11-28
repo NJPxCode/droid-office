@@ -602,9 +602,8 @@ jobs:
           compgen -G "$out/*.apk" > /dev/null || { echo "no APK to hand over"; exit 1; }
           printf '%s\n' "$out"/*.apk
 
-  # android/core is Kotlin Multiplatform, shared with the iOS companion. Kotlin/Native compiles its
-  # iOS targets on a macOS host (Xcode is not needed for this), so the ubuntu Android job leaves them
-  # out; this job keeps commonMain free of JVM-only APIs. It ships nothing, so publish doesn't wait for it.
+  # The Android job runs commonTest on the JVM. Run those same contracts on the iOS simulator
+  # and compile the device library here. No Apple artifact is published.
   android-core-ios:
     needs: changes
     if: needs.changes.outputs.ios == 'true'
@@ -637,8 +636,14 @@ jobs:
         working-directory: .
         run: .github/scripts/runner-toolchain.sh java xcode android
 
-      - name: Compile the shared core for iOS
-        run: ./gradlew :core:compileKotlinIosArm64 :core:compileKotlinIosSimulatorArm64
+      - name: Install an iOS simulator runtime if missing
+        run: |
+          if ! xcrun simctl list runtimes available | grep -q '^iOS '; then
+            xcodebuild -downloadPlatform iOS -architectureVariant arm64
+          fi
+
+      - name: Build the iPhone core and run its simulator tests
+        run: ./gradlew :core:compileKotlinIosArm64 :core:iosSimulatorArm64Test
 
   publish:
     needs: [changes, release, website, mac, android]

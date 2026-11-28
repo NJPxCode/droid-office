@@ -1,6 +1,5 @@
 package ai.factory.droidoffice.core
 
-import java.net.InetAddress
 import java.net.URLDecoder
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -44,22 +43,5 @@ class CommonParityTest {
         }
         // Android's URLDecoder refuses a sign in an escape, which the desktop JDK here would read as hex.
         for (s in listOf("%+1", "%1+", "a%+fb")) assertNull(s, UrlDecoder.decodeOrNull(s))
-    }
-
-    @Test
-    fun ipv6LiteralsMatchInetAddress() {
-        val literals = listOf(
-            "::", "::1", "fe80::1", "fd7a:115c:a1e0::1", "2001:4860:4860::8888",
-            "1:2:3:4:5:6:7:8", "1::8", "1:2:3:4:5:6:7::", "::ffff:192.168.1.2", "::192.168.1.2",
-            "64:ff9b::10.0.0.1", "FEC0::ABCD",
-        )
-        for (literal in literals) {
-            assertArrayEquals(literal, InetAddress.getByName(literal).address, Routes.parseIpv6(literal))
-        }
-        // A zone names an interface this machine may not have, so InetAddress can't be the judge.
-        assertArrayEquals(Routes.parseIpv6("fe80::1"), Routes.parseIpv6("fe80::1%wlan0"))
-        for (bad in listOf("1:2", "1::2::3", ":1::", "1:2:3:4:5:6:7:8:9", "12345::", "g::1", "::1.2.3", "1:2:3:4:5:6:7:8::")) {
-            assertNull(bad, Routes.parseIpv6(bad))
-        }
     }
 }

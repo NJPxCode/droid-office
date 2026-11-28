@@ -1,8 +1,8 @@
 package ai.factory.droidoffice.core
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class AppearanceTest {
     // glassAlpha / chromeAlpha from src/shared/companion-themes.ts for theme glass .72, .74 and .84.
@@ -16,8 +16,8 @@ class AppearanceTest {
         for ((themeGlass, levels) in web) {
             GlassLevel.entries.forEachIndexed { i, level ->
                 val (pane, chrome) = levels[i]
-                assertEquals("$level pane at $themeGlass", pane, Glass.pane(themeGlass, level), 1e-4f)
-                assertEquals("$level chrome at $themeGlass", chrome, Glass.chrome(themeGlass, level), 1e-4f)
+                assertEquals(pane, Glass.pane(themeGlass, level), 1e-4f, "$level pane at $themeGlass")
+                assertEquals(chrome, Glass.chrome(themeGlass, level), 1e-4f, "$level chrome at $themeGlass")
             }
         }
     }
@@ -27,7 +27,7 @@ class AppearanceTest {
             val chrome = Glass.chrome(themeGlass, level)
             val over = Glass.paneOverChrome(themeGlass, level)
             assertTrue(over in 0f..1f)
-            assertEquals("$level at $themeGlass", Glass.pane(themeGlass, level), chrome + over * (1f - chrome), 1e-4f)
+            assertEquals(Glass.pane(themeGlass, level), chrome + over * (1f - chrome), 1e-4f, "$level at $themeGlass")
         }
         // Solid keeps panels filled where no chrome lies under them, such as inside sheets.
         assertEquals(1f, Glass.paneOverChrome(.72f, GlassLevel.Solid))
@@ -40,8 +40,8 @@ class AppearanceTest {
         val sakura = listOf(.61f, .56f, .45f, .06f, 0f, 0f)
         val tokyo = listOf(.23f, .12f, 0f, 0f, 0f, 0f)
         GlassLevel.entries.forEachIndexed { i, level ->
-            assertEquals("sakura $level", sakura[i], Glass.pictureShade(.84f, level, 0xFF22161E.toInt(), 0xFFFFF4F8.toInt(), 0xFFD2B6C3.toInt(), 239), 1e-4f)
-            assertEquals("tokyo $level", tokyo[i], Glass.pictureShade(.72f, level, 0xFF090914.toInt(), 0xFFF4F1FF.toInt(), 0xFFAAA5C2.toInt(), 89), 1e-4f)
+            assertEquals(sakura[i], Glass.pictureShade(.84f, level, 0xFF22161E.toInt(), 0xFFFFF4F8.toInt(), 0xFFD2B6C3.toInt(), 239), 1e-4f, "sakura $level")
+            assertEquals(tokyo[i], Glass.pictureShade(.72f, level, 0xFF090914.toInt(), 0xFFF4F1FF.toInt(), 0xFFAAA5C2.toInt(), 89), 1e-4f, "tokyo $level")
         }
     }
 

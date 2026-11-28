@@ -101,7 +101,8 @@ Run from `android/`:
 
 | Task | Command |
 | --- | --- |
-| Unit tests | `./gradlew testDebugUnitTest` |
+| Android app and shared core tests (JVM) | `./gradlew testDebugUnitTest :core:testAndroidHostTest` |
+| iPhone device library and shared tests (Mac with Xcode and an iOS simulator runtime) | `./gradlew :core:compileKotlinIosArm64 :core:iosSimulatorArm64Test` |
 | Lint (any error fails) | `./gradlew lintDebug :core:lint` |
 | Debug APK (`ai.factory.droidoffice.debug`, installs next to a release build) | `./gradlew assembleDebug` |
 | Install the debug APK on a connected phone or emulator | `./gradlew installDebug` |
@@ -193,7 +194,8 @@ The keystore and its passwords are kept outside the repository by the maintainer
 | Path | Contents |
 | --- | --- |
 | `core/` | Kotlin Multiplatform module shared with the iOS companion (`core/src/commonMain/`, package `ai.factory.droidoffice.core`). Pure Kotlin, no Android or JVM APIs: the pairing link parser, route kinds and the route race, the WebSocket protocol, the terminal screen model and cell layout (character widths, box glyphs, numbered menus), worker grouping, labels and model names, and the Whiteboard (its board model, sync, ops and ping eligibility, and the live card page's routes, byte ranges and messages in `WbPage.kt`). What it needs from the platform (URI parsing, number and date formats, collation) is in `Platform.kt`, answered by `androidMain` and `iosMain` |
-| `core/src/androidHostTest/` | JUnit tests for `core/`, run on the JVM, and the golden files the Node suite shares |
+| `core/src/commonTest/` | The same pairing, deep-link, wire protocol, terminal bridge and Appearance tests run on the JVM and iOS simulator. The iOS target is a library, not an installable iPhone app |
+| `core/src/androidHostTest/` | Additional JVM tests, including checks against the Android/JDK behavior, and the golden files the Node suite shares |
 | `app/src/main/java/ai/factory/droidoffice/core/` | The Android-only part of the `core` package: APK update checks (`AppUpdate.kt`, `UpdateController.kt`) and the on-disk queue receipts (`Receipts.kt`) |
 | `data/` | Paired offices and settings (DataStore) and the Keystore token vault |
 | `net/` | The HTTP API (OkHttp), the cleartext guard and the network monitor |

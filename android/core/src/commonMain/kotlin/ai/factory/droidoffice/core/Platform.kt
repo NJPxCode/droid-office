@@ -11,6 +11,9 @@ internal class UriParts(val scheme: String?, val host: String?, val port: Int, v
 /** [text] read as a URI; null when it isn't one. */
 internal expect fun parseUri(text: String): UriParts?
 
+/** Parses an IPv6 literal and its interface scope without DNS. Mapped IPv4 addresses return four bytes. */
+internal expect fun ipv6Bytes(host: String): ByteArray?
+
 /** [value] with exactly [decimals] digits after a `.` and no grouping, as `"%.Nf"` gives it. */
 internal expect fun formatDecimals(value: Double, decimals: Int): String
 

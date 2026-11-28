@@ -26,6 +26,14 @@ class RoutesTest {
     }
 
     @Test
+    fun scopedIpv6KeepsAndroidsInterfaceLookup() {
+        val host = "fe80::1%no-such-office-interface"
+        assertTrue(runCatching { InetAddress.getByName(host) }.isFailure)
+        assertEquals(RouteKind.Remote, Routes.kindOf("http://[$host]:4600"))
+        assertEquals(RouteKind.Lan, Routes.kindOf("http://[fe80::1]:4600"))
+    }
+
+    @Test
     fun onlyBetterKindsAreWorthMovingTo() {
         val lan = "http://192.168.0.148:4600"
         val magic = "http://niks-mac.tail1234.ts.net:4600"

@@ -1,12 +1,26 @@
 package ai.factory.droidoffice.core
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class PairingTest {
     private fun ok(raw: String) = (Pairing.parse(raw) as InviteParse.Ok).invite
     private fun invalid(raw: String) = (Pairing.parse(raw) as InviteParse.Invalid).reason
+
+    @Test
+    fun ipv6OfficeRoutesUseTheAddressNotJustTheBrackets() {
+        for (lan in listOf("::1", "fe80::1", "fec0::abcd", "fd00::1", "::ffff:192.168.1.2")) {
+            assertEquals(RouteKind.Lan, Routes.kindOf("http://[$lan]:4600"), lan)
+        }
+        for (remote in listOf("::", "2001:4860:4860::8888", "::ffff:8.8.8.8", "64:ff9b::10.0.0.1")) {
+            assertEquals(RouteKind.Remote, Routes.kindOf("https://[$remote]"), remote)
+        }
+        for (invalid in listOf("1:2", "1::2::3", ":1::", "1:2:3:4:5:6:7:8:9", "12345::", "g::1", "::1.2.3", "1:2:3:4:5:6:7:8::")) {
+            assertEquals(null, ipv6Bytes(invalid), invalid)
+        }
+        assertEquals("http://[::1]:4600", Pairing.normalizeBase("http://[::1]:4600/dashboard"))
+    }
 
     @Test
     fun readsTailnetHttpsCodeAndCompanionJoinLink() {

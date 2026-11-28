@@ -2,6 +2,7 @@ package ai.factory.droidoffice.core
 
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
@@ -117,7 +118,7 @@ object Glass {
 
     private fun linear(c: Float): Double {
         val s = c / 255.0
-        return if (s <= .03928) s / 12.92 else Math.pow((s + .055) / 1.055, 2.4)
+        return if (s <= .03928) s / 12.92 else ((s + .055) / 1.055).pow(2.4)
     }
 
     private fun luminance(r: Float, g: Float, b: Float) = .2126 * linear(r) + .7152 * linear(g) + .0722 * linear(b)
@@ -159,6 +160,6 @@ object Glass {
         }
         ys.sort()
         val y = ys[(ys.size * quantile).toInt().coerceIn(0, ys.lastIndex)]
-        return (255 * (if (y <= .00304) y * 12.92 else 1.055 * Math.pow(y, 1 / 2.4) - .055)).roundToInt()
+        return (255 * (if (y <= .00304) y * 12.92 else 1.055 * y.pow(1 / 2.4) - .055)).roundToInt()
     }
 }

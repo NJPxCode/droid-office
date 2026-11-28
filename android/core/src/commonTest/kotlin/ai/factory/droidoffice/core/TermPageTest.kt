@@ -3,10 +3,10 @@ package ai.factory.droidoffice.core
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class TermPageTest {
     @Test
@@ -53,7 +53,7 @@ class TermPageTest {
             """{"t":"image","width":0,"height":10,"data":"abc"}""",
             """{"t":"image","width":10,"height":10,"data":""}""",
         )) {
-            assertNull(bad, TermPage.decode(bad))
+            assertNull(TermPage.decode(bad), bad)
         }
     }
 
