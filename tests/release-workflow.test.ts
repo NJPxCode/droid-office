@@ -280,9 +280,9 @@ test('release versions, packages, signing, bundle smoke checks and uploads only 
   }
 });
 
-test('PRs retain builds, native compilation, coverage, Android tests and checkout smoke checks', () => {
+test('PRs retain builds, native compilation, Node and Android tests and checkout smoke checks', () => {
   for (const [job, fragments] of [
-    ['release', ['name: Install and build', 'run: npm run lint', 'run: npm run typecheck', 'name: Test with coverage', 'name: Start the office from the checkout']],
+    ['release', ['name: Install and build', 'run: npm run lint', 'run: npm run typecheck', 'name: Test without coverage', 'name: Start the office from the checkout']],
     ['mac', ['name: Install and build', 'name: Check the native Metal presenter']],
     ['android', ['name: Unit tests and lint']],
     ['website', ['run: npm run build:website']],
@@ -456,7 +456,7 @@ test('CI caches hosted Chromium, isolates Mac Mini PR installs and checks render
   assert.match(smoke, /finally \{[\s\S]*?await closeBrowser\(\)/);
   assert.doesNotMatch(smoke, /if:|continue-on-error|\|\| true/);
   assert.ok(steps.indexOf(cache) < steps.indexOf(install) && steps.indexOf(install) < steps.indexOf(smoke));
-  assert.ok(steps.indexOf(smoke) < steps.findIndex((step) => step.includes('name: Test with coverage')));
+  for (const name of ['Test without coverage', 'Test with coverage']) assert.ok(steps.indexOf(smoke) < steps.findIndex((step) => step.includes(`name: ${name}`)));
 });
 
 test('the toolchain check reports every kind of drift instead of dying on it', () => {
@@ -528,17 +528,23 @@ test('jobs that can run at once do not fight over a port or a Gradle daemon', ()
   assert.doesNotMatch(workflow, /gradlew --no-daemon/);
 });
 
-test('PR coverage writes session fixtures and the checkout smoke syncs skills into temporary homes', () => {
+test('PR tests and checkout smoke use temporary homes; only non-PR runs collect coverage', () => {
   const steps = jobSteps('release');
-  for (const [name, home, command] of [
-    ['Test with coverage', 'test-home', 'npm run test:coverage'],
-    ['Start the office from the checkout', 'smoke-home', 'node "$GITHUB_WORKSPACE/bin/droid-office.js"'],
-  ]) {
-    const step = steps.find((s) => s.includes(`name: ${name}\n`));
-    assert.ok(step, name);
-    const guard = `if [ "$GITHUB_EVENT_NAME" = pull_request ]; then\n            export HOME="$RUNNER_TEMP/${home}"\n            mkdir -p "$HOME"\n          fi`;
-    assert.ok(step.includes(guard) && step.indexOf(command) > step.indexOf(guard), name);
+  const tests = steps.find((s) => s.includes('name: Test without coverage'))!;
+  const coverage = steps.find((s) => s.includes('run: npm run test:coverage'))!;
+  for (const [event, pr] of [
+    ['pull_request', true],
+    ['push', false],
+    ['workflow_dispatch', false],
+  ] as const) {
+    assert.equal(stepRuns(tests, event), pr);
+    assert.equal(stepRuns(coverage, event), !pr);
   }
+  assert.match(tests, /^ {10}HOME: \$\{\{ runner\.temp \}\}\/test-home$/m);
+  assert.match(tests, /mkdir -p "\$HOME"\s+npm test\s*$/);
+  const smoke = steps.find((s) => s.includes('name: Start the office from the checkout'))!;
+  const guard = 'if [ "$GITHUB_EVENT_NAME" = pull_request ]; then\n            export HOME="$RUNNER_TEMP/smoke-home"\n            mkdir -p "$HOME"\n          fi';
+  assert.ok(smoke.includes(guard) && smoke.indexOf('node "$GITHUB_WORKSPACE/bin/droid-office.js"') > smoke.indexOf(guard));
 });
 
 test('build-tools is chosen with the sort macOS actually has', () => {

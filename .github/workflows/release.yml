@@ -220,13 +220,17 @@ jobs:
           }
           JS
 
-      - name: Test with coverage
+      - name: Test without coverage
+        if: github.event_name == 'pull_request'
+        env:
+          HOME: ${{ runner.temp }}/test-home
         run: |
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            export HOME="$RUNNER_TEMP/test-home"
-            mkdir -p "$HOME"
-          fi
-          npm run test:coverage
+          mkdir -p "$HOME"
+          npm test
+
+      - name: Test with coverage
+        if: github.event_name != 'pull_request'
+        run: npm run test:coverage
 
       - name: Test the Office performance proof contract
         env:
