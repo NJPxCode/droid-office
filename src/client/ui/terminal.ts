@@ -198,7 +198,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
         const mark = orchestratorMark ? h('span.dash-mission-mark.sm', { 'aria-hidden': 'true' }, orchestratorMark) : colorDot(info.color);
         const element = h('header', {}, mark, h('div.titles', {}, h('div.term-title', {}, title, pill), sub), h('div.actions', {}, viewSwitch, zoom, changes, fork), close);
         const zoomBy = (dir: 1 | -1) => {
-          setTermFontSize(stepTermFont(term.options.fontSize ?? termFontSize(), dir));
+          setTermFontSize(stepTermFont(requestedFontSize() ?? termFontSize(), dir));
           if (threadView) setThreadView('raw');
           else term.focus();
         };
@@ -321,21 +321,22 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
    */
   let adoptSharedSize = false;
   /** Sizes the shared PTY to this window, or this window to the shared PTY (see adoptSharedSize). */
-  const sendSize = (typing = false) => {
+  const sendSize = (claim: boolean, dimensions: () => typeof term.observedDimensions) => {
     if (readOnly) {
+      dimensions(); // Apply a queued font, but retain the shared PTY grid.
       const w = store.worker(workerId);
       if (w && w.cols > 0 && w.rows > 0 && (w.cols !== term.cols || w.rows !== term.rows)) term.resize(w.cols, w.rows);
       return;
     }
     if (!mirror.ready || !opened || !net.up) return;
-    if (typing || paneSizeChanged) adoptSharedSize = false;
+    if (claim || paneSizeChanged) adoptSharedSize = false;
     paneSizeChanged = false;
     if (adoptSharedSize) {
       const w = store.worker(workerId);
       if (w && (w.cols !== term.cols || w.rows !== term.rows)) term.resize(w.cols, w.rows);
       return;
     }
-    const size = term.observedDimensions;
+    const size = dimensions();
     if (!size) return;
     // Match WorkerManager.resize's limits so the server can acknowledge the exact request.
     term.resize(Math.max(20, Math.min(400, size.cols)), Math.max(5, Math.min(200, size.rows)));
@@ -487,7 +488,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
     offMission();
   };
   const unsubCredits = store.on('factory', refresh);
-  const requestFit = followTerminalFit(term, () => (paneSizeChanged = true), sendSize, readOnly ? null : workspace);
+  const { requestFit, setFontSize, requestedFontSize } = followTerminalFit(term, () => (paneSizeChanged = true), sendSize, readOnly ? null : workspace);
   const offStatus = net.onStatus((up) => {
     header?.refresh(store.worker(workerId) ?? info);
     thread?.update(store.worker(workerId) ?? info, up);
@@ -615,7 +616,7 @@ export function openTerminal(net: Net, workerId: string, onChanges?: () => void,
   }
   header?.zoom(termFontSize());
   const offFont = onTermFontSize((px) => {
-    term.options.fontSize = px;
+    setFontSize(px);
     header?.zoom(px);
   });
   const offTheme = onTermTheme(() => (term.options.theme = termTheme()));
@@ -765,15 +766,15 @@ export function openOfficeShell(net: Net) {
   const pendingSizes: string[] = [];
   let boxChanged = false;
 
-  const sendSize = (typing = false) => {
-    if (term.options.disableStdin || !mirror.ready || !opened || !net.up) return;
-    if (typing || boxChanged) shared = false;
+  const sendSize = (claim: boolean, dimensions: () => typeof term.observedDimensions) => {
+    if (!mirror.ready || !opened || !net.up || term.options.disableStdin) return;
+    if (claim || boxChanged) shared = false;
     boxChanged = false;
     if (shared) {
       if (ptyCols !== term.cols || ptyRows !== term.rows) term.resize(ptyCols, ptyRows);
       return;
     }
-    const size = term.observedDimensions;
+    const size = dimensions();
     if (!size) return;
     term.resize(Math.max(20, Math.min(400, size.cols)), Math.max(5, Math.min(200, size.rows)));
     const key = `${term.cols}x${term.rows}`;
@@ -856,7 +857,7 @@ export function openOfficeShell(net: Net) {
     lastSentSize = '';
     pendingSizes.length = 0;
   });
-  const requestFit = followTerminalFit(term, () => (boxChanged = true), sendSize);
+  const { requestFit, setFontSize, requestedFontSize } = followTerminalFit(term, () => (boxChanged = true), sendSize);
 
   const modal = openModal(el, {
     backdropCloses: true,
@@ -889,12 +890,12 @@ export function openOfficeShell(net: Net) {
   };
   paintZoom(termFontSize());
   const offFont = onTermFontSize((px) => {
-    term.options.fontSize = px;
+    setFontSize(px);
     paintZoom(px);
   });
   const offTheme = onTermTheme(() => (term.options.theme = termTheme()));
   const zoomBy = (dir: 1 | -1) => {
-    setTermFontSize(stepTermFont(term.options.fontSize ?? termFontSize(), dir));
+    setTermFontSize(stepTermFont(requestedFontSize() ?? termFontSize(), dir));
     term.focus();
   };
   smaller.addEventListener('click', () => zoomBy(-1));

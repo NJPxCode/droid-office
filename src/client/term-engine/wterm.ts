@@ -328,6 +328,7 @@ export class WTermAdapter {
     return true;
   }
   private rowHeight = 1;
+  private fittingFont = false;
   private lastClientHeight = 0;
   private metricsContext?: CanvasRenderingContext2D | null;
   private keepTailOnShrink() {
@@ -363,6 +364,14 @@ export class WTermAdapter {
       return fn();
     } finally {
       el.style.transform = transform;
+    }
+  }
+  setFontForFit(px: number) {
+    this.fittingFont = true;
+    try {
+      this.options.fontSize = px;
+    } finally {
+      this.fittingFont = false;
     }
   }
   refreshMetrics() {
@@ -420,8 +429,21 @@ export class WTermAdapter {
         }
       });
       if (previousHeight !== this.rowHeight) {
-        if (this.readerRow !== undefined) el.scrollTop = Math.max(0, this.readerRow - this.paintedDiscarded) * this.rowHeight;
-        this.pendingRestore = { appliedTop: el.scrollTop };
+        const restore = (this.pendingRestore = { appliedTop: el.scrollTop });
+        if (this.readerRow !== undefined) {
+          const readerRow = this.readerRow;
+          const { cols, rows } = this;
+          // A font fit resizes synchronously. Let its mapped viewport replace
+          // this restore rather than scrolling rows that still have the old pitch.
+          const scroll = () => {
+            if (this.pendingRestore !== restore || el.scrollTop !== restore.appliedTop) return;
+            if ((cols !== this.cols || rows !== this.rows) && this.core && this.scheduleViewport(Math.max(0, readerRow - this.core.getScrollbackDiscardedCount()) * this.rowHeight)) return;
+            el.scrollTop = Math.max(0, readerRow - this.paintedDiscarded) * this.rowHeight;
+            restore.appliedTop = el.scrollTop;
+          };
+          if (this.fittingFont) queueMicrotask(scroll);
+          else scroll();
+        }
       }
     }
   }
